@@ -391,12 +391,35 @@ func AddFollower(leaderPeerID string) error {
 }
 
 // RejoinNode restarts the existing node ownPeerID (reusing its data
-// directory and identity) and (re)joins it to leaderPeerID. Use this to
-// bring a node back up after it went down, possibly under a new leader.
+// directory and identity) and (re)joins it to leaderPeerID. Use this when
+// the node's address changed since it went down, or a different/new
+// leader needs to be told about it; if neither is true, ResumeNode is
+// simpler (no leader coordination at all).
 //
 // Usage: mage rejoinnode <leaderPeerID> <ownPeerID>
 func RejoinNode(leaderPeerID, ownPeerID string) error {
 	return runAddNode(leaderPeerID, ownPeerID)
+}
+
+// ResumeNode restarts the existing node ownPeerID in place -- reusing its
+// data directory and identity -- with no leader coordination at all. The
+// daemon recognizes it already has persisted raft state and resumes
+// operating on it directly. Use this when the node's address hasn't
+// changed since it went down (a pinned -listen-port makes that reliable);
+// otherwise use RejoinNode.
+//
+// Usage: mage resumenode <ownPeerID>
+func ResumeNode(ownPeerID string) error {
+	root, err := repoRoot()
+	if err != nil {
+		return err
+	}
+	peerID, err := kvctl.ResumeNode(root, ownPeerID)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("✅ node %s resumed and selected as current\n", peerID)
+	return nil
 }
 
 func runAddNode(peerIDs ...string) error {

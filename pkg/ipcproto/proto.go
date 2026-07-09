@@ -8,6 +8,7 @@ package ipcproto
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 )
 
@@ -46,15 +47,22 @@ const (
 	// ValueSize is the fixed width of the Request.Value and Response.Value
 	// fields, in bytes.
 	ValueSize = 256
+	// idSize is the fixed width of the Request.ID/Response.ID fields, in bytes.
+	idSize = 8
 
 	// RequestSize is the total encoded size of a Request.
-	RequestSize = 1 + KeySize + ValueSize
+	RequestSize = idSize + 1 + KeySize + ValueSize
 	// ResponseSize is the total encoded size of a Response.
-	ResponseSize = 1 + ValueSize
+	ResponseSize = idSize + 1 + ValueSize
 )
 
 // Request is the fixed-size message the CLI sends to the daemon.
 type Request struct {
+	// ID is a per-call nonce that pkg/ipc uses to name a response channel
+	// unique to this round trip; see that package's doc comment for why a
+	// shared, reused name is unsafe. Callers building a Request via
+	// NewRequest leave this zero -- pkg/ipc.Call fills it in.
+	ID     uint64
 	Action Action
 	Key    [KeySize]byte
 	Value  [ValueSize]byte
@@ -73,9 +81,10 @@ func NewRequest(action Action, key, value string) Request {
 // Encode serializes req to its wire form.
 func (req Request) Encode() [RequestSize]byte {
 	var buf [RequestSize]byte
-	buf[0] = byte(req.Action)
-	copy(buf[1:1+KeySize], req.Key[:])
-	copy(buf[1+KeySize:], req.Value[:])
+	binary.BigEndian.PutUint64(buf[0:idSize], req.ID)
+	buf[idSize] = byte(req.Action)
+	copy(buf[idSize+1:idSize+1+KeySize], req.Key[:])
+	copy(buf[idSize+1+KeySize:], req.Value[:])
 	return buf
 }
 
@@ -86,9 +95,10 @@ func DecodeRequest(buf []byte) (Request, error) {
 		return Request{}, fmt.Errorf("ipcproto: short request: %d bytes", len(buf))
 	}
 	var req Request
-	req.Action = Action(buf[0])
-	copy(req.Key[:], buf[1:1+KeySize])
-	copy(req.Value[:], buf[1+KeySize:1+KeySize+ValueSize])
+	req.ID = binary.BigEndian.Uint64(buf[0:idSize])
+	req.Action = Action(buf[idSize])
+	copy(req.Key[:], buf[idSize+1:idSize+1+KeySize])
+	copy(req.Value[:], buf[idSize+1+KeySize:idSize+1+KeySize+ValueSize])
 	return req, nil
 }
 
@@ -108,6 +118,8 @@ const (
 
 // Response is the fixed-size message the daemon sends back to the CLI.
 type Response struct {
+	// ID echoes the Request.ID it answers; see Request.ID.
+	ID     uint64
 	Status Status
 	// Value carries the requested value (ActionGet), the confirmed/assigned
 	// peer id (ActionAdd), or a truncated error message (Status == StatusError).
@@ -126,8 +138,9 @@ func NewResponse(status Status, value string) Response {
 // Encode serializes resp to its wire form.
 func (resp Response) Encode() [ResponseSize]byte {
 	var buf [ResponseSize]byte
-	buf[0] = byte(resp.Status)
-	copy(buf[1:], resp.Value[:])
+	binary.BigEndian.PutUint64(buf[0:idSize], resp.ID)
+	buf[idSize] = byte(resp.Status)
+	copy(buf[idSize+1:], resp.Value[:])
 	return buf
 }
 
@@ -138,8 +151,9 @@ func DecodeResponse(buf []byte) (Response, error) {
 		return Response{}, fmt.Errorf("ipcproto: short response: %d bytes", len(buf))
 	}
 	var resp Response
-	resp.Status = Status(buf[0])
-	copy(resp.Value[:], buf[1:1+ValueSize])
+	resp.ID = binary.BigEndian.Uint64(buf[0:idSize])
+	resp.Status = Status(buf[idSize])
+	copy(resp.Value[:], buf[idSize+1:idSize+1+ValueSize])
 	return resp, nil
 }
 

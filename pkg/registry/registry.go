@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Role identifies whether a node was created as the initial cluster leader
@@ -156,6 +157,12 @@ func (r *Registry) List() ([]NodeInfo, error) {
 // ResolveAddress returns a dialable multiaddr (including /p2p/<peerID>) for
 // peerID, looked up from the local registry. It is used to turn a bare peer
 // id (what a human, or `mage addnode`, provides) into a raft.ServerAddress.
+//
+// It only works for nodes created on *this* machine, since the registry is
+// a local file. A leader on another machine (e.g. a remote deployment
+// joined over SSH) has no shared registry to resolve from -- callers should
+// check IsMultiaddr first and, if the caller-supplied string is already a
+// full multiaddr, use it directly instead of calling ResolveAddress.
 func (r *Registry) ResolveAddress(peerID string) (string, error) {
 	info, ok, err := r.Get(peerID)
 	if err != nil {
@@ -168,6 +175,15 @@ func (r *Registry) ResolveAddress(peerID string) (string, error) {
 		return "", fmt.Errorf("registry: peer id %s has no known listen address", peerID)
 	}
 	return info.ListenAddrs[0], nil
+}
+
+// IsMultiaddr reports whether s looks like a multiaddr (e.g.
+// "/ip4/1.2.3.4/tcp/4001/p2p/12D3Koo...") rather than a bare peer id (e.g.
+// "12D3Koo..."). Multiaddrs always start with "/"; peer ids never do. Used
+// to decide whether a leader identifier can be dialed directly or needs
+// resolving through the local registry.
+func IsMultiaddr(s string) bool {
+	return strings.HasPrefix(s, "/")
 }
 
 // Current returns the peer id of the "active" node that set/get target, or

@@ -17,6 +17,12 @@ import (
 func main() {
 	dataDir := flag.String("data-dir", "", "node data directory (identity key, pebble, raft)")
 	keyPath := flag.String("key-path", "", "path to this node's libp2p identity key")
+	listenPort := flag.Int("listen-port", 0, "TCP/QUIC port to listen on (0 = ephemeral; pin this for publicly reachable deployments)")
+	relayService := flag.Bool("relay-service", false, "act as a circuit-relay v2 point for other nodes and force public reachability (only for nodes with a real public address)")
+	heartbeatTimeout := flag.Duration("raft-heartbeat-timeout", 0, "raft heartbeat timeout (0 = hashicorp/raft's own default, 1s -- safe for real networks)")
+	electionTimeout := flag.Duration("raft-election-timeout", 0, "raft election timeout (0 = default, 1s)")
+	commitTimeout := flag.Duration("raft-commit-timeout", 0, "raft commit timeout (0 = default, 50ms)")
+	leaderLeaseTimeout := flag.Duration("raft-leader-lease-timeout", 0, "raft leader lease timeout (0 = default, 500ms)")
 	flag.Parse()
 
 	if *dataDir == "" || *keyPath == "" {
@@ -33,8 +39,14 @@ func main() {
 	}()
 
 	err := daemon.Run(ctx, daemon.Config{
-		DataDir: *dataDir,
-		KeyPath: *keyPath,
+		DataDir:            *dataDir,
+		KeyPath:            *keyPath,
+		ListenPort:         *listenPort,
+		RelayService:       *relayService,
+		HeartbeatTimeout:   *heartbeatTimeout,
+		ElectionTimeout:    *electionTimeout,
+		CommitTimeout:      *commitTimeout,
+		LeaderLeaseTimeout: *leaderLeaseTimeout,
 	})
 	if err != nil && ctx.Err() == nil {
 		fmt.Fprintf(os.Stderr, "kvnode: %v\n", err)
