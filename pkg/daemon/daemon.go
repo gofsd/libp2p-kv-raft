@@ -303,7 +303,20 @@ func newHost(priv crypto.PrivKey, cfg Config) (lp2phost.Host, error) {
 		if err != nil {
 			return nil, fmt.Errorf("relay peer address %q missing peer id: %w", cfg.RelayPeer, err)
 		}
-		opts = append(opts, libp2p.EnableAutoRelayWithStaticRelays([]peer.AddrInfo{*info}))
+		// AutoRelay only actively reserves a relay slot once it believes
+		// this host is privately reachable, a judgment it otherwise leaves
+		// to AutoNAT -- which can be slow, or simply wrong on a network
+		// (like this project's own test environment) that looks publicly
+		// dialable but isn't actually reachable by the specific peer that
+		// matters (the raft leader). RelayPeer is only ever set by a caller
+		// who already knows this node needs a relay to be reached at all
+		// (see the field's doc comment), so force that judgment instead of
+		// leaving the reservation -- and therefore the /p2p-circuit address
+		// join()'s awaitRelayAddr waits for -- contingent on AutoNAT.
+		opts = append(opts,
+			libp2p.ForceReachabilityPrivate(),
+			libp2p.EnableAutoRelayWithStaticRelays([]peer.AddrInfo{*info}),
+		)
 	}
 
 	return libp2p.New(opts...)
