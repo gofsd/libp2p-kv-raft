@@ -580,6 +580,28 @@ func (n *Node) handleAdd(ctx context.Context, req ipcproto.Request) ipcproto.Res
 
 // join asks the leader reachable at leaderAddr to add this node as a voter.
 func (n *Node) join(ctx context.Context, leaderAddr string) error {
+	// If this node needs a relay reservation to be reachable at all (see
+	// Config.RelayPeer), give it a moment to complete before doing anything
+	// else: AutoRelay's reservation happens asynchronously in the background
+	// from newHost, and raft's configuration stores whatever address we send
+	// below permanently -- getting it before the /p2p-circuit address exists
+	// means the leader can never actually reach this node.
+	//
+	// This has to happen before opening the join stream, not just before
+	// sending on it: host.NewStream returns as soon as Identify has told us
+	// the remote supports JoinProtocolID, deferring the actual
+	// multistream-select handshake to the stream's first Write (see
+	// msmux.NewMSSelect) -- but the remote's own DefaultNegotiationTimeout
+	// (10s) starts ticking the moment it sees the raw stream open, not when
+	// bytes first arrive on it. An awaitRelayAddr wait sitting between
+	// NewStream and the first Write can easily outlast that 10s window,
+	// so the remote resets the stream (StreamProtocolNegotiationFailed)
+	// before our write -- which is the join request itself -- ever reaches
+	// it. Observed directly: this is why joins reliably failed whenever
+	// RelayPeer was set, and never when it was empty (awaitRelayAddr is a
+	// no-op then, so the write follows NewStream within milliseconds).
+	n.awaitRelayAddr(15 * time.Second)
+
 	maddr, err := multiaddr.NewMultiaddr(leaderAddr)
 	if err != nil {
 		return fmt.Errorf("invalid leader address %q: %w", leaderAddr, err)
@@ -597,14 +619,6 @@ func (n *Node) join(ctx context.Context, leaderAddr string) error {
 		return fmt.Errorf("open join stream to leader %s: %w", info.ID, err)
 	}
 	defer s.Close()
-
-	// If this node needs a relay reservation to be reachable at all (see
-	// Config.RelayPeer), give it a moment to complete before announcing an
-	// address: AutoRelay's reservation happens asynchronously in the
-	// background from newHost, and raft's configuration stores whatever
-	// address we send here permanently -- getting it before the /p2p-circuit
-	// address exists means the leader can never actually reach this node.
-	n.awaitRelayAddr(15 * time.Second)
 
 	selfAddr := n.advertisedAddrs()[0]
 	if _, err := fmt.Fprintf(s, "%s %s\n", n.peerID, selfAddr); err != nil {
