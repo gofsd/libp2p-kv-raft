@@ -4,8 +4,10 @@ See [`web-app/README.md`](../web-app/README.md) for the actual, current browser 
 architecture. Summary: `web-app/` is a Rust crate compiled to `wasm32-unknown-unknown`, running a
 real (non-voting) `hashicorp/raft` learner in the browser -- [`rust-libp2p`](https://github.com/libp2p/rust-libp2p)
 dials a running `kvnode` over WebTransport, reserves a circuit-relay v2 slot so the leader can
-`Dial()` back to the tab, and joins the actual raft configuration via a new `ClientProtocolID`
-`ActionAdd` path (`pkg/daemon.handleAddLearner`) that calls `raft.AddNonvoter`. From there the tab
+`Dial()` back to the tab, and joins the actual raft configuration via `ClientProtocolID`, speaking
+`pkg/shmevent`'s single Cap'n Proto-encoded struct (see `api/shmevent.capnp`): an unsigned
+`EventGetPrivateKey` bootstrap fetches the target's key, then a signed `EventSetKey`+`EventAdd`
+pair reaches `pkg/daemon.handleAddLearner`, which calls `raft.AddNonvoter`. From there the tab
 receives genuine `AppendEntries` replication -- reimplementing `hashicorp/raft`'s `NetworkTransport`
 msgpack wire format byte-for-byte (verified against real fixtures pulled from `go-msgpack/v2`'s own
 test data) -- and answers `Get` from its own locally-applied SQLite-backed state, not a forwarded

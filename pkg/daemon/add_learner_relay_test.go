@@ -2,23 +2,25 @@ package daemon
 
 import (
 	"context"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/hashicorp/raft"
+	lp2phost "github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
 
-	"github.com/gofsd/libp2p-kv-raft/pkg/ipcproto"
 	p2praft "github.com/gofsd/libp2p-kv-raft/pkg/raft"
 	"github.com/gofsd/libp2p-kv-raft/pkg/rafttransport"
+	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
 
 // TestAddLearnerThroughRelay is a real-cluster test for handleAddLearner
-// (ClientProtocolID's ActionAdd): it spins up a genuine circuit-relay v2
+// (ClientProtocolID's EventAdd): it spins up a genuine circuit-relay v2
 // server, a real leader daemon.Node, and a plain go-libp2p host standing in
 // for what web-app/'s rust-libp2p-in-wasm build would be -- a peer with no
 // directly-dialable address of its own, reachable only through a relay
@@ -26,11 +28,13 @@ import (
 // Config.RelayPeer's doc comment). It doesn't exercise the Rust wire codec
 // itself (that's covered byte-for-byte by web-app's own raft_wire tests
 // against real hashicorp/raft fixtures) -- what it proves is the Go-side
-// half: that AddNonvoter over a relay-reserved address actually lands in
-// the leader's raft configuration, and that the leader's own
-// rafttransport.NetworkTransport can subsequently Dial() the "browser"
-// through that reservation to deliver a real AppendEntries stream, the same
-// way it already does for a relay-joined voter (see TestJoinThroughRelay).
+// half: that the full pkg/shmevent handshake (GetPrivateKey bootstrap,
+// then a signed SetKey+EventAdd pair) results in AddNonvoter landing in
+// the leader's raft configuration at a relay-reserved address, and that
+// the leader's own rafttransport.NetworkTransport can subsequently Dial()
+// the "browser" through that reservation to deliver a real AppendEntries
+// stream, the same way it already does for a relay-joined voter (see
+// TestJoinThroughRelay).
 func TestAddLearnerThroughRelay(t *testing.T) {
 	t.Parallel()
 
@@ -70,9 +74,8 @@ func TestAddLearnerThroughRelay(t *testing.T) {
 	}
 	defer leader.shutdown()
 
-	bootstrapResp := leader.handleAdd(ctx, ipcproto.NewRequest(ipcproto.ActionAdd, "", ""))
-	if bootstrapResp.Status != ipcproto.StatusOK {
-		t.Fatalf("bootstrap leader: %s", bootstrapResp.ValueString())
+	if _, err := leader.handleAdd(ctx, ""); err != nil {
+		t.Fatalf("bootstrap leader: %v", err)
 	}
 	leaderAddr := leader.advertisedAddrs()[0]
 	t.Logf("leader addr: %s", leaderAddr)
@@ -133,26 +136,49 @@ func TestAddLearnerThroughRelay(t *testing.T) {
 		t.Fatalf("browser connect to leader: %v", err)
 	}
 
-	addStream, err := browser.Host.NewStream(ctx, leaderPeerID, ClientProtocolID)
+	// Bootstrap: fetch the shared signing key -- unsigned, per
+	// shmevent.RequiresSignature -- exactly like web-app/'s app.rs does
+	// before it can sign anything else.
+	keyResp, err := callClientProtocol(ctx, browser.Host, leaderPeerID, shmevent.Msg{
+		EventType: shmevent.EventGetPrivateKey,
+		ID:        1,
+	}, nil)
 	if err != nil {
-		t.Fatalf("open client-protocol stream to leader: %v", err)
+		t.Fatalf("get_private_key: %v", err)
 	}
-	addReq := ipcproto.NewRequest(ipcproto.ActionAdd, browser.Host.ID().String(), browserAddr)
-	addReqBuf := addReq.Encode()
-	if _, err := addStream.Write(addReqBuf[:]); err != nil {
-		t.Fatalf("write add-learner request: %v", err)
+	if keyResp.EventType == shmevent.EventError {
+		t.Fatalf("get_private_key rejected: %s", keyResp.Value)
 	}
-	addRespBuf := make([]byte, ipcproto.ResponseSize)
-	if _, err := readFullTest(addStream, addRespBuf); err != nil {
-		t.Fatalf("read add-learner response: %v", err)
-	}
-	addStream.Close()
-	addResp, err := ipcproto.DecodeResponse(addRespBuf)
+	browserPriv := shmevent.PrivateKey(keyResp.Value)
+
+	// SetKey registers the browser's own peer id, then EventAdd
+	// (SourceID referencing it) supplies the relay-reserved address --
+	// see pkg/shmevent's doc comment for why AddNonvoter's two pieces of
+	// data need two linked messages.
+	const setKeyID = 2
+	setKeyResp, err := callClientProtocol(ctx, browser.Host, leaderPeerID, shmevent.Msg{
+		EventType: shmevent.EventSetKey,
+		Value:     []byte(browser.Host.ID().String()),
+		ID:        setKeyID,
+	}, browserPriv)
 	if err != nil {
-		t.Fatalf("decode add-learner response: %v", err)
+		t.Fatalf("set_key: %v", err)
 	}
-	if addResp.Status != ipcproto.StatusOK {
-		t.Fatalf("add-learner rejected: %s", addResp.ValueString())
+	if setKeyResp.EventType == shmevent.EventError {
+		t.Fatalf("set_key rejected: %s", setKeyResp.Value)
+	}
+
+	addResp, err := callClientProtocol(ctx, browser.Host, leaderPeerID, shmevent.Msg{
+		EventType: shmevent.EventAdd,
+		SourceID:  setKeyID,
+		Value:     []byte(browserAddr),
+		ID:        3,
+	}, browserPriv)
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if addResp.EventType == shmevent.EventError {
+		t.Fatalf("add-learner rejected: %s", addResp.Value)
 	}
 
 	rf := leader.getRaft()
@@ -183,14 +209,34 @@ func TestAddLearnerThroughRelay(t *testing.T) {
 	}
 }
 
-func readFullTest(s network.Stream, buf []byte) (int, error) {
-	total := 0
-	for total < len(buf) {
-		n, err := s.Read(buf[total:])
-		total += n
-		if err != nil {
-			return total, err
-		}
+// callClientProtocol speaks ClientProtocolID for one request/response
+// round trip -- the test's stand-in for what web-app/'s p2p.rs
+// (call_client_protocol) or a Go pkg/shmclient caller would do.
+func callClientProtocol(ctx context.Context, h lp2phost.Host, target peer.ID, m shmevent.Msg, priv shmevent.PrivateKey) (shmevent.Msg, error) {
+	s, err := h.NewStream(ctx, target, ClientProtocolID)
+	if err != nil {
+		return shmevent.Msg{}, err
 	}
-	return total, nil
+	defer s.Close()
+
+	buf, err := shmevent.Encode(m, priv)
+	if err != nil {
+		return shmevent.Msg{}, err
+	}
+	if _, err := s.Write(buf); err != nil {
+		return shmevent.Msg{}, err
+	}
+	if err := s.CloseWrite(); err != nil {
+		return shmevent.Msg{}, err
+	}
+
+	respBuf, err := io.ReadAll(s)
+	if err != nil {
+		return shmevent.Msg{}, err
+	}
+	resp, _, _, err := shmevent.Decode(respBuf)
+	if err != nil {
+		return shmevent.Msg{}, err
+	}
+	return resp, nil
 }

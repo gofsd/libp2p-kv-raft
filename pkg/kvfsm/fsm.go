@@ -34,6 +34,15 @@ func EncodeCommand(op OpType, key, value []byte) []byte {
 	return buf
 }
 
+// DecodeCommand is the inverse of EncodeCommand -- also used directly by
+// pkg/daemon's ForwardProtocolID handling, which forwards a Set to the
+// leader using this same op+key+value framing rather than the user-facing
+// pkg/shmevent protocol (ForwardProtocolID is internal node-to-node
+// machinery, not something a "user" ever speaks).
+func DecodeCommand(data []byte) (op OpType, key, value []byte, err error) {
+	return decodeCommand(data)
+}
+
 func decodeCommand(data []byte) (op OpType, key, value []byte, err error) {
 	if len(data) < 5 {
 		return 0, nil, nil, fmt.Errorf("kvfsm: command too short")
@@ -74,7 +83,7 @@ type ApplyResult struct {
 }
 
 // Apply implements raft.FSM.
-func (f *FSM) Apply(l *raft.Log) interface{} {
+func (f *FSM) Apply(l *raft.Log) any {
 	op, key, value, err := decodeCommand(l.Data)
 	if err != nil {
 		return ApplyResult{Err: err}

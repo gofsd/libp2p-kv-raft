@@ -28,18 +28,18 @@ package ipc
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/binary"
 	"fmt"
+	"io"
 	"sync"
 
 	"github.com/gofsd/shmring"
 
-	"github.com/gofsd/libp2p-kv-raft/pkg/ipcproto"
+	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
 
 // capacity is the shared-memory data region size for both channels. It must
-// be a power of two and comfortably fit the larger of Request/Response.
+// be a power of two and comfortably fit the larger of an encoded
+// request/response (see pkg/shmevent.ValueSize).
 const capacity = 4096
 
 // call is what Call hands to Serve via the per-peer mailbox.
@@ -80,36 +80,28 @@ func mailboxFor(peerID string) chan call {
 	return ch
 }
 
-// newRequestID returns a random nonce for a Request.ID. Android's
-// transport doesn't need it to disambiguate channels the way desktop's
-// does (see package doc comment), but ipcproto.Request.ID is part of the
-// shared wire format, and daemon handlers may still echo/log it, so fill
-// it in for consistency with the desktop transport's Call.
-func newRequestID() uint64 {
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return 0
-	}
-	return binary.BigEndian.Uint64(b[:])
-}
-
-// Call sends req to the in-process follower daemon serving peerID and
+// Call sends m (with m.ID already set by the caller -- see pkg/shmevent's
+// doc comment on why the caller, not this package, chooses it) to the
+// in-process follower daemon serving peerID, signed with priv (nil only
+// for EventGetPublicKey/EventGetPrivateKey -- see shmevent.Sign), and
 // returns its response. It blocks until the daemon replies or ctx is done.
-func Call(ctx context.Context, peerID string, req ipcproto.Request) (ipcproto.Response, error) {
-	req.ID = newRequestID()
-
+func Call(ctx context.Context, peerID string, m shmevent.Msg, priv shmevent.PrivateKey) (shmevent.Msg, error) {
 	w, fd, err := shmring.CreateAndroidSharedMemory("kvipc-req", capacity)
 	if err != nil {
-		return ipcproto.Response{}, fmt.Errorf("ipc: create request shm: %w", err)
+		return shmevent.Msg{}, fmt.Errorf("ipc: create request shm: %w", err)
 	}
-	buf := req.Encode()
-	if _, err := w.WriteContext(ctx, buf[:]); err != nil {
+	buf, err := shmevent.Encode(m, priv)
+	if err != nil {
 		w.CloseStorage()
-		return ipcproto.Response{}, fmt.Errorf("ipc: write request: %w", err)
+		return shmevent.Msg{}, fmt.Errorf("ipc: encode request: %w", err)
+	}
+	if _, err := w.WriteContext(ctx, buf); err != nil {
+		w.CloseStorage()
+		return shmevent.Msg{}, fmt.Errorf("ipc: write request: %w", err)
 	}
 	if err := w.Close(); err != nil {
 		w.CloseStorage()
-		return ipcproto.Response{}, fmt.Errorf("ipc: close request writer: %w", err)
+		return shmevent.Msg{}, fmt.Errorf("ipc: close request writer: %w", err)
 	}
 
 	respChan := make(chan respHandoff, 1)
@@ -117,7 +109,7 @@ func Call(ctx context.Context, peerID string, req ipcproto.Request) (ipcproto.Re
 	case mailboxFor(peerID) <- call{reqFD: fd, respChan: respChan}:
 	case <-ctx.Done():
 		w.CloseStorage()
-		return ipcproto.Response{}, ctx.Err()
+		return shmevent.Msg{}, ctx.Err()
 	}
 
 	var rh respHandoff
@@ -125,23 +117,22 @@ func Call(ctx context.Context, peerID string, req ipcproto.Request) (ipcproto.Re
 	case rh = <-respChan:
 	case <-ctx.Done():
 		w.CloseStorage()
-		return ipcproto.Response{}, ctx.Err()
+		return shmevent.Msg{}, ctx.Err()
 	}
 
 	r, openErr := shmring.OpenAndroidSharedMemory(rh.fd, capacity)
 	close(rh.ack)
 	if openErr != nil {
 		w.CloseStorage()
-		return ipcproto.Response{}, fmt.Errorf("ipc: open response shm: %w", openErr)
+		return shmevent.Msg{}, fmt.Errorf("ipc: open response shm: %w", openErr)
 	}
 
-	respBuf := make([]byte, ipcproto.ResponseSize)
-	if err := readFull(ctx, r, respBuf); err != nil {
-		r.Close()
-		w.CloseStorage()
-		return ipcproto.Response{}, fmt.Errorf("ipc: read response: %w", err)
-	}
+	respBuf, err := readAll(ctx, r)
 	r.Close()
+	if err != nil {
+		w.CloseStorage()
+		return shmevent.Msg{}, fmt.Errorf("ipc: read response: %w", err)
+	}
 
 	// The response proves the daemon already fully read the request (same
 	// reasoning as desktop Call, and unconditionally true here since every
@@ -149,34 +140,42 @@ func Call(ctx context.Context, peerID string, req ipcproto.Request) (ipcproto.Re
 	// safe to release the request segment now.
 	w.CloseStorage()
 
-	resp, err := ipcproto.DecodeResponse(respBuf)
+	resp, _, _, err := shmevent.Decode(respBuf)
 	if err != nil {
-		return ipcproto.Response{}, err
+		return shmevent.Msg{}, err
 	}
 	return resp, nil
 }
 
-func readFull(ctx context.Context, r *shmring.Reader, buf []byte) error {
-	total := 0
-	for total < len(buf) {
-		n, err := r.ReadContext(ctx, buf[total:])
-		total += n
+// readAll reads r until EOF -- a capnp message has no fixed size (unlike
+// the ipcproto.Request/Response this transport used to carry).
+func readAll(ctx context.Context, r *shmring.Reader) ([]byte, error) {
+	var out []byte
+	chunk := make([]byte, 4096)
+	for {
+		n, err := r.ReadContext(ctx, chunk)
+		if n > 0 {
+			out = append(out, chunk[:n]...)
+		}
 		if err != nil {
-			return err
+			if err == io.EOF {
+				return out, nil
+			}
+			return out, err
 		}
 	}
-	return nil
 }
 
-// Handler processes one decoded Request and returns the Response to send
-// back.
-type Handler func(ctx context.Context, req ipcproto.Request) ipcproto.Response
+// Handler processes one decoded request (m, with crc/sig as decoded off
+// the wire for the handler to verify -- see shmevent.Verify) and returns
+// the response Msg to send back.
+type Handler func(ctx context.Context, m shmevent.Msg, crc uint32, sig []byte) shmevent.Msg
 
 // Serve runs the in-process daemon side of the protocol for peerID: it
 // repeatedly waits for a Call on the peer's mailbox, dispatches it to
-// handle, and hands the response segment's fd back. It blocks until ctx is
-// done.
-func Serve(ctx context.Context, peerID string, handle Handler) error {
+// handle, and hands the response segment's fd back. Responses are signed
+// with priv. It blocks until ctx is done.
+func Serve(ctx context.Context, peerID string, priv shmevent.PrivateKey, handle Handler) error {
 	ch := mailboxFor(peerID)
 	for {
 		var c call
@@ -190,8 +189,7 @@ func Serve(ctx context.Context, peerID string, handle Handler) error {
 		if err != nil {
 			continue
 		}
-		reqBuf := make([]byte, ipcproto.RequestSize)
-		err = readFull(ctx, r, reqBuf)
+		reqBuf, err := readAll(ctx, r)
 		r.Close()
 		if err != nil {
 			if ctx.Err() != nil {
@@ -200,20 +198,24 @@ func Serve(ctx context.Context, peerID string, handle Handler) error {
 			continue
 		}
 
-		req, err := ipcproto.DecodeRequest(reqBuf)
+		m, crc, sig, err := shmevent.Decode(reqBuf)
 		if err != nil {
 			continue
 		}
 
-		resp := handle(ctx, req)
-		resp.ID = req.ID
+		resp := handle(ctx, m, crc, sig)
+		resp.ID = m.ID
 
 		w, respFD, err := shmring.CreateAndroidSharedMemory("kvipc-resp", capacity)
 		if err != nil {
 			continue
 		}
-		respBuf := resp.Encode()
-		if _, err := w.WriteContext(ctx, respBuf[:]); err != nil {
+		respBuf, err := shmevent.Encode(resp, priv)
+		if err != nil {
+			w.CloseStorage()
+			continue
+		}
+		if _, err := w.WriteContext(ctx, respBuf); err != nil {
 			w.CloseStorage()
 			continue
 		}

@@ -12,10 +12,19 @@ network-facing RPC port.
 
 - `pkg/daemon` — the long-running node process (`cmd/kvnode`): a libp2p host, a raft instance
   backed by `pkg/kvfsm`/`pkg/store`, and a `pkg/ipc` server for local control.
+- `api/shmevent.capnp` — the single [Cap'n Proto](https://capnproto.org/)-encoded wire struct every
+  "user"-to-"raft node instance" hop speaks: `pkg/ipc`'s local shared memory, and
+  `pkg/daemon.ClientProtocolID`'s network hop for a remote browser learner. One `event` byte,
+  `sourceId`/`destinationId` relational references, a raw `value`, a CRC32, an Ed25519 `signature`,
+  and a correlation `id` — a Set decomposes into a linked `SetKey`+`SetField` pair, a Get is a
+  one-shot `GetField`, and `GetPublicKey`/`GetPrivateKey` are how a caller with no key yet
+  bootstraps into the same key the node itself holds. `pkg/shmevent` (Go) and `web-app/src/shmevent.rs`
+  (Rust) are both generated from this identical schema. See its doc comment for the full design.
 - `pkg/ipc` — request/response IPC between a short-lived CLI process and the daemon, over shmring
-  ring buffers. `ipc.go` is the desktop (named shared-memory) transport; `ipc_android.go` is the
-  Android transport (`ASharedMemory`, no named rendezvous, so client and daemon must share a
-  process — see that file's doc comment).
+  ring buffers carrying `pkg/shmevent.Msg`. `ipc.go` is the desktop (named shared-memory) transport;
+  `ipc_android.go` is the Android transport (`ASharedMemory`, no named rendezvous, so client and
+  daemon must share a process — see that file's doc comment). `pkg/shmclient` implements the
+  caller-side SetKey+SetField/GetField orchestration and the `GetPrivateKey` bootstrap on top of it.
 - `pkg/kvctl` / `cmd/kvctl-cli` — client logic for spawning/bootstrapping nodes and issuing
   set/get requests. `kvctl-cli` is a no-Go-toolchain-required binary meant to run next to an
   already-built `kvnode` binary on a remote deployment target (e.g. a VPS reached over SSH).
@@ -28,9 +37,9 @@ network-facing RPC port.
   *votes*, but it does run a real hashicorp/raft non-voter (learner), reimplementing
   `NetworkTransport`'s msgpack wire protocol to receive genuine `AppendEntries` replication.
 
-A node has no leader/follower role until it receives an `ActionAdd` request: bootstrap as the
-cluster's sole leader, or join an existing leader (given as a bare peer ID registered on the same
-machine, or a full multiaddr for a leader on another machine).
+A node has no leader/follower role until it receives an `EventAdd` request (`pkg/shmevent`):
+bootstrap as the cluster's sole leader, or join an existing leader (given as a bare peer ID
+registered on the same machine, or a full multiaddr for a leader on another machine).
 
 ## Running a cluster
 
@@ -132,11 +141,13 @@ followers](#follower-on-android) above) — so `web-app/` is a real (if non-voti
 cluster, in Rust compiled to `wasm32-unknown-unknown` over `rust-libp2p`: it reimplements
 `hashicorp/raft`'s `NetworkTransport` msgpack wire protocol to receive genuine `AppendEntries`
 replication, backed by real SQLite (`sqlite-wasm-rs`) for the replicated log and kv table. Joining
-happens over a new libp2p protocol, `pkg/daemon.ClientProtocolID`'s `ActionAdd` handler
-(`handleAddLearner`), which calls `raft.AddNonvoter` — forwarding to the real leader server-side if
-the dialed node isn't it, one hop, mirroring how a voter's own join request forwards
-(`pkg/daemon.ForwardJoinProtocolID`). A Set still forwards to the leader the same way; a Get reads
-this tab's own locally-replicated state.
+happens over `pkg/daemon.ClientProtocolID`, speaking `pkg/shmevent`'s capnp struct: the browser
+first fetches the target's Ed25519 key (`EventGetPrivateKey`, unsigned — the one bootstrap
+exception), then sends a signed `EventSetKey`+`EventAdd` pair (own peer id, then own reserved
+address) to `handleAddLearner`, which calls `raft.AddNonvoter` — forwarding to the real leader
+server-side if the dialed node isn't it, one hop, mirroring how a voter's own join request forwards
+(`pkg/daemon.ForwardJoinProtocolID`). A Set still forwards to the leader the same way (as a signed
+`EventSetKey`+`EventSetField` pair); a Get reads this tab's own locally-replicated state.
 
 Every node already listens on a browser-reachable WebTransport address (`newHost` adds it
 alongside the existing TCP/QUIC listeners); `advertisedAddrs()`/`ready.json` include it

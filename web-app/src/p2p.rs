@@ -246,27 +246,32 @@ impl Handle {
     }
 
     /// Speaks `CLIENT_PROTOCOL` to `target` for one request/response round
-    /// trip -- used for the `ActionAdd` join handshake and for forwarded
-    /// Set/Get, exactly like the desktop CLI and the Android app's
-    /// relationship to their own daemon (see `pkg/daemon.ClientProtocolID`),
-    /// just re-encoded with this crate's own [`crate::ipcproto`] port.
+    /// trip -- used for the join handshake and for forwarded Set/Get,
+    /// exactly like the desktop CLI and the Android app's relationship to
+    /// their own daemon (see `pkg/daemon.ClientProtocolID`), just
+    /// re-encoded with this crate's own [`crate::shmevent`] port. A capnp
+    /// message has no fixed size (unlike the ipcproto.Request/Response
+    /// this replaced), so the response is read until the daemon closes
+    /// its write side rather than a known byte count.
     pub async fn call_client_protocol(
         &mut self,
         target: PeerId,
-        req: &crate::ipcproto::Request,
-    ) -> Result<crate::ipcproto::Response, Error> {
+        req: &crate::shmevent::Msg,
+        priv_key: Option<&ed25519_dalek::SigningKey>,
+    ) -> Result<crate::shmevent::Msg, Error> {
         let mut s = self
             .control
             .open_stream(target, CLIENT_PROTOCOL.clone())
             .await
             .map_err(|e| Error(e.to_string()))?;
-        let buf = req.encode();
+        let buf = crate::shmevent::encode(req, priv_key).map_err(|e| Error(e.to_string()))?;
         s.write_all(&buf).await?;
         s.close().await?;
 
-        let mut resp_buf = vec![0u8; crate::ipcproto::RESPONSE_SIZE];
-        s.read_exact(&mut resp_buf).await?;
-        crate::ipcproto::Response::decode(&resp_buf).map_err(|e| Error(e.to_string()))
+        let mut resp_buf = Vec::new();
+        s.read_to_end(&mut resp_buf).await?;
+        let (resp, _, _) = crate::shmevent::decode(&resp_buf).map_err(|e| Error(e.to_string()))?;
+        Ok(resp)
     }
 }
 

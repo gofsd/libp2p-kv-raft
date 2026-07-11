@@ -4,10 +4,10 @@
 
 mod app;
 pub mod fsm;
-pub mod ipcproto;
 pub mod learner;
 pub mod msgpack;
 pub mod p2p;
 pub mod raft_wire;
+pub mod shmevent;
 mod shmring_ipc;
 pub mod sqlite_store;

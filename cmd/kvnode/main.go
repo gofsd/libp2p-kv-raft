@@ -1,6 +1,6 @@
 // Command kvnode is the long-running node daemon spawned by `mage addnode`.
 // It has no notion of leader/follower at startup; that is decided later by
-// an ipcproto.ActionAdd request delivered over pkg/ipc (see pkg/daemon).
+// a pkg/shmevent EventAdd request delivered over pkg/ipc (see pkg/daemon).
 package main
 
 import (

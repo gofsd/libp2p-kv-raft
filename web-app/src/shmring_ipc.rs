@@ -12,6 +12,12 @@
 //! supports one in-flight call at a time (one operator driving this tab's
 //! UI sequentially), which is what lets `MainChannel` track "the current
 //! pending call" without a request-id map.
+//!
+//! Carries [`crate::shmevent::Msg`], the same capnp-encoded struct every
+//! other hop in this project speaks (see that module's doc comment) --
+//! unlike the fixed-size `ipcproto::Request`/`Response` this replaced, a
+//! capnp message has no fixed length, so both directions read until the
+//! writer closes rather than a known byte count (see `poll_read_to_end`).
 #![cfg(target_arch = "wasm32")]
 
 use std::cell::RefCell;
@@ -25,10 +31,11 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{MessageEvent, Worker};
 
-use crate::ipcproto::{Request, Response, REQUEST_SIZE, RESPONSE_SIZE};
+use crate::shmevent::{self, Msg};
 
 /// Ring buffer payload size -- matches `pkg/ipc`'s `capacity` constant
-/// (comfortably fits the larger of Request/Response).
+/// (comfortably fits an encoded request/response; see
+/// `shmevent::VALUE_SIZE`).
 const CAPACITY: u64 = 4096;
 
 /// shmring's own header is `pub(crate)` (currently 64 bytes as of 0.3.0,
@@ -52,6 +59,11 @@ impl std::fmt::Display for Error {
 
 impl From<shmring::Error> for Error {
     fn from(e: shmring::Error) -> Self {
+        Error(e.to_string())
+    }
+}
+impl From<shmevent::Error> for Error {
+    fn from(e: shmevent::Error) -> Self {
         Error(e.to_string())
     }
 }
@@ -87,27 +99,27 @@ async fn poll_write_all(
     Ok(())
 }
 
-async fn poll_read_exact(
-    r: &mut Reader<SharedArrayBufferStorage>,
-    buf: &mut [u8],
-) -> Result<(), Error> {
-    let mut total = 0usize;
+/// Reads `r` until the writer closes and the buffer drains -- a capnp
+/// message has no fixed size, so (unlike the fixed-size `ipcproto` reads
+/// this replaced) there is no byte count to read up front.
+async fn poll_read_to_end(r: &mut Reader<SharedArrayBufferStorage>) -> Result<Vec<u8>, Error> {
+    let mut out = Vec::new();
+    let mut chunk = [0u8; 512];
     let mut wait_ms = MIN_POLL_MS;
-    while total < buf.len() {
-        match r.try_read(&mut buf[total..]) {
+    loop {
+        match r.try_read(&mut chunk) {
             Ok(n) if n > 0 => {
-                total += n;
+                out.extend_from_slice(&chunk[..n]);
                 wait_ms = MIN_POLL_MS;
                 continue;
             }
             Ok(_) => {}
-            Err(shmring::Error::Eof) => return Err(Error("unexpected EOF mid-message".into())),
+            Err(shmring::Error::Eof) => return Ok(out),
             Err(e) => return Err(e.into()),
         }
         gloo_timers::future::TimeoutFuture::new(wait_ms).await;
         wait_ms = (wait_ms * 2).min(MAX_POLL_MS);
     }
-    Ok(())
 }
 
 /// Main-thread side: holds the `Worker` handle and drives `call`,
@@ -142,12 +154,18 @@ impl MainChannel {
         }
     }
 
-    /// Sends `req` to the Worker's [`serve`] loop and returns its
+    /// Sends `req` (signed with `priv_key`, `None` only for
+    /// `EVENT_GET_PUBLIC_KEY`/`EVENT_GET_PRIVATE_KEY` -- see
+    /// `shmevent::sign`) to the Worker's [`serve`] loop and returns its
     /// response. Must not be called again before the previous call
     /// returns (see this module's doc comment).
-    pub async fn call(&self, req: Request) -> Result<Response, Error> {
+    pub async fn call(
+        &self,
+        req: &Msg,
+        priv_key: Option<&ed25519_dalek::SigningKey>,
+    ) -> Result<Msg, Error> {
         let (mut writer, req_sab) = new_writer()?;
-        let buf = req.encode();
+        let buf = shmevent::encode(req, priv_key)?;
         poll_write_all(&mut writer, &buf).await?;
         writer.close()?;
 
@@ -161,12 +179,12 @@ impl MainChannel {
             .await
             .map_err(|_| Error("worker channel closed".into()))?;
         let mut reader = open_reader(resp_sab)?;
-        let mut resp_buf = [0u8; RESPONSE_SIZE];
-        poll_read_exact(&mut reader, &mut resp_buf).await?;
+        let resp_buf = poll_read_to_end(&mut reader).await?;
         reader.close()?;
         writer.close_storage()?;
 
-        Response::decode(&resp_buf).map_err(|e| Error(e.to_string()))
+        let (resp, _, _) = shmevent::decode(&resp_buf)?;
+        Ok(resp)
     }
 }
 
@@ -176,11 +194,17 @@ impl MainChannel {
 /// Must be called from within the Worker script itself. `handle` runs
 /// against `self` (a `DedicatedWorkerGlobalScope`), same as
 /// `kvmobile.Start/Submit/Get` answer `pkg/ipc` requests from Android's
-/// `MainActivity`.
+/// `MainActivity`. `handle` receives the decoded crc/signature alongside
+/// the message so it can verify authenticity itself (see
+/// `shmevent::verify`) -- the same responsibility `pkg/daemon.handleShmEvent`
+/// has on the Go side -- and returns the already-`shmevent::encode`d (and
+/// so already-signed, with whatever key the Worker's own dispatch logic
+/// decides is appropriate) response bytes directly, so this generic
+/// transport layer never needs its own signing key.
 pub fn serve<F, Fut>(global: web_sys::DedicatedWorkerGlobalScope, handle: F)
 where
-    F: Fn(Request) -> Fut + 'static,
-    Fut: std::future::Future<Output = Response> + 'static,
+    F: Fn(Msg, u32, Vec<u8>) -> Fut + 'static,
+    Fut: std::future::Future<Output = Vec<u8>> + 'static,
 {
     let handle = Rc::new(handle);
     let global_for_post = global.clone();
@@ -194,24 +218,20 @@ where
             let Ok(mut reader) = open_reader(req_sab) else {
                 return;
             };
-            let mut req_buf = [0u8; REQUEST_SIZE];
-            if poll_read_exact(&mut reader, &mut req_buf).await.is_err() {
-                return;
-            }
-            let _ = reader.close();
-
-            let Ok(req) = Request::decode(&req_buf) else {
+            let Ok(req_buf) = poll_read_to_end(&mut reader).await else {
                 return;
             };
-            let req_id = req.id;
-            let mut resp = handle(req).await;
-            resp.id = req_id;
+            let _ = reader.close();
+
+            let Ok((req, crc, sig)) = shmevent::decode(&req_buf) else {
+                return;
+            };
+            let resp_buf = handle(req, crc, sig).await;
 
             let Ok((mut writer, resp_sab)) = new_writer() else {
                 return;
             };
-            let buf = resp.encode();
-            if poll_write_all(&mut writer, &buf).await.is_err() {
+            if poll_write_all(&mut writer, &resp_buf).await.is_err() {
                 return;
             }
             let _ = writer.close();

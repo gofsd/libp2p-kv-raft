@@ -9,7 +9,6 @@ import (
 
 	"github.com/hashicorp/raft"
 
-	"github.com/gofsd/libp2p-kv-raft/pkg/ipcproto"
 	p2praft "github.com/gofsd/libp2p-kv-raft/pkg/raft"
 )
 
@@ -90,9 +89,8 @@ func TestJoinThroughRelay(t *testing.T) {
 	}
 	defer leader.shutdown()
 
-	bootstrapResp := leader.handleAdd(ctx, ipcproto.NewRequest(ipcproto.ActionAdd, "", ""))
-	if bootstrapResp.Status != ipcproto.StatusOK {
-		t.Fatalf("bootstrap leader: %s", bootstrapResp.ValueString())
+	if _, err := leader.handleAdd(ctx, ""); err != nil {
+		t.Fatalf("bootstrap leader: %v", err)
 	}
 	leaderAddr := leader.advertisedAddrs()[0]
 	t.Logf("leader addr: %s", leaderAddr)
@@ -117,10 +115,10 @@ func TestJoinThroughRelay(t *testing.T) {
 	// window the pre-fix ordering would have lost the race against.
 	const minJoinWait = 12 * time.Second
 	joinStart := time.Now()
-	joinResp := follower.handleAdd(ctx, ipcproto.NewRequest(ipcproto.ActionAdd, leaderAddr, ""))
+	_, err = follower.handleAdd(ctx, leaderAddr)
 	joinElapsed := time.Since(joinStart)
-	if joinResp.Status != ipcproto.StatusOK {
-		t.Fatalf("follower join: %s", joinResp.ValueString())
+	if err != nil {
+		t.Fatalf("follower join: %v", err)
 	}
 	t.Logf("join took %s", joinElapsed)
 	if joinElapsed < minJoinWait {
@@ -143,19 +141,18 @@ func TestJoinThroughRelay(t *testing.T) {
 	}
 	t.Logf("follower's raft address: %s (relay circuit address: %v)", followerAddr, strings.Contains(string(followerAddr), "/p2p-circuit"))
 
-	setResp := leader.handleSet(ctx, ipcproto.NewRequest(ipcproto.ActionSet, "k1", "v1"))
-	if setResp.Status != ipcproto.StatusOK {
-		t.Fatalf("set on leader: %s", setResp.ValueString())
+	if err := leader.handleSetForward(ctx, []byte("k1"), []byte("v1"), true); err != nil {
+		t.Fatalf("set on leader: %v", err)
 	}
 
 	deadline := time.Now().Add(20 * time.Second)
 	for {
-		getResp := follower.handleGet(ctx, ipcproto.NewRequest(ipcproto.ActionGet, "k1", ""))
-		if getResp.Status == ipcproto.StatusOK && getResp.ValueString() == "v1" {
+		value, err := follower.handleGet([]byte("k1"))
+		if err == nil && string(value) == "v1" {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("follower never observed replicated value: status=%v value=%q", getResp.Status, getResp.ValueString())
+			t.Fatalf("follower never observed replicated value: err=%v value=%q", err, value)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

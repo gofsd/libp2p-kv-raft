@@ -15,9 +15,8 @@ import (
 	"time"
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/daemon"
-	"github.com/gofsd/libp2p-kv-raft/pkg/ipc"
-	"github.com/gofsd/libp2p-kv-raft/pkg/ipcproto"
 	"github.com/gofsd/libp2p-kv-raft/pkg/registry"
+	"github.com/gofsd/libp2p-kv-raft/pkg/shmclient"
 )
 
 // readyTimeout bounds how long AddNode waits for a freshly spawned daemon to
@@ -253,12 +252,8 @@ func bootUp(reg *registry.Registry, binPath string, extraDaemonArgs []string, pe
 
 	ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
 	defer cancel()
-	resp, err := ipc.Call(ctx, peerID, ipcproto.NewRequest(ipcproto.ActionAdd, leaderPeerID, ""))
-	if err != nil {
+	if _, err := shmclient.Add(ctx, peerID, leaderPeerID); err != nil {
 		return "", fmt.Errorf("addnode: bootstrap request to %s: %w", peerID, err)
-	}
-	if resp.Status != ipcproto.StatusOK {
-		return "", fmt.Errorf("addnode: node %s rejected bootstrap: %s", peerID, resp.ValueString())
 	}
 
 	if err := reg.SetCurrent(peerID); err != nil {
@@ -296,12 +291,8 @@ func Set(key, value string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
 	defer cancel()
-	resp, err := ipc.Call(ctx, peerID, ipcproto.NewRequest(ipcproto.ActionSet, key, value))
-	if err != nil {
+	if err := shmclient.Set(ctx, peerID, key, value); err != nil {
 		return fmt.Errorf("set: %w", err)
-	}
-	if resp.Status != ipcproto.StatusOK {
-		return fmt.Errorf("set: %s", resp.ValueString())
 	}
 	return nil
 }
@@ -327,14 +318,11 @@ func Get(key string) (string, error) {
 func GetFrom(peerID, key string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
 	defer cancel()
-	resp, err := ipc.Call(ctx, peerID, ipcproto.NewRequest(ipcproto.ActionGet, key, ""))
+	value, err := shmclient.Get(ctx, peerID, key)
 	if err != nil {
 		return "", fmt.Errorf("get: %w", err)
 	}
-	if resp.Status != ipcproto.StatusOK {
-		return "", fmt.Errorf("get: %s", resp.ValueString())
-	}
-	return resp.ValueString(), nil
+	return value, nil
 }
 
 func ensureDaemonBinary(reg *registry.Registry, repoRoot string) (string, error) {

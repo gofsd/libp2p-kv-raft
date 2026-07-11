@@ -37,8 +37,17 @@ is what "learner" means here and in the Raft paper itself.
   Android device behind carrier-grade NAT already relies on (see
   `pkg/daemon.Config.RelayPeer`'s doc comment) -- and serves `rafttransport.ProtocolID` (the raft
   RPC stream) and `pkg/daemon.ClientProtocolID` (the join handshake and forwarded Set/Get).
-- `src/ipcproto.rs` -- byte-for-byte port of `pkg/ipcproto/proto.go`'s fixed-size wire format.
-- `src/shmring_ipc.rs` -- the main-thread/Worker channel, using
+- `src/shmevent.rs` -- Rust port of `pkg/shmevent` (see `api/shmevent.capnp`): the single
+  capnp-encoded struct every "user"-to-"raft node instance" hop in this project speaks --
+  main-thread/Worker here, and `pkg/daemon.ClientProtocolID`'s network hop too. Every message
+  carries one `event` byte, `sourceId`/`destinationId` relational references, a raw `value`, a
+  CRC32, an Ed25519 `signature`, and a correlation `id`; a Set decomposes into a linked
+  `SetKey`+`SetField` pair, a Get is a one-shot `GetField` (or, addressed by a prior `SetKey`'s id,
+  via `SourceID`), and `GetPublicKey`/`GetPrivateKey` are how a caller with no key yet bootstraps
+  into one -- see `api/shmevent.capnp`'s doc comment for the full design and `pkg/shmevent`'s Go
+  twin, generated from the identical schema (`build.rs` runs `capnp compile` at build time).
+  Replaces the old fixed-size `ipcproto.rs`.
+- `src/shmring_ipc.rs` -- the main-thread/Worker channel carrying `shmevent::Msg`, using
   [`shmring`](https://crates.io/crates/shmring) `0.3.0`'s Rust API directly (both sides of this
   channel are this same crate compiled to wasm, so there's no need for shmring's separate
   JS-facing `wasm_api`/`@gofsd/shmring` package -- see that crate's README on using
@@ -46,13 +55,19 @@ is what "learner" means here and in the Raft paper itself.
   `pkg/ipc/ipc_android.go`'s Call/Serve pattern: each round trip gets a fresh, single-use pair of
   rings, and only one call is ever in flight at a time.
 - `src/app.rs` -- wires all of the above into the two `wasm-bindgen` entry points a page actually
-  loads: `worker_main()` (run inside the Worker; owns the `p2p::Node`, the `Learner`, and answers
-  every request from the main thread) and `MainHandle` (run on the main thread; `connect`/`set`/`get`).
-  `ActionAdd` is repurposed from "join as a voter" (its meaning everywhere else in this project) to
-  "join as a non-voting learner" -- see `app.rs`'s doc comment.
+  loads: `worker_main()` (run inside the Worker; owns the `p2p::Node`, the `Learner`, its own
+  `shmevent` key registry, and answers every request from the main thread) and `MainHandle` (run on
+  the main thread; `connect`/`set`/`get`). Two separate Ed25519 keys are in play -- the Worker's own
+  identity key secures the main-thread/Worker hop, and a key fetched from the remote leader during
+  `connect` secures the `ClientProtocolID` hop -- see `app.rs`'s doc comment for why both exist.
+  `EVENT_ADD`'s `SourceID` referencing a prior `EVENT_SET_KEY` (this tab's own peer id) is what
+  turns a plain connect into a real `AddNonvoter` learner-join, the same sequence
+  `pkg/daemon.TestAddLearnerThroughRelay` exercises from the Go side.
 - `main.js` / `worker.js` / `index.html` -- the JS glue and UI, playing the role `MainActivity.kt`
   plays for the Android app. `main.js` is also this crate's worked example of driving it from
-  plain JS: `new Worker("./worker.js")` plus `new MainHandle(worker)` is the entire surface.
+  plain JS: `new Worker("./worker.js")` plus `new MainHandle(worker)` is the entire surface --
+  `MainHandle` handles the `shmevent` key bootstrap and the SetKey/SetField pairing internally, so
+  callers only ever see `connect(multiaddr)`/`set(key, value)`/`get(key)`.
 
 ## Building
 
@@ -64,9 +79,14 @@ npm run build:wasm   # wasm-pack build --target web --out-dir pkg
 npm run dev
 ```
 
-`sqlite-wasm-rs`'s build script compiles SQLite's C amalgamation with `cc`/`clang` targeting
-`wasm32-unknown-unknown` -- a real C toolchain with wasm32 support is required, distinct from just
-having `rustc`'s own wasm32 target installed.
+Two things need to be on `PATH` beyond the usual Rust toolchain, neither of which needs root if
+your package manager doesn't have them: a C compiler (`cc`/`clang`, for `sqlite-wasm-rs`'s build
+script, which compiles SQLite's C amalgamation targeting `wasm32-unknown-unknown`) and the Cap'n
+Proto schema compiler (`capnp`, for `build.rs`'s `capnp compile` -- see `api/shmevent.capnp`;
+`capnpc`, the Rust codegen backend, is a normal Cargo build-dependency and needs nothing extra).
+Cap'n Proto builds cleanly from source in a user-local prefix with just `cmake`/`g++`/`pkg-config`
+(`cmake .. -DCMAKE_INSTALL_PREFIX=$HOME/.local && cmake --build . && cmake --install .` from a
+`capnproto` release tarball's `c++/` directory) if it isn't packaged wherever this runs.
 
 ## Running it
 
@@ -99,21 +119,29 @@ file's doc comment); it's skipped with no cluster running.
 
 ## Known gaps / what to verify before relying on this
 
-This was built and its core logic verified in a sandboxed environment with `cargo`/`rustc` but no
-C compiler with wasm32 support and no ability to launch a real browser or a live cluster. Verified:
+This was built and its core logic verified in a sandboxed environment with `cargo`/`rustc` and
+(after building it from source into a user prefix -- see "Building" above) `capnp`, but no C
+compiler with wasm32 support and no ability to launch a real browser or a live cluster. Verified:
 
-- `cargo test` (native): the entire msgpack/raft-wire codec, `pkg/ipcproto`/`pkg/kvfsm` byte
-  compatibility -- all passing against real hashicorp/raft fixtures.
+- `cargo test` (native): the entire msgpack/raft-wire codec, `pkg/kvfsm` byte compatibility, and
+  the `shmevent` capnp codec (encode/decode, CRC32 corruption detection, Ed25519 sign/verify
+  including tamper detection, and the two-bootstrap-event unsigned exception) -- all passing, and
+  the `pkg/shmevent` Go twin generated from the same `api/shmevent.capnp` schema has its own
+  equivalent passing suite (`go test ./pkg/shmevent/...`).
 - `cargo check --target wasm32-unknown-unknown`: the full `rust-libp2p` `Swarm` construction
-  (WebTransport transport, relay client, `libp2p-stream`), the shmring main/worker channel, and
-  the `wasm-bindgen` entry points all type-check against the real crate APIs (`sqlite-wasm-rs`'s
-  code was verified separately against a stub with byte-identical FFI signatures, since its own
-  build needs `clang`).
-- A real Go-side integration test (`pkg/daemon.TestAddLearnerThroughRelay`) proves `AddNonvoter`
-  over a relay-reserved address lands in the leader's raft configuration and that the leader's
+  (WebTransport transport, relay client, `libp2p-stream`), the shmring main/worker channel carrying
+  `shmevent::Msg`, and the `wasm-bindgen` entry points (including the two-key signing flow in
+  `app.rs`) all type-check against the real crate APIs (`sqlite-wasm-rs`'s code was verified
+  separately against a stub with byte-identical FFI signatures, since its own build needs `clang`
+  specifically, not just any C compiler `capnp` happened to need).
+- Real Go-side integration tests: `pkg/daemon.TestAddLearnerThroughRelay` exercises the *exact*
+  wire sequence `app.rs`'s `do_connect` performs -- unsigned `GetPrivateKey` bootstrap, then a
+  signed `SetKey`+`EventAdd` pair -- against a real leader+relay, proving `AddNonvoter` over a
+  relay-reserved address lands in the raft configuration and that the leader's
   `rafttransport.NetworkTransport` really dials it and delivers an `AppendEntries` stream.
 
-Not yet verified (needs a machine with a wasm32 C toolchain, a browser, and time to run):
+Not yet verified (needs a machine with a wasm32 C toolchain for SQLite, a browser, and time to
+run):
 
 - That `wasm-pack build` actually succeeds and produces a working bundle.
 - A real end-to-end Connect/Set/Get in an actual browser against a live cluster (`tests/set_get.spec.js`

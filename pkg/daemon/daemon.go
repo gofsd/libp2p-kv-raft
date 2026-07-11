@@ -3,7 +3,7 @@
 // that a local mage CLI invocation drives with add/set/get requests.
 //
 // A daemon always starts "unconfigured": it has an identity and a raft
-// instance, but no cluster role until it receives an ipcproto.ActionAdd
+// instance, but no cluster role until it receives a pkg/shmevent EventAdd
 // request telling it whether to bootstrap as the cluster's sole leader or
 // to join an existing leader. This lets the same binary serve every
 // `mage addnode` case (new leader, new follower, or rejoining after a
@@ -37,10 +37,10 @@ import (
 	manet "github.com/multiformats/go-multiaddr/net"
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/ipc"
-	"github.com/gofsd/libp2p-kv-raft/pkg/ipcproto"
 	"github.com/gofsd/libp2p-kv-raft/pkg/kvfsm"
 	"github.com/gofsd/libp2p-kv-raft/pkg/rafttransport"
 	"github.com/gofsd/libp2p-kv-raft/pkg/registry"
+	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 	"github.com/gofsd/libp2p-kv-raft/pkg/store"
 )
 
@@ -144,7 +144,7 @@ type Config struct {
 }
 
 // Node is a running daemon instance. Its raft/transport fields are nil
-// until the first ipcproto.ActionAdd request initializes them (see
+// until the first EventAdd request initializes them (see
 // initRaft): constructing raft.NewRaft starts its election-timeout loop
 // immediately, so doing that unconditionally at process startup -- before
 // mage has had a chance to deliver the Add request that decides whether
@@ -159,6 +159,19 @@ type Node struct {
 	host   lp2phost.Host
 	store  *store.Store
 	peerID string
+
+	// ed25519Priv/ed25519Pub are this node's libp2p identity key, in
+	// stdlib crypto/ed25519's portable raw form -- what
+	// EventGetPrivateKey/EventGetPublicKey hand out, and what every
+	// pkg/shmevent message this node sends/verifies is signed/checked
+	// against. See pkg/shmevent's doc comment on why local callers share
+	// this same key rather than provisioning one of their own.
+	ed25519Priv shmevent.PrivateKey
+	ed25519Pub  shmevent.PublicKey
+
+	// registry backs pkg/shmevent's EventSetKey/EventGetKey and the
+	// SourceID-addressed forms of EventSetField/EventGetField/EventAdd.
+	registry *shmevent.Registry
 
 	logStore  *raftboltdb.BoltStore
 	snapStore raft.SnapshotStore
@@ -182,13 +195,13 @@ func Run(ctx context.Context, cfg Config) error {
 	// A node that already has persisted raft state -- because it was
 	// bootstrapped or joined before, e.g. across a restart -- doesn't need
 	// (and, since BootstrapCluster now correctly refuses a non-empty log,
-	// can't use) an ActionAdd to become operational again: raft.NewRaft
+	// can't use) an EventAdd to become operational again: raft.NewRaft
 	// recovers the last known configuration and log from disk on its own.
 	// Resume immediately so Set/Get work right away, with no coordination
 	// step at all, as long as this node is still reachable at whatever
 	// address that recovered configuration expects (true if -listen-port
 	// is pinned across restarts). A caller that also needs to re-announce
-	// a changed address to the current leader still sends an ActionAdd
+	// a changed address to the current leader still sends an EventAdd
 	// with a leader address; handleAdd's join path works whether or not
 	// this already ran, since initRaft is idempotent.
 	hasState, err := raft.HasExistingState(n.logStore, n.logStore, n.snapStore)
@@ -205,7 +218,7 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("daemon: write ready file: %w", err)
 	}
 
-	return ipc.Serve(ctx, n.peerID, n.handle)
+	return ipc.Serve(ctx, n.peerID, n.ed25519Priv, n.handleShmEvent)
 }
 
 func start(cfg Config) (*Node, error) {
@@ -261,13 +274,29 @@ func start(cfg Config) (*Node, error) {
 		return nil, fmt.Errorf("daemon: open snapshot store: %w", err)
 	}
 
+	ed25519Priv, err := priv.Raw()
+	if err != nil {
+		st.Close()
+		h.Close()
+		return nil, fmt.Errorf("daemon: raw identity private key: %w", err)
+	}
+	ed25519Pub, err := priv.GetPublic().Raw()
+	if err != nil {
+		st.Close()
+		h.Close()
+		return nil, fmt.Errorf("daemon: raw identity public key: %w", err)
+	}
+
 	n := &Node{
-		cfg:       cfg,
-		host:      h,
-		store:     st,
-		peerID:    peerID.String(),
-		logStore:  logStore,
-		snapStore: snapStore,
+		cfg:         cfg,
+		host:        h,
+		store:       st,
+		peerID:      peerID.String(),
+		ed25519Priv: ed25519Priv,
+		ed25519Pub:  ed25519Pub,
+		registry:    shmevent.NewRegistry(),
+		logStore:    logStore,
+		snapStore:   snapStore,
 	}
 	h.SetStreamHandler(JoinProtocolID, n.handleJoinStream)
 	h.SetStreamHandler(ForwardProtocolID, n.handleForwardSetStream)
@@ -355,7 +384,7 @@ func newHost(priv crypto.PrivKey, cfg Config) (lp2phost.Host, error) {
 }
 
 // initRaft lazily constructs the raft transport and raft.Raft instance. It
-// must be called at most once, synchronously, from the ActionAdd handler.
+// must be called at most once, synchronously, from the EventAdd handler.
 func (n *Node) initRaft() (*raft.Raft, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -518,7 +547,7 @@ func (n *Node) awaitRelayAddr(timeout time.Duration) {
 
 // ReadyInfo is the content of ReadyFileName: what the spawning `mage
 // addnode` needs to learn about a freshly started node before it can
-// register it and trigger its ActionAdd bootstrap.
+// register it and trigger its EventAdd bootstrap.
 type ReadyInfo struct {
 	PeerID      string   `json:"peer_id"`
 	ListenAddrs []string `json:"listen_addrs"`
@@ -553,27 +582,108 @@ func (n *Node) writeReadyFile() error {
 	return os.Rename(tmp, path)
 }
 
-// handle dispatches one decoded ipcproto.Request to the appropriate raft/
-// store operation and returns the Response to send back.
-func (n *Node) handle(ctx context.Context, req ipcproto.Request) ipcproto.Response {
-	switch req.Action {
-	case ipcproto.ActionAdd:
-		return n.handleAdd(ctx, req)
-	case ipcproto.ActionSet:
-		return n.handleSet(ctx, req)
-	case ipcproto.ActionGet:
-		return n.handleGet(ctx, req)
+// handleShmEvent dispatches one decoded pkg/shmevent.Msg to the appropriate
+// raft/store/registry operation and returns the Msg to send back -- the
+// single entry point both pkg/ipc.Serve (local shared memory) and
+// handleClientStream (ClientProtocolID, the remote equivalent for a
+// browser learner) call into. See pkg/shmevent's doc comment for the
+// overall protocol design and api/shmevent.capnp for the wire struct.
+func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, sig []byte) shmevent.Msg {
+	if shmevent.RequiresSignature(m.EventType) {
+		if err := shmevent.Verify(n.ed25519Pub, m, crc, sig); err != nil {
+			return errorMsg(m.ID, err)
+		}
+	}
+
+	switch m.EventType {
+	case shmevent.EventSetKey:
+		n.registry.Register(m.ID, m.Value)
+		return shmevent.Msg{EventType: shmevent.EventSetKey, ID: m.ID, Value: m.Value}
+
+	case shmevent.EventGetKey:
+		v, ok := n.registry.Lookup(m.SourceID)
+		if !ok {
+			return errorMsg(m.ID, fmt.Errorf("no entry registered under id %d", m.SourceID))
+		}
+		return shmevent.Msg{EventType: shmevent.EventGetKey, ID: m.ID, Value: v}
+
+	case shmevent.EventSetField:
+		key, ok := n.registry.Lookup(m.SourceID)
+		if !ok {
+			return errorMsg(m.ID, fmt.Errorf("no key registered under id %d -- send SetKey first", m.SourceID))
+		}
+		if err := n.handleSetForward(ctx, key, m.Value, true); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventSetField, ID: m.ID}
+
+	case shmevent.EventGetField:
+		key := m.Value
+		if m.SourceID != 0 {
+			k, ok := n.registry.Lookup(m.SourceID)
+			if !ok {
+				return errorMsg(m.ID, fmt.Errorf("no key registered under id %d -- send SetKey first", m.SourceID))
+			}
+			key = k
+		}
+		value, err := n.handleGet(key)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventGetField, ID: m.ID, Value: value}
+
+	case shmevent.EventGetPublicKey:
+		return shmevent.Msg{EventType: shmevent.EventGetPublicKey, ID: m.ID, Value: n.ed25519Pub}
+
+	case shmevent.EventGetPrivateKey:
+		return shmevent.Msg{EventType: shmevent.EventGetPrivateKey, ID: m.ID, Value: n.ed25519Priv}
+
+	case shmevent.EventAdd:
+		peerID, err := n.handleAddDispatch(ctx, m)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventAdd, ID: m.ID, Value: []byte(peerID)}
+
 	default:
-		return ipcproto.NewResponse(ipcproto.StatusError, fmt.Sprintf("unknown action %d", req.Action))
+		return errorMsg(m.ID, fmt.Errorf("unknown event %d", m.EventType))
 	}
 }
 
-func (n *Node) handleAdd(ctx context.Context, req ipcproto.Request) ipcproto.Response {
-	leaderPeerID := req.KeyString()
+// errorMsg builds the response for a failed request -- see
+// shmevent.EventError's doc comment for why this event exists even though
+// it isn't part of api/shmevent.capnp's originally specified field set.
+func errorMsg(id uint16, err error) shmevent.Msg {
+	msg := err.Error()
+	if len(msg) > shmevent.ValueSize {
+		msg = msg[:shmevent.ValueSize]
+	}
+	return shmevent.Msg{EventType: shmevent.EventError, ID: id, Value: []byte(msg)}
+}
 
+// handleAddDispatch implements EventAdd's three shapes -- see
+// EventAdd's doc comment in pkg/shmevent -- and returns this node's own
+// peer id on success, mirroring the pre-shmevent ipcproto.ActionAdd
+// response.
+func (n *Node) handleAddDispatch(ctx context.Context, m shmevent.Msg) (string, error) {
+	// Learner join (remote browser caller, via ClientProtocolID): SourceID
+	// references a prior EventSetKey holding the caller's own peer id,
+	// Value is the caller's own reachable address.
+	if m.SourceID != 0 {
+		joinPeerID, ok := n.registry.Lookup(m.SourceID)
+		if !ok {
+			return "", fmt.Errorf("no peer id registered under id %d -- send SetKey first", m.SourceID)
+		}
+		return n.handleAddLearner(ctx, string(joinPeerID), string(m.Value))
+	}
+	// Bootstrap (Value empty) or voter join (Value = leader peer id/multiaddr).
+	return n.handleAdd(ctx, string(m.Value))
+}
+
+func (n *Node) handleAdd(ctx context.Context, leaderPeerID string) (string, error) {
 	rf, err := n.initRaft()
 	if err != nil {
-		return ipcproto.NewResponse(ipcproto.StatusError, "init raft: "+err.Error())
+		return "", fmt.Errorf("init raft: %w", err)
 	}
 
 	if leaderPeerID == "" {
@@ -585,7 +695,7 @@ func (n *Node) handleAdd(ctx context.Context, req ipcproto.Request) ipcproto.Res
 			}},
 		}
 		if err := rf.BootstrapCluster(cfg).Error(); err != nil {
-			return ipcproto.NewResponse(ipcproto.StatusError, "bootstrap: "+err.Error())
+			return "", fmt.Errorf("bootstrap: %w", err)
 		}
 		// BootstrapCluster only guarantees the configuration was persisted,
 		// not that self-election has completed yet. A follower's join
@@ -596,9 +706,9 @@ func (n *Node) handleAdd(ctx context.Context, req ipcproto.Request) ipcproto.Res
 		// than a fixed constant, so a longer WAN-tuned timeout still gets a
 		// comfortable margin instead of being raced against a hardcoded window.
 		if _, err := n.awaitLeader(10 * n.electionTimeout); err != nil {
-			return ipcproto.NewResponse(ipcproto.StatusError, "await self-election: "+err.Error())
+			return "", fmt.Errorf("await self-election: %w", err)
 		}
-		return ipcproto.NewResponse(ipcproto.StatusOK, n.peerID)
+		return n.peerID, nil
 	}
 
 	// leaderPeerID is either a full multiaddr (a leader on another machine,
@@ -609,18 +719,18 @@ func (n *Node) handleAdd(ctx context.Context, req ipcproto.Request) ipcproto.Res
 	if !registry.IsMultiaddr(leaderPeerID) {
 		reg, err := registry.Open()
 		if err != nil {
-			return ipcproto.NewResponse(ipcproto.StatusError, err.Error())
+			return "", err
 		}
 		leaderAddr, err = reg.ResolveAddress(leaderPeerID)
 		if err != nil {
-			return ipcproto.NewResponse(ipcproto.StatusError, err.Error())
+			return "", err
 		}
 	}
 
 	if err := n.join(ctx, leaderAddr); err != nil {
-		return ipcproto.NewResponse(ipcproto.StatusError, "join: "+err.Error())
+		return "", fmt.Errorf("join: %w", err)
 	}
-	return ipcproto.NewResponse(ipcproto.StatusOK, n.peerID)
+	return n.peerID, nil
 }
 
 // join asks the leader reachable at leaderAddr to add this node as a voter.
@@ -843,21 +953,16 @@ func (n *Node) forwardJoin(ctx context.Context, leaderID raft.ServerID, joinPeer
 	return scanner.Text(), nil
 }
 
-// handleSet is the IPC entry point for ActionSet: it applies directly if
-// this node is the leader, or forwards to the leader (one hop only) if
-// not. Handler is not exported to pkg/ipc directly; see handle's switch.
-func (n *Node) handleSet(ctx context.Context, req ipcproto.Request) ipcproto.Response {
-	return n.handleSetForward(ctx, req, true)
-}
-
-// handleSetForward implements handleSet, plus handleForwardSetStream's
-// leader-side answer to an already-forwarded request. allowForward is
-// false on that second path so a request can be forwarded at most once:
-// if the node it lands on then *also* turns out not to be leader (a
+// handleSetForward is the entry point for a Set (EventSetField, or
+// handleForwardSetStream's leader-side answer to an already-forwarded
+// request): it applies directly if this node is the leader, or forwards
+// to the leader (one hop only) if not. allowForward is false on the
+// already-forwarded path so a request can be forwarded at most once: if
+// the node it lands on then *also* turns out not to be leader (a
 // leadership change mid-flight), it fails outward with a clear error
 // instead of forwarding again, which rules out any forwarding cycle
 // regardless of how leadership bounces around.
-func (n *Node) handleSetForward(ctx context.Context, req ipcproto.Request, allowForward bool) ipcproto.Response {
+func (n *Node) handleSetForward(ctx context.Context, key, value []byte, allowForward bool) error {
 	// Both wait windows below scale off the actual configured election
 	// timeout (not a fixed constant) so a WAN-tuned longer timeout still
 	// gets a comfortable margin: Apply itself can legitimately take a full
@@ -865,145 +970,138 @@ func (n *Node) handleSetForward(ctx context.Context, req ipcproto.Request, allow
 	// mid-call.
 	rf, isLeader, leaderID, err := n.resolveWriteTarget(5 * n.electionTimeout)
 	if err != nil {
-		return ipcproto.NewResponse(ipcproto.StatusError, err.Error())
+		return err
 	}
 	if isLeader {
-		return n.applySet(rf, req)
+		return n.applySet(rf, key, value)
 	}
 	if !allowForward {
-		return ipcproto.NewResponse(ipcproto.StatusError, fmt.Sprintf("not leader; current leader is %s (already forwarded once)", leaderID))
+		return fmt.Errorf("not leader; current leader is %s (already forwarded once)", leaderID)
 	}
-	return n.forwardSet(ctx, leaderID, req)
+	return n.forwardSet(ctx, leaderID, key, value)
 }
 
-func (n *Node) applySet(rf *raft.Raft, req ipcproto.Request) ipcproto.Response {
-	cmd := kvfsm.EncodeCommand(kvfsm.OpSet, []byte(req.KeyString()), []byte(req.ValueString()))
+func (n *Node) applySet(rf *raft.Raft, key, value []byte) error {
+	cmd := kvfsm.EncodeCommand(kvfsm.OpSet, key, value)
 	future := rf.Apply(cmd, 10*n.electionTimeout)
 	if err := future.Error(); err != nil {
-		return ipcproto.NewResponse(ipcproto.StatusError, err.Error())
+		return err
 	}
 	if res, ok := future.Response().(kvfsm.ApplyResult); ok && res.Err != nil {
-		return ipcproto.NewResponse(ipcproto.StatusError, res.Err.Error())
+		return res.Err
 	}
-	return ipcproto.NewResponse(ipcproto.StatusOK, "")
+	return nil
 }
 
-// forwardSet relays req (an ActionSet) to leaderID over ForwardProtocolID
-// and returns its response verbatim. The libp2p host already has an open
-// connection/known address for leaderID -- it's the peer this node's own
-// raft transport talks to for AppendEntries -- so no address resolution
-// is needed beyond the peer id itself.
-func (n *Node) forwardSet(ctx context.Context, leaderID raft.ServerID, req ipcproto.Request) ipcproto.Response {
+// forwardSet relays a Set(key, value) to leaderID over ForwardProtocolID
+// and returns its outcome. This is purely internal node-to-node machinery
+// (not something a "user" ever speaks -- see pkg/shmevent's doc comment),
+// so it reuses kvfsm's own log-command framing directly rather than
+// pkg/shmevent's user-facing relational protocol: write the encoded
+// command, close the write side, then read until EOF -- an empty response
+// means success, a non-empty one is the leader's error message. The
+// libp2p host already has an open connection/known address for leaderID
+// -- it's the peer this node's own raft transport talks to for
+// AppendEntries -- so no address resolution is needed beyond the peer id
+// itself.
+func (n *Node) forwardSet(ctx context.Context, leaderID raft.ServerID, key, value []byte) error {
 	pid, err := peer.Decode(string(leaderID))
 	if err != nil {
-		return ipcproto.NewResponse(ipcproto.StatusError, fmt.Sprintf("forward set: invalid leader id %s: %v", leaderID, err))
+		return fmt.Errorf("forward set: invalid leader id %s: %w", leaderID, err)
 	}
 	s, err := n.host.NewStream(ctx, pid, ForwardProtocolID)
 	if err != nil {
-		return ipcproto.NewResponse(ipcproto.StatusError, fmt.Sprintf("forward set to leader %s: %v", leaderID, err))
+		return fmt.Errorf("forward set to leader %s: %w", leaderID, err)
 	}
 	defer s.Close()
 
-	buf := req.Encode()
-	if _, err := s.Write(buf[:]); err != nil {
-		return ipcproto.NewResponse(ipcproto.StatusError, fmt.Sprintf("forward set: write to leader %s: %v", leaderID, err))
+	cmd := kvfsm.EncodeCommand(kvfsm.OpSet, key, value)
+	if _, err := s.Write(cmd); err != nil {
+		return fmt.Errorf("forward set: write to leader %s: %w", leaderID, err)
 	}
 	if err := s.CloseWrite(); err != nil {
-		return ipcproto.NewResponse(ipcproto.StatusError, fmt.Sprintf("forward set: close write to leader %s: %v", leaderID, err))
+		return fmt.Errorf("forward set: close write to leader %s: %w", leaderID, err)
 	}
 
-	respBuf := make([]byte, ipcproto.ResponseSize)
-	if _, err := io.ReadFull(s, respBuf); err != nil {
-		return ipcproto.NewResponse(ipcproto.StatusError, fmt.Sprintf("forward set: read response from leader %s: %v", leaderID, err))
-	}
-	resp, err := ipcproto.DecodeResponse(respBuf)
+	respBuf, err := io.ReadAll(s)
 	if err != nil {
-		return ipcproto.NewResponse(ipcproto.StatusError, fmt.Sprintf("forward set: decode response: %v", err))
+		return fmt.Errorf("forward set: read response from leader %s: %w", leaderID, err)
 	}
-	return resp
+	if len(respBuf) > 0 {
+		return fmt.Errorf("forward set: %s", respBuf)
+	}
+	return nil
 }
 
 // handleForwardSetStream is the leader-side handler for ForwardProtocolID:
-// it decodes a full ipcproto.Request (always an ActionSet) and answers it
-// exactly like a local Set would, with forwarding disabled (see
-// handleSetForward's allowForward doc).
+// it decodes a kvfsm-framed Set command and answers it exactly like a
+// local Set would, with forwarding disabled (see
+// handleSetForward's allowForward doc). See forwardSet's doc comment for
+// the wire format (kvfsm's own command framing, not pkg/shmevent).
 func (n *Node) handleForwardSetStream(s network.Stream) {
 	defer s.Close()
 
-	buf := make([]byte, ipcproto.RequestSize)
-	if _, err := io.ReadFull(s, buf); err != nil {
-		return
-	}
-	req, err := ipcproto.DecodeRequest(buf)
+	buf, err := io.ReadAll(s)
 	if err != nil {
 		return
 	}
+	op, key, value, err := kvfsm.DecodeCommand(buf)
+	if err != nil || op != kvfsm.OpSet {
+		return
+	}
 
-	resp := n.handleSetForward(context.Background(), req, false)
-	respBuf := resp.Encode()
-	s.Write(respBuf[:])
+	if err := n.handleSetForward(context.Background(), key, value, false); err != nil {
+		s.Write([]byte(err.Error()))
+	}
 }
 
 // handleClientStream is the leader-or-follower-side handler for
-// ClientProtocolID: it decodes a single ipcproto.Request and answers it the
-// same way this node's own pkg/ipc.Serve loop would for ActionSet (which
-// still forwards on to the real leader if this node isn't it -- a browser
-// client has no cheaper way to find the leader than any other caller does),
-// ActionGet (this node's own possibly-lagging local read, same caveat
-// pkg/ipc's Get answer already carries for any non-leader caller), or
-// ActionAdd (adds the browser as a raft non-voter -- see handleAddLearner
-// and ClientProtocolID's doc comment for why that's ActionAdd's meaning
-// here specifically, unlike everywhere else it means AddVoter).
+// ClientProtocolID: the remote counterpart of pkg/ipc's local shared
+// memory, speaking the exact same pkg/shmevent capnp wire struct -- see
+// that package's doc comment and ClientProtocolID's for why a browser
+// learner's join (EventAdd) looks the way it does here specifically. A
+// capnp message has no fixed size (unlike the ipcproto.Request this
+// replaced), so this reads the whole request off the stream before
+// decoding, the same way handleForwardSetStream already did for
+// kvfsm's variable-length command framing.
 func (n *Node) handleClientStream(s network.Stream) {
 	defer s.Close()
 
-	buf := make([]byte, ipcproto.RequestSize)
-	if _, err := io.ReadFull(s, buf); err != nil {
+	buf, err := io.ReadAll(s)
+	if err != nil {
 		return
 	}
-	req, err := ipcproto.DecodeRequest(buf)
+	m, crc, sig, err := shmevent.Decode(buf)
 	if err != nil {
 		return
 	}
 
-	var resp ipcproto.Response
-	switch req.Action {
-	case ipcproto.ActionAdd:
-		resp = n.handleAddLearner(context.Background(), req)
-	case ipcproto.ActionSet:
-		resp = n.handleSet(context.Background(), req)
-	case ipcproto.ActionGet:
-		resp = n.handleGet(context.Background(), req)
-	default:
-		resp = ipcproto.NewResponse(ipcproto.StatusError, fmt.Sprintf("action %s not supported over the client protocol", req.Action))
+	resp := n.handleShmEvent(context.Background(), m, crc, sig)
+	respBuf, err := shmevent.Encode(resp, n.ed25519Priv)
+	if err != nil {
+		return
 	}
-	resp.ID = req.ID
-
-	respBuf := resp.Encode()
-	s.Write(respBuf[:])
+	s.Write(respBuf)
 }
 
-// handleAddLearner is ClientProtocolID's ActionAdd handler: req.Key is the
-// browser's own peer id, req.Value its reserved /p2p-circuit multiaddr (see
-// ClientProtocolID's doc comment). It adds that address to the raft
-// configuration as a non-voter directly if this node is the leader, or
-// forwards to whoever currently is (one hop only, over ForwardJoinProtocolID,
-// reusing the exact same wire path a voter join already forwards through --
-// see handleJoinStream) since the browser has no cheaper way to learn the
-// real leader than any other joining node does.
-func (n *Node) handleAddLearner(ctx context.Context, req ipcproto.Request) ipcproto.Response {
-	joinPeerID := req.KeyString()
-	joinAddr := req.ValueString()
+// handleAddLearner adds joinPeerID as a raft non-voter at joinAddr directly
+// if this node is the leader, or forwards to whoever currently is (one hop
+// only, over ForwardJoinProtocolID, reusing the exact same wire path a
+// voter join already forwards through -- see handleJoinStream) since the
+// caller has no cheaper way to learn the real leader than any other
+// joining node does. Returns this node's own peer id on success, mirroring
+// handleAdd's return value.
+func (n *Node) handleAddLearner(ctx context.Context, joinPeerID, joinAddr string) (string, error) {
 	if joinPeerID == "" || joinAddr == "" {
-		return ipcproto.NewResponse(ipcproto.StatusError, "client add: missing peer id or multiaddr")
+		return "", fmt.Errorf("client add: missing peer id or multiaddr")
 	}
 
 	rf := n.getRaft()
 	if rf != nil && rf.State() == raft.Leader {
 		if line := addServerLine(rf, joinPeerID, joinAddr, raft.Nonvoter); strings.HasPrefix(line, "ERR: ") {
-			return ipcproto.NewResponse(ipcproto.StatusError, strings.TrimPrefix(line, "ERR: "))
+			return "", fmt.Errorf("%s", strings.TrimPrefix(line, "ERR: "))
 		}
-		return ipcproto.NewResponse(ipcproto.StatusOK, n.peerID)
+		return n.peerID, nil
 	}
 
 	var leaderID raft.ServerID
@@ -1011,25 +1109,25 @@ func (n *Node) handleAddLearner(ctx context.Context, req ipcproto.Request) ipcpr
 		_, leaderID = rf.LeaderWithID()
 	}
 	if leaderID == "" {
-		return ipcproto.NewResponse(ipcproto.StatusError, "client add: not leader and no leader known")
+		return "", fmt.Errorf("client add: not leader and no leader known")
 	}
 
 	line, err := n.forwardJoin(ctx, leaderID, joinPeerID, joinAddr, raft.Nonvoter)
 	if err != nil {
-		return ipcproto.NewResponse(ipcproto.StatusError, "client add: forward: "+err.Error())
+		return "", fmt.Errorf("client add: forward: %w", err)
 	}
 	if reason, isErr := strings.CutPrefix(line, "ERR: "); isErr {
-		return ipcproto.NewResponse(ipcproto.StatusError, reason)
+		return "", fmt.Errorf("%s", reason)
 	}
-	return ipcproto.NewResponse(ipcproto.StatusOK, n.peerID)
+	return n.peerID, nil
 }
 
-func (n *Node) handleGet(_ context.Context, req ipcproto.Request) ipcproto.Response {
-	value, err := n.store.Get([]byte(req.KeyString()))
+func (n *Node) handleGet(key []byte) ([]byte, error) {
+	value, err := n.store.Get(key)
 	if err != nil {
-		return ipcproto.NewResponse(ipcproto.StatusError, err.Error())
+		return nil, err
 	}
-	return ipcproto.NewResponse(ipcproto.StatusOK, string(value))
+	return value, nil
 }
 
 // awaitLeader waits up to timeout for this node to become raft leader and

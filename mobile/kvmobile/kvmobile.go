@@ -25,8 +25,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/daemon"
-	"github.com/gofsd/libp2p-kv-raft/pkg/ipc"
-	"github.com/gofsd/libp2p-kv-raft/pkg/ipcproto"
+	"github.com/gofsd/libp2p-kv-raft/pkg/shmclient"
 )
 
 // leaderMultiaddr is baked in at build time -- see package doc comment.
@@ -74,6 +73,7 @@ var (
 	started bool
 	peerID  string
 	runErrC chan error
+	session *shmclient.Session
 )
 
 // Start brings up the follower daemon in-process under dataDir (an
@@ -126,14 +126,15 @@ func Start(dataDir string) (string, error) {
 
 	addCtx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
-	resp, err := ipc.Call(addCtx, id, ipcproto.NewRequest(ipcproto.ActionAdd, leaderMultiaddr, ""))
+	sess, err := shmclient.Open(addCtx, id)
 	if err != nil {
+		return "", fmt.Errorf("kvmobile: fetch signing key: %w", err)
+	}
+	if _, err := sess.Add(addCtx, leaderMultiaddr); err != nil {
 		return "", fmt.Errorf("kvmobile: join cluster: %w", err)
 	}
-	if resp.Status != ipcproto.StatusOK {
-		return "", fmt.Errorf("kvmobile: join cluster: %s", resp.ValueString())
-	}
 
+	session = sess
 	peerID = id
 	started = true
 	return peerID, nil
@@ -144,7 +145,7 @@ func Start(dataDir string) (string, error) {
 // follower, it never is, so every Submit takes that path.
 func Submit(key, value string) error {
 	mu.Lock()
-	id := peerID
+	sess := session
 	ok := started
 	mu.Unlock()
 	if !ok {
@@ -153,12 +154,8 @@ func Submit(key, value string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
-	resp, err := ipc.Call(ctx, id, ipcproto.NewRequest(ipcproto.ActionSet, key, value))
-	if err != nil {
+	if err := sess.Set(ctx, key, value); err != nil {
 		return fmt.Errorf("kvmobile: set: %w", err)
-	}
-	if resp.Status != ipcproto.StatusOK {
-		return fmt.Errorf("kvmobile: set: %s", resp.ValueString())
 	}
 	return nil
 }
@@ -168,7 +165,7 @@ func Submit(key, value string) error {
 // that just committed on the leader).
 func Get(key string) (string, error) {
 	mu.Lock()
-	id := peerID
+	sess := session
 	ok := started
 	mu.Unlock()
 	if !ok {
@@ -177,14 +174,11 @@ func Get(key string) (string, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
-	resp, err := ipc.Call(ctx, id, ipcproto.NewRequest(ipcproto.ActionGet, key, ""))
+	value, err := sess.Get(ctx, key)
 	if err != nil {
 		return "", fmt.Errorf("kvmobile: get: %w", err)
 	}
-	if resp.Status != ipcproto.StatusOK {
-		return "", fmt.Errorf("kvmobile: get: %s", resp.ValueString())
-	}
-	return resp.ValueString(), nil
+	return value, nil
 }
 
 // PeerID returns this device's peer id, or "" if Start hasn't completed
