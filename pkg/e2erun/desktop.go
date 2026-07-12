@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"time"
 
@@ -107,6 +108,36 @@ func EnsureLocalDesktopNode(kvnodeBin string, nodeID int, node e2edata.Node) err
 
 	if _, err := waitLocalReady(dataDir, readyTimeout); err != nil {
 		return fmt.Errorf("e2erun: local desktop node %s never became ready: %w", node.PeerID, err)
+	}
+	return nil
+}
+
+// EnsureAllDesktopNodes starts a real local kvnode process (via
+// EnsureLocalDesktopNode) for every PlatformDesktop entry in f, in ascending
+// node-id order. A no-op (after the native build) if f has no desktop
+// nodes at all -- e.g. right after `mage e2e:destroyall`, before any
+// `mage e2e:addnode desktop` has run again.
+func EnsureAllDesktopNodes(repoRoot string, f *e2edata.File) error {
+	ids := make([]int, 0, len(f.Nodes))
+	for id, node := range f.Nodes {
+		if node.Platform == e2edata.PlatformDesktop {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	sort.Ints(ids)
+
+	kvnodeBin, _, err := buildNativeBinaries(repoRoot)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := EnsureLocalDesktopNode(kvnodeBin, id, f.Nodes[id]); err != nil {
+			return fmt.Errorf("e2erun: start desktop node %d: %w", id, err)
+		}
+		fmt.Printf("✅ node %d (desktop) running: %s\n", id, f.Nodes[id].PeerID)
 	}
 	return nil
 }

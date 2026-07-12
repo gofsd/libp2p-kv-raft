@@ -133,6 +133,15 @@ set rather than leaving that judgment to AutoNAT — and covered by a real relay
 cluster test (`pkg/daemon.TestJoinThroughRelay`). A plain direct join (no `relayMultiaddr`) has
 also been tested working from a phone on cellular data, joining a publicly reachable leader.
 
+**Which node to point `RelayPeer`/`relayMultiaddr` at**: `configs/bootstrap-nodes.json` (read via
+`mage bootstrapnodes`) is the catalog of already-deployed `-relay-service` nodes -- any node that
+can't guarantee it's directly dialable (a phone, a browser, a dev laptop on a LAN/firewall/dynamic
+IP) should reserve its relay slot through one of those rather than assume direct dial-back will
+work. See `CLAUDE.md`'s "Node connectivity policy" for a real gap this surfaced: relay only covers
+join/replication today, not a follower's forwarded `Set` (`ForwardProtocolID` dials the current
+leader directly, no relay fallback) -- so leadership should stay on a bootstrap-nodes.json host,
+not an ad hoc dev machine, until that path gets the same fallback.
+
 ### Client in a browser
 
 Unlike the desktop CLI and the Android app, a browser tab can never be a raft *voter*: a voter's
@@ -219,16 +228,21 @@ mage e2e:newversion                                                     # stamp 
 mage e2e:addnode desktop                                                # generate a deterministic identity
 mage e2e:addtest <nodeID> <eventName> <id> <sourceID> <destID> <value>  # record a row against it
 mage e2e:bootstrap                                                      # deploy/confirm the shared leader (SSH)
+mage e2e:bootstrapall                                                   # start the leader, plus every desktop node -- no test rows run
 mage e2e:current                                                        # run only rows newer than the last published version
 mage e2e:all                                                            # run every recorded row
 mage e2e:deletenode <nodeID>                                            # tear down a node's real process/data and remove it
+mage e2e:destroyall                                                     # tear down every node at once
 ```
 
 `eventName` is one of `set_key`, `set_field`, `get_key`, `get_field`, `get_public_key`,
 `get_private_key`, `add` (see `pkg/shmevent.EventName`). Deployed nodes are never torn down
 automatically -- by `e2e:current`, `e2e:all`, or anything else -- specifically so a human can poke
-at them after a run; `e2e:deletenode` is the explicit, deliberate command for when a node is no
-longer wanted.
+at them after a run; `e2e:deletenode`/`e2e:destroyall` are the explicit, deliberate commands for
+when a node (or every node) is no longer wanted. `e2e:destroyall` tears every node down the same
+real way `e2e:deletenode` does (one at a time, continuing past any single node's failure rather than
+stopping), then saves the file -- so partial teardown from a failure partway through still sticks
+for whichever nodes it did reach.
 
 An `add` row (a raft join) is inherently a one-time operation, same as `mage addnode` itself: once a
 node has actually joined, re-running `e2e:all` sends that same join again to an already-voting

@@ -1090,16 +1090,29 @@ func (n *Node) forwardSet(ctx context.Context, leaderID raft.ServerID, key, valu
 // it decodes a kvfsm-framed Set command and answers it exactly like a
 // local Set would, with forwarding disabled (see
 // handleSetForward's allowForward doc). See forwardSet's doc comment for
-// the wire format (kvfsm's own command framing, not pkg/shmevent).
+// the wire format (kvfsm's own command framing, not pkg/shmevent) --
+// forwardSet treats *any* empty response as success, so every early return
+// here must write a non-empty error instead of silently closing the
+// stream: an empty response from a read/decode failure would otherwise be
+// indistinguishable from genuine success, silently dropping the write
+// while the forwarding follower reports it as applied. Found exactly this
+// way -- a follower over a relay-adjacent connection (a phone) reporting
+// every Set as successful while nothing was ever persisted, anywhere.
 func (n *Node) handleForwardSetStream(s network.Stream) {
 	defer s.Close()
 
 	buf, err := io.ReadAll(s)
 	if err != nil {
+		fmt.Fprintf(s, "forward set: read command: %v", err)
 		return
 	}
 	op, key, value, err := kvfsm.DecodeCommand(buf)
-	if err != nil || op != kvfsm.OpSet {
+	if err != nil {
+		fmt.Fprintf(s, "forward set: decode command: %v", err)
+		return
+	}
+	if op != kvfsm.OpSet {
+		fmt.Fprintf(s, "forward set: expected OpSet, got op %d", op)
 		return
 	}
 

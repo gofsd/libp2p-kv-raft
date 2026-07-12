@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -42,6 +43,37 @@ func DeleteNode(f *e2edata.File, nodeID int) error {
 	}
 	if affectedRows > 0 {
 		fmt.Fprintf(os.Stderr, "e2erun: warning: %d row(s) still reference deleted node %d; they will fail with \"unknown node id\" until removed too\n", affectedRows, nodeID)
+	}
+	return nil
+}
+
+// DeleteAllNodes tears down every node currently in f the same way
+// DeleteNode does, one at a time in ascending node-id order (so output reads
+// top-to-bottom the same way `mage e2e:deletenode` output would if run
+// manually for each id) -- the explicit, human-invoked counterpart to
+// wanting a clean slate across desktop/remote/android/web all at once
+// (`mage e2e:destroyall`). Continues past a single node's teardown failure
+// rather than aborting, collecting every error, since one node's local
+// process being unkillable (say) shouldn't leave every other node's real
+// process/data untouched -- returns a combined error afterward if anything
+// failed, but every node that *could* be torn down still was.
+func DeleteAllNodes(f *e2edata.File) error {
+	ids := make([]int, 0, len(f.Nodes))
+	for id := range f.Nodes {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+
+	var errs []string
+	for _, id := range ids {
+		if err := DeleteNode(f, id); err != nil {
+			errs = append(errs, fmt.Sprintf("node %d: %v", id, err))
+			continue
+		}
+		fmt.Printf("✅ node %d destroyed\n", id)
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("e2erun: failed to destroy %d node(s):\n%s", len(errs), strings.Join(errs, "\n"))
 	}
 	return nil
 }

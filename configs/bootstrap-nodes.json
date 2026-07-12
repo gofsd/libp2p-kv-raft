@@ -1,0 +1,18 @@
+{
+  "bootstrap_nodes": [
+    {
+      "name": "primary",
+      "ssh_host": "root@63.250.47.155",
+      "install_dir": "/root/kvstore",
+      "listen_port": 4001,
+      "relay_service": true,
+      "peer_id": "12D3KooWRKy6WzDdgruaFjgH7LMXCwmhd6wYSLvRYU7LhMMY73n8",
+      "data_dir": "/root/kvstore/nodes/12D3KooWRKy6WzDdgruaFjgH7LMXCwmhd6wYSLvRYU7LhMMY73n8",
+      "key_path": "/root/kvstore/nodes/12D3KooWRKy6WzDdgruaFjgH7LMXCwmhd6wYSLvRYU7LhMMY73n8/identity.key",
+      "listen_addrs": [
+        "/ip4/63.250.47.155/tcp/4001/p2p/12D3KooWRKy6WzDdgruaFjgH7LMXCwmhd6wYSLvRYU7LhMMY73n8",
+        "/ip4/63.250.47.155/udp/4001/quic-v1/p2p/12D3KooWRKy6WzDdgruaFjgH7LMXCwmhd6wYSLvRYU7LhMMY73n8"
+      ]
+    }
+  ]
+}

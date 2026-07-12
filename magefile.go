@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -298,6 +299,40 @@ func (E2E) DeleteNode(nodeID int) error {
 	return nil
 }
 
+// DestroyAll tears down every node currently in the testdata file at once --
+// the same real teardown DeleteNode does (kill the local desktop process,
+// kill the SSH bootstrap daemon and wipe its whole remote directory), just
+// for every node id instead of naming one. Android/web nodes have no
+// persistent process this pipeline manages, so "destroying" them is just
+// removing their testdata.json entry (see pkg/e2erun.DeleteNode's doc
+// comment).
+//
+// Saves the file even if some node's teardown failed, so whichever nodes
+// *did* get torn down aren't left looking like they're still around --
+// e2erun.DeleteAllNodes's own doc comment covers why one failure doesn't
+// stop the rest.
+//
+// Usage: mage e2e:destroyall
+func (E2E) DestroyAll() error {
+	path, err := testdataPath()
+	if err != nil {
+		return err
+	}
+	f, err := e2edata.Load(path)
+	if err != nil {
+		return err
+	}
+	destroyErr := e2erun.DeleteAllNodes(f)
+	if err := f.Save(path); err != nil {
+		return err
+	}
+	if destroyErr != nil {
+		return destroyErr
+	}
+	fmt.Println("✅ all nodes destroyed")
+	return nil
+}
+
 // Bootstrap deploys (or confirms already running, idempotently) the shared
 // e2e bootstrap/leader node on the SSH server -- see
 // pkg/e2erun.EnsureBootstrap for exactly what that involves and how it
@@ -326,6 +361,41 @@ func (E2E) Bootstrap() error {
 	}
 	fmt.Printf("✅ bootstrap %s ready at %s (webtransport: %s)\n", peerID, multiaddr, webTransportAddr)
 	return nil
+}
+
+// BootstrapAll ensures every node currently recorded in the testdata file
+// has its real process up and running, without running any test rows: the
+// SSH-deployed remote leader (same as e2e:bootstrap -- and, same as that
+// command, this provisions a fresh remote identity first if the file has
+// none yet), plus a real local kvnode process for every desktop node.
+// Android/web nodes have no persistent process to pre-start -- see
+// pkg/e2erun.EnsureAllDesktopNodes's doc comment -- e2e:current/e2e:all
+// drive those fresh each time regardless.
+//
+// Usage: mage e2e:bootstrapall
+func (E2E) BootstrapAll() error {
+	root, err := repoRoot()
+	if err != nil {
+		return err
+	}
+	path, err := testdataPath()
+	if err != nil {
+		return err
+	}
+	f, err := e2edata.Load(path)
+	if err != nil {
+		return err
+	}
+	multiaddr, webTransportAddr, peerID, err := e2erun.EnsureBootstrap(root, path, f)
+	if err != nil {
+		return err
+	}
+	if err := f.Save(path); err != nil {
+		return err
+	}
+	fmt.Printf("✅ bootstrap %s ready at %s (webtransport: %s)\n", peerID, multiaddr, webTransportAddr)
+
+	return e2erun.EnsureAllDesktopNodes(root, f)
 }
 
 // Current runs only the rows recorded since the last published version --
@@ -731,6 +801,67 @@ func Get(key string) error {
 		return err
 	}
 	fmt.Println(value)
+	return nil
+}
+
+// bootstrapNodesConfigPath is configs/bootstrap-nodes.json, relative to the
+// repo root -- a human-maintained record of already-deployed leader nodes
+// (ssh host, install dir, port, peer id/multiaddrs). Nothing in this repo
+// deploys to it automatically; it's updated by hand (or by whoever ran the
+// SSH bootstrap in README's "Leader on a remote machine" section) after the
+// fact, same as registry.json on the node itself.
+const bootstrapNodesConfigPath = "configs/bootstrap-nodes.json"
+
+// bootstrapNodesFile is configs/bootstrap-nodes.json's shape.
+type bootstrapNodesFile struct {
+	BootstrapNodes []bootstrapNodeConfig `json:"bootstrap_nodes"`
+}
+
+type bootstrapNodeConfig struct {
+	Name         string   `json:"name"`
+	SSHHost      string   `json:"ssh_host"`
+	InstallDir   string   `json:"install_dir"`
+	ListenPort   int      `json:"listen_port"`
+	RelayService bool     `json:"relay_service"`
+	PeerID       string   `json:"peer_id"`
+	DataDir      string   `json:"data_dir"`
+	KeyPath      string   `json:"key_path"`
+	ListenAddrs  []string `json:"listen_addrs"`
+}
+
+// BootstrapNodes prints the leader nodes recorded in
+// configs/bootstrap-nodes.json -- each one an already-deployed kvnode
+// leader on a remote host, not something this target deploys itself (see
+// bootstrapNodesConfigPath's doc comment).
+//
+// Usage: mage bootstrapnodes
+func BootstrapNodes() error {
+	root, err := repoRoot()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(root, bootstrapNodesConfigPath)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("bootstrapnodes: read %s: %w", path, err)
+	}
+	var cfg bootstrapNodesFile
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return fmt.Errorf("bootstrapnodes: parse %s: %w", path, err)
+	}
+	if len(cfg.BootstrapNodes) == 0 {
+		fmt.Printf("no bootstrap nodes configured in %s\n", bootstrapNodesConfigPath)
+		return nil
+	}
+	for _, n := range cfg.BootstrapNodes {
+		fmt.Printf("%s\n", n.Name)
+		fmt.Printf("  ssh:     %s\n", n.SSHHost)
+		fmt.Printf("  install: %s (port %d, relay-service=%v)\n", n.InstallDir, n.ListenPort, n.RelayService)
+		fmt.Printf("  peer id: %s\n", n.PeerID)
+		for _, addr := range n.ListenAddrs {
+			fmt.Printf("  addr:    %s\n", addr)
+		}
+	}
 	return nil
 }
 
