@@ -189,22 +189,41 @@ mage testall        # all of the above, plus every e2e:all row (see below)
 
 ### End-to-end tests / deploy pipeline
 
-`test/e2e/testdata.json` is the single source of truth for the e2e suite: a version history,
-deterministic Ed25519 identities per platform (desktop/android/web), and a recorded log of test
-rows -- each one raw `pkg/shmevent.Msg` sent to a node, with the last run's pass/fail status and
-error message. See `pkg/e2edata` for the file format and `pkg/e2erun` for what running a row
-actually does per platform (a real locally-spawned `kvnode` for desktop, a real
-Playwright-driven browser check for web, and -- since no on-device/emulator build automation
-exists yet -- a clearly marked skip for android).
+`test/e2e/testdata.json` is the single source of truth for the e2e suite, and is meant to be read
+by a human, not just tooling: a version history stamped with this repo's own semver (one shared
+version across every platform, from the same git tags `mage patch`/`minor`/`major` manage),
+deterministic Ed25519 identities per platform (desktop/android/web/remote), and a recorded log of
+test rows -- each one raw `pkg/shmevent.Msg` sent to a node, printed with a human-readable event
+name and a plain-text value rather than the wire bytes (see `pkg/e2edata.Event`'s doc comment for
+exactly how, without changing the underlying capnp structure at all) -- with the last run's
+pass/fail status and error message. See `pkg/e2edata` for the file format and `pkg/e2erun` for what
+running a row actually does per platform (a real locally-spawned `kvnode` for desktop, the SSH
+bootstrap leader itself for remote, a real Playwright-driven browser check for web, and -- since no
+on-device/emulator build automation exists yet -- a clearly marked skip for android).
 
 ```bash
-mage e2e:newversion "<label>"                              # start a new version
-mage e2e:addnode desktop                                    # generate a deterministic identity
-mage e2e:addtest <nodeID> <event> <id> <sourceID> <destID> <value>  # record a row against it
-mage e2e:bootstrap                                           # deploy/confirm the shared leader (SSH)
-mage e2e:current                                              # run only rows newer than the last published version
-mage e2e:all                                                   # run every recorded row
+mage e2e:newversion                                                     # stamp a new version with the current semver
+mage e2e:addnode desktop                                                # generate a deterministic identity
+mage e2e:addtest <nodeID> <eventName> <id> <sourceID> <destID> <value>  # record a row against it
+mage e2e:bootstrap                                                      # deploy/confirm the shared leader (SSH)
+mage e2e:current                                                        # run only rows newer than the last published version
+mage e2e:all                                                            # run every recorded row
+mage e2e:deletenode <nodeID>                                            # tear down a node's real process/data and remove it
 ```
+
+`eventName` is one of `set_key`, `set_field`, `get_key`, `get_field`, `get_public_key`,
+`get_private_key`, `add` (see `pkg/shmevent.EventName`). Deployed nodes are never torn down
+automatically -- by `e2e:current`, `e2e:all`, or anything else -- specifically so a human can poke
+at them after a run; `e2e:deletenode` is the explicit, deliberate command for when a node is no
+longer wanted.
+
+An `add` row (a raft join) is inherently a one-time operation, same as `mage addnode` itself: once a
+node has actually joined, re-running `e2e:all` sends that same join again to an already-voting
+member, which `pkg/daemon.handleAdd` correctly rejects ("leader rejected join: ERR: not leader" --
+the join target no longer being who to ask). That's an expected re-run artifact, not a pipeline bug
+-- a genuinely clean pass needs either a fresh node (`e2e:deletenode` first) or accepting that row
+as the one exception on a repeat `e2e:all`. It doesn't affect `e2e:current`/the push gate, since that
+only re-runs rows newer than `published_version`.
 
 `mage e2e:current` is what runs before every push once installed:
 

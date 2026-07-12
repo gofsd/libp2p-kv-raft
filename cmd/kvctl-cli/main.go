@@ -60,10 +60,10 @@ func usage() {
   kvctl-cli get <key>
   kvctl-cli sendevent <peerID> <eventJSON>
 
-sendevent sends one raw pkg/shmevent.Msg (JSON-encoded, e.g.
-'{"event":4,"value_hex":"68656c6c6f"}' -- see pkg/e2edata.Event for the
-field names, why value is hex not a plain string, and pkg/shmevent's event
-constants for the "event" byte) to peerID over the
+sendevent sends one raw pkg/shmevent.Msg (JSON-encoded, human-readable, e.g.
+'{"event":"get_field","value":"hello"}' -- see pkg/e2edata.Event for the
+field names and how "value" handles binary data, and pkg/shmevent's
+EventName for the "event" name strings) to peerID over the
 local shmring transport, signing it with peerID's own key when the event
 type requires one (fetched via an unsigned EventGetPrivateKey first). It
 prints the JSON response event to stdout and exits non-zero if the response
@@ -227,12 +227,7 @@ func cmdSendEvent(args []string) {
 		priv = shmevent.PrivateKey(keyResp.Value)
 	}
 
-	msg, err := ev.ToMsg()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "sendevent: %v\n", err)
-		os.Exit(2)
-	}
-	resp, err := ipc.Call(ctx, peerID, msg, priv)
+	resp, err := ipc.Call(ctx, peerID, ev.ToMsg(), priv)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sendevent: %v\n", err)
 		os.Exit(1)

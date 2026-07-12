@@ -85,6 +85,34 @@ func EventName(e uint8) string {
 	}
 }
 
+// EventFromName is the inverse of EventName: it returns the event type byte
+// for one of the names EventName produces ("set_key", "set_field", ...),
+// and false if name isn't recognized. Used to parse a human-authored event
+// name (e.g. from test/e2e/testdata.json or kvctl-cli sendevent's JSON
+// argument) back into the wire byte.
+func EventFromName(name string) (uint8, bool) {
+	switch name {
+	case "set_key":
+		return EventSetKey, true
+	case "set_field":
+		return EventSetField, true
+	case "get_key":
+		return EventGetKey, true
+	case "get_field":
+		return EventGetField, true
+	case "get_public_key":
+		return EventGetPublicKey, true
+	case "get_private_key":
+		return EventGetPrivateKey, true
+	case "add":
+		return EventAdd, true
+	case "error":
+		return EventError, true
+	default:
+		return 0, false
+	}
+}
+
 // ValueSize is the maximum length of Msg.Value this package enforces (a
 // convention, not a capnp schema constraint -- see api/shmevent.capnp's
 // doc comment on Event.value).

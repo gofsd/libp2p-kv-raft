@@ -51,7 +51,7 @@ func Run(repoRoot, path string, f *e2edata.File, rowIndices []int) error {
 			row.Error = fmt.Sprintf("unknown node id %d", row.Node)
 			failures++
 		} else {
-			status, errMsg := runRow(repoRoot, kvnodeBin, kvctlBin, f, row.Node, node, bootstrapMultiaddr, row.Event, web)
+			status, errMsg := runRow(repoRoot, kvnodeBin, kvctlBin, row.Node, node, bootstrapMultiaddr, row.Event, web)
 			row.Status = status
 			row.Error = errMsg
 			if status == e2edata.StatusFail {
@@ -82,31 +82,28 @@ func statusName(status int) string {
 	}
 }
 
-// runRow dispatches one row to the right execution path: the SSH bootstrap
-// node itself (nodeID == f.BootstrapNode) goes over ssh; other desktop
-// identities get a real local kvnode process and a real sendevent call;
-// web rows share one Playwright-driven verdict per Run; android rows are
-// always reported skipped (see web.go/runWebSuite and this package's doc
-// comment for the reasoning).
-func runRow(repoRoot, kvnodeBin, kvctlBin string, f *e2edata.File, nodeID int, node e2edata.Node, bootstrapMultiaddr string, ev e2edata.Event, web *webRunResult) (status int, errMsg string) {
+// runRow dispatches one row to the right execution path: a PlatformRemote
+// node goes over ssh; PlatformDesktop identities get a real local kvnode
+// process and a real sendevent call; web rows share one Playwright-driven
+// verdict per Run; android rows are always reported skipped (see
+// web.go/runWebSuite and this package's doc comment for the reasoning).
+func runRow(repoRoot, kvnodeBin, kvctlBin string, nodeID int, node e2edata.Node, bootstrapMultiaddr string, ev e2edata.Event, web *webRunResult) (status int, errMsg string) {
 	if ev.EventType == shmevent.EventAdd {
-		if v, err := ev.Value(); err == nil {
-			resolved := ResolveBootstrapPlaceholder(string(v), bootstrapMultiaddr)
-			ev = e2edata.NewEvent(ev.EventType, ev.SourceID, ev.DestinationID, []byte(resolved), ev.ID)
-		}
+		resolved := ResolveBootstrapPlaceholder(string(ev.Value()), bootstrapMultiaddr)
+		ev = e2edata.NewEvent(ev.EventType, ev.SourceID, ev.DestinationID, []byte(resolved), ev.ID)
 	}
 
-	switch {
-	case nodeID == f.BootstrapNode:
+	switch node.Platform {
+	case e2edata.PlatformRemote:
 		return retryReadsIfNeeded(ev, func() (int, string) { return sendEventRemote(node.PeerID, ev) })
-	case node.Platform == e2edata.PlatformDesktop:
+	case e2edata.PlatformDesktop:
 		if err := EnsureLocalDesktopNode(kvnodeBin, nodeID, node); err != nil {
 			return e2edata.StatusFail, err.Error()
 		}
 		return retryReadsIfNeeded(ev, func() (int, string) { return sendEventLocal(kvctlBin, node.PeerID, ev) })
-	case node.Platform == e2edata.PlatformWeb:
+	case e2edata.PlatformWeb:
 		return web.resultFor(repoRoot, bootstrapMultiaddr)
-	case node.Platform == e2edata.PlatformAndroid:
+	case e2edata.PlatformAndroid:
 		return e2edata.StatusSkipped, "android e2e execution not implemented yet -- no on-device/emulator build automation exists; see mobile/kvmobile"
 	default:
 		return e2edata.StatusFail, fmt.Sprintf("unknown platform %q", node.Platform)
@@ -190,8 +187,7 @@ func interpretSendEventResult(stdout, stderr string, runErr error) (int, string)
 		return e2edata.StatusFail, fmt.Sprintf("parse sendevent output %q: %v", stdout, err)
 	}
 	if resp.EventType == shmevent.EventError {
-		v, _ := resp.Value()
-		return e2edata.StatusFail, string(v)
+		return e2edata.StatusFail, string(resp.Value())
 	}
 	return e2edata.StatusPass, ""
 }

@@ -124,6 +124,22 @@ func TestGetPublicPrivateKeyEventsSignWithNilKey(t *testing.T) {
 	}
 }
 
+func TestEventNameRoundTrip(t *testing.T) {
+	for _, e := range []uint8{EventSetKey, EventSetField, EventGetKey, EventGetField, EventGetPublicKey, EventGetPrivateKey, EventAdd, EventError} {
+		name := EventName(e)
+		got, ok := EventFromName(name)
+		if !ok {
+			t.Fatalf("EventFromName(%q): not recognized", name)
+		}
+		if got != e {
+			t.Fatalf("EventFromName(EventName(%d)) = %d, want %d", e, got, e)
+		}
+	}
+	if _, ok := EventFromName("not_a_real_event"); ok {
+		t.Fatal("EventFromName unexpectedly recognized a bogus name")
+	}
+}
+
 func TestValueTooLongRejected(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {

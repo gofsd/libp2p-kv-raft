@@ -50,8 +50,8 @@ const BootstrapToken = "BOOTSTRAP"
 // Deployment is idempotent: re-running this after the daemon is already up
 // just confirms it's alive and returns its current address -- safe to call
 // at the start of every e2e:current/e2e:all invocation. path is saved to
-// immediately after provisioning f.BootstrapNode (if it needed
-// provisioning), before any remote action is taken -- a newly generated
+// immediately after provisioning the PlatformRemote identity (if none
+// existed yet), before any remote action is taken -- a newly generated
 // identity that dies with this process before ever reaching disk would
 // otherwise get silently regenerated (and so *changed*) on the next
 // attempt, even though the first attempt may have already deployed the
@@ -59,19 +59,16 @@ const BootstrapToken = "BOOTSTRAP"
 // after a first deploy attempt failed partway through for an unrelated
 // reason.
 func EnsureBootstrap(repoRoot, path string, f *e2edata.File) (multiaddr, peerID string, err error) {
-	if f.BootstrapNode == 0 {
-		id, _, err := f.AddNode(e2edata.PlatformDesktop)
+	_, node, ok := f.RemoteNode()
+	if !ok {
+		var err error
+		_, node, err = f.AddNode(e2edata.PlatformRemote)
 		if err != nil {
 			return "", "", fmt.Errorf("e2erun: provision bootstrap identity: %w", err)
 		}
-		f.BootstrapNode = id
 		if err := f.Save(path); err != nil {
 			return "", "", fmt.Errorf("e2erun: save provisioned bootstrap identity: %w", err)
 		}
-	}
-	node, ok := f.Nodes[f.BootstrapNode]
-	if !ok {
-		return "", "", fmt.Errorf("e2erun: bootstrap_node %d not found in nodes", f.BootstrapNode)
 	}
 
 	binDir, err := buildLinuxAmd64Binaries(repoRoot)
@@ -137,7 +134,11 @@ func buildLinuxAmd64Binaries(repoRoot string) (string, error) {
 	for _, pkg := range []string{"./cmd/kvnode", "./cmd/kvctl-cli"} {
 		name := filepath.Base(pkg)
 		out := filepath.Join(binDir, name)
-		cmd := exec.Command("go", "build", "-o", out, pkg)
+		// -s -w strips the debug/symbol info this binary never needs on a
+		// deploy target, cutting the upload ~30% smaller -- meaningfully
+		// lowers the odds of the scp transfer below getting cut short
+		// partway through (see deployIfMissing's doc comment).
+		cmd := exec.Command("go", "build", "-ldflags=-s -w", "-o", out, pkg)
 		cmd.Dir = repoRoot
 		cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64")
 		cmd.Stdout = os.Stderr
@@ -152,6 +153,15 @@ func buildLinuxAmd64Binaries(repoRoot string) (string, error) {
 // deployIfMissing scp's kvnode/kvctl-cli to the bootstrap host only if
 // they're not already there with a matching size -- avoids re-uploading on
 // every single e2e run while still self-healing a partial/missing deploy.
+//
+// It uploads to a ".upload" sibling path and `mv`s it into place rather
+// than scp-ing straight over remote, because kvnode is very likely still
+// running (using the very binary being replaced) whenever a deploy picks
+// up code changes -- overwriting a running executable in place fails with
+// ETXTBSY ("scp: dest open ... Failure", opaque enough that it took a real
+// deploy against a live bootstrap to surface), while `mv`'s rename leaves
+// the running process's already-open inode untouched and just repoints
+// the path for whatever starts next.
 func deployIfMissing(binDir string) error {
 	if err := sshRun(BootstrapHost, fmt.Sprintf("mkdir -p %s/bin %s/data", BootstrapRemoteDir, BootstrapRemoteDir)); err != nil {
 		return err
@@ -167,14 +177,47 @@ func deployIfMissing(binDir string) error {
 		if err == nil && fmt.Sprintf("%d\n", localInfo.Size()) == out {
 			continue // already deployed, same size
 		}
-		if err := scp(local, BootstrapHost, remote); err != nil {
-			return err
-		}
-		if err := sshRun(BootstrapHost, "chmod +x "+remote); err != nil {
+		if err := uploadWithRetry(local, BootstrapHost, remote, localInfo.Size()); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// uploadRetries bounds how many times uploadWithRetry re-sends a binary
+// whose transfer landed short.
+const uploadRetries = 3
+
+// uploadWithRetry scp's local to a ".upload" sibling of remote and verifies
+// the resulting remote file size matches localSize before `mv`-ing it into
+// place, retrying the whole upload (not just the size check) up to
+// uploadRetries times on a mismatch. This exists because scp can return a
+// zero exit status for a transfer the connection dropped partway through
+// -- observed directly against this project's own deploy target: a 37 MB
+// binary repeatedly landed as an 8-11 MB ".upload" file with scp itself
+// reporting success, silently deploying a truncated (unexecutable)
+// binary -- so "scp didn't error" is not sufficient evidence the transfer
+// actually completed.
+func uploadWithRetry(local, host, remote string, localSize int64) error {
+	uploadPath := remote + ".upload"
+	var lastErr error
+	for attempt := 1; attempt <= uploadRetries; attempt++ {
+		if err := scp(local, host, uploadPath); err != nil {
+			lastErr = err
+			continue
+		}
+		out, err := sshOutput(host, fmt.Sprintf("stat -c%%s %s 2>/dev/null || true", uploadPath))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if strings.TrimSpace(out) != fmt.Sprintf("%d", localSize) {
+			lastErr = fmt.Errorf("upload of %s landed as %s bytes, want %d (attempt %d/%d)", filepath.Base(local), strings.TrimSpace(out), localSize, attempt, uploadRetries)
+			continue
+		}
+		return sshRun(host, fmt.Sprintf("chmod +x %s && mv -f %s %s", uploadPath, uploadPath, remote))
+	}
+	return fmt.Errorf("e2erun: upload %s: %w", local, lastErr)
 }
 
 func deployKeyIfMissing(node e2edata.Node) error {

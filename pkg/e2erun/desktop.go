@@ -12,11 +12,23 @@ import (
 	"github.com/gofsd/libp2p-kv-raft/pkg/e2edata"
 )
 
+// EnvE2EHome, when set, overrides localE2EHome's default location -- tests
+// use this to isolate their state from a real operator's e2e node data,
+// the same way pkg/registry.EnvHome works for the normal `mage addnode`
+// registry.
+const EnvE2EHome = "KVSTORE_E2E_HOME"
+
 // localE2EHome is where locally-run (non-bootstrap) desktop test nodes keep
 // their data -- deliberately separate from the operator's normal
 // ~/.libp2p-kv-raft (pkg/registry.EnvHome default) so e2e runs never
 // collide with or disturb nodes created by `mage addnode` for manual use.
 func localE2EHome() (string, error) {
+	if dir := os.Getenv(EnvE2EHome); dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return "", err
+		}
+		return dir, nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err

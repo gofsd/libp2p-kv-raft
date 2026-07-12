@@ -170,12 +170,20 @@ func testdataPath() (string, error) {
 	return filepath.Join(root, e2edata.DefaultPath), nil
 }
 
-// NewVersion records a new version labeled label so subsequent
+// NewVersion records a new e2e test version stamped with this repo's
+// current semver (from git tags -- the same version `mage patch`/`minor`/
+// `major` manage), shared across every platform's implementation since
+// this is one monorepo with one release version, not per-platform version
+// numbers (see e2edata.File.Versions' doc comment). Subsequent
 // `e2e:addtest` calls target it instead of whatever version was current
 // before.
 //
-// Usage: mage e2e:newversion "<label>"
-func (E2E) NewVersion(label string) error {
+// Usage: mage e2e:newversion
+func (E2E) NewVersion() error {
+	v, err := getCurrentVersion()
+	if err != nil {
+		return err
+	}
 	path, err := testdataPath()
 	if err != nil {
 		return err
@@ -184,17 +192,19 @@ func (E2E) NewVersion(label string) error {
 	if err != nil {
 		return err
 	}
-	id := f.NewVersion(label)
+	id := f.NewVersion(v.String())
 	if err := f.Save(path); err != nil {
 		return err
 	}
-	fmt.Printf("✅ version %d: %s\n", id, label)
+	fmt.Printf("✅ version %d: %s\n", id, v.String())
 	return nil
 }
 
 // AddNode generates a fresh deterministic Ed25519 identity for platform
-// ("desktop", "android", or "web") and records it, printing the node id
-// later e2e:addtest calls reference.
+// ("desktop", "android", "web", or "remote" -- the SSH-deployed bootstrap
+// leader, though e2e:bootstrap provisions that one automatically if it
+// doesn't exist yet, so this is rarely needed for "remote" directly) and
+// records it, printing the node id later e2e:addtest calls reference.
 //
 // Usage: mage e2e:addnode <platform>
 func (E2E) AddNode(platform string) error {
@@ -219,22 +229,27 @@ func (E2E) AddNode(platform string) error {
 
 // AddTest appends a test row against the current (not yet published)
 // version -- creating version 1 automatically if none exists yet -- that
-// sends one raw pkg/shmevent to nodeID: event is the event type byte (see
-// pkg/shmevent's EventSetKey..EventAdd constants), id is this message's own
+// sends one raw pkg/shmevent to nodeID: eventName is the event's name (see
+// pkg/shmevent.EventName -- "set_key", "set_field", "get_key", "get_field",
+// "get_public_key", "get_private_key", "add"), id is this message's own
 // correlation id (pick a nonzero value and reuse it as a later row's
-// sourceID/destID to link them -- e.g. a SetKey row with id=100 followed by
-// a SetField row with sourceID=100 -- since pkg/e2erun dispatches rows
+// sourceID/destID to link them -- e.g. a set_key row with id=100 followed
+// by a set_field row with sourceID=100 -- since pkg/e2erun dispatches rows
 // through kvctl-cli sendevent, which only randomizes an id left at its
 // zero value, an explicit id here is preserved exactly through to the
 // wire), sourceID/destID are the relational reference fields (0 for
-// unused), and value is a plain string (hex-encoded internally -- see
-// pkg/e2edata.Event's doc comment on why). An EventAdd row's value may be
-// the literal string "BOOTSTRAP" to mean "the live bootstrap leader's
-// address, whatever it is at run time" (see pkg/e2erun.BootstrapToken)
-// instead of a frozen address.
+// unused), and value is plain text (see pkg/e2edata.Event's doc comment on
+// how binary values are represented). An "add" row's value may be the
+// literal string "BOOTSTRAP" to mean "the live bootstrap leader's address,
+// whatever it is at run time" (see pkg/e2erun.BootstrapToken) instead of a
+// frozen address.
 //
-// Usage: mage e2e:addtest <nodeID> <event> <id> <sourceID> <destID> <value>
-func (E2E) AddTest(nodeID, event, id, sourceID, destID int, value string) error {
+// Usage: mage e2e:addtest <nodeID> <eventName> <id> <sourceID> <destID> <value>
+func (E2E) AddTest(nodeID int, eventName string, id, sourceID, destID int, value string) error {
+	eventType, ok := shmevent.EventFromName(eventName)
+	if !ok {
+		return fmt.Errorf("e2e:addtest: unknown event name %q (want one of: set_key, set_field, get_key, get_field, get_public_key, get_private_key, add)", eventName)
+	}
 	path, err := testdataPath()
 	if err != nil {
 		return err
@@ -243,7 +258,7 @@ func (E2E) AddTest(nodeID, event, id, sourceID, destID int, value string) error 
 	if err != nil {
 		return err
 	}
-	ev := e2edata.NewEvent(uint8(event), uint16(sourceID), uint16(destID), []byte(value), uint16(id))
+	ev := e2edata.NewEvent(eventType, uint16(sourceID), uint16(destID), []byte(value), uint16(id))
 	row, err := f.AddTest(nodeID, ev)
 	if err != nil {
 		return err
@@ -251,7 +266,35 @@ func (E2E) AddTest(nodeID, event, id, sourceID, destID int, value string) error 
 	if err := f.Save(path); err != nil {
 		return err
 	}
-	fmt.Printf("✅ added row: version %d, node %d, event %s\n", row.Version, row.Node, shmevent.EventName(ev.EventType))
+	fmt.Printf("✅ added row: version %d, node %d, event %s\n", row.Version, row.Node, eventName)
+	return nil
+}
+
+// DeleteNode tears down whatever real process/data nodeID's platform has
+// running -- a local kvnode process for a desktop node, or the SSH
+// bootstrap daemon and its entire remote directory for the remote node
+// (see pkg/e2erun.DeleteNode) -- then removes it from the testdata file.
+// Nodes are never deleted automatically by e2e:current/e2e:all, precisely
+// so a deployed node stays around for a human to poke at; this is the
+// explicit, deliberate teardown command for when that's no longer wanted.
+//
+// Usage: mage e2e:deletenode <nodeID>
+func (E2E) DeleteNode(nodeID int) error {
+	path, err := testdataPath()
+	if err != nil {
+		return err
+	}
+	f, err := e2edata.Load(path)
+	if err != nil {
+		return err
+	}
+	if err := e2erun.DeleteNode(f, nodeID); err != nil {
+		return err
+	}
+	if err := f.Save(path); err != nil {
+		return err
+	}
+	fmt.Printf("✅ node %d deleted\n", nodeID)
 	return nil
 }
 

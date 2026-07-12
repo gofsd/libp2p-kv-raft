@@ -2,8 +2,10 @@ package e2edata
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	lp2pcrypto "github.com/libp2p/go-libp2p/core/crypto"
@@ -162,10 +164,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if loaded.CurrentVersion() != 1 {
 		t.Fatalf("loaded CurrentVersion = %d, want 1", loaded.CurrentVersion())
 	}
-	gotValue, err := loaded.Rows[0].Event.Value()
-	if err != nil {
-		t.Fatalf("Value: %v", err)
-	}
+	gotValue := loaded.Rows[0].Event.Value()
 	if len(loaded.Rows) != 1 || string(gotValue) != "world" {
 		t.Fatalf("loaded rows mismatch: %+v", loaded.Rows)
 	}
@@ -181,6 +180,107 @@ func TestLoadMissingFile(t *testing.T) {
 	}
 	if f.CurrentVersion() != 0 || len(f.Nodes) != 0 {
 		t.Fatalf("Load missing file: want empty File, got %+v", f)
+	}
+}
+
+func TestEventJSONHumanReadable(t *testing.T) {
+	ev := NewEvent(shmevent.EventSetField, 100, 0, []byte("world"), 7)
+	data, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	got := string(data)
+	want := `{"event":"set_field","source_id":100,"value":"world","id":7}`
+	if got != want {
+		t.Fatalf("Marshal(set_field) = %s, want %s", got, want)
+	}
+
+	var back Event
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if back.EventType != ev.EventType || back.SourceID != ev.SourceID || back.DestinationID != ev.DestinationID ||
+		string(back.Value()) != string(ev.Value()) || back.ID != ev.ID {
+		t.Fatalf("round trip mismatch: got %+v, want %+v", back, ev)
+	}
+}
+
+func TestEventJSONBinaryValueUsesHexPrefix(t *testing.T) {
+	binary := []byte{0xde, 0xad, 0xbe, 0xef, 0x00, 0xff}
+	ev := NewEvent(shmevent.EventGetPublicKey, 0, 0, binary, 0)
+	data, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"0xdeadbeef00ff"`) {
+		t.Fatalf("Marshal(binary value) = %s, want a 0x-prefixed hex value", data)
+	}
+
+	var back Event
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if string(back.Value()) != string(binary) {
+		t.Fatalf("round trip mismatch: got %x, want %x", back.Value(), binary)
+	}
+}
+
+func TestEventJSONUnknownEventNameRejected(t *testing.T) {
+	var ev Event
+	if err := json.Unmarshal([]byte(`{"event":"not_a_real_event"}`), &ev); err == nil {
+		t.Fatal("Unmarshal with unknown event name: want error, got nil")
+	}
+}
+
+func TestRemoteNode(t *testing.T) {
+	f := &File{Versions: map[int]string{}, Nodes: map[int]Node{}}
+	if _, _, ok := f.RemoteNode(); ok {
+		t.Fatal("RemoteNode on empty file: want ok=false")
+	}
+
+	if _, _, err := f.AddNode(PlatformDesktop); err != nil {
+		t.Fatal(err)
+	}
+	remoteID, _, err := f.AddNode(PlatformRemote)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gotID, node, ok := f.RemoteNode()
+	if !ok || gotID != remoteID || node.Platform != PlatformRemote {
+		t.Fatalf("RemoteNode() = (%d, %+v, %v), want (%d, platform remote, true)", gotID, node, ok, remoteID)
+	}
+}
+
+func TestDeleteNode(t *testing.T) {
+	f := &File{Versions: map[int]string{}, Nodes: map[int]Node{}}
+	id, _, err := f.AddNode(PlatformDesktop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.AddTest(id, NewEvent(shmevent.EventGetPublicKey, 0, 0, nil, 0)); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, affectedRows, err := f.DeleteNode(id)
+	if err != nil {
+		t.Fatalf("DeleteNode: %v", err)
+	}
+	if removed.Platform != PlatformDesktop {
+		t.Fatalf("DeleteNode returned %+v, want the deleted node", removed)
+	}
+	if affectedRows != 1 {
+		t.Fatalf("DeleteNode affectedRows = %d, want 1", affectedRows)
+	}
+	if _, ok := f.Nodes[id]; ok {
+		t.Fatal("DeleteNode: node still present in Nodes")
+	}
+	if len(f.Rows) != 1 {
+		t.Fatal("DeleteNode: rows should be left in place, not deleted")
+	}
+
+	if _, _, err := f.DeleteNode(999); err == nil {
+		t.Fatal("DeleteNode with unknown node id: want error, got nil")
 	}
 }
 
