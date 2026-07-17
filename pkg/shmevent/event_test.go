@@ -125,7 +125,7 @@ func TestGetPublicPrivateKeyEventsSignWithNilKey(t *testing.T) {
 }
 
 func TestEventNameRoundTrip(t *testing.T) {
-	for _, e := range []uint8{EventSetKey, EventSetField, EventGetKey, EventGetField, EventGetPublicKey, EventGetPrivateKey, EventAdd, EventError} {
+	for _, e := range []uint8{EventSetKey, EventSetField, EventGetKey, EventGetField, EventGetPublicKey, EventGetPrivateKey, EventAdd, EventSet, EventError} {
 		name := EventName(e)
 		got, ok := EventFromName(name)
 		if !ok {
@@ -137,6 +137,66 @@ func TestEventNameRoundTrip(t *testing.T) {
 	}
 	if _, ok := EventFromName("not_a_real_event"); ok {
 		t.Fatal("EventFromName unexpectedly recognized a bogus name")
+	}
+}
+
+func TestSetPayloadRoundTrip(t *testing.T) {
+	payload, err := EncodeSetPayload([]byte("hello"), []byte("world"))
+	if err != nil {
+		t.Fatalf("EncodeSetPayload: %v", err)
+	}
+	key, value, err := DecodeSetPayload(payload)
+	if err != nil {
+		t.Fatalf("DecodeSetPayload: %v", err)
+	}
+	if string(key) != "hello" || string(value) != "world" {
+		t.Fatalf("got key=%q value=%q, want key=%q value=%q", key, value, "hello", "world")
+	}
+
+	// Empty key and/or value must round-trip too.
+	payload, err = EncodeSetPayload(nil, []byte("world"))
+	if err != nil {
+		t.Fatalf("EncodeSetPayload with empty key: %v", err)
+	}
+	key, value, err = DecodeSetPayload(payload)
+	if err != nil {
+		t.Fatalf("DecodeSetPayload with empty key: %v", err)
+	}
+	if len(key) != 0 || string(value) != "world" {
+		t.Fatalf("got key=%q value=%q, want key=\"\" value=%q", key, value, "world")
+	}
+
+	if _, _, err := DecodeSetPayload([]byte{0}); err == nil {
+		t.Fatal("DecodeSetPayload unexpectedly accepted a payload shorter than the length prefix")
+	}
+	if _, _, err := DecodeSetPayload([]byte{0, 10}); err == nil {
+		t.Fatal("DecodeSetPayload unexpectedly accepted a key length exceeding the payload size")
+	}
+}
+
+func TestEventSetEncodeDecodeRoundTrip(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := EncodeSetPayload([]byte("hello"), []byte("world"))
+	if err != nil {
+		t.Fatalf("EncodeSetPayload: %v", err)
+	}
+	buf, err := Encode(Msg{EventType: EventSet, Value: payload, ID: 5}, priv)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	got, _, _, err := Decode(buf)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	key, value, err := DecodeSetPayload(got.Value)
+	if err != nil {
+		t.Fatalf("DecodeSetPayload: %v", err)
+	}
+	if string(key) != "hello" || string(value) != "world" {
+		t.Fatalf("got key=%q value=%q, want key=%q value=%q", key, value, "hello", "world")
 	}
 }
 

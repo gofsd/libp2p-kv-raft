@@ -52,6 +52,22 @@ const (
 	// callers need since the target daemon has no other way to learn a
 	// remote caller's identity.
 	EventAdd uint8 = 7
+	// EventSet is a single-round-trip alternative to the SetKey+SetField
+	// pair: Value packs both the key and the value together (see
+	// EncodeSetPayload/DecodeSetPayload), so the daemon can perform
+	// store.Set(key, value) directly without the registry.Register/
+	// Lookup round trip SetKey+SetField needs to relate two separate
+	// messages via SourceID. It exists because api/shmevent.capnp's
+	// Event has only one `value` field per message -- callers for whom
+	// each message doesn't have a meaningful per-round-trip cost (e.g.
+	// web-app's Rust client, talking over an already-open network
+	// stream) have no reason to switch off SetKey+SetField; EventSet is
+	// for pkg/shmclient, which pays a real, non-negligible cost (a fresh
+	// shmring segment pair) per round trip. Trade-off: key and value now
+	// share one ValueSize (512-byte) budget instead of each getting
+	// their own -- SetKey+SetField remains the only option for a
+	// combined key+value beyond that.
+	EventSet uint8 = 8
 	// EventError is response-only: Value carries a UTF-8 error message,
 	// ID echoes the failed request's ID. Not part of the fields the
 	// protocol was specified with -- added because the struct has no
@@ -78,6 +94,8 @@ func EventName(e uint8) string {
 		return "get_private_key"
 	case EventAdd:
 		return "add"
+	case EventSet:
+		return "set"
 	case EventError:
 		return "error"
 	default:
@@ -106,6 +124,8 @@ func EventFromName(name string) (uint8, bool) {
 		return EventGetPrivateKey, true
 	case "add":
 		return EventAdd, true
+	case "set":
+		return EventSet, true
 	case "error":
 		return EventError, true
 	default:
@@ -139,6 +159,35 @@ type Msg struct {
 	DestinationID uint16
 	Value         []byte
 	ID            uint16
+}
+
+// EncodeSetPayload packs key and value into a single EventSet Msg.Value: a
+// 2-byte big-endian length prefix for key, then key verbatim, then value
+// verbatim -- the rest of the buffer, with no length prefix of its own,
+// since Value's own end marks value's end. See EventSet's doc comment for
+// why this packing exists instead of a second capnp field.
+func EncodeSetPayload(key, value []byte) ([]byte, error) {
+	if len(key) > 0xFFFF {
+		return nil, fmt.Errorf("shmevent: set payload key too long: %d bytes", len(key))
+	}
+	buf := make([]byte, 2+len(key)+len(value))
+	buf[0] = byte(len(key) >> 8)
+	buf[1] = byte(len(key))
+	copy(buf[2:], key)
+	copy(buf[2+len(key):], value)
+	return buf, nil
+}
+
+// DecodeSetPayload is the inverse of EncodeSetPayload.
+func DecodeSetPayload(payload []byte) (key, value []byte, err error) {
+	if len(payload) < 2 {
+		return nil, nil, fmt.Errorf("shmevent: set payload too short: %d bytes", len(payload))
+	}
+	keyLen := int(payload[0])<<8 | int(payload[1])
+	if 2+keyLen > len(payload) {
+		return nil, nil, fmt.Errorf("shmevent: set payload key length %d exceeds payload size %d", keyLen, len(payload))
+	}
+	return payload[2 : 2+keyLen], payload[2+keyLen:], nil
 }
 
 // Encode serializes m to its capnp wire form, computing CRC32 and signing

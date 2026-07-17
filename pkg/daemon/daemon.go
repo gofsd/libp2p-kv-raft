@@ -655,6 +655,16 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		}
 		return shmevent.Msg{EventType: shmevent.EventSetField, ID: m.ID}
 
+	case shmevent.EventSet:
+		key, value, err := shmevent.DecodeSetPayload(m.Value)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		if err := n.handleSetForward(ctx, key, value, true); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventSet, ID: m.ID}
+
 	case shmevent.EventGetField:
 		key := m.Value
 		if m.SourceID != 0 {

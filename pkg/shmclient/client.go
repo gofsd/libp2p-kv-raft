@@ -57,35 +57,27 @@ func newID() uint16 {
 	}
 }
 
-// Set applies key=value through raft on the session's node: SetKey
-// registers key, then SetField (referencing it via SourceID) applies the
-// value -- see pkg/shmevent's doc comment for why a Set needs two linked
-// messages rather than one.
+// Set applies key=value through raft on the session's node, in a single
+// EventSet round trip (key and value packed together via
+// shmevent.EncodeSetPayload) rather than the SetKey+SetField pair --
+// see EventSet's doc comment for why: pkg/ipc.Call pays a real,
+// non-negligible cost (a fresh shmring segment pair) per round trip, so a
+// caller in this package's position halves Set's cost by not needing two.
 func (s *Session) Set(ctx context.Context, key, value string) error {
-	keyID := newID()
-	setKeyResp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventSetKey,
-		Value:     []byte(key),
-		ID:        keyID,
-	}, s.priv)
+	payload, err := shmevent.EncodeSetPayload([]byte(key), []byte(value))
 	if err != nil {
-		return fmt.Errorf("shmclient: set_key: %w", err)
+		return fmt.Errorf("shmclient: set: %w", err)
 	}
-	if setKeyResp.EventType == shmevent.EventError {
-		return fmt.Errorf("shmclient: set_key: %s", setKeyResp.Value)
-	}
-
-	setFieldResp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventSetField,
-		SourceID:  keyID,
-		Value:     []byte(value),
+	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
+		EventType: shmevent.EventSet,
+		Value:     payload,
 		ID:        newID(),
 	}, s.priv)
 	if err != nil {
-		return fmt.Errorf("shmclient: set_field: %w", err)
+		return fmt.Errorf("shmclient: set: %w", err)
 	}
-	if setFieldResp.EventType == shmevent.EventError {
-		return fmt.Errorf("shmclient: set_field: %s", setFieldResp.Value)
+	if resp.EventType == shmevent.EventError {
+		return fmt.Errorf("shmclient: set: %s", resp.Value)
 	}
 	return nil
 }

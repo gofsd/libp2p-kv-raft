@@ -21,6 +21,18 @@
 #      registered under sourceId (X), then performs the real Set("hello",
 #      "world") against the replicated store. Response echoes id Y.
 #
+# A caller for which a second round trip has a real, non-negligible cost
+# (pkg/shmclient, over shmring -- see pkg/ipc's doc comment) can instead
+# send a single Set{value: pack("hello", "world"), id: Z}, where pack is
+# pkg/shmevent.EncodeSetPayload: a 2-byte big-endian length prefix for the
+# key, then the key, then the value -- key and value packed into the one
+# `value` field this schema provides, at the cost of sharing its single
+# ValueSize budget instead of each getting their own. This is an
+# optimization, not a replacement: SetKey+SetField is still what a caller
+# with no such per-message cost (e.g. web-app's Rust client, already
+# holding an open network stream) should keep using, and is still the only
+# option for a combined key+value beyond one ValueSize.
+#
 # Get mirrors this, and additionally allows skipping the registry
 # round-trip entirely when the caller already knows the raw key:
 #
