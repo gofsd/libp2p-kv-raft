@@ -80,6 +80,43 @@ func (s *Store) Delete(key []byte) error {
 	return err
 }
 
+// CountPrefix returns how many stored keys begin with prefix -- a range
+// scan over the BLOB-keyed kv table (SQLite compares BLOBs byte-wise, so
+// key >= prefix AND key < prefixUpperBound(prefix) selects exactly that
+// range). Used by pkg/kvfsm to enforce a per-SystemKey-list entry cap.
+func (s *Store) CountPrefix(prefix []byte) (int, error) {
+	upper := prefixUpperBound(prefix)
+	var row *sql.Row
+	if upper == nil {
+		row = s.db.QueryRow(`SELECT COUNT(*) FROM kv WHERE key >= ?`, prefix)
+	} else {
+		row = s.db.QueryRow(`SELECT COUNT(*) FROM kv WHERE key >= ? AND key < ?`, prefix, upper)
+	}
+	var count int
+	if err := row.Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+// prefixUpperBound returns the smallest byte sequence greater than every
+// sequence starting with prefix -- prefix with its last non-0xFF byte
+// incremented, carrying into preceding bytes as needed (the standard
+// BLOB-prefix-range trick). Returns nil if prefix is empty or entirely
+// 0xFF bytes (no finite upper bound exists), in which case the caller
+// scans with no upper bound at all.
+func prefixUpperBound(prefix []byte) []byte {
+	upper := make([]byte, len(prefix))
+	copy(upper, prefix)
+	for i := len(upper) - 1; i >= 0; i-- {
+		if upper[i] < 0xFF {
+			upper[i]++
+			return upper[:i+1]
+		}
+	}
+	return nil
+}
+
 // Close closes the underlying database.
 func (s *Store) Close() error {
 	return s.db.Close()

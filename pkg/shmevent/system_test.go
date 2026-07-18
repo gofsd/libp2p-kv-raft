@@ -51,6 +51,45 @@ func TestPermitRequestPayloadRoundTrip(t *testing.T) {
 	}
 }
 
+func TestClusterMemberKeyLayout(t *testing.T) {
+	key := ClusterMemberKey([]byte("peer-123"))
+	want := SystemKey(KindClusterMember, clusterMemberStatusPlaceholder, []byte("peer-123"))
+	if !bytes.Equal(key, want) {
+		t.Fatalf("got key %x, want %x", key, want)
+	}
+	if key[0] != SystemKeyPrefix || key[1] != KindClusterMember {
+		t.Fatalf("ClusterMemberKey = %x, want SystemKeyPrefix/KindClusterMember prefix", key)
+	}
+}
+
+func TestClusterMemberPayloadRoundTrip(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, role := range []byte{RoleVoter, RoleLearner, RoleLeader} {
+		payload := EncodeClusterMemberPayload(PublicKey(pub), role)
+		gotPub, gotRole, err := DecodeClusterMemberPayload(payload)
+		if err != nil {
+			t.Fatalf("DecodeClusterMemberPayload(role=%d): %v", role, err)
+		}
+		if !bytes.Equal(gotPub, pub) || gotRole != role {
+			t.Fatalf("got pub=%x role=%d, want pub=%x role=%d", gotPub, gotRole, pub, role)
+		}
+	}
+
+	if _, _, err := DecodeClusterMemberPayload(nil); err == nil {
+		t.Fatal("DecodeClusterMemberPayload unexpectedly accepted an empty payload")
+	}
+	if _, _, err := DecodeClusterMemberPayload(make([]byte, PublicKeySize)); err == nil {
+		t.Fatal("DecodeClusterMemberPayload unexpectedly accepted a payload missing the role byte")
+	}
+	if _, _, err := DecodeClusterMemberPayload(make([]byte, PublicKeySize+2)); err == nil {
+		t.Fatal("DecodeClusterMemberPayload unexpectedly accepted a payload longer than pub+role")
+	}
+}
+
 func TestPermitConfirmPayloadRoundTrip(t *testing.T) {
 	payload := EncodePermitConfirmPayload(KindPermitPeer, []byte("peer-123"))
 	kind, peerID, err := DecodePermitConfirmPayload(payload)

@@ -232,6 +232,13 @@ type Node struct {
 	raft            *raft.Raft
 	transport       *raft.NetworkTransport
 	electionTimeout time.Duration // the effective value raft is actually using, set by initRaft
+
+	// leadershipObserver/leadershipObsCh back watchLeadership -- see
+	// initRaft's registration of them. Torn down in shutdown so that
+	// goroutine doesn't leak past this Node's lifetime (relevant mainly
+	// for tests, which construct many short-lived Nodes in one process).
+	leadershipObserver *raft.Observer
+	leadershipObsCh    chan raft.Observation
 }
 
 // Run starts a node and blocks, serving IPC requests, until ctx is
@@ -486,7 +493,63 @@ func (n *Node) initRaft() (*raft.Raft, error) {
 	n.raft = rf
 	n.transport = transport
 	n.electionTimeout = raftConf.ElectionTimeout
+
+	// Registered before this function returns to whichever caller then
+	// calls BootstrapCluster (handleAdd's bootstrap branch) -- so this
+	// node's very first self-election, not just later re-elections, is
+	// caught too.
+	obsCh := make(chan raft.Observation, 8)
+	observer := raft.NewObserver(obsCh, false, func(o *raft.Observation) bool {
+		_, ok := o.Data.(raft.LeaderObservation)
+		return ok
+	})
+	rf.RegisterObserver(observer)
+	n.leadershipObserver = observer
+	n.leadershipObsCh = obsCh
+	go n.watchLeadership(rf, obsCh)
+
 	return rf, nil
+}
+
+// watchLeadership reacts to every leadership-change notification (see
+// initRaft's Observer registration) by re-asserting this node's own
+// current truth in its KindClusterMember record -- not tracking "who used
+// to be leader": deliberately stateless/idempotent, so a redundant
+// identical write is harmless and a missed one self-corrects on the next
+// transition. Returns once ch is closed (shutdown).
+func (n *Node) watchLeadership(rf *raft.Raft, ch chan raft.Observation) {
+	for range ch {
+		role, ok := n.ownCurrentRole(rf)
+		if !ok {
+			continue
+		}
+		if err := n.recordClusterMember(context.Background(), n.peerID, role); err != nil {
+			fmt.Fprintf(os.Stderr, "daemon: record own cluster member status: %v\n", err)
+		}
+	}
+}
+
+// ownCurrentRole determines this node's own current role: RoleLeader if
+// it's currently raft.Leader, else RoleVoter/RoleLearner per its own
+// suffrage in the current configuration. ok is false if this node isn't
+// (yet) present in the configuration at all.
+func (n *Node) ownCurrentRole(rf *raft.Raft) (role byte, ok bool) {
+	if rf.State() == raft.Leader {
+		return shmevent.RoleLeader, true
+	}
+	cfgFuture := rf.GetConfiguration()
+	if err := cfgFuture.Error(); err != nil {
+		return 0, false
+	}
+	for _, srv := range cfgFuture.Configuration().Servers {
+		if srv.ID == raft.ServerID(n.peerID) {
+			if srv.Suffrage == raft.Nonvoter {
+				return shmevent.RoleLearner, true
+			}
+			return shmevent.RoleVoter, true
+		}
+	}
+	return 0, false
 }
 
 // getRaft returns the raft instance if initRaft has already run.
@@ -511,9 +574,20 @@ func loadKey(keyPath string) (crypto.PrivKey, error) {
 func (n *Node) shutdown() {
 	n.mu.Lock()
 	rf, transport := n.raft, n.transport
+	observer, obsCh := n.leadershipObserver, n.leadershipObsCh
 	n.mu.Unlock()
 
 	if rf != nil {
+		if observer != nil {
+			// Deregister before closing: RegisterObserver/DeregisterObserver
+			// and observe() share a lock, so once this returns, raft can no
+			// longer be mid-send on obsCh, and closing it is safe -- stops
+			// watchLeadership's goroutine instead of leaking it past this
+			// Node's lifetime (relevant mainly for tests, which construct
+			// many short-lived Nodes in one process).
+			rf.DeregisterObserver(observer)
+			close(obsCh)
+		}
 		rf.Shutdown()
 	}
 	if transport != nil {
@@ -690,7 +764,14 @@ func remoteCaller(s network.Stream) (callerIdentity, error) {
 // record. Only consulted when Config.RequirePermitForRemote is true -- see
 // that field's doc comment.
 func (n *Node) isPermittedPeer(id peer.ID) bool {
-	_, err := n.store.Get(shmevent.SystemKey(shmevent.KindPermitPeer, shmevent.StatusConfirmed, []byte(id.String())))
+	return isPermittedPeer(n.store, id)
+}
+
+// isPermittedPeer is the package-level form of the check above, taking a
+// *store.Store directly rather than a *Node -- needed by relayACL, which
+// is constructed inside newHost before a *Node exists yet (see start).
+func isPermittedPeer(st *store.Store, id peer.ID) bool {
+	_, err := st.Get(shmevent.SystemKey(shmevent.KindPermitPeer, shmevent.StatusConfirmed, []byte(id.String())))
 	return err == nil
 }
 
@@ -776,6 +857,25 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		return shmevent.Msg{EventType: shmevent.EventPermitRequest, ID: m.ID}
 
 	case shmevent.EventPermitConfirm:
+		// The only place that actually enforces "only a raft voter may
+		// confirm" (see shmevent.EventPermitConfirm's doc comment): check
+		// the *original* caller's own identity here, once, before doing
+		// anything else -- not handleForwardConfirmStream's check, which
+		// only ever authenticates whichever node relayed the request one
+		// hop closer to the leader (using *its own* libp2p identity), not
+		// who actually asked. A remote caller with no standing at all
+		// could otherwise dial any legitimate voter follower and have it
+		// unwittingly relay the confirm on its behalf, or dial the leader
+		// directly (handleConfirmForward's isLeader branch used to apply
+		// with no identity check at all -- that reasoning only held when
+		// caller and node were the same actor, true for a local pkg/ipc
+		// operator but not for a remote caller.Conn()-authenticated key).
+		if caller.remotePeer != "" {
+			rf := n.getRaft()
+			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
+				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
+			}
+		}
 		kind, peerID, err := shmevent.DecodePermitConfirmPayload(m.Value)
 		if err != nil {
 			return errorMsg(m.ID, err)
@@ -1010,7 +1110,7 @@ func (n *Node) handleJoinStream(s network.Stream) {
 
 	rf := n.getRaft()
 	if rf != nil && rf.State() == raft.Leader {
-		fmt.Fprintf(s, "%s\n", addServerLine(rf, joinPeerID, joinAddr, suffrage))
+		fmt.Fprintf(s, "%s\n", n.addServerLine(context.Background(), rf, joinPeerID, joinAddr, suffrage))
 		return
 	}
 
@@ -1056,7 +1156,7 @@ func (n *Node) handleForwardJoinStream(s network.Stream) {
 		return
 	}
 
-	fmt.Fprintf(s, "%s\n", addServerLine(rf, joinPeerID, joinAddr, suffrage))
+	fmt.Fprintf(s, "%s\n", n.addServerLine(context.Background(), rf, joinPeerID, joinAddr, suffrage))
 }
 
 // parseJoinRequest reads and parses the single
@@ -1097,8 +1197,11 @@ func parseJoinRequest(s network.Stream) (peerID, addr string, suffrage raft.Serv
 
 // addServerLine runs raft.AddVoter or raft.AddNonvoter (per suffrage) for
 // joinPeerID/joinAddr and returns the response line to send back over the
-// wire: "OK" or "ERR: <reason>".
-func addServerLine(rf *raft.Raft, joinPeerID, joinAddr string, suffrage raft.ServerSuffrage) string {
+// wire: "OK" or "ERR: <reason>". Every call site already only reaches this
+// once rf.State()==Leader is confirmed, so on success it also records
+// joinPeerID's KindClusterMember system record (pubkey + role) --
+// see pkg/shmevent.KindClusterMember's doc comment.
+func (n *Node) addServerLine(ctx context.Context, rf *raft.Raft, joinPeerID, joinAddr string, suffrage raft.ServerSuffrage) string {
 	var future raft.IndexFuture
 	switch suffrage {
 	case raft.Nonvoter:
@@ -1109,7 +1212,42 @@ func addServerLine(rf *raft.Raft, joinPeerID, joinAddr string, suffrage raft.Ser
 	if err := future.Error(); err != nil {
 		return fmt.Sprintf("ERR: %v", err)
 	}
+
+	role := shmevent.RoleVoter
+	if suffrage == raft.Nonvoter {
+		role = shmevent.RoleLearner
+	}
+	if err := n.recordClusterMember(ctx, joinPeerID, role); err != nil {
+		// The join itself already succeeded and is committed to the raft
+		// configuration -- this registry is a queryable convenience
+		// mirror, not something anything else depends on for
+		// correctness, so a failure recording it shouldn't fail the join
+		// response back to the caller.
+		fmt.Fprintf(os.Stderr, "daemon: record cluster member %s: %v\n", joinPeerID, err)
+	}
 	return "OK"
+}
+
+// recordClusterMember extracts peerIDStr's own public key -- embedded in
+// the peer id itself for this project's Ed25519 identities, see
+// pkg/shmevent.KindClusterMember's doc comment -- and writes its
+// KindClusterMember record with the given role.
+func (n *Node) recordClusterMember(ctx context.Context, peerIDStr string, role byte) error {
+	pid, err := peer.Decode(peerIDStr)
+	if err != nil {
+		return fmt.Errorf("decode peer id: %w", err)
+	}
+	pub, err := pid.ExtractPublicKey()
+	if err != nil {
+		return fmt.Errorf("extract public key: %w", err)
+	}
+	raw, err := pub.Raw()
+	if err != nil {
+		return fmt.Errorf("public key raw bytes: %w", err)
+	}
+	key := shmevent.ClusterMemberKey([]byte(peerIDStr))
+	value := shmevent.EncodeClusterMemberPayload(raw, role)
+	return n.handleSetForward(ctx, key, value, true)
 }
 
 // forwardJoin relays a join request (joinPeerID, joinAddr, suffrage) to
@@ -1447,7 +1585,7 @@ func (n *Node) handleAddLearner(ctx context.Context, joinPeerID, joinAddr string
 
 	rf := n.getRaft()
 	if rf != nil && rf.State() == raft.Leader {
-		if line := addServerLine(rf, joinPeerID, joinAddr, raft.Nonvoter); strings.HasPrefix(line, "ERR: ") {
+		if line := n.addServerLine(ctx, rf, joinPeerID, joinAddr, raft.Nonvoter); strings.HasPrefix(line, "ERR: ") {
 			return "", fmt.Errorf("%s", strings.TrimPrefix(line, "ERR: "))
 		}
 		return n.peerID, nil

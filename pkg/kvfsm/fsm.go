@@ -4,13 +4,59 @@ package kvfsm
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 
 	"github.com/hashicorp/raft"
 
+	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 	"github.com/gofsd/libp2p-kv-raft/pkg/store"
 )
+
+// maxSystemListEntries bounds every pkg/shmevent.SystemKey-based list (the
+// confirmed/pending halves of KindPermitPeer, KindBootstrapNode,
+// KindClusterMember, and any future kind) independently -- each distinct
+// kind+status prefix (SystemKey's first 3 bytes) may hold at most this
+// many entries. Enforced here, inside Apply, rather than as a pre-check in
+// pkg/daemon before calling rf.Apply: Apply is the only place every raft
+// replica deterministically agrees on order, so a Go-level pre-check could
+// race against a concurrent Apply from another source and let two nodes
+// disagree about whether the cap was hit. A var, not a const, so tests can
+// temporarily lower it rather than writing 65000 real rows.
+var maxSystemListEntries = 65000
+
+// systemKeyPrefixLen is how many leading bytes of a shmevent.SystemKey
+// identify its list (kind + status, see that function's doc comment) --
+// everything after is the peer id, which varies per entry and so must not
+// be part of the count-limiting prefix.
+const systemKeyPrefixLen = 3
+
+// checkSystemListCap enforces maxSystemListEntries for key if key is a
+// pkg/shmevent.SystemKey (starts with shmevent.SystemKeyPrefix): an
+// overwrite of an already-existing key never grows its list, so only a
+// genuinely new key is checked against its kind+status prefix's current
+// count. Ordinary user keys (anything not starting with SystemKeyPrefix)
+// are never counted or capped.
+func checkSystemListCap(s *store.Store, key []byte) error {
+	if len(key) < systemKeyPrefixLen || key[0] != shmevent.SystemKeyPrefix {
+		return nil
+	}
+	if _, err := s.Get(key); err == nil {
+		return nil // overwrite of an existing entry, not a new one
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	prefix := key[:systemKeyPrefixLen]
+	count, err := s.CountPrefix(prefix)
+	if err != nil {
+		return err
+	}
+	if count >= maxSystemListEntries {
+		return fmt.Errorf("kvfsm: system list %x is at capacity (%d entries)", prefix, maxSystemListEntries)
+	}
+	return nil
+}
 
 // OpType identifies the kind of mutation carried by a raft log entry.
 type OpType uint8
@@ -97,6 +143,9 @@ func (f *FSM) Apply(l *raft.Log) any {
 	}
 	switch op {
 	case OpSet:
+		if err := checkSystemListCap(f.Store, key); err != nil {
+			return ApplyResult{Err: err}
+		}
 		return ApplyResult{Err: f.Store.Set(key, value)}
 	case OpDel:
 		return ApplyResult{Err: f.Store.Delete(key)}
@@ -109,6 +158,14 @@ func (f *FSM) Apply(l *raft.Log) any {
 		v, err := f.Store.Get(key)
 		if err != nil {
 			return ApplyResult{Err: fmt.Errorf("kvfsm: confirm: no pending record at key: %w", err)}
+		}
+		// The cap check applies to the *confirmed* key (value) being
+		// promoted to, not the pending key (key) being read from and
+		// deleted -- this is what makes a kind's pending and confirmed
+		// lists count independently: confirming never touches the
+		// pending list's membership count, only the confirmed side's.
+		if err := checkSystemListCap(f.Store, value); err != nil {
+			return ApplyResult{Err: err}
 		}
 		if err := f.Store.Set(value, v); err != nil {
 			return ApplyResult{Err: err}

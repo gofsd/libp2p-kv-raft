@@ -133,6 +133,71 @@ func TestDumpAllLoadAllRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCountPrefix(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "sqlite"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	entries := map[string]string{
+		string([]byte{0x00, 0x01, 0x02, 'a'}): "1",
+		string([]byte{0x00, 0x01, 0x02, 'b'}): "2",
+		string([]byte{0x00, 0x01, 0x02, 'c'}): "3",
+		// Same kind byte (0x01), different status byte (0x03) -- must not
+		// be counted under the 0x00,0x01,0x02 prefix.
+		string([]byte{0x00, 0x01, 0x03, 'a'}): "4",
+		// Entirely different top-level key, no shared prefix at all.
+		string([]byte{0xFF}): "5",
+	}
+	for k, v := range entries {
+		if err := s.Set([]byte(k), []byte(v)); err != nil {
+			t.Fatalf("Set(%x): %v", k, err)
+		}
+	}
+
+	prefix := []byte{0x00, 0x01, 0x02}
+	count, err := s.CountPrefix(prefix)
+	if err != nil {
+		t.Fatalf("CountPrefix(%x): %v", prefix, err)
+	}
+	if count != 3 {
+		t.Fatalf("CountPrefix(%x) = %d, want 3", prefix, count)
+	}
+
+	differentStatus := []byte{0x00, 0x01, 0x03}
+	count, err = s.CountPrefix(differentStatus)
+	if err != nil {
+		t.Fatalf("CountPrefix(%x): %v", differentStatus, err)
+	}
+	if count != 1 {
+		t.Fatalf("CountPrefix(%x) = %d, want 1", differentStatus, count)
+	}
+
+	noMatch := []byte{0x00, 0x02, 0x02}
+	count, err = s.CountPrefix(noMatch)
+	if err != nil {
+		t.Fatalf("CountPrefix(%x): %v", noMatch, err)
+	}
+	if count != 0 {
+		t.Fatalf("CountPrefix(%x) = %d, want 0", noMatch, count)
+	}
+
+	// A prefix ending in 0xFF exercises prefixUpperBound's carry logic
+	// (the byte before it must be incremented instead).
+	if err := s.Set([]byte{0x00, 0xFF, 'x'}, []byte("6")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	carryPrefix := []byte{0x00, 0xFF}
+	count, err = s.CountPrefix(carryPrefix)
+	if err != nil {
+		t.Fatalf("CountPrefix(%x): %v", carryPrefix, err)
+	}
+	if count != 1 {
+		t.Fatalf("CountPrefix(%x) = %d, want 1 (must not also match the unrelated 0xFF top-level key)", carryPrefix, count)
+	}
+}
+
 func TestReopenPersists(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "sqlite")
 

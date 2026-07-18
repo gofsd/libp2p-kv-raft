@@ -229,7 +229,7 @@
         "value": "BOOTSTRAP"
       },
       "status": 1,
-      "error": "join: leader rejected join: ERR: not leader"
+      "error": "join: leader rejected join: ERR: leadership lost while committing log"
     },
     {
       "version": 4,

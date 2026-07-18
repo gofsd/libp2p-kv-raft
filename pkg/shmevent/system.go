@@ -11,7 +11,7 @@ import "fmt"
 const SystemKeyPrefix = 0x00
 
 // Kind bytes -- what a system record (see SystemKey) is about. Values
-// 0x03 and above are intentionally left unassigned: they're reserved for
+// 0x04 and above are intentionally left unassigned: they're reserved for
 // future system operations built on this same EventPermitRequest/
 // EventPermitConfirm two-stage workflow (e.g. a raft voter adding or
 // removing another raft voter/learner), so that work can slot in without
@@ -19,6 +19,14 @@ const SystemKeyPrefix = 0x00
 const (
 	KindPermitPeer    byte = 0x01 // permission for a peer to join/use the cluster's relay
 	KindBootstrapNode byte = 0x02 // registration of a stable relay/bootstrap point
+	// KindClusterMember records a raft member's public key and current
+	// role (RoleVoter/RoleLearner/RoleLeader) -- see ClusterMemberKey/
+	// EncodeClusterMemberPayload. Unlike KindPermitPeer/KindBootstrapNode
+	// it has no pending/confirmed two-stage lifecycle: it's a live status
+	// mirror, always written directly under a fixed status placeholder
+	// (see ClusterMemberKey), kept current by pkg/daemon whenever a peer
+	// joins or this node's own raft leadership status changes.
+	KindClusterMember byte = 0x03
 )
 
 // KindName returns a human-readable name for k, for CLI use (mage/
@@ -30,24 +38,36 @@ func KindName(k byte) string {
 		return "peer"
 	case KindBootstrapNode:
 		return "bootstrap"
+	case KindClusterMember:
+		return "cluster-member"
 	default:
 		return fmt.Sprintf("unknown(%d)", k)
 	}
 }
 
 // KindFromName is the inverse of KindName: it returns the kind byte for
-// one of the names KindName produces ("peer", "bootstrap"), and false if
-// name isn't recognized.
+// one of the names KindName produces ("peer", "bootstrap",
+// "cluster-member"), and false if name isn't recognized.
 func KindFromName(name string) (byte, bool) {
 	switch name {
 	case "peer":
 		return KindPermitPeer, true
 	case "bootstrap":
 		return KindBootstrapNode, true
+	case "cluster-member":
+		return KindClusterMember, true
 	default:
 		return 0, false
 	}
 }
+
+// Role bytes -- a raft member's current standing, as recorded in a
+// KindClusterMember record's payload (see EncodeClusterMemberPayload).
+const (
+	RoleVoter   byte = 0x01
+	RoleLearner byte = 0x02
+	RoleLeader  byte = 0x03
+)
 
 // Status bytes -- where a system record is in its two-stage
 // request/confirm lifecycle (see SystemKey).
@@ -67,6 +87,41 @@ func SystemKey(kind, status byte, peerID []byte) []byte {
 	key[2] = status
 	copy(key[3:], peerID)
 	return key
+}
+
+// clusterMemberStatusPlaceholder is the fixed status byte ClusterMemberKey
+// uses -- KindClusterMember has no pending/confirmed lifecycle (see that
+// constant's doc comment), so unlike SystemKey's other callers this isn't
+// StatusPending/StatusConfirmed, just a placeholder keeping the key layout
+// uniform with every other SystemKey-produced key.
+const clusterMemberStatusPlaceholder = 0x00
+
+// ClusterMemberKey builds the pkg/store key for peerID's KindClusterMember
+// record -- see that constant's doc comment.
+func ClusterMemberKey(peerID []byte) []byte {
+	return SystemKey(KindClusterMember, clusterMemberStatusPlaceholder, peerID)
+}
+
+// EncodeClusterMemberPayload packs pub and role into a single
+// KindClusterMember record's value: pub is always exactly
+// ed25519.PublicKeySize (32) bytes, role is the trailing byte -- both
+// fixed-size, so unlike EncodePermitRequestPayload no length prefix is
+// needed.
+func EncodeClusterMemberPayload(pub PublicKey, role byte) []byte {
+	buf := make([]byte, len(pub)+1)
+	copy(buf, pub)
+	buf[len(pub)] = role
+	return buf
+}
+
+// DecodeClusterMemberPayload is the inverse of EncodeClusterMemberPayload.
+func DecodeClusterMemberPayload(payload []byte) (pub PublicKey, role byte, err error) {
+	if len(payload) != PublicKeySize+1 {
+		return nil, 0, fmt.Errorf("shmevent: cluster member payload must be %d bytes, got %d", PublicKeySize+1, len(payload))
+	}
+	pub = PublicKey(payload[:PublicKeySize])
+	role = payload[PublicKeySize]
+	return pub, role, nil
 }
 
 // EncodePermitRequestPayload packs kind, peerID, and metadata into a
