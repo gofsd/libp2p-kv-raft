@@ -836,6 +836,34 @@ func ConfirmPermit(kind, peerID string) error {
 	return nil
 }
 
+// Execute sends value as a direct peer-to-peer EventExecute notification
+// from the current node to destPeerID -- bypassing raft and the store
+// entirely, see shmevent.EventExecute's doc comment.
+// Usage: mage execute <destPeerID> <value>
+func Execute(destPeerID, value string) error {
+	if err := kvctl.Execute(destPeerID, value); err != nil {
+		return err
+	}
+	fmt.Println("✅ execute sent")
+	return nil
+}
+
+// PollExecute drains one queued EventExecute notification delivered to the
+// current node, if any, and prints its sender peer id and value.
+// Usage: mage pollexecute
+func PollExecute() error {
+	senderPeerID, value, ok, err := kvctl.PollExecute()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		fmt.Println("(no execute notification pending)")
+		return nil
+	}
+	fmt.Printf("%s: %s\n", senderPeerID, value)
+	return nil
+}
+
 // bootstrapNodesConfigPath is configs/bootstrap-nodes.json, relative to the
 // repo root -- a human-maintained record of already-deployed leader nodes
 // (ssh host, install dir, port, peer id/multiaddrs). Nothing in this repo

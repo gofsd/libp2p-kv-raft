@@ -371,6 +371,51 @@ func ConfirmPermit(kind byte, targetPeerID []byte) error {
 	return nil
 }
 
+// Execute implements `mage execute <destPeerID> <value>`: sends value as a
+// direct peer-to-peer EventExecute notification from the current node to
+// destPeerID, bypassing raft and the store entirely -- see
+// shmevent.EventExecute's doc comment.
+func Execute(destPeerID, value string) error {
+	reg, err := registry.Open()
+	if err != nil {
+		return err
+	}
+	peerID, err := reg.Current()
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
+	defer cancel()
+	if err := shmclient.Execute(ctx, peerID, destPeerID, []byte(value)); err != nil {
+		return fmt.Errorf("execute: %w", err)
+	}
+	return nil
+}
+
+// PollExecute implements `mage pollexecute`: drains one queued
+// EventExecute notification delivered to the current node, if any -- see
+// shmevent.EventPollExecute's doc comment. ok is false if nothing is
+// currently queued.
+func PollExecute() (senderPeerID, value string, ok bool, err error) {
+	reg, err := registry.Open()
+	if err != nil {
+		return "", "", false, err
+	}
+	peerID, err := reg.Current()
+	if err != nil {
+		return "", "", false, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
+	defer cancel()
+	sender, payload, ok, err := shmclient.PollExecute(ctx, peerID)
+	if err != nil {
+		return "", "", false, fmt.Errorf("poll execute: %w", err)
+	}
+	return sender, string(payload), ok, nil
+}
+
 func ensureDaemonBinary(reg *registry.Registry, repoRoot string) (string, error) {
 	binDir := filepath.Join(reg.Dir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {

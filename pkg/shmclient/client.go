@@ -167,6 +167,80 @@ func (s *Session) ConfirmPermit(ctx context.Context, kind byte, peerID []byte) e
 	return nil
 }
 
+// Execute sends payload as a direct peer-to-peer EventExecute notification
+// from the session's own node to destPeerID -- bypassing raft and the
+// store entirely, see shmevent.EventExecute's doc comment. Needs two
+// EventSetKey round trips first (registering the session's own peer id
+// and destPeerID under fresh ids) since dispatchExecute requires both
+// SourceID and DestinationID to reference prior registrations, unlike
+// Set/Get's single-round-trip forms.
+func (s *Session) Execute(ctx context.Context, destPeerID string, payload []byte) error {
+	sourceID := newID()
+	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
+		EventType: shmevent.EventSetKey,
+		Value:     []byte(s.peerID),
+		ID:        sourceID,
+	}, s.priv)
+	if err != nil {
+		return fmt.Errorf("shmclient: execute: register source: %w", err)
+	}
+	if resp.EventType == shmevent.EventError {
+		return fmt.Errorf("shmclient: execute: register source: %s", resp.Value)
+	}
+
+	destID := newID()
+	resp, err = ipc.Call(ctx, s.peerID, shmevent.Msg{
+		EventType: shmevent.EventSetKey,
+		Value:     []byte(destPeerID),
+		ID:        destID,
+	}, s.priv)
+	if err != nil {
+		return fmt.Errorf("shmclient: execute: register destination: %w", err)
+	}
+	if resp.EventType == shmevent.EventError {
+		return fmt.Errorf("shmclient: execute: register destination: %s", resp.Value)
+	}
+
+	resp, err = ipc.Call(ctx, s.peerID, shmevent.Msg{
+		EventType:     shmevent.EventExecute,
+		SourceID:      sourceID,
+		DestinationID: destID,
+		Value:         payload,
+		ID:            newID(),
+	}, s.priv)
+	if err != nil {
+		return fmt.Errorf("shmclient: execute: %w", err)
+	}
+	if resp.EventType == shmevent.EventError {
+		return fmt.Errorf("shmclient: execute: %s", resp.Value)
+	}
+	return nil
+}
+
+// PollExecute drains one queued EventExecute notification delivered to
+// the session's node -- see shmevent.EventPollExecute's doc comment. ok
+// is false if nothing is currently queued.
+func (s *Session) PollExecute(ctx context.Context) (senderPeerID string, payload []byte, ok bool, err error) {
+	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
+		EventType: shmevent.EventPollExecute,
+		ID:        newID(),
+	}, s.priv)
+	if err != nil {
+		return "", nil, false, fmt.Errorf("shmclient: poll_execute: %w", err)
+	}
+	if resp.EventType == shmevent.EventError {
+		return "", nil, false, fmt.Errorf("shmclient: poll_execute: %s", resp.Value)
+	}
+	if len(resp.Value) == 0 {
+		return "", nil, false, nil
+	}
+	sender, notifPayload, err := shmevent.DecodeExecuteNotification(resp.Value)
+	if err != nil {
+		return "", nil, false, fmt.Errorf("shmclient: poll_execute: decode notification: %w", err)
+	}
+	return string(sender), notifPayload, true, nil
+}
+
 // GetPublicKey fetches peerID's Ed25519 public key -- unsigned, since it's
 // one of the two bootstrap events a node accepts without a key to check a
 // signature against yet (see pkg/shmevent.RequiresSignature).
@@ -252,4 +326,23 @@ func ConfirmPermit(ctx context.Context, peerID string, kind byte, targetPeerID [
 		return err
 	}
 	return s.ConfirmPermit(ctx, kind, targetPeerID)
+}
+
+// Execute is the one-shot convenience wrapper around Open+Session.Execute.
+func Execute(ctx context.Context, peerID, destPeerID string, payload []byte) error {
+	s, err := Open(ctx, peerID)
+	if err != nil {
+		return err
+	}
+	return s.Execute(ctx, destPeerID, payload)
+}
+
+// PollExecute is the one-shot convenience wrapper around
+// Open+Session.PollExecute.
+func PollExecute(ctx context.Context, peerID string) (senderPeerID string, payload []byte, ok bool, err error) {
+	s, err := Open(ctx, peerID)
+	if err != nil {
+		return "", nil, false, err
+	}
+	return s.PollExecute(ctx)
 }
