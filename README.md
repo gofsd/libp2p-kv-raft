@@ -64,6 +64,21 @@ itself as publicly reachable. `-listen-port` pins the port so it survives restar
 `~/.libp2p-kv-raft`); set it explicitly and pass it on every subsequent `kvctl-cli` call
 against that install.
 
+By default a `-relay-service` node lets *any* peer reserve a slot or open a relayed circuit
+through it. Add `-require-permit-for-relay` to restrict that to peers with a confirmed
+permit record: an operator (or any current raft voter) runs
+
+```bash
+mage requestpermit peer <peerID> ""
+mage confirmpermit peer <peerID>
+```
+
+(`ConfirmPermit` only takes effect if run against a node that is itself a current raft
+voter) before that peer can reserve a relay slot or dial through this node's relay. This is
+independent of `-require-permit-for-remote` (not yet exposed as a flag), which instead gates
+remote `Set`/`Get`/etc. requests over `ClientProtocolID` — a node can require a permit for one
+without the other.
+
 Print the leader's multiaddr for followers to join against:
 
 ```bash
