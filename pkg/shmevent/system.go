@@ -21,6 +21,34 @@ const (
 	KindBootstrapNode byte = 0x02 // registration of a stable relay/bootstrap point
 )
 
+// KindName returns a human-readable name for k, for CLI use (mage/
+// kvctl-cli's requestpermit/confirmpermit commands) -- "unknown(N)" for
+// anything not defined above. Mirrors EventName/EventFromName.
+func KindName(k byte) string {
+	switch k {
+	case KindPermitPeer:
+		return "peer"
+	case KindBootstrapNode:
+		return "bootstrap"
+	default:
+		return fmt.Sprintf("unknown(%d)", k)
+	}
+}
+
+// KindFromName is the inverse of KindName: it returns the kind byte for
+// one of the names KindName produces ("peer", "bootstrap"), and false if
+// name isn't recognized.
+func KindFromName(name string) (byte, bool) {
+	switch name {
+	case "peer":
+		return KindPermitPeer, true
+	case "bootstrap":
+		return KindBootstrapNode, true
+	default:
+		return 0, false
+	}
+}
+
 // Status bytes -- where a system record is in its two-stage
 // request/confirm lifecycle (see SystemKey).
 const (

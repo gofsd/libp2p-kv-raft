@@ -180,6 +180,19 @@ type Config struct {
 	// SnapshotThreshold, not instead of it, for a snapshot to actually
 	// shrink what a new join has to replay.
 	TrailingLogs uint64
+
+	// RequirePermitForRemote gates every remote (ClientProtocolID) request
+	// other than EventPermitRequest/EventPermitConfirm on the caller
+	// having a confirmed KindPermitPeer record (see pkg/shmevent's
+	// SystemKey/EventPermitRequest doc comments) for its own
+	// libp2p-authenticated peer id. Defaults to false: today's behavior,
+	// where any remote caller that signs with its own key (see
+	// callerIdentity) is honored with no separate allow-listing. Turning
+	// this on requires an operator to RequestPermit+ConfirmPermit every
+	// remote peer first -- including test/e2e/web-app callers -- via
+	// pkg/kvctl's RequestPermit/ConfirmPermit (mage requestpermit/
+	// confirmpermit, kvctl-cli requestpermit/confirmpermit).
+	RequirePermitForRemote bool
 }
 
 // Node is a running daemon instance. Its raft/transport fields are nil
@@ -257,7 +270,9 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("daemon: write ready file: %w", err)
 	}
 
-	return ipc.Serve(ctx, n.peerID, n.ed25519Priv, n.handleShmEvent)
+	return ipc.Serve(ctx, n.peerID, n.ed25519Priv, func(ctx context.Context, m shmevent.Msg, crc uint32, sig []byte) shmevent.Msg {
+		return n.handleShmEvent(ctx, m, crc, sig, n.localCaller())
+	})
 }
 
 func start(cfg Config) (*Node, error) {
@@ -632,15 +647,82 @@ func (n *Node) writeReadyFile() error {
 }
 
 // handleShmEvent dispatches one decoded pkg/shmevent.Msg to the appropriate
+// callerIdentity is who handleShmEvent should treat as the sender of a
+// request: the public key its signature must verify against, and -- for a
+// genuinely remote, libp2p-authenticated caller -- the peer id that
+// identity resolves to. The zero value means "local pkg/ipc caller":
+// verify against this node's own shared key, exactly as before (see
+// pkg/shmevent's doc comment on the shmring same-machine trust boundary).
+// remotePeer being non-empty is also what lets handleShmEvent tell a
+// genuinely remote caller apart from a local one for the
+// remote-only restrictions below (no key-fetch bootstrap, optional permit
+// gate) -- it is never derived from anything the message itself claims.
+type callerIdentity struct {
+	verifyPub  shmevent.PublicKey
+	remotePeer peer.ID // "" for a local caller
+}
+
+// localCaller is every pkg/ipc (shmring) request's identity: this node's
+// own shared key, the same one it hands out via EventGetPrivateKey to a
+// same-machine caller with no key yet -- see pkg/shmevent's doc comment.
+func (n *Node) localCaller() callerIdentity {
+	return callerIdentity{verifyPub: n.ed25519Pub}
+}
+
+// remoteCaller derives a callerIdentity from s's own libp2p-authenticated
+// identity (the Noise/TLS handshake's remote public key/peer id) rather
+// than anything the message itself claims -- mirroring the RemotePeer()
+// pattern handleForwardConfirmStream already uses for its voter-only
+// confirm check.
+func remoteCaller(s network.Stream) (callerIdentity, error) {
+	pub := s.Conn().RemotePublicKey()
+	if pub == nil {
+		return callerIdentity{}, fmt.Errorf("remote caller: connection has no authenticated public key")
+	}
+	raw, err := pub.Raw()
+	if err != nil {
+		return callerIdentity{}, fmt.Errorf("remote caller: %w", err)
+	}
+	return callerIdentity{verifyPub: raw, remotePeer: s.Conn().RemotePeer()}, nil
+}
+
+// isPermittedPeer reports whether id has a confirmed KindPermitPeer
+// record. Only consulted when Config.RequirePermitForRemote is true -- see
+// that field's doc comment.
+func (n *Node) isPermittedPeer(id peer.ID) bool {
+	_, err := n.store.Get(shmevent.SystemKey(shmevent.KindPermitPeer, shmevent.StatusConfirmed, []byte(id.String())))
+	return err == nil
+}
+
 // raft/store/registry operation and returns the Msg to send back -- the
 // single entry point both pkg/ipc.Serve (local shared memory) and
 // handleClientStream (ClientProtocolID, the remote equivalent for a
 // browser learner) call into. See pkg/shmevent's doc comment for the
 // overall protocol design and api/shmevent.capnp for the wire struct.
-func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, sig []byte) shmevent.Msg {
+//
+// caller identifies who's asking (see callerIdentity) -- a remote caller
+// gets two restrictions a local one doesn't: EventGetPrivateKey/
+// EventGetPublicKey are refused outright (a remote caller always has its
+// own key already -- see web-app's do_connect -- so the bootstrap
+// exception that exists for a same-machine caller with no key yet has no
+// legitimate remote use, and serving it remotely would just hand out this
+// node's own private key to anyone able to dial it), and, if
+// Config.RequirePermitForRemote is set, every event but
+// EventPermitRequest/EventPermitConfirm additionally requires a confirmed
+// KindPermitPeer record for the caller's own authenticated peer id.
+func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, sig []byte, caller callerIdentity) shmevent.Msg {
+	if caller.remotePeer != "" && (m.EventType == shmevent.EventGetPrivateKey || m.EventType == shmevent.EventGetPublicKey) {
+		return errorMsg(m.ID, fmt.Errorf("%s: not available to a remote caller -- bring your own key", shmevent.EventName(m.EventType)))
+	}
 	if shmevent.RequiresSignature(m.EventType) {
-		if err := shmevent.Verify(n.ed25519Pub, m, crc, sig); err != nil {
+		if err := shmevent.Verify(caller.verifyPub, m, crc, sig); err != nil {
 			return errorMsg(m.ID, err)
+		}
+	}
+	if caller.remotePeer != "" && n.cfg.RequirePermitForRemote &&
+		m.EventType != shmevent.EventPermitRequest && m.EventType != shmevent.EventPermitConfirm {
+		if !n.isPermittedPeer(caller.remotePeer) {
+			return errorMsg(m.ID, fmt.Errorf("%s not permitted -- send permit_request and have a raft voter confirm it first", caller.remotePeer))
 		}
 	}
 
@@ -727,7 +809,7 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		return shmevent.Msg{EventType: shmevent.EventGetPrivateKey, ID: m.ID, Value: n.ed25519Priv}
 
 	case shmevent.EventAdd:
-		peerID, err := n.handleAddDispatch(ctx, m)
+		peerID, err := n.handleAddDispatch(ctx, m, caller.remotePeer)
 		if err != nil {
 			return errorMsg(m.ID, err)
 		}
@@ -752,8 +834,10 @@ func errorMsg(id uint16, err error) shmevent.Msg {
 // handleAddDispatch implements EventAdd's three shapes -- see
 // EventAdd's doc comment in pkg/shmevent -- and returns this node's own
 // peer id on success, mirroring the pre-shmevent ipcproto.ActionAdd
-// response.
-func (n *Node) handleAddDispatch(ctx context.Context, m shmevent.Msg) (string, error) {
+// response. remotePeer is the caller's own libp2p-authenticated identity
+// ("" for a local pkg/ipc caller, see callerIdentity) -- checked against
+// the learner-join branch's claimed peer id below.
+func (n *Node) handleAddDispatch(ctx context.Context, m shmevent.Msg, remotePeer peer.ID) (string, error) {
 	// Learner join (remote browser caller, via ClientProtocolID): SourceID
 	// references a prior EventSetKey holding the caller's own peer id,
 	// Value is the caller's own reachable address.
@@ -761,6 +845,15 @@ func (n *Node) handleAddDispatch(ctx context.Context, m shmevent.Msg) (string, e
 		joinPeerID, ok := n.registry.Lookup(m.SourceID)
 		if !ok {
 			return "", fmt.Errorf("no peer id registered under id %d -- send SetKey first", m.SourceID)
+		}
+		// A remote caller could otherwise register any peer id string it
+		// likes via EventSetKey -- not necessarily its own -- and get it
+		// added to the raft configuration at an address of its choosing.
+		// Binding the claim to the stream's own authenticated identity
+		// (unforgeable -- established by the libp2p handshake, not
+		// anything the message itself carries) closes that.
+		if remotePeer != "" && string(joinPeerID) != remotePeer.String() {
+			return "", fmt.Errorf("add: claimed peer id %q does not match the authenticated connection identity %s", joinPeerID, remotePeer)
 		}
 		return n.handleAddLearner(ctx, string(joinPeerID), string(m.Value))
 	}
@@ -1306,6 +1399,11 @@ func isVoter(rf *raft.Raft, id raft.ServerID) bool {
 // replaced), so this reads the whole request off the stream before
 // decoding, the same way handleForwardSetStream already did for
 // kvfsm's variable-length command framing.
+//
+// Every request here is treated as a remoteCaller (see callerIdentity):
+// its signature is checked against its own libp2p-authenticated identity,
+// not this node's key -- there is no shared-key bootstrap over this
+// protocol (see handleShmEvent's doc comment).
 func (n *Node) handleClientStream(s network.Stream) {
 	defer s.Close()
 
@@ -1318,7 +1416,16 @@ func (n *Node) handleClientStream(s network.Stream) {
 		return
 	}
 
-	resp := n.handleShmEvent(context.Background(), m, crc, sig)
+	caller, err := remoteCaller(s)
+	if err != nil {
+		respBuf, encErr := shmevent.Encode(errorMsg(m.ID, err), n.ed25519Priv)
+		if encErr == nil {
+			s.Write(respBuf)
+		}
+		return
+	}
+
+	resp := n.handleShmEvent(context.Background(), m, crc, sig, caller)
 	respBuf, err := shmevent.Encode(resp, n.ed25519Priv)
 	if err != nil {
 		return

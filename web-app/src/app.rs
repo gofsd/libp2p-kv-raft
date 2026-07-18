@@ -8,30 +8,33 @@
 //! Worker exclusively through [`shmring_ipc::MainChannel`], the same shape
 //! Android's UI drives its in-process daemon through `pkg/ipc.Call`).
 //!
-//! # Two separate signing keys
+//! # One key, two hops
 //!
-//! Every hop in this project speaks the same [`crate::shmevent`] struct,
-//! and per that module's doc comment, a caller with no key of its own
-//! bootstraps by fetching one from whichever "raft node instance" it's
-//! talking to. That happens *twice* here, with two different keys:
+//! Every hop in this project speaks the same [`crate::shmevent`] struct.
+//! This tab has exactly one signing key -- the Worker's own libp2p identity
+//! key, generated in [`worker_main`] -- and uses it for both hops:
 //!
 //!  1. **Main thread <-> Worker** (this file's `MainHandle`/`handle_request`):
-//!     the Worker generates its own libp2p identity key in [`worker_main`]
-//!     and doubles as this hop's signing key -- `MainHandle::ensure_key`
-//!     fetches it via `EVENT_GET_PRIVATE_KEY` before signing anything else,
-//!     mirroring `pkg/shmclient.Session`'s bootstrap. Same-origin/same-JS-realm
-//!     as this relationship is, there's no realistic attacker who could
-//!     forge a message here without already having arbitrary code execution
-//!     in the page (at which point far worse is possible directly) -- this
-//!     hop is signed anyway for protocol consistency (one struct, one
-//!     verification path, everywhere) and because it costs little given the
-//!     Worker already has a real key on hand.
+//!     `MainHandle::ensure_key` fetches it via `EVENT_GET_PRIVATE_KEY`
+//!     before signing anything else, mirroring `pkg/shmclient.Session`'s
+//!     bootstrap. Same-origin/same-JS-realm as this relationship is,
+//!     there's no realistic attacker who could forge a message here
+//!     without already having arbitrary code execution in the page (at
+//!     which point far worse is possible directly) -- this hop is signed
+//!     anyway for protocol consistency (one struct, one verification path,
+//!     everywhere) and because it costs little given the Worker already
+//!     has a real key on hand.
 //!  2. **This tab <-> the remote leader** (`do_connect`/`do_set`, over
-//!     `p2p::Handle::call_client_protocol`): `do_connect` fetches the
-//!     *leader's* key the same way, and every subsequent SetKey/SetField/Add
-//!     to that leader is signed with it -- this is the hop
-//!     `pkg/daemon.handleShmEvent` actually verifies against, and where
-//!     unsigned/wrongly-signed requests are genuinely rejected server-side.
+//!     `p2p::Handle::call_client_protocol`): every SetKey/SetField/Add to
+//!     the leader is signed with this same Worker key -- not a key
+//!     borrowed from the leader. `pkg/daemon.handleShmEvent` verifies a
+//!     remote caller's signature against its own libp2p-authenticated
+//!     identity (the connection's Noise handshake, not anything the
+//!     message claims), so this tab needs no bootstrap round trip to the
+//!     leader at all before it can sign -- and `pkg/daemon` refuses to
+//!     serve `EVENT_GET_PRIVATE_KEY`/`EVENT_GET_PUBLIC_KEY` to a remote
+//!     caller in the first place, since a remote caller always has its own
+//!     key already.
 //!
 //! `ActionAdd`'s old meaning ("connect to the target node and join as a
 //! non-voting learner") is now `EVENT_ADD`, `SourceID` referencing a prior
@@ -70,9 +73,6 @@ struct WorkerState {
     handle: p2p::Handle,
     learner: Option<Rc<Learner>>,
     leader: Option<PeerId>,
-    /// The leader's signing key, fetched once by `do_connect` -- see this
-    /// module's doc comment, key relationship 2.
-    remote_priv: Option<SigningKey>,
     /// Backs `EVENT_SET_KEY`/`EVENT_GET_KEY` for the main-thread<->Worker
     /// hop -- this Worker's own mirror of `pkg/shmevent.Registry`.
     registry: HashMap<u16, Vec<u8>>,
@@ -162,7 +162,6 @@ async fn run_worker(keypair: identity::Keypair) {
         handle,
         learner: None,
         leader: None,
-        remote_priv: None,
         registry: HashMap::new(),
         signing_key,
         verifying_key,
@@ -329,16 +328,14 @@ fn encode_local_response(state: &Rc<RefCell<WorkerState>>, resp: Msg) -> Vec<u8>
 }
 
 /// Dials `target_addr` (any cluster member's WebTransport multiaddr, per
-/// `pkg/daemon.newHost`), reserves a circuit-relay v2 slot through it,
-/// fetches its signing key (unsigned `EVENT_GET_PRIVATE_KEY` bootstrap --
-/// see this module's doc comment, key relationship 2), and asks it
-/// (forwarding to the real leader server-side if needed -- see the
+/// `pkg/daemon.newHost`), reserves a circuit-relay v2 slot through it, and
+/// asks it (forwarding to the real leader server-side if needed -- see the
 /// learner-join handling in `pkg/daemon`) to add this tab as a raft
 /// non-voter at that reserved address via a signed `EVENT_SET_KEY` +
-/// `EVENT_ADD` pair -- the same sequence
-/// `pkg/daemon.TestAddLearnerThroughRelay` exercises from the Go side.
-/// Returns this tab's own peer id, mirroring `kvmobile.Start`'s return
-/// value.
+/// `EVENT_ADD` pair, signed with this tab's own key (see this module's doc
+/// comment) -- the same sequence `pkg/daemon.TestAddLearnerThroughRelay`
+/// exercises from the Go side. Returns this tab's own peer id, mirroring
+/// `kvmobile.Start`'s return value.
 async fn do_connect(
     state: &Rc<RefCell<WorkerState>>,
     target_addr: &str,
@@ -362,8 +359,7 @@ async fn do_connect(
         "kv-raft-web: do_connect: relay slot reserved, self_addr={self_addr}"
     ));
 
-    let remote_priv = fetch_remote_signing_key(&mut handle, target_peer).await?;
-    crate::p2p::debug_log("kv-raft-web: do_connect: fetched remote signing key");
+    let signing_key = state.borrow().signing_key.clone();
 
     let store = SqliteStore::open(&format!("kv-raft-web-{self_id}.sqlite3"), None)
         .map_err(|e| p2p::Error(e.to_string()))?;
@@ -377,7 +373,6 @@ async fn do_connect(
         let mut guard = state.borrow_mut();
         guard.learner = Some(learner.clone());
         guard.leader = Some(target_peer);
-        guard.remote_priv = Some(remote_priv.clone());
     }
 
     // Accept inbound raft-protocol streams forever -- spawned once, using
@@ -401,7 +396,7 @@ async fn do_connect(
             id: set_key_id,
             ..Default::default()
         },
-        Some(&remote_priv),
+        Some(&signing_key),
     )
     .await?;
     reject_if_error(&set_key_resp)?;
@@ -416,36 +411,12 @@ async fn do_connect(
             id: new_id(),
             ..Default::default()
         },
-        Some(&remote_priv),
+        Some(&signing_key),
     )
     .await?;
     reject_if_error(&add_resp)?;
 
     Ok(self_id)
-}
-
-async fn fetch_remote_signing_key(
-    handle: &mut p2p::Handle,
-    target_peer: PeerId,
-) -> Result<SigningKey, p2p::Error> {
-    let resp = call_remote(
-        handle,
-        target_peer,
-        Msg {
-            event_type: shmevent::EVENT_GET_PRIVATE_KEY,
-            id: new_id(),
-            ..Default::default()
-        },
-        None,
-    )
-    .await?;
-    reject_if_error(&resp)?;
-    let seed: [u8; 32] = resp
-        .value
-        .get(..32)
-        .and_then(|s| s.try_into().ok())
-        .ok_or_else(|| p2p::Error("invalid private key length in response".into()))?;
-    Ok(SigningKey::from_bytes(&seed))
 }
 
 async fn call_remote(
@@ -477,16 +448,12 @@ async fn do_set(
     key: &str,
     value: &str,
 ) -> Result<(), p2p::Error> {
-    let (mut handle, leader, remote_priv) = {
+    let (mut handle, leader, signing_key) = {
         let guard = state.borrow();
         let leader = guard
             .leader
             .ok_or_else(|| p2p::Error("do_connect has not completed yet".into()))?;
-        let remote_priv = guard
-            .remote_priv
-            .clone()
-            .ok_or_else(|| p2p::Error("do_connect has not completed yet".into()))?;
-        (guard.handle.clone(), leader, remote_priv)
+        (guard.handle.clone(), leader, guard.signing_key.clone())
     };
 
     let set_key_id = new_id();
@@ -499,7 +466,7 @@ async fn do_set(
             id: set_key_id,
             ..Default::default()
         },
-        Some(&remote_priv),
+        Some(&signing_key),
     )
     .await?;
     reject_if_error(&set_key_resp)?;
@@ -514,7 +481,7 @@ async fn do_set(
             id: new_id(),
             ..Default::default()
         },
-        Some(&remote_priv),
+        Some(&signing_key),
     )
     .await?;
     reject_if_error(&set_field_resp)

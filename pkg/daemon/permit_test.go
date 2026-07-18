@@ -113,7 +113,7 @@ func TestPermitRequestConfirmWorkflow(t *testing.T) {
 		if err != nil {
 			t.Fatalf("decode: %v", err)
 		}
-		return n.handleShmEvent(ctx, decoded, crc, sig)
+		return n.handleShmEvent(ctx, decoded, crc, sig, n.localCaller())
 	}
 
 	targetPeerID := []byte("some-new-node-peer-id")

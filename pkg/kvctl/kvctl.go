@@ -325,6 +325,52 @@ func GetFrom(peerID, key string) (string, error) {
 	return value, nil
 }
 
+// RequestPermit implements `mage requestpermit <kind> <peerID> [metadata]`:
+// lodges a pending permit record for targetPeerID (of the given kind --
+// shmevent.KindPermitPeer or KindBootstrapNode) on the current node,
+// forwarded to the leader like any other Set -- see
+// shmevent.EventPermitRequest's doc comment. Any raft node may originate
+// one, so this needs no special standing of its own.
+func RequestPermit(kind byte, targetPeerID, metadata []byte) error {
+	reg, err := registry.Open()
+	if err != nil {
+		return err
+	}
+	peerID, err := reg.Current()
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
+	defer cancel()
+	if err := shmclient.RequestPermit(ctx, peerID, kind, targetPeerID, metadata); err != nil {
+		return fmt.Errorf("request permit: %w", err)
+	}
+	return nil
+}
+
+// ConfirmPermit implements `mage confirmpermit <kind> <peerID>`: promotes a
+// pending permit record for targetPeerID to confirmed. Only takes effect
+// if the current node is itself a raft voter -- see
+// shmevent.EventPermitConfirm's doc comment.
+func ConfirmPermit(kind byte, targetPeerID []byte) error {
+	reg, err := registry.Open()
+	if err != nil {
+		return err
+	}
+	peerID, err := reg.Current()
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
+	defer cancel()
+	if err := shmclient.ConfirmPermit(ctx, peerID, kind, targetPeerID); err != nil {
+		return fmt.Errorf("confirm permit: %w", err)
+	}
+	return nil
+}
+
 func ensureDaemonBinary(reg *registry.Registry, repoRoot string) (string, error) {
 	binDir := filepath.Join(reg.Dir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {

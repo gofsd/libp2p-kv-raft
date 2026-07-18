@@ -146,10 +146,12 @@ see "Building" above), but no ability to launch a real browser or a live cluster
   packages that bundle with `main.js`/`worker.js`/`index.html` into a working `dist/` with no
   errors.
 - Real Go-side integration tests: `pkg/daemon.TestAddLearnerThroughRelay` exercises the *exact*
-  wire sequence `app.rs`'s `do_connect` performs -- unsigned `GetPrivateKey` bootstrap, then a
-  signed `SetKey`+`EventAdd` pair -- against a real leader+relay, proving `AddNonvoter` over a
-  relay-reserved address lands in the raft configuration and that the leader's
-  `rafttransport.NetworkTransport` really dials it and delivers an `AppendEntries` stream.
+  wire sequence `app.rs`'s `do_connect` performs -- a signed `SetKey`+`EventAdd` pair, signed with
+  the tab's own key (`pkg/daemon` verifies it against the connection's own libp2p-authenticated
+  identity, not a key borrowed from the leader -- see `app.rs`'s "One key, two hops" doc comment) --
+  against a real leader+relay, proving `AddNonvoter` over a relay-reserved address lands in the
+  raft configuration and that the leader's `rafttransport.NetworkTransport` really dials it and
+  delivers an `AppendEntries` stream.
 
 Not yet verified (needs a real browser and a live cluster to drive):
 

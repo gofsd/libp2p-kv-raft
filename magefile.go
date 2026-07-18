@@ -804,6 +804,38 @@ func Get(key string) error {
 	return nil
 }
 
+// RequestPermit lodges a pending permit record for peerID on the current
+// node, forwarded to the leader like any other Set. metadata may be "" (a
+// dialable multiaddr for kind "bootstrap", unused for kind "peer" -- see
+// shmevent.EncodePermitRequestPayload).
+// Usage: mage requestpermit <kind: peer|bootstrap> <peerID> <metadata>
+func RequestPermit(kind, peerID, metadata string) error {
+	k, ok := shmevent.KindFromName(kind)
+	if !ok {
+		return fmt.Errorf("unknown permit kind %q (want \"peer\" or \"bootstrap\")", kind)
+	}
+	if err := kvctl.RequestPermit(k, []byte(peerID), []byte(metadata)); err != nil {
+		return err
+	}
+	fmt.Println("✅ permit requested")
+	return nil
+}
+
+// ConfirmPermit promotes a pending permit record for peerID to confirmed.
+// Only takes effect if the current node is itself a raft voter.
+// Usage: mage confirmpermit <kind: peer|bootstrap> <peerID>
+func ConfirmPermit(kind, peerID string) error {
+	k, ok := shmevent.KindFromName(kind)
+	if !ok {
+		return fmt.Errorf("unknown permit kind %q (want \"peer\" or \"bootstrap\")", kind)
+	}
+	if err := kvctl.ConfirmPermit(k, []byte(peerID)); err != nil {
+		return err
+	}
+	fmt.Println("✅ permit confirmed")
+	return nil
+}
+
 // bootstrapNodesConfigPath is configs/bootstrap-nodes.json, relative to the
 // repo root -- a human-maintained record of already-deployed leader nodes
 // (ssh host, install dir, port, peer id/multiaddrs). Nothing in this repo

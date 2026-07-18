@@ -28,9 +28,10 @@ import (
 // Config.RelayPeer's doc comment). It doesn't exercise the Rust wire codec
 // itself (that's covered byte-for-byte by web-app's own raft_wire tests
 // against real hashicorp/raft fixtures) -- what it proves is the Go-side
-// half: that the full pkg/shmevent handshake (GetPrivateKey bootstrap,
-// then a signed SetKey+EventAdd pair) results in AddNonvoter landing in
-// the leader's raft configuration at a relay-reserved address, and that
+// half: that a signed SetKey+EventAdd pair, signed with the browser's own
+// independently-generated key (never fetched from the leader -- see
+// callerIdentity/remoteCaller in daemon.go) results in AddNonvoter landing
+// in the leader's raft configuration at a relay-reserved address, and that
 // the leader's own rafttransport.NetworkTransport can subsequently Dial()
 // the "browser" through that reservation to deliver a real AppendEntries
 // stream, the same way it already does for a relay-joined voter (see
@@ -85,7 +86,22 @@ func TestAddLearnerThroughRelay(t *testing.T) {
 	// reservation NewP2PNode already sets up (EnableRelay +
 	// ListenAddrStrings("/p2p-circuit") + relayclient.Reserve), exactly
 	// the mechanism p2p.rs's reserve_relay_slot performs from inside wasm.
-	browser, err := p2praft.NewP2PNode(ctx, relayAddr, filepath.Join(tmpDir, "browser.key"))
+	browserKeyPath := filepath.Join(tmpDir, "browser.key")
+	// Loaded once here (writing the key file) so its raw ed25519 bytes are
+	// available below for signing -- NewP2PNode's own LoadOrGenerateKey
+	// call then finds the file already there and loads the same key,
+	// exactly like web-app's Worker already holds its own libp2p identity
+	// key (run_worker) with no separate fetch from anyone else.
+	browserLibp2pPriv, err := p2praft.LoadOrGenerateKey(browserKeyPath)
+	if err != nil {
+		t.Fatalf("generate browser key: %v", err)
+	}
+	browserPriv, err := browserLibp2pPriv.Raw()
+	if err != nil {
+		t.Fatalf("browser key raw bytes: %v", err)
+	}
+
+	browser, err := p2praft.NewP2PNode(ctx, relayAddr, browserKeyPath)
 	if err != nil {
 		t.Fatalf("start browser stand-in: %v", err)
 	}
@@ -136,25 +152,13 @@ func TestAddLearnerThroughRelay(t *testing.T) {
 		t.Fatalf("browser connect to leader: %v", err)
 	}
 
-	// Bootstrap: fetch the shared signing key -- unsigned, per
-	// shmevent.RequiresSignature -- exactly like web-app/'s app.rs does
-	// before it can sign anything else.
-	keyResp, err := callClientProtocol(ctx, browser.Host, leaderPeerID, shmevent.Msg{
-		EventType: shmevent.EventGetPrivateKey,
-		ID:        1,
-	}, nil)
-	if err != nil {
-		t.Fatalf("get_private_key: %v", err)
-	}
-	if keyResp.EventType == shmevent.EventError {
-		t.Fatalf("get_private_key rejected: %s", keyResp.Value)
-	}
-	browserPriv := shmevent.PrivateKey(keyResp.Value)
-
 	// SetKey registers the browser's own peer id, then EventAdd
 	// (SourceID referencing it) supplies the relay-reserved address --
 	// see pkg/shmevent's doc comment for why AddNonvoter's two pieces of
-	// data need two linked messages.
+	// data need two linked messages. Both are signed with the browser's
+	// own key (browserPriv, above) -- the leader verifies against this
+	// connection's own libp2p-authenticated public key (remoteCaller),
+	// never a key it handed out itself.
 	const setKeyID = 2
 	setKeyResp, err := callClientProtocol(ctx, browser.Host, leaderPeerID, shmevent.Msg{
 		EventType: shmevent.EventSetKey,

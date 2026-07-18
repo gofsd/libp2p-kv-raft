@@ -43,6 +43,10 @@ func main() {
 		cmdSet(os.Args[2:])
 	case "get":
 		cmdGet(os.Args[2:])
+	case "requestpermit":
+		cmdRequestPermit(os.Args[2:])
+	case "confirmpermit":
+		cmdConfirmPermit(os.Args[2:])
 	case "sendevent":
 		cmdSendEvent(os.Args[2:])
 	default:
@@ -58,6 +62,8 @@ func usage() {
   kvctl-cli use <peerID>
   kvctl-cli set <key> <value>
   kvctl-cli get <key>
+  kvctl-cli requestpermit <kind: peer|bootstrap> <peerID> <metadata>
+  kvctl-cli confirmpermit <kind: peer|bootstrap> <peerID>
   kvctl-cli sendevent <peerID> <eventJSON>
 
 sendevent sends one raw pkg/shmevent.Msg (JSON-encoded, human-readable, e.g.
@@ -188,6 +194,38 @@ func cmdGet(args []string) {
 		os.Exit(1)
 	}
 	fmt.Println(value)
+}
+
+func cmdRequestPermit(args []string) {
+	if len(args) != 3 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli requestpermit <kind: peer|bootstrap> <peerID> <metadata>")
+		os.Exit(2)
+	}
+	kind, ok := shmevent.KindFromName(args[0])
+	if !ok {
+		fmt.Fprintf(os.Stderr, "requestpermit: unknown permit kind %q (want \"peer\" or \"bootstrap\")\n", args[0])
+		os.Exit(2)
+	}
+	if err := kvctl.RequestPermit(kind, []byte(args[1]), []byte(args[2])); err != nil {
+		fmt.Fprintf(os.Stderr, "requestpermit: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdConfirmPermit(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli confirmpermit <kind: peer|bootstrap> <peerID>")
+		os.Exit(2)
+	}
+	kind, ok := shmevent.KindFromName(args[0])
+	if !ok {
+		fmt.Fprintf(os.Stderr, "confirmpermit: unknown permit kind %q (want \"peer\" or \"bootstrap\")\n", args[0])
+		os.Exit(2)
+	}
+	if err := kvctl.ConfirmPermit(kind, []byte(args[1])); err != nil {
+		fmt.Fprintf(os.Stderr, "confirmpermit: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 // sendEventTimeout bounds both the optional GetPrivateKey signing-key

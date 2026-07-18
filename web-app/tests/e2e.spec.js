@@ -40,9 +40,10 @@ test.skip(
 
 test("run pkg/e2edata rows against a real browser tab with a deterministic identity", async ({ page }) => {
   // Generous: the first row is normally a real raft learner join (an "add"
-  // event), which alone is up to 4 sequential real network round trips --
-  // a relay reservation plus 3 client-protocol calls (GetPrivateKey
-  // bootstrap, SetKey, Add), see p2p.rs's RELAY_RESERVATION_TIMEOUT_MS/
+  // event), which alone is up to 3 sequential real network round trips --
+  // a relay reservation plus 2 client-protocol calls (SetKey, Add -- both
+  // signed with this tab's own key, no separate key-fetch bootstrap round
+  // trip), see p2p.rs's RELAY_RESERVATION_TIMEOUT_MS/
   // CLIENT_PROTOCOL_TIMEOUT_MS (45s each) -- so this and ROW_TIMEOUT_MS
   // below need real headroom past playwright.config.js's default 60s, not
   // just "a bit longer": a real deploy target with a slow link can

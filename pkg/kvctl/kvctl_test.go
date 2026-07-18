@@ -13,6 +13,7 @@ import (
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/kvctl"
 	"github.com/gofsd/libp2p-kv-raft/pkg/registry"
+	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
 
 // repoRoot walks up from this test file's location to the module root
@@ -255,5 +256,89 @@ func TestResumeNode(t *testing.T) {
 	}
 	if got != "qux" {
 		t.Fatalf("GetFrom(baz) after resume = %q, want %q", got, "qux")
+	}
+}
+
+// TestRequestConfirmPermitAcrossNodes drives kvctl.RequestPermit/
+// ConfirmPermit (the CLI-facing plumbing behind `mage requestpermit`/
+// `confirmpermit`) end to end through two real spawned nodes and real
+// pkg/shmclient/pkg/ipc round trips -- not just the daemon-internal
+// dispatch pkg/daemon's own permit_test.go/caller_identity_test.go
+// already cover. The follower lodges a request for an arbitrary target
+// peer id, the leader (a real raft voter) confirms it, and the confirmed
+// system record shows up under GetFrom on both nodes once raft replicates
+// it -- proving the CLI path reaches the exact same shmevent.SystemKey
+// pkg/daemon's own handling reads and writes.
+func TestRequestConfirmPermitAcrossNodes(t *testing.T) {
+	root := repoRoot(t)
+	home := t.TempDir()
+	t.Setenv(registry.EnvHome, home)
+
+	reg, err := registry.Open()
+	if err != nil {
+		t.Fatalf("registry.Open: %v", err)
+	}
+	t.Cleanup(func() { killAllRegistered(t, reg) })
+
+	fastRaftArgs := []string{
+		"-raft-heartbeat-timeout", "300ms",
+		"-raft-election-timeout", "300ms",
+		"-raft-leader-lease-timeout", "250ms",
+	}
+
+	leaderID, err := kvctl.AddNodeWithArgs(root, fastRaftArgs)
+	if err != nil {
+		t.Fatalf("AddNode (leader): %v", err)
+	}
+	followerID, err := kvctl.AddNodeWithArgs(root, fastRaftArgs, leaderID)
+	if err != nil {
+		t.Fatalf("AddNode (follower): %v", err)
+	}
+
+	const targetPeerID = "some-target-peer-id"
+
+	if err := kvctl.Use(followerID); err != nil {
+		t.Fatalf("Use(follower): %v", err)
+	}
+	if err := kvctl.RequestPermit(shmevent.KindPermitPeer, []byte(targetPeerID), nil); err != nil {
+		t.Fatalf("RequestPermit: %v", err)
+	}
+
+	pendingKey := string(shmevent.SystemKey(shmevent.KindPermitPeer, shmevent.StatusPending, []byte(targetPeerID)))
+	deadline := time.Now().Add(10 * time.Second)
+	var (
+		got     string
+		lastErr error
+	)
+	for time.Now().Before(deadline) {
+		got, lastErr = kvctl.GetFrom(leaderID, pendingKey)
+		if lastErr == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if lastErr != nil {
+		t.Fatalf("GetFrom(leader, pendingKey) after RequestPermit: %v", lastErr)
+	}
+	_ = got // metadata is empty for KindPermitPeer; just needs to exist
+
+	if err := kvctl.Use(leaderID); err != nil {
+		t.Fatalf("Use(leader): %v", err)
+	}
+	if err := kvctl.ConfirmPermit(shmevent.KindPermitPeer, []byte(targetPeerID)); err != nil {
+		t.Fatalf("ConfirmPermit: %v", err)
+	}
+
+	confirmedKey := string(shmevent.SystemKey(shmevent.KindPermitPeer, shmevent.StatusConfirmed, []byte(targetPeerID)))
+	deadline = time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		_, lastErr = kvctl.GetFrom(followerID, confirmedKey)
+		if lastErr == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if lastErr != nil {
+		t.Fatalf("GetFrom(follower, confirmedKey) after ConfirmPermit: %v", lastErr)
 	}
 }
