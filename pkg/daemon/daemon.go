@@ -231,6 +231,23 @@ type Config struct {
 	// requires RequestPermit+ConfirmPermit (kind "peer") for every
 	// non-member peer that needs to send Execute notifications.
 	RequirePermitForExecute bool
+
+	// RequirePermitForLog gates EventLogAppend and EventListRange, for a
+	// remote caller only (never a local one -- see handleShmEvent's doc
+	// comment on why a local caller is always trusted as this node's own
+	// operator), on that peer holding a confirmed KindLogPermit record
+	// for the specific pkg/logrecord kind being appended/queried (see
+	// isPermittedForLogKind). Unlike RequirePermitForExecute, cluster
+	// membership is NOT an automatic exemption here -- matches
+	// RequirePermitForRemote's existing behavior, which doesn't exempt
+	// cluster members either. Defaults to false: today's behavior, where
+	// any caller that already clears RequirePermitForRemote (or any local
+	// caller, unconditionally) may append/query log records of any kind.
+	// Independent of RequirePermitForRelay/RequirePermitForRemote/
+	// RequirePermitForExecute. Turning this on requires
+	// RequestLogPermit+ConfirmLogPermit for every (peer, kind) pair a
+	// remote caller needs.
+	RequirePermitForLog bool
 }
 
 // Node is a running daemon instance. Its raft/transport fields are nil
@@ -895,6 +912,23 @@ func (n *Node) isClusterMember(id peer.ID) bool {
 	return err == nil
 }
 
+// isPermittedForLogKind reports whether id has a confirmed KindLogPermit
+// record for logKind -- see that kind's doc comment. Only consulted when
+// Config.RequirePermitForLog is true. Unlike isClusterMember's role in
+// Config.RequirePermitForExecute, cluster membership is deliberately NOT
+// checked here as an alternative: this gate matches
+// Config.RequirePermitForRemote's existing behavior, which doesn't exempt
+// cluster members either -- every peer, member or not, needs its own
+// explicit per-kind grant.
+func (n *Node) isPermittedForLogKind(logKind string, id peer.ID) bool {
+	key, err := shmevent.LogPermitKey(shmevent.StatusConfirmed, logKind, []byte(id.String()))
+	if err != nil {
+		return false
+	}
+	_, err = n.store.Get(key)
+	return err == nil
+}
+
 // rejectReservedKey refuses an ordinary EventSet/EventSetField write
 // whose key starts with a byte this codebase reserves for its own
 // internal bookkeeping -- shmevent.SystemKeyPrefix (permits/bootstrap
@@ -952,8 +986,11 @@ func (a relayACL) AllowConnect(src peer.ID, _ multiaddr.Multiaddr, _ peer.ID) bo
 // legitimate remote use, and serving it remotely would just hand out this
 // node's own private key to anyone able to dial it), and, if
 // Config.RequirePermitForRemote is set, every event but
-// EventPermitRequest/EventPermitConfirm additionally requires a confirmed
-// KindPermitPeer record for the caller's own authenticated peer id.
+// EventPermitRequest/EventPermitConfirm/EventLogPermitRequest/
+// EventLogPermitConfirm additionally requires a confirmed KindPermitPeer
+// record for the caller's own authenticated peer id. EventLogAppend and
+// EventListRange are separately, additionally gated per log kind by
+// Config.RequirePermitForLog -- see those cases below.
 func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, sig []byte, caller callerIdentity) shmevent.Msg {
 	if caller.remotePeer != "" && (m.EventType == shmevent.EventGetPrivateKey || m.EventType == shmevent.EventGetPublicKey) {
 		return errorMsg(m.ID, fmt.Errorf("%s: not available to a remote caller -- bring your own key", shmevent.EventName(m.EventType)))
@@ -964,7 +1001,8 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		}
 	}
 	if caller.remotePeer != "" && n.cfg.RequirePermitForRemote &&
-		m.EventType != shmevent.EventPermitRequest && m.EventType != shmevent.EventPermitConfirm {
+		m.EventType != shmevent.EventPermitRequest && m.EventType != shmevent.EventPermitConfirm &&
+		m.EventType != shmevent.EventLogPermitRequest && m.EventType != shmevent.EventLogPermitConfirm {
 		if !n.isPermittedPeer(caller.remotePeer) {
 			return errorMsg(m.ID, fmt.Errorf("%s not permitted -- send permit_request and have a raft voter confirm it first", caller.remotePeer))
 		}
@@ -1071,6 +1109,69 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		}
 		return shmevent.Msg{EventType: shmevent.EventPermitRevoke, ID: m.ID}
 
+	case shmevent.EventLogPermitRequest:
+		logKind, peerID, metadata, err := shmevent.DecodeLogPermitRequestPayload(m.Value)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		key, err := shmevent.LogPermitKey(shmevent.StatusPending, logKind, peerID)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		if err := n.handleSetForward(ctx, key, metadata, true); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventLogPermitRequest, ID: m.ID}
+
+	case shmevent.EventLogPermitConfirm:
+		// Same "only a raft voter may act" enforcement as EventPermitConfirm
+		// (see that case's comment) -- checked once here against the
+		// original caller's own identity.
+		if caller.remotePeer != "" {
+			rf := n.getRaft()
+			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
+				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
+			}
+		}
+		logKind, peerID, err := shmevent.DecodeLogPermitConfirmPayload(m.Value)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		pendingKey, err := shmevent.LogPermitKey(shmevent.StatusPending, logKind, peerID)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		confirmedKey, err := shmevent.LogPermitKey(shmevent.StatusConfirmed, logKind, peerID)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		if err := n.handleConfirmForward(ctx, kvfsm.OpConfirm, pendingKey, confirmedKey, true); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventLogPermitConfirm, ID: m.ID}
+
+	case shmevent.EventLogPermitRevoke:
+		// Same "only a raft voter may act" enforcement as EventPermitConfirm
+		// above.
+		if caller.remotePeer != "" {
+			rf := n.getRaft()
+			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
+				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
+			}
+		}
+		logKind, peerID, err := shmevent.DecodeLogPermitConfirmPayload(m.Value)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		confirmedKey, err := shmevent.LogPermitKey(shmevent.StatusConfirmed, logKind, peerID)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		if err := n.handleConfirmForward(ctx, kvfsm.OpDel, confirmedKey, nil, true); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventLogPermitRevoke, ID: m.ID}
+
 	case shmevent.EventExecute:
 		if err := n.dispatchExecute(ctx, m); err != nil {
 			return errorMsg(m.ID, err)
@@ -1108,6 +1209,26 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		if err != nil {
 			return errorMsg(m.ID, err)
 		}
+		// Config.RequirePermitForLog only applies to a range that's
+		// actually claiming to be inside pkg/logrecord's namespace --
+		// anything else (ordinary data, shmevent.SystemKeyPrefix data)
+		// falls through unchanged, governed only by the generic
+		// RequirePermitForRemote gate above, same as today. Both start
+		// and end must parse to the same kind: ScanRange is a raw byte
+		// range with no logical confinement, so checking only start would
+		// let a permitted start smuggle in an end that overruns into an
+		// unpermitted kind's range.
+		if caller.remotePeer != "" && n.cfg.RequirePermitForLog &&
+			len(start) > 0 && start[0] == logrecord.LogKeyPrefix {
+			kindStart, _, _, errStart := logrecord.ParseKey(start)
+			kindEnd, _, _, errEnd := logrecord.ParseKey(end)
+			if errStart != nil || errEnd != nil || kindStart != kindEnd {
+				return errorMsg(m.ID, fmt.Errorf("list_range: range must be scoped to a single well-formed logrecord kind under RequirePermitForLog"))
+			}
+			if !n.isPermittedForLogKind(kindStart, caller.remotePeer) {
+				return errorMsg(m.ID, fmt.Errorf("%s not permitted for log kind %q", caller.remotePeer, kindStart))
+			}
+		}
 		matches, err := n.store.ScanRange(start, end, 1)
 		if err != nil {
 			return errorMsg(m.ID, err)
@@ -1128,6 +1249,15 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		}
 		if len(key) == 0 || key[0] != logrecord.LogKeyPrefix {
 			return errorMsg(m.ID, fmt.Errorf("log_append: key must start with the reserved logrecord prefix"))
+		}
+		if caller.remotePeer != "" && n.cfg.RequirePermitForLog {
+			kind, _, _, err := logrecord.ParseKey(key)
+			if err != nil {
+				return errorMsg(m.ID, err)
+			}
+			if !n.isPermittedForLogKind(kind, caller.remotePeer) {
+				return errorMsg(m.ID, fmt.Errorf("%s not permitted for log kind %q", caller.remotePeer, kind))
+			}
 		}
 		if err := n.handleSetForward(ctx, key, value, true); err != nil {
 			return errorMsg(m.ID, err)

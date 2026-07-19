@@ -853,6 +853,42 @@ func RevokePermit(kind, peerID string) error {
 	return nil
 }
 
+// RequestLogPermit lodges a pending permission for peerID to
+// append/query pkg/logrecord records of logKind, forwarded to the leader
+// like any other Set. metadata may be "".
+// Usage: mage requestlogpermit <logKind> <peerID> <metadata>
+func RequestLogPermit(logKind, peerID, metadata string) error {
+	if err := kvctl.RequestLogPermit(logKind, []byte(peerID), []byte(metadata)); err != nil {
+		return err
+	}
+	fmt.Println("✅ log permit requested")
+	return nil
+}
+
+// ConfirmLogPermit promotes a pending log-kind permit record for peerID
+// to confirmed. Only takes effect if the current node is itself a raft
+// voter.
+// Usage: mage confirmlogpermit <logKind> <peerID>
+func ConfirmLogPermit(logKind, peerID string) error {
+	if err := kvctl.ConfirmLogPermit(logKind, []byte(peerID)); err != nil {
+		return err
+	}
+	fmt.Println("✅ log permit confirmed")
+	return nil
+}
+
+// RevokeLogPermit deletes a confirmed log-kind permit record for peerID
+// outright. Only takes effect if the current node is itself a raft
+// voter.
+// Usage: mage revokelogpermit <logKind> <peerID>
+func RevokeLogPermit(logKind, peerID string) error {
+	if err := kvctl.RevokeLogPermit(logKind, []byte(peerID)); err != nil {
+		return err
+	}
+	fmt.Println("✅ log permit revoked")
+	return nil
+}
+
 // Execute sends value as a direct peer-to-peer EventExecute notification
 // from the current node to destPeerID -- bypassing raft and the store
 // entirely, see shmevent.EventExecute's doc comment.

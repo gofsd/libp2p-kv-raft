@@ -247,6 +247,29 @@ no entry cap or rotation policy, since silently dropping old journal entries onc
 count limit is hit would be actively wrong for a logbook. Both are left for a future pass
 if they turn out to matter in practice.
 
+### Per-kind log access control
+
+By default any caller that already clears `-require-permit-for-remote` (or any local
+`mage`/`kvctl-cli` caller, which that flag never gates) may `logappend`/`logquery` records
+of *any* kind. Add `-require-permit-for-log` to restrict that further, per (peer, kind)
+pair — e.g. a peer permitted for `"sitrep"` still can't touch `"casrep"` unless separately
+granted:
+
+```bash
+mage requestlogpermit sitrep <peerID> ""
+mage confirmlogpermit sitrep <peerID>
+```
+
+(`confirmlogpermit`, like `confirmpermit`, only takes effect if run against a node that
+is itself a current raft voter.) `mage revokelogpermit sitrep <peerID>` takes a grant back
+outright, same rules as `revokepermit`. This is a separate, independent grant from the
+plain `requestpermit`/`confirmpermit peer` permission — being permitted for
+`-require-permit-for-relay`/`-require-permit-for-remote`/`-require-permit-for-execute`
+does not by itself grant any log-kind access, and vice versa. As with
+`-require-permit-for-remote`, this only ever restricts a *remote* caller (over
+`ClientProtocolID`) — a local caller is always trusted as this node's own operator and is
+never gated by it, regardless of raft membership.
+
 ## Vendored dependency patch
 
 `thirdparty/anet` is a local, patched copy of `github.com/wlynxg/anet` (pinned via a `replace`

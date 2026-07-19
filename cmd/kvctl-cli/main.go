@@ -57,6 +57,12 @@ func main() {
 		cmdLogAppend(os.Args[2:])
 	case "logquery":
 		cmdLogQuery(os.Args[2:])
+	case "requestlogpermit":
+		cmdRequestLogPermit(os.Args[2:])
+	case "confirmlogpermit":
+		cmdConfirmLogPermit(os.Args[2:])
+	case "revokelogpermit":
+		cmdRevokeLogPermit(os.Args[2:])
 	case "sendevent":
 		cmdSendEvent(os.Args[2:])
 	default:
@@ -79,6 +85,9 @@ func usage() {
   kvctl-cli pollexecute
   kvctl-cli logappend <kind> <unitID> <fieldsJSON> <narrative>
   kvctl-cli logquery <kind> <unitID> [-since RFC3339] [-until RFC3339] [-limit N]
+  kvctl-cli requestlogpermit <logKind> <peerID> <metadata>
+  kvctl-cli confirmlogpermit <logKind> <peerID>
+  kvctl-cli revokelogpermit <logKind> <peerID>
   kvctl-cli sendevent <peerID> <eventJSON>
 
 sendevent sends one raw pkg/shmevent.Msg (JSON-encoded, human-readable, e.g.
@@ -255,6 +264,39 @@ func cmdRevokePermit(args []string) {
 	}
 	if err := kvctl.RevokePermit(kind, []byte(args[1])); err != nil {
 		fmt.Fprintf(os.Stderr, "revokepermit: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdRequestLogPermit(args []string) {
+	if len(args) != 3 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli requestlogpermit <logKind> <peerID> <metadata>")
+		os.Exit(2)
+	}
+	if err := kvctl.RequestLogPermit(args[0], []byte(args[1]), []byte(args[2])); err != nil {
+		fmt.Fprintf(os.Stderr, "requestlogpermit: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdConfirmLogPermit(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli confirmlogpermit <logKind> <peerID>")
+		os.Exit(2)
+	}
+	if err := kvctl.ConfirmLogPermit(args[0], []byte(args[1])); err != nil {
+		fmt.Fprintf(os.Stderr, "confirmlogpermit: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdRevokeLogPermit(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli revokelogpermit <logKind> <peerID>")
+		os.Exit(2)
+	}
+	if err := kvctl.RevokeLogPermit(args[0], []byte(args[1])); err != nil {
+		fmt.Fprintf(os.Stderr, "revokelogpermit: %v\n", err)
 		os.Exit(1)
 	}
 }

@@ -175,6 +175,36 @@ const (
 	// doesn't actually start with LogKeyPrefix -- this event isn't a
 	// general-purpose Set bypass, only a log-record one.
 	EventLogAppend uint8 = 15
+	// EventLogPermitRequest lodges a pending KindLogPermit record -- a
+	// request for peerID to be permitted to append/query pkg/logrecord
+	// records of one specific log kind (Config.RequirePermitForLog's
+	// enforcement point). Value is EncodeLogPermitRequestPayload(logKind,
+	// peerID, metadata). Any raft node may receive and relay one (applied
+	// exactly like EventPermitRequest, via handleSetForward's existing
+	// one-hop forward-to-leader path) -- see EventLogPermitConfirm's doc
+	// comment for the second stage, which is restricted. This is the same
+	// two-stage workflow EventPermitRequest/EventPermitConfirm already
+	// implement, just scoped by an additional logKind dimension that
+	// SystemKey's fixed 3-field shape can't express -- see
+	// shmevent.LogPermitKey.
+	EventLogPermitRequest uint8 = 16
+	// EventLogPermitConfirm promotes a pending EventLogPermitRequest
+	// record from pending to confirmed. Value is
+	// EncodeLogPermitConfirmPayload(logKind, peerID) -- no metadata, same
+	// reasoning as EventPermitConfirm. Only a peer that is currently a
+	// raft *voter* may confirm, enforced the identical way
+	// EventPermitConfirm's is (see that event's doc comment and
+	// pkg/daemon's handleForwardConfirmStream, which handles this event
+	// too -- it operates on opaque keys, not caring which permit kind
+	// they belong to).
+	EventLogPermitConfirm uint8 = 17
+	// EventLogPermitRevoke deletes a confirmed KindLogPermit record
+	// outright -- EventPermitRevoke's counterpart for this permit kind,
+	// same restriction (raft voter only) and same payload shape as
+	// EventLogPermitConfirm (EncodeLogPermitConfirmPayload once again,
+	// reused as-is). Once revoked, peerID immediately loses access to
+	// logKind under Config.RequirePermitForLog on every node.
+	EventLogPermitRevoke uint8 = 18
 	// EventError is response-only: Value carries a UTF-8 error message,
 	// ID echoes the failed request's ID. Not part of the fields the
 	// protocol was specified with -- added because the struct has no
@@ -217,6 +247,12 @@ func EventName(e uint8) string {
 		return "list_range"
 	case EventLogAppend:
 		return "log_append"
+	case EventLogPermitRequest:
+		return "log_permit_request"
+	case EventLogPermitConfirm:
+		return "log_permit_confirm"
+	case EventLogPermitRevoke:
+		return "log_permit_revoke"
 	case EventError:
 		return "error"
 	default:
@@ -261,6 +297,12 @@ func EventFromName(name string) (uint8, bool) {
 		return EventListRange, true
 	case "log_append":
 		return EventLogAppend, true
+	case "log_permit_request":
+		return EventLogPermitRequest, true
+	case "log_permit_confirm":
+		return EventLogPermitConfirm, true
+	case "log_permit_revoke":
+		return EventLogPermitRevoke, true
 	case "error":
 		return EventError, true
 	default:

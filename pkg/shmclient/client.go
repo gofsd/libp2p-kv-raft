@@ -214,6 +214,75 @@ func (s *Session) RevokePermit(ctx context.Context, kind byte, peerID []byte) er
 	return nil
 }
 
+// RequestLogPermit lodges a pending permission for peerID to
+// append/query pkg/logrecord records of logKind on the session's node.
+// metadata is opaque, as with RequestPermit. See
+// shmevent.EventLogPermitRequest's doc comment: any raft node may
+// receive and relay this.
+func (s *Session) RequestLogPermit(ctx context.Context, logKind string, peerID, metadata []byte) error {
+	payload, err := shmevent.EncodeLogPermitRequestPayload(logKind, peerID, metadata)
+	if err != nil {
+		return fmt.Errorf("shmclient: log_permit_request: %w", err)
+	}
+	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
+		EventType: shmevent.EventLogPermitRequest,
+		Value:     payload,
+		ID:        newID(),
+	}, s.priv)
+	if err != nil {
+		return fmt.Errorf("shmclient: log_permit_request: %w", err)
+	}
+	if resp.EventType == shmevent.EventError {
+		return fmt.Errorf("shmclient: log_permit_request: %s", resp.Value)
+	}
+	return nil
+}
+
+// ConfirmLogPermit promotes a pending log-kind permit request for
+// (logKind, peerID) from pending to confirmed. See
+// shmevent.EventLogPermitConfirm's doc comment: only a peer that is
+// currently a raft voter may confirm.
+func (s *Session) ConfirmLogPermit(ctx context.Context, logKind string, peerID []byte) error {
+	payload, err := shmevent.EncodeLogPermitConfirmPayload(logKind, peerID)
+	if err != nil {
+		return fmt.Errorf("shmclient: log_permit_confirm: %w", err)
+	}
+	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
+		EventType: shmevent.EventLogPermitConfirm,
+		Value:     payload,
+		ID:        newID(),
+	}, s.priv)
+	if err != nil {
+		return fmt.Errorf("shmclient: log_permit_confirm: %w", err)
+	}
+	if resp.EventType == shmevent.EventError {
+		return fmt.Errorf("shmclient: log_permit_confirm: %s", resp.Value)
+	}
+	return nil
+}
+
+// RevokeLogPermit deletes a confirmed log-kind permit record for
+// (logKind, peerID) outright. See shmevent.EventLogPermitRevoke's doc
+// comment: only a peer that is currently a raft voter may revoke.
+func (s *Session) RevokeLogPermit(ctx context.Context, logKind string, peerID []byte) error {
+	payload, err := shmevent.EncodeLogPermitConfirmPayload(logKind, peerID)
+	if err != nil {
+		return fmt.Errorf("shmclient: log_permit_revoke: %w", err)
+	}
+	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
+		EventType: shmevent.EventLogPermitRevoke,
+		Value:     payload,
+		ID:        newID(),
+	}, s.priv)
+	if err != nil {
+		return fmt.Errorf("shmclient: log_permit_revoke: %w", err)
+	}
+	if resp.EventType == shmevent.EventError {
+		return fmt.Errorf("shmclient: log_permit_revoke: %s", resp.Value)
+	}
+	return nil
+}
+
 // Execute sends payload as a direct peer-to-peer EventExecute notification
 // from the session's own node to destPeerID -- bypassing raft and the
 // store entirely, see shmevent.EventExecute's doc comment. Needs two
@@ -425,6 +494,36 @@ func RevokePermit(ctx context.Context, peerID string, kind byte, targetPeerID []
 		return err
 	}
 	return s.RevokePermit(ctx, kind, targetPeerID)
+}
+
+// RequestLogPermit is the one-shot convenience wrapper around
+// Open+Session.RequestLogPermit.
+func RequestLogPermit(ctx context.Context, peerID, logKind string, targetPeerID, metadata []byte) error {
+	s, err := Open(ctx, peerID)
+	if err != nil {
+		return err
+	}
+	return s.RequestLogPermit(ctx, logKind, targetPeerID, metadata)
+}
+
+// ConfirmLogPermit is the one-shot convenience wrapper around
+// Open+Session.ConfirmLogPermit.
+func ConfirmLogPermit(ctx context.Context, peerID, logKind string, targetPeerID []byte) error {
+	s, err := Open(ctx, peerID)
+	if err != nil {
+		return err
+	}
+	return s.ConfirmLogPermit(ctx, logKind, targetPeerID)
+}
+
+// RevokeLogPermit is the one-shot convenience wrapper around
+// Open+Session.RevokeLogPermit.
+func RevokeLogPermit(ctx context.Context, peerID, logKind string, targetPeerID []byte) error {
+	s, err := Open(ctx, peerID)
+	if err != nil {
+		return err
+	}
+	return s.RevokeLogPermit(ctx, logKind, targetPeerID)
 }
 
 // Execute is the one-shot convenience wrapper around Open+Session.Execute.

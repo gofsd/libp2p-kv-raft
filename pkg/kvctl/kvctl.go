@@ -394,6 +394,72 @@ func RevokePermit(kind byte, targetPeerID []byte) error {
 	return nil
 }
 
+// RequestLogPermit implements `mage requestlogpermit <logKind> <peerID>
+// <metadata>`: lodges a pending permission for targetPeerID to
+// append/query pkg/logrecord records of logKind, forwarded to the leader
+// like any other Set -- see shmevent.EventLogPermitRequest's doc comment.
+func RequestLogPermit(logKind string, targetPeerID, metadata []byte) error {
+	reg, err := registry.Open()
+	if err != nil {
+		return err
+	}
+	peerID, err := reg.Current()
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
+	defer cancel()
+	if err := shmclient.RequestLogPermit(ctx, peerID, logKind, targetPeerID, metadata); err != nil {
+		return fmt.Errorf("request log permit: %w", err)
+	}
+	return nil
+}
+
+// ConfirmLogPermit implements `mage confirmlogpermit <logKind> <peerID>`:
+// promotes a pending log-kind permit record for targetPeerID to
+// confirmed. Only takes effect if the current node is itself a raft
+// voter -- see shmevent.EventLogPermitConfirm's doc comment.
+func ConfirmLogPermit(logKind string, targetPeerID []byte) error {
+	reg, err := registry.Open()
+	if err != nil {
+		return err
+	}
+	peerID, err := reg.Current()
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
+	defer cancel()
+	if err := shmclient.ConfirmLogPermit(ctx, peerID, logKind, targetPeerID); err != nil {
+		return fmt.Errorf("confirm log permit: %w", err)
+	}
+	return nil
+}
+
+// RevokeLogPermit implements `mage revokelogpermit <logKind> <peerID>`:
+// deletes a confirmed log-kind permit record for targetPeerID outright.
+// Only takes effect if the current node is itself a raft voter -- see
+// shmevent.EventLogPermitRevoke's doc comment.
+func RevokeLogPermit(logKind string, targetPeerID []byte) error {
+	reg, err := registry.Open()
+	if err != nil {
+		return err
+	}
+	peerID, err := reg.Current()
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
+	defer cancel()
+	if err := shmclient.RevokeLogPermit(ctx, peerID, logKind, targetPeerID); err != nil {
+		return fmt.Errorf("revoke log permit: %w", err)
+	}
+	return nil
+}
+
 // Execute implements `mage execute <destPeerID> <value>`: sends value as a
 // direct peer-to-peer EventExecute notification from the current node to
 // destPeerID, bypassing raft and the store entirely -- see

@@ -11,11 +11,11 @@ import "fmt"
 const SystemKeyPrefix = 0x00
 
 // Kind bytes -- what a system record (see SystemKey) is about. Values
-// 0x04 and above are intentionally left unassigned: they're reserved for
-// future system operations built on this same EventPermitRequest/
-// EventPermitConfirm two-stage workflow (e.g. a raft voter adding or
-// removing another raft voter/learner), so that work can slot in without
-// changing this key layout.
+// 0x05 and above are still unassigned, reserved for future system
+// operations built on this same EventPermitRequest/EventPermitConfirm
+// two-stage workflow (e.g. a raft voter adding or removing another raft
+// voter/learner), so that work can slot in without changing this key
+// layout.
 const (
 	KindPermitPeer    byte = 0x01 // permission for a peer to join/use the cluster's relay
 	KindBootstrapNode byte = 0x02 // registration of a stable relay/bootstrap point
@@ -27,6 +27,18 @@ const (
 	// (see ClusterMemberKey), kept current by pkg/daemon whenever a peer
 	// joins or this node's own raft leadership status changes.
 	KindClusterMember byte = 0x03
+	// KindLogPermit consumes the 0x04 slot this block used to leave
+	// unassigned: permission for a peer to append/query pkg/logrecord
+	// records of one specific log kind. Unlike KindPermitPeer -- which
+	// keys purely on peerID -- a log-kind permit record needs a second
+	// variable-length dimension (which log kind string), which
+	// SystemKey's fixed 3-field shape (prefix, kind, status, then just
+	// peerID) can't express; see LogPermitKey, this package's own key
+	// builder for that shape, kept here since checkSystemListCap
+	// (pkg/kvfsm) and the voter-gated confirm/revoke machinery
+	// (pkg/daemon's handleConfirmForward et al.) both key off
+	// SystemKeyPrefix, and this record needs both.
+	KindLogPermit byte = 0x04
 )
 
 // KindName returns a human-readable name for k, for CLI use (mage/

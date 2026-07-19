@@ -21,6 +21,7 @@ func main() {
 	relayService := flag.Bool("relay-service", false, "act as a circuit-relay v2 point for other nodes and force public reachability (only for nodes with a real public address)")
 	requirePermitForRelay := flag.Bool("require-permit-for-relay", false, "only used alongside -relay-service: only let peers with a confirmed permit (mage requestpermit/confirmpermit, kind \"peer\") reserve a relay slot or open a relayed circuit through this node")
 	requirePermitForExecute := flag.Bool("require-permit-for-execute", false, "only deliver EventExecute notifications (mage execute/pollexecute) from a current raft voter/learner or a peer with a confirmed permit (mage requestpermit/confirmpermit, kind \"peer\")")
+	requirePermitForLog := flag.Bool("require-permit-for-log", false, "only let a remote peer logappend/logquery a given pkg/logrecord kind if it holds a confirmed per-kind permit for it (mage requestlogpermit/confirmlogpermit)")
 	heartbeatTimeout := flag.Duration("raft-heartbeat-timeout", 0, "raft heartbeat timeout (0 = hashicorp/raft's own default, 1s -- safe for real networks)")
 	electionTimeout := flag.Duration("raft-election-timeout", 0, "raft election timeout (0 = default, 1s)")
 	commitTimeout := flag.Duration("raft-commit-timeout", 0, "raft commit timeout (0 = default, 50ms)")
@@ -50,6 +51,7 @@ func main() {
 		RelayService:            *relayService,
 		RequirePermitForRelay:   *requirePermitForRelay,
 		RequirePermitForExecute: *requirePermitForExecute,
+		RequirePermitForLog:     *requirePermitForLog,
 		HeartbeatTimeout:        *heartbeatTimeout,
 		ElectionTimeout:         *electionTimeout,
 		CommitTimeout:           *commitTimeout,
