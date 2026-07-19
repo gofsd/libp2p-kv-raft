@@ -165,3 +165,127 @@ func TestPermitRequestConfirmWorkflow(t *testing.T) {
 		t.Fatal("pending record still present after successful confirm -- should have been consumed")
 	}
 }
+
+// TestPermitRevokeWorkflow is TestPermitRequestConfirmWorkflow's
+// counterpart for EventPermitRevoke: same real leader/voter/learner
+// cluster, proving revoke is voter-gated the identical way confirm is
+// (rejected from the learner, accepted from the voter) and that it
+// actually deletes the confirmed record via kvfsm.OpDel rather than just
+// reporting success.
+func TestPermitRevokeWorkflow(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	tmpDir := t.TempDir()
+
+	fastRaft := Config{
+		HeartbeatTimeout:   200 * time.Millisecond,
+		ElectionTimeout:    200 * time.Millisecond,
+		CommitTimeout:      20 * time.Millisecond,
+		LeaderLeaseTimeout: 100 * time.Millisecond,
+	}
+
+	startNode := func(name string) *Node {
+		t.Helper()
+		key := filepath.Join(tmpDir, name+".key")
+		if _, err := p2praft.LoadOrGenerateKey(key); err != nil {
+			t.Fatalf("generate %s key: %v", name, err)
+		}
+		cfg := fastRaft
+		cfg.DataDir = filepath.Join(tmpDir, name)
+		cfg.KeyPath = key
+		n, err := start(cfg)
+		if err != nil {
+			t.Fatalf("start %s: %v", name, err)
+		}
+		return n
+	}
+
+	leader := startNode("leader")
+	defer leader.shutdown()
+	if _, err := leader.handleAdd(ctx, ""); err != nil {
+		t.Fatalf("bootstrap leader: %v", err)
+	}
+	leaderAddr := leader.advertisedAddrs()[0]
+
+	voter := startNode("voter")
+	defer voter.shutdown()
+	if _, err := voter.handleAdd(ctx, leaderAddr); err != nil {
+		t.Fatalf("join voter: %v", err)
+	}
+
+	learner := startNode("learner")
+	defer learner.shutdown()
+	if _, err := learner.initRaft(); err != nil {
+		t.Fatalf("init learner raft: %v", err)
+	}
+	if _, err := leader.handleAddLearner(ctx, learner.peerID, learner.advertisedAddrs()[0]); err != nil {
+		t.Fatalf("join learner: %v", err)
+	}
+
+	call := func(n *Node, m shmevent.Msg) shmevent.Msg {
+		t.Helper()
+		buf, err := shmevent.Encode(m, n.ed25519Priv)
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		decoded, crc, sig, err := shmevent.Decode(buf)
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return n.handleShmEvent(ctx, decoded, crc, sig, n.localCaller())
+	}
+
+	targetPeerID := []byte("some-revoked-node-peer-id")
+
+	reqPayload, err := shmevent.EncodePermitRequestPayload(shmevent.KindPermitPeer, targetPeerID, nil)
+	if err != nil {
+		t.Fatalf("EncodePermitRequestPayload: %v", err)
+	}
+	resp := call(leader, shmevent.Msg{EventType: shmevent.EventPermitRequest, Value: reqPayload, ID: 1})
+	if resp.EventType == shmevent.EventError {
+		t.Fatalf("permit_request rejected: %s", resp.Value)
+	}
+
+	confirmPayload := shmevent.EncodePermitConfirmPayload(shmevent.KindPermitPeer, targetPeerID)
+	resp = call(voter, shmevent.Msg{EventType: shmevent.EventPermitConfirm, Value: confirmPayload, ID: 2})
+	if resp.EventType == shmevent.EventError {
+		t.Fatalf("voter permit_confirm rejected: %s", resp.Value)
+	}
+
+	confirmedKey := shmevent.SystemKey(shmevent.KindPermitPeer, shmevent.StatusConfirmed, targetPeerID)
+	getResp := call(leader, shmevent.Msg{EventType: shmevent.EventGetField, Value: confirmedKey, ID: 3})
+	if getResp.EventType == shmevent.EventError {
+		t.Fatalf("confirmed record missing after voter confirm: %s", getResp.Value)
+	}
+
+	revokePayload := shmevent.EncodePermitConfirmPayload(shmevent.KindPermitPeer, targetPeerID)
+
+	// A learner (nonvoter) revoking must be rejected, for the same
+	// voter-only reason confirm is, and must not touch the confirmed
+	// record.
+	resp = call(learner, shmevent.Msg{EventType: shmevent.EventPermitRevoke, Value: revokePayload, ID: 4})
+	if resp.EventType != shmevent.EventError {
+		t.Fatalf("learner permit_revoke unexpectedly succeeded")
+	}
+	if !strings.Contains(string(resp.Value), "not a current raft voter") {
+		t.Fatalf("learner permit_revoke rejected for the wrong reason: %s", resp.Value)
+	}
+	getResp = call(leader, shmevent.Msg{EventType: shmevent.EventGetField, Value: confirmedKey, ID: 5})
+	if getResp.EventType == shmevent.EventError {
+		t.Fatalf("confirmed record missing after rejected learner revoke: %s", getResp.Value)
+	}
+
+	// A real voter revoking must succeed and actually delete the
+	// confirmed record.
+	resp = call(voter, shmevent.Msg{EventType: shmevent.EventPermitRevoke, Value: revokePayload, ID: 6})
+	if resp.EventType == shmevent.EventError {
+		t.Fatalf("voter permit_revoke rejected: %s", resp.Value)
+	}
+	getResp = call(leader, shmevent.Msg{EventType: shmevent.EventGetField, Value: confirmedKey, ID: 7})
+	if getResp.EventType != shmevent.EventError {
+		t.Fatal("confirmed record still present after successful revoke -- should have been deleted")
+	}
+}

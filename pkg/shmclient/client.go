@@ -167,6 +167,27 @@ func (s *Session) ConfirmPermit(ctx context.Context, kind byte, peerID []byte) e
 	return nil
 }
 
+// RevokePermit deletes a confirmed permit record for peerID (of the given
+// kind) outright. See shmevent.EventPermitRevoke's doc comment: only a
+// peer that is currently a raft voter may revoke -- the session's node
+// will reject this (surfaced as an error here) if it forwards to a
+// leader that determines the revoking node isn't one, the same as
+// ConfirmPermit.
+func (s *Session) RevokePermit(ctx context.Context, kind byte, peerID []byte) error {
+	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
+		EventType: shmevent.EventPermitRevoke,
+		Value:     shmevent.EncodePermitConfirmPayload(kind, peerID),
+		ID:        newID(),
+	}, s.priv)
+	if err != nil {
+		return fmt.Errorf("shmclient: permit_revoke: %w", err)
+	}
+	if resp.EventType == shmevent.EventError {
+		return fmt.Errorf("shmclient: permit_revoke: %s", resp.Value)
+	}
+	return nil
+}
+
 // Execute sends payload as a direct peer-to-peer EventExecute notification
 // from the session's own node to destPeerID -- bypassing raft and the
 // store entirely, see shmevent.EventExecute's doc comment. Needs two
@@ -326,6 +347,16 @@ func ConfirmPermit(ctx context.Context, peerID string, kind byte, targetPeerID [
 		return err
 	}
 	return s.ConfirmPermit(ctx, kind, targetPeerID)
+}
+
+// RevokePermit is the one-shot convenience wrapper around
+// Open+Session.RevokePermit.
+func RevokePermit(ctx context.Context, peerID string, kind byte, targetPeerID []byte) error {
+	s, err := Open(ctx, peerID)
+	if err != nil {
+		return err
+	}
+	return s.RevokePermit(ctx, kind, targetPeerID)
 }
 
 // Execute is the one-shot convenience wrapper around Open+Session.Execute.

@@ -47,6 +47,8 @@ func main() {
 		cmdRequestPermit(os.Args[2:])
 	case "confirmpermit":
 		cmdConfirmPermit(os.Args[2:])
+	case "revokepermit":
+		cmdRevokePermit(os.Args[2:])
 	case "execute":
 		cmdExecute(os.Args[2:])
 	case "pollexecute":
@@ -68,6 +70,7 @@ func usage() {
   kvctl-cli get <key>
   kvctl-cli requestpermit <kind: peer|bootstrap> <peerID> <metadata>
   kvctl-cli confirmpermit <kind: peer|bootstrap> <peerID>
+  kvctl-cli revokepermit <kind: peer|bootstrap> <peerID>
   kvctl-cli execute <destPeerID> <value>
   kvctl-cli pollexecute
   kvctl-cli sendevent <peerID> <eventJSON>
@@ -230,6 +233,22 @@ func cmdConfirmPermit(args []string) {
 	}
 	if err := kvctl.ConfirmPermit(kind, []byte(args[1])); err != nil {
 		fmt.Fprintf(os.Stderr, "confirmpermit: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdRevokePermit(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli revokepermit <kind: peer|bootstrap> <peerID>")
+		os.Exit(2)
+	}
+	kind, ok := shmevent.KindFromName(args[0])
+	if !ok {
+		fmt.Fprintf(os.Stderr, "revokepermit: unknown permit kind %q (want \"peer\" or \"bootstrap\")\n", args[0])
+		os.Exit(2)
+	}
+	if err := kvctl.RevokePermit(kind, []byte(args[1])); err != nil {
+		fmt.Fprintf(os.Stderr, "revokepermit: %v\n", err)
 		os.Exit(1)
 	}
 }

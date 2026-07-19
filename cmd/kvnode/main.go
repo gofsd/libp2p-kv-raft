@@ -20,6 +20,7 @@ func main() {
 	listenPort := flag.Int("listen-port", 0, "TCP/QUIC port to listen on (0 = ephemeral; pin this for publicly reachable deployments)")
 	relayService := flag.Bool("relay-service", false, "act as a circuit-relay v2 point for other nodes and force public reachability (only for nodes with a real public address)")
 	requirePermitForRelay := flag.Bool("require-permit-for-relay", false, "only used alongside -relay-service: only let peers with a confirmed permit (mage requestpermit/confirmpermit, kind \"peer\") reserve a relay slot or open a relayed circuit through this node")
+	requirePermitForExecute := flag.Bool("require-permit-for-execute", false, "only deliver EventExecute notifications (mage execute/pollexecute) from a current raft voter/learner or a peer with a confirmed permit (mage requestpermit/confirmpermit, kind \"peer\")")
 	heartbeatTimeout := flag.Duration("raft-heartbeat-timeout", 0, "raft heartbeat timeout (0 = hashicorp/raft's own default, 1s -- safe for real networks)")
 	electionTimeout := flag.Duration("raft-election-timeout", 0, "raft election timeout (0 = default, 1s)")
 	commitTimeout := flag.Duration("raft-commit-timeout", 0, "raft commit timeout (0 = default, 50ms)")
@@ -43,18 +44,19 @@ func main() {
 	}()
 
 	err := daemon.Run(ctx, daemon.Config{
-		DataDir:               *dataDir,
-		KeyPath:               *keyPath,
-		ListenPort:            *listenPort,
-		RelayService:          *relayService,
-		RequirePermitForRelay: *requirePermitForRelay,
-		HeartbeatTimeout:      *heartbeatTimeout,
-		ElectionTimeout:       *electionTimeout,
-		CommitTimeout:         *commitTimeout,
-		LeaderLeaseTimeout:    *leaderLeaseTimeout,
-		SnapshotThreshold:     *snapshotThreshold,
-		SnapshotInterval:      *snapshotInterval,
-		TrailingLogs:          *trailingLogs,
+		DataDir:                 *dataDir,
+		KeyPath:                 *keyPath,
+		ListenPort:              *listenPort,
+		RelayService:            *relayService,
+		RequirePermitForRelay:   *requirePermitForRelay,
+		RequirePermitForExecute: *requirePermitForExecute,
+		HeartbeatTimeout:        *heartbeatTimeout,
+		ElectionTimeout:         *electionTimeout,
+		CommitTimeout:           *commitTimeout,
+		LeaderLeaseTimeout:      *leaderLeaseTimeout,
+		SnapshotThreshold:       *snapshotThreshold,
+		SnapshotInterval:        *snapshotInterval,
+		TrailingLogs:            *trailingLogs,
 	})
 	if err != nil && ctx.Err() == nil {
 		fmt.Fprintf(os.Stderr, "kvnode: %v\n", err)

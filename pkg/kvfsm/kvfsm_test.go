@@ -105,3 +105,40 @@ func TestApplyOpConfirmWithNoPendingRecordFails(t *testing.T) {
 		t.Fatalf("confirmed key: got %v, want ErrNotFound (nothing should have been written)", err)
 	}
 }
+
+// TestApplyOpDel exercises kvfsm.OpDel directly -- EventPermitRevoke is
+// its first real caller (see pkg/daemon's handleConfirmForward/
+// applyConfirm), but OpDel itself was already fully implemented and
+// otherwise untested.
+func TestApplyOpDel(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "sqlite"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer s.Close()
+
+	f := kvfsm.New(s)
+
+	confirmedKey := []byte{0x00, 0x01, 0x02, 'p', 'e', 'e', 'r'}
+
+	setCmd := kvfsm.EncodeCommand(kvfsm.OpSet, confirmedKey, []byte("value"))
+	if res, ok := f.Apply(&raft.Log{Data: setCmd}).(kvfsm.ApplyResult); !ok || res.Err != nil {
+		t.Fatalf("Apply OpSet: %+v", res)
+	}
+
+	delCmd := kvfsm.EncodeCommand(kvfsm.OpDel, confirmedKey, nil)
+	if res, ok := f.Apply(&raft.Log{Data: delCmd}).(kvfsm.ApplyResult); !ok || res.Err != nil {
+		t.Fatalf("Apply OpDel: %+v", res)
+	}
+	if _, err := s.Get(confirmedKey); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("key after OpDel: got %v, want ErrNotFound", err)
+	}
+
+	// Deleting a key that was never set is a store.Delete no-op, not an
+	// Apply error -- matches store.Store.Delete's own contract.
+	ghostKey := []byte{0x00, 0x01, 0x02, 'g', 'h', 'o', 's', 't'}
+	ghostDelCmd := kvfsm.EncodeCommand(kvfsm.OpDel, ghostKey, nil)
+	if res, ok := f.Apply(&raft.Log{Data: ghostDelCmd}).(kvfsm.ApplyResult); !ok || res.Err != nil {
+		t.Fatalf("Apply OpDel on absent key: %+v", res)
+	}
+}

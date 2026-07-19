@@ -215,6 +215,21 @@ type Config struct {
 	// operator to RequestPermit+ConfirmPermit every peer that needs relay
 	// access first, same as RequirePermitForRemote.
 	RequirePermitForRelay bool
+
+	// RequirePermitForExecute gates EventExecute delivery
+	// (handleExecuteStream) on the signature-verified sender being either
+	// a recorded KindClusterMember (a current raft voter or learner --
+	// see isClusterMember) or a confirmed KindPermitPeer (see
+	// isPermittedPeer): a cluster member is trusted implicitly, the same
+	// way it already is for every raft-replicated write, so it never
+	// needs a separate permit just to use Execute; any other peer does.
+	// Defaults to false: today's behavior, where handleExecuteStream
+	// queues a notification from any peer whose self-contained signature
+	// checks out, regardless of standing. Independent of
+	// RequirePermitForRelay/RequirePermitForRemote. Turning this on
+	// requires RequestPermit+ConfirmPermit (kind "peer") for every
+	// non-member peer that needs to send Execute notifications.
+	RequirePermitForExecute bool
 }
 
 // Node is a running daemon instance. Its raft/transport fields are nil
@@ -852,8 +867,9 @@ func remoteCaller(s network.Stream) (callerIdentity, error) {
 }
 
 // isPermittedPeer reports whether id has a confirmed KindPermitPeer
-// record. Only consulted when Config.RequirePermitForRemote is true -- see
-// that field's doc comment.
+// record. Only consulted when Config.RequirePermitForRemote or
+// Config.RequirePermitForExecute is true -- see those fields' doc
+// comments.
 func (n *Node) isPermittedPeer(id peer.ID) bool {
 	return isPermittedPeer(n.store, id)
 }
@@ -863,6 +879,18 @@ func (n *Node) isPermittedPeer(id peer.ID) bool {
 // is constructed inside newHost before a *Node exists yet (see start).
 func isPermittedPeer(st *store.Store, id peer.ID) bool {
 	_, err := st.Get(shmevent.SystemKey(shmevent.KindPermitPeer, shmevent.StatusConfirmed, []byte(id.String())))
+	return err == nil
+}
+
+// isClusterMember reports whether id has a KindClusterMember record --
+// i.e. is currently (or was, since nothing ever deletes this record) a
+// raft voter or learner, per recordClusterMember. Only consulted when
+// Config.RequirePermitForExecute is true, to let a cluster member send
+// Execute notifications without also needing a separate KindPermitPeer
+// permit -- membership already implies stronger standing than a relay
+// permit.
+func (n *Node) isClusterMember(id peer.ID) bool {
+	_, err := n.store.Get(shmevent.ClusterMemberKey([]byte(id.String())))
 	return err == nil
 }
 
@@ -994,10 +1022,31 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		}
 		pendingKey := shmevent.SystemKey(kind, shmevent.StatusPending, peerID)
 		confirmedKey := shmevent.SystemKey(kind, shmevent.StatusConfirmed, peerID)
-		if err := n.handleConfirmForward(ctx, pendingKey, confirmedKey, true); err != nil {
+		if err := n.handleConfirmForward(ctx, kvfsm.OpConfirm, pendingKey, confirmedKey, true); err != nil {
 			return errorMsg(m.ID, err)
 		}
 		return shmevent.Msg{EventType: shmevent.EventPermitConfirm, ID: m.ID}
+
+	case shmevent.EventPermitRevoke:
+		// Same "only a raft voter may act" enforcement as
+		// EventPermitConfirm above, for the identical reason (see that
+		// case's comment) -- checked once here against the original
+		// caller's own identity, not just relied on downstream.
+		if caller.remotePeer != "" {
+			rf := n.getRaft()
+			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
+				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
+			}
+		}
+		kind, peerID, err := shmevent.DecodePermitConfirmPayload(m.Value)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		confirmedKey := shmevent.SystemKey(kind, shmevent.StatusConfirmed, peerID)
+		if err := n.handleConfirmForward(ctx, kvfsm.OpDel, confirmedKey, nil, true); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventPermitRevoke, ID: m.ID}
 
 	case shmevent.EventExecute:
 		if err := n.dispatchExecute(ctx, m); err != nil {
@@ -1531,31 +1580,35 @@ func (n *Node) handleForwardSetStream(s network.Stream) {
 	}
 }
 
-// handleConfirmForward is EventPermitConfirm's counterpart to
-// handleSetForward: applies directly if this node is the leader, or
-// forwards to the leader (one hop only, same allowForward-guarded
-// pattern) if not. When this node *is* the leader, no separate voter
-// check is needed here -- hashicorp/raft guarantees only a Voter can ever
-// hold leader state, so isLeader==true already implies the confirming
-// node is a voter. The forwarded path's voter check happens in
-// handleForwardConfirmStream instead, against the authenticated identity
-// of whichever node actually opened the stream.
-func (n *Node) handleConfirmForward(ctx context.Context, pendingKey, confirmedKey []byte, allowForward bool) error {
+// handleConfirmForward is EventPermitConfirm/EventPermitRevoke's shared
+// counterpart to handleSetForward: applies directly if this node is the
+// leader, or forwards to the leader (one hop only, same allowForward
+// -guarded pattern) if not. op is kvfsm.OpConfirm (key1 = the pending
+// record's key, key2 = the confirmed record's key it's promoted to) or
+// kvfsm.OpDel (key1 = the confirmed record's key being revoked outright,
+// key2 unused -- see kvfsm.Apply's OpDel case). When this node *is* the
+// leader, no separate voter check is needed here -- hashicorp/raft
+// guarantees only a Voter can ever hold leader state, so isLeader==true
+// already implies the caller is a voter. The forwarded path's voter
+// check happens in handleForwardConfirmStream instead, against the
+// authenticated identity of whichever node actually opened the stream --
+// it applies identically regardless of which op is being forwarded.
+func (n *Node) handleConfirmForward(ctx context.Context, op kvfsm.OpType, key1, key2 []byte, allowForward bool) error {
 	rf, isLeader, leaderID, err := n.resolveWriteTarget(5 * n.electionTimeout)
 	if err != nil {
 		return err
 	}
 	if isLeader {
-		return n.applyConfirm(rf, pendingKey, confirmedKey)
+		return n.applyConfirm(rf, op, key1, key2)
 	}
 	if !allowForward {
 		return fmt.Errorf("not leader; current leader is %s (already forwarded once)", leaderID)
 	}
-	return n.forwardConfirm(ctx, leaderID, pendingKey, confirmedKey)
+	return n.forwardConfirm(ctx, leaderID, op, key1, key2)
 }
 
-func (n *Node) applyConfirm(rf *raft.Raft, pendingKey, confirmedKey []byte) error {
-	cmd := kvfsm.EncodeCommand(kvfsm.OpConfirm, pendingKey, confirmedKey)
+func (n *Node) applyConfirm(rf *raft.Raft, op kvfsm.OpType, key1, key2 []byte) error {
+	cmd := kvfsm.EncodeCommand(op, key1, key2)
 	future := rf.Apply(cmd, 10*n.electionTimeout)
 	if err := future.Error(); err != nil {
 		return err
@@ -1566,11 +1619,11 @@ func (n *Node) applyConfirm(rf *raft.Raft, pendingKey, confirmedKey []byte) erro
 	return nil
 }
 
-// forwardConfirm relays an OpConfirm(pendingKey, confirmedKey) to
-// leaderID over ForwardConfirmProtocolID, mirroring forwardSet's wire
-// convention exactly (kvfsm's own command framing; empty response =
-// success, non-empty = the leader's error message).
-func (n *Node) forwardConfirm(ctx context.Context, leaderID raft.ServerID, pendingKey, confirmedKey []byte) error {
+// forwardConfirm relays op(key1, key2) to leaderID over
+// ForwardConfirmProtocolID, mirroring forwardSet's wire convention
+// exactly (kvfsm's own command framing; empty response = success,
+// non-empty = the leader's error message).
+func (n *Node) forwardConfirm(ctx context.Context, leaderID raft.ServerID, op kvfsm.OpType, key1, key2 []byte) error {
 	pid, err := peer.Decode(string(leaderID))
 	if err != nil {
 		return fmt.Errorf("forward confirm: invalid leader id %s: %w", leaderID, err)
@@ -1581,7 +1634,7 @@ func (n *Node) forwardConfirm(ctx context.Context, leaderID raft.ServerID, pendi
 	}
 	defer s.Close()
 
-	cmd := kvfsm.EncodeCommand(kvfsm.OpConfirm, pendingKey, confirmedKey)
+	cmd := kvfsm.EncodeCommand(op, key1, key2)
 	if _, err := s.Write(cmd); err != nil {
 		return fmt.Errorf("forward confirm: write to leader %s: %w", leaderID, err)
 	}
@@ -1600,19 +1653,21 @@ func (n *Node) forwardConfirm(ctx context.Context, leaderID raft.ServerID, pendi
 }
 
 // handleForwardConfirmStream is the leader-side handler for
-// ForwardConfirmProtocolID. Unlike handleForwardSetStream, it checks the
+// ForwardConfirmProtocolID, shared by EventPermitConfirm (OpConfirm) and
+// EventPermitRevoke (OpDel). Unlike handleForwardSetStream, it checks the
 // stream's libp2p-authenticated remote peer -- s.Conn().RemotePeer(),
 // established by the connection's own handshake and so unforgeable by
 // whatever a caller puts in the message itself -- against the leader's
 // live raft configuration before applying anything, rejecting unless
 // that peer is currently a Voter. This is the actual enforcement of
-// EventPermitConfirm's "only a raft voter may confirm" rule: the
-// generic per-message Ed25519 signature check every event type already
-// gets (see handleShmEvent) only proves the message wasn't corrupted and
-// was signed with whoever's key it was checked against -- for local
-// same-machine shmring IPC that's inherently this same node's own key
-// (see pkg/shmevent's doc comment), which doesn't by itself say anything
-// about cluster membership. The RemotePeer check here is what does.
+// EventPermitConfirm/EventPermitRevoke's "only a raft voter may
+// confirm/revoke" rule: the generic per-message Ed25519 signature check
+// every event type already gets (see handleShmEvent) only proves the
+// message wasn't corrupted and was signed with whoever's key it was
+// checked against -- for local same-machine shmring IPC that's
+// inherently this same node's own key (see pkg/shmevent's doc comment),
+// which doesn't by itself say anything about cluster membership. The
+// RemotePeer check here is what does, uniformly for either op.
 func (n *Node) handleForwardConfirmStream(s network.Stream) {
 	defer s.Close()
 
@@ -1628,17 +1683,17 @@ func (n *Node) handleForwardConfirmStream(s network.Stream) {
 		fmt.Fprintf(s, "forward confirm: read command: %v", err)
 		return
 	}
-	op, pendingKey, confirmedKey, err := kvfsm.DecodeCommand(buf)
+	op, key1, key2, err := kvfsm.DecodeCommand(buf)
 	if err != nil {
 		fmt.Fprintf(s, "forward confirm: decode command: %v", err)
 		return
 	}
-	if op != kvfsm.OpConfirm {
-		fmt.Fprintf(s, "forward confirm: expected OpConfirm, got op %d", op)
+	if op != kvfsm.OpConfirm && op != kvfsm.OpDel {
+		fmt.Fprintf(s, "forward confirm: expected OpConfirm or OpDel, got op %d", op)
 		return
 	}
 
-	if err := n.handleConfirmForward(context.Background(), pendingKey, confirmedKey, false); err != nil {
+	if err := n.handleConfirmForward(context.Background(), op, key1, key2, false); err != nil {
 		s.Write([]byte(err.Error()))
 	}
 }
@@ -1731,8 +1786,11 @@ func (n *Node) sendExecute(ctx context.Context, dest peer.ID, payload []byte) er
 // (matches EventExecute's doc comment: authenticity doesn't depend on the
 // stream's own connection identity), unlike handleForwardConfirmStream's
 // check, which deliberately does the opposite for a different reason (see
-// its own doc comment). On success, queues the notification for
-// EventPollExecute; never touches n.store or raft either way.
+// its own doc comment). Once the signature checks out, applies
+// Config.RequirePermitForExecute's gate (a read-only n.store lookup, if
+// enabled) against that same verified sender peer id, then queues the
+// notification for EventPollExecute. Never writes to n.store or raft
+// either way.
 func (n *Node) handleExecuteStream(s network.Stream) {
 	defer s.Close()
 
@@ -1772,6 +1830,14 @@ func (n *Node) handleExecuteStream(s network.Stream) {
 	}
 	if err := shmevent.Verify(shmevent.PublicKey(rawSenderPub), m, crc, sig); err != nil {
 		fmt.Fprintf(s, "execute: %v", err)
+		return
+	}
+	// Authorization, checked only now that senderPeer is proven authentic
+	// (see this function's doc comment on why that's the peer id this
+	// gate must check, never s.Conn().RemotePeer()) -- see
+	// Config.RequirePermitForExecute's doc comment.
+	if n.cfg.RequirePermitForExecute && !n.isClusterMember(senderPeer) && !n.isPermittedPeer(senderPeer) {
+		fmt.Fprintf(s, "execute: %s is not a raft cluster member or a permitted peer", senderPeer)
 		return
 	}
 	n.executeInbox.push(senderPeerID, payload)

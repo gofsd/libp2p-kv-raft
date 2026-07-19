@@ -97,6 +97,15 @@
 #      message itself. The per-message signature below still applies but
 #      doesn't by itself establish this -- see that comment for why.
 #
+# PermitRevoke{value: pack(kind, peerID), id: Z} deletes an already
+# -confirmed record outright -- the same pack(kind, peerID) shape
+# PermitConfirm uses (pkg/shmevent.EncodePermitConfirmPayload), reused
+# as-is since neither needs metadata. It carries the identical
+# raft-voter-only restriction as PermitConfirm, enforced the same way
+# (handleForwardConfirmStream checks both ops now). There's no
+# corresponding way to cancel a still-*pending* (unconfirmed) record --
+# only a confirmed one can be revoked.
+#
 # `kind` distinguishes what a record is about (permitted peer vs.
 # bootstrap node today); values beyond those two are reserved for future
 # system operations built on this same two-stage workflow (e.g. a voter

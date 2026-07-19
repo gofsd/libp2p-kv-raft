@@ -371,6 +371,28 @@ func ConfirmPermit(kind byte, targetPeerID []byte) error {
 	return nil
 }
 
+// RevokePermit implements `mage revokepermit <kind> <peerID>`: deletes a
+// confirmed permit record for targetPeerID outright. Only takes effect if
+// the current node is itself a raft voter -- see
+// shmevent.EventPermitRevoke's doc comment.
+func RevokePermit(kind byte, targetPeerID []byte) error {
+	reg, err := registry.Open()
+	if err != nil {
+		return err
+	}
+	peerID, err := reg.Current()
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
+	defer cancel()
+	if err := shmclient.RevokePermit(ctx, peerID, kind, targetPeerID); err != nil {
+		return fmt.Errorf("revoke permit: %w", err)
+	}
+	return nil
+}
+
 // Execute implements `mage execute <destPeerID> <value>`: sends value as a
 // direct peer-to-peer EventExecute notification from the current node to
 // destPeerID, bypassing raft and the store entirely -- see

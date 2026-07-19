@@ -125,6 +125,22 @@ const (
 	// doc comment on why it's strictly request/response) to observe
 	// Execute notifications addressed to this node.
 	EventPollExecute uint8 = 12
+	// EventPermitRevoke demotes a confirmed pkg/shmevent system record
+	// (KindPermitPeer or KindBootstrapNode) straight back out of existence
+	// -- unlike EventPermitRequest/EventPermitConfirm's pending->confirmed
+	// two-stage lifecycle, there's no intermediate status to pass through,
+	// it just deletes the confirmed record. Value is
+	// EncodePermitConfirmPayload(kind, peerID) -- the same payload shape
+	// EventPermitConfirm uses, reused as-is since both only ever need
+	// kind+peerID, no metadata. Same restriction as EventPermitConfirm:
+	// only a peer that is currently a raft *voter* may revoke, enforced
+	// the identical way (see EventPermitConfirm's doc comment and
+	// pkg/daemon's handleForwardConfirmStream, which now handles both).
+	// Once revoked, a peer previously permitted via this record --
+	// e.g. for -require-permit-for-relay or -require-permit-for-execute --
+	// immediately loses that permission on every node, exactly as
+	// promptly as a confirm grants it.
+	EventPermitRevoke uint8 = 13
 	// EventError is response-only: Value carries a UTF-8 error message,
 	// ID echoes the failed request's ID. Not part of the fields the
 	// protocol was specified with -- added because the struct has no
@@ -161,6 +177,8 @@ func EventName(e uint8) string {
 		return "execute"
 	case EventPollExecute:
 		return "poll_execute"
+	case EventPermitRevoke:
+		return "permit_revoke"
 	case EventError:
 		return "error"
 	default:
@@ -199,6 +217,8 @@ func EventFromName(name string) (uint8, bool) {
 		return EventExecute, true
 	case "poll_execute":
 		return EventPollExecute, true
+	case "permit_revoke":
+		return EventPermitRevoke, true
 	case "error":
 		return EventError, true
 	default:

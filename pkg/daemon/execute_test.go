@@ -242,6 +242,114 @@ func TestExecuteStreamRejectsForgedSignature(t *testing.T) {
 	}
 }
 
+// TestRequirePermitForExecuteGate exercises Config.RequirePermitForExecute
+// against a real two-node topology (mirroring
+// TestExecuteEventDeliversAcrossNodes): with the gate enabled on the
+// receiver, a sender with neither a confirmed KindPermitPeer record nor a
+// KindClusterMember record must be rejected, while either one on its own
+// must be accepted. Since these bare test nodes never bootstrap raft (see
+// startExecuteTestNode), the permit/membership records are written
+// directly into the receiver's store rather than via the real
+// request/confirm or join workflows -- those are already covered by
+// TestPermitRequestConfirmWorkflow and TestPermitRevokeWorkflow; this test
+// is only about handleExecuteStream's gate itself.
+func TestRequirePermitForExecuteGate(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmpDir := t.TempDir()
+	a := startExecuteTestNode(t, filepath.Join(tmpDir, "a"))
+
+	bDir := filepath.Join(tmpDir, "b")
+	if err := os.MkdirAll(bDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", bDir, err)
+	}
+	bKeyPath := filepath.Join(bDir, "identity.key")
+	if _, err := p2praft.LoadOrGenerateKey(bKeyPath); err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	b, err := start(Config{DataDir: bDir, KeyPath: bKeyPath, RequirePermitForExecute: true})
+	if err != nil {
+		t.Fatalf("start b: %v", err)
+	}
+	t.Cleanup(b.shutdown)
+
+	connectPeers(t, ctx, a, b)
+
+	const sourceID, destID = 1, 2
+	a.registry.Register(sourceID, []byte(a.peerID))
+	a.registry.Register(destID, []byte(b.peerID))
+
+	send := func(id uint16) shmevent.Msg {
+		t.Helper()
+		return callLocal(t, ctx, a, shmevent.Msg{
+			EventType:     shmevent.EventExecute,
+			SourceID:      sourceID,
+			DestinationID: destID,
+			Value:         []byte("payload"),
+			ID:            id,
+		}, a.ed25519Priv)
+	}
+	pollEmpty := func() bool {
+		t.Helper()
+		resp := callLocal(t, ctx, b, shmevent.Msg{EventType: shmevent.EventPollExecute, ID: 99}, b.ed25519Priv)
+		return len(resp.Value) == 0
+	}
+
+	// Neither permitted nor a cluster member: sendExecute reads b's
+	// response synchronously (see that function's doc comment), so the
+	// gate's rejection on b surfaces straight back as a local
+	// dispatchExecute error on a, not a silent drop.
+	if resp := send(1); resp.EventType != shmevent.EventError {
+		t.Fatal("execute from an unpermitted, non-member sender unexpectedly succeeded")
+	}
+	if !pollEmpty() {
+		t.Fatal("unpermitted, non-member sender's notification was queued despite RequirePermitForExecute")
+	}
+
+	// Grant a a confirmed KindPermitPeer record directly in b's store.
+	aPeerID, err := peer.Decode(a.peerID)
+	if err != nil {
+		t.Fatalf("decode a peer id: %v", err)
+	}
+	permitKey := shmevent.SystemKey(shmevent.KindPermitPeer, shmevent.StatusConfirmed, []byte(aPeerID.String()))
+	if err := b.store.Set(permitKey, nil); err != nil {
+		t.Fatalf("grant permit: %v", err)
+	}
+	if resp := send(2); resp.EventType == shmevent.EventError {
+		t.Fatalf("execute from a permitted sender rejected: %s", resp.Value)
+	}
+	if pollEmpty() {
+		t.Fatal("permitted sender's notification was not queued")
+	}
+
+	// Revoke it again and confirm a KindClusterMember record alone is
+	// sufficient (the cluster-member exemption), independent of the
+	// permit.
+	if err := b.store.Delete(permitKey); err != nil {
+		t.Fatalf("revoke permit: %v", err)
+	}
+	if resp := send(3); resp.EventType != shmevent.EventError {
+		t.Fatal("execute from a sender with a revoked permit and no cluster membership unexpectedly succeeded")
+	}
+	if !pollEmpty() {
+		t.Fatal("sender's notification was queued after its permit was revoked and it's not a cluster member")
+	}
+
+	memberKey := shmevent.ClusterMemberKey([]byte(aPeerID.String()))
+	memberPayload := shmevent.EncodeClusterMemberPayload(a.ed25519Pub, shmevent.RoleVoter)
+	if err := b.store.Set(memberKey, memberPayload); err != nil {
+		t.Fatalf("record cluster member: %v", err)
+	}
+	if resp := send(4); resp.EventType == shmevent.EventError {
+		t.Fatalf("execute from a cluster member rejected: %s", resp.Value)
+	}
+	if pollEmpty() {
+		t.Fatal("cluster member's notification was not queued despite having no separate permit")
+	}
+}
+
 func mustRaw(t *testing.T, priv crypto.PrivKey) []byte {
 	t.Helper()
 	raw, err := priv.Raw()

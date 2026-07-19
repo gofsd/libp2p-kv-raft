@@ -79,6 +79,20 @@ independent of `-require-permit-for-remote` (not yet exposed as a flag), which i
 remote `Set`/`Get`/etc. requests over `ClientProtocolID` — a node can require a permit for one
 without the other.
 
+The same confirmed permit record also doubles as the allow-list for `EventExecute`
+(`mage execute <destPeerID> <value>` / `mage pollexecute`, a direct unreplicated
+peer-to-peer notification between two node processes — see `pkg/shmevent`'s
+`EventExecute` doc comment) when a node is started with `-require-permit-for-execute`:
+a raft cluster member (voter or learner) can always send one, but any other peer needs
+the same `requestpermit`/`confirmpermit` grant as above before its Execute notifications
+are delivered rather than silently dropped.
+
+A permit granted this way can be taken back with `mage revokepermit peer <peerID>` (also
+voter-only, same as confirm) — it deletes the confirmed record outright, immediately
+revoking both relay and Execute access on every node. There's no way to cancel a still
+-*pending*, not-yet-confirmed request; it can only be confirmed or overwritten by a
+fresh `requestpermit`.
+
 Print the leader's multiaddr for followers to join against:
 
 ```bash

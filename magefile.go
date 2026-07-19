@@ -836,6 +836,21 @@ func ConfirmPermit(kind, peerID string) error {
 	return nil
 }
 
+// RevokePermit deletes a confirmed permit record for peerID outright.
+// Only takes effect if the current node is itself a raft voter.
+// Usage: mage revokepermit <kind: peer|bootstrap> <peerID>
+func RevokePermit(kind, peerID string) error {
+	k, ok := shmevent.KindFromName(kind)
+	if !ok {
+		return fmt.Errorf("unknown permit kind %q (want \"peer\" or \"bootstrap\")", kind)
+	}
+	if err := kvctl.RevokePermit(k, []byte(peerID)); err != nil {
+		return err
+	}
+	fmt.Println("✅ permit revoked")
+	return nil
+}
+
 // Execute sends value as a direct peer-to-peer EventExecute notification
 // from the current node to destPeerID -- bypassing raft and the store
 // entirely, see shmevent.EventExecute's doc comment.
