@@ -212,6 +212,31 @@ client-side only, inside `kvmobile` itself — nothing in `pkg/daemon` independe
 caller from reading/writing its own already-replicated store (`Config.RequirePermitForLog` only
 gates a *different* peer's forwarded request), so it holds only as long as callers go through these
 bindings rather than around them.
+
+`kvmobile`'s dispatch layer (`dispatch.go`) turns a `Command` from the catalog into an actual
+request/response flow, still with no new capnp wire schema. `ResolveQRGroup` decodes a scanned QR
+payload (`{"group_id":...}`) into a `GroupView` (a `Group` plus its `ListCommands` result) in one
+call. `SubmitCommand(groupID, commandID, inputsJSON)` writes a durable `CommandRequest` under a
+per-group log kind and sends the command's `TargetPeerID` a best-effort `Execute` poke, returning
+an `instanceID` the caller tracks the dispatch by; `GetCommandRequest`/`ListCommandRequests` read
+it back (the latter is a target device's catch-up path for a poke it might have missed). The
+target reports progress with `AppendCommandLog(requesterPeerID, instanceID, fieldsJSON,
+narrative)`, read back via `QueryCommandLog`/`WatchCommandLog` (a 1.5s poll, accelerated but not
+replaced by `AppendCommandLog`'s own poke back to the requester) or `LatestCommandLog(instanceID)`
+for just the newest entry.
+
+`ListExecutionsByPeer(peerID)` answers "every command execution touching this peer, across every
+group" without iterating `ListCommandRequests` per group: `SubmitCommand` writes a small per-peer
+index entry (`commandExecIndexKind`) alongside the `CommandRequest` itself, once for the requester
+and once for the target (skipped if they're the same peer), and `ListExecutionsByPeer` walks just
+that one peer's index, most-recent-first, capped at 200. The index is deliberately thin — it
+stores only `group_id`/`command_id`/a one-byte role code, not `requested_by` (already the record's
+own `AuthorPeerID`) or `target_peer_id` (redundant when the role is target; looked up via
+`GetCommand` for a requester-role entry instead) — because every `pkg/logrecord` write shares
+`pkg/shmevent.ValueSize`'s 512-byte budget across its *key* (which already embeds a full peer id
+once for this index, via `commandExecIndexKind`) and value combined; an earlier version of this
+index stored both peer ids directly and blew that budget the moment two real ~52-byte peer ids
+were involved in the same dispatch.
 over `pkg/daemon.ForwardProtocolID`. `Kvmobile.sendEvent` (not used by `MainActivity`, only by the
 e2e pipeline's `E2ETest` instrumented test) exposes the same raw `pkg/shmevent` event dispatch
 `submit`/`get` are themselves built on, for tests that need the exact event kvctl-cli's `sendevent`

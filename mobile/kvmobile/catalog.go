@@ -168,6 +168,23 @@ func scanRevisions(ctx context.Context, sess *shmclient.Session, kind, unitID st
 	}
 }
 
+// kindPrefixBounds returns the [lo, hi] key range covering every record
+// of the given kind, across every unitID and timestamp -- the shared
+// bound construction behind listUnitIDs and ListExecutionsByPeer's
+// per-kind prefix scans. hi is sized from maxCatalogIDLen so it's
+// provably wide enough to cover any unitID this package itself ever
+// writes under kind, regardless of which ones actually exist.
+func kindPrefixBounds(kind string) (lo, hi []byte) {
+	prefix := logrecord.KindPrefix(kind)
+	lo = prefix
+	hi = make([]byte, len(prefix)+2+maxCatalogIDLen+8+8)
+	copy(hi, prefix)
+	for i := len(prefix); i < len(hi); i++ {
+		hi[i] = 0xFF
+	}
+	return lo, hi
+}
+
 // listUnitIDs enumerates every distinct unitID that has ever logged a
 // record of kind (see logrecord.KindPrefix), in ascending key order --
 // multiple revisions of the same unitID are deduplicated, keeping
@@ -175,13 +192,7 @@ func scanRevisions(ctx context.Context, sess *shmclient.Session, kind, unitID st
 // provably wide enough regardless of which unitIDs actually exist under
 // kind.
 func listUnitIDs(ctx context.Context, sess *shmclient.Session, kind string) ([]string, error) {
-	prefix := logrecord.KindPrefix(kind)
-	lo := prefix
-	hi := make([]byte, len(prefix)+2+maxCatalogIDLen+8+8)
-	copy(hi, prefix)
-	for i := len(prefix); i < len(hi); i++ {
-		hi[i] = 0xFF
-	}
+	lo, hi := kindPrefixBounds(kind)
 
 	seen := map[string]bool{}
 	var ids []string

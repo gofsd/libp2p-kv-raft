@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/logrecord"
+	"github.com/gofsd/libp2p-kv-raft/pkg/shmclient"
 )
 
 // This file ties the QR-scan -> catalog -> dispatch -> execution-log flow
@@ -108,6 +109,52 @@ const logCommandExecKind = "cmdlog"
 // requests with one prefix scan.
 func commandRequestLogKind(groupID string) string {
 	return "cmdreq:" + groupID
+}
+
+// commandExecIndexKind returns the pkg/logrecord Kind SubmitCommand
+// indexes a dispatch under for peerID's sake, once per role (requester,
+// target) peerID plays in it -- see ListExecutionsByPeer, which this
+// makes a single per-peer prefix scan instead of iterating every group's
+// ListCommandRequests looking for peerID's dispatches.
+func commandExecIndexKind(peerID string) string {
+	return "cmdexec:" + peerID
+}
+
+// execIndexRoleRequester/execIndexRoleTarget are commandExecIndexKind
+// entries' "role" field values -- kept to one byte (see
+// appendCommandExecIndex's doc comment on why this index is deliberately
+// thin) rather than the human-readable "requester"/"target" strings
+// ListExecutionsByPeer's CommandExecution.Role actually returns.
+const (
+	execIndexRoleRequester = "r"
+	execIndexRoleTarget    = "t"
+)
+
+// appendCommandExecIndex writes one commandExecIndexKind(peerID) entry
+// for instanceID, naming groupID/commandID and peerID's role in this
+// dispatch (execIndexRoleRequester/execIndexRoleTarget) -- SubmitCommand
+// calls this once per role peerID plays in a dispatch.
+//
+// Deliberately thin: it stores only what ListExecutionsByPeer can't
+// otherwise derive. It does not store requesterPeerID (that's already
+// the record's own AuthorPeerID -- appendRecord always sets it to
+// PeerID(), the dispatching device, regardless of which peer's index
+// this entry belongs to) or targetPeerID (redundant with peerID itself
+// when role is target; ListExecutionsByPeer looks it up via GetCommand
+// for a role-requester entry instead). This matters because
+// commandExecIndexKind(peerID) already embeds a full peer id in the
+// pkg/logrecord key (see BuildKey), and every record here shares
+// pkg/shmevent.ValueSize's single 512-byte budget across key *and*
+// value combined -- an earlier version of this function also stored
+// requested_by/target_peer_id directly and blew that budget the moment
+// two real peer ids (~52 bytes each) were involved at once.
+func appendCommandExecIndex(ctx context.Context, sess *shmclient.Session, peerID, instanceID, groupID, commandID, role string) error {
+	fields := map[string]string{
+		"group_id":   groupID,
+		"command_id": commandID,
+		"role":       role,
+	}
+	return appendRecord(ctx, sess, commandExecIndexKind(peerID), instanceID, fields, "")
 }
 
 // executePoke is the small JSON envelope SubmitCommand/AppendCommandLog
@@ -211,6 +258,16 @@ func SubmitCommand(groupID, commandID, inputsJSON string) (string, error) {
 		return "", fmt.Errorf("kvmobile: submit command: %w", err)
 	}
 
+	requesterPeerID := PeerID()
+	if err := appendCommandExecIndex(ctx, sess, requesterPeerID, instanceID, groupID, commandID, execIndexRoleRequester); err != nil {
+		return "", fmt.Errorf("kvmobile: submit command: %w", err)
+	}
+	if targetPeerID != requesterPeerID {
+		if err := appendCommandExecIndex(ctx, sess, targetPeerID, instanceID, groupID, commandID, execIndexRoleTarget); err != nil {
+			return "", fmt.Errorf("kvmobile: submit command: %w", err)
+		}
+	}
+
 	if poke, err := json.Marshal(executePoke{Type: "cmd_req", GroupID: groupID, CommandID: commandID, InstanceID: instanceID}); err == nil {
 		_ = Execute(targetPeerID, string(poke))
 	}
@@ -291,6 +348,132 @@ func ListCommandRequests(groupID string) (string, error) {
 	return string(out), nil
 }
 
+// maxExecutionsByPeer bounds ListExecutionsByPeer's result to the 200
+// most recent executions touching a peer -- enough for a device to
+// render a meaningful recent-activity view without pulling in a peer's
+// entire dispatch history over shmring on every call.
+const maxExecutionsByPeer = 200
+
+// CommandExecution is one SubmitCommand dispatch as it appears from
+// peerID's point of view (see ListExecutionsByPeer) -- Role is
+// "requester" or "target" depending on which side of the dispatch
+// peerID was on. The same instance appears twice, once under each role's
+// peer, if requester and target differ. TargetPeerID is "" for a
+// requester-role entry if this device could not resolve it (see
+// targetPeerIDForCommand) -- e.g. the command was since deleted, or this
+// device isn't a participant of that group.
+type CommandExecution struct {
+	InstanceID   string    `json:"instance_id"`
+	GroupID      string    `json:"group_id"`
+	CommandID    string    `json:"command_id"`
+	RequestedBy  string    `json:"requested_by"`
+	TargetPeerID string    `json:"target_peer_id"`
+	Role         string    `json:"role"`
+	RequestedAt  time.Time `json:"requested_at"`
+}
+
+// targetPeerIDForCommand best-effort resolves commandID's current
+// TargetPeerID within groupID -- ListExecutionsByPeer's fallback for a
+// role-requester index entry, which (see appendCommandExecIndex's doc
+// comment on why the index is deliberately thin) doesn't store
+// target_peer_id itself. Returns "" rather than an error if the command
+// was since deleted or this device isn't (or is no longer) a participant
+// of groupID -- a missing detail on one history entry shouldn't fail the
+// whole list.
+func targetPeerIDForCommand(groupID, commandID string) string {
+	out, err := GetCommand(groupID, commandID)
+	if err != nil {
+		return ""
+	}
+	var cmd Command
+	if json.Unmarshal([]byte(out), &cmd) != nil {
+		return ""
+	}
+	return cmd.TargetPeerID
+}
+
+// ListExecutionsByPeer returns up to the maxExecutionsByPeer most recent
+// SubmitCommand dispatches touching peerID, as either requester or
+// target, most recent first -- the binding behind "show me every command
+// execution involving this peer, across every group, without me
+// iterating ListCommandRequests per group myself." Backed by the
+// dedicated per-peer index SubmitCommand writes at dispatch time (see
+// commandExecIndexKind/appendCommandExecIndex), so this costs one prefix
+// scan over peerID's own dispatch history, not O(groups) -- plus one
+// GetCommand lookup per requester-role entry to resolve TargetPeerID
+// (see targetPeerIDForCommand), since the index itself doesn't carry it.
+//
+// There is no reverse-scan primitive anywhere in this stack
+// (pkg/store.ScanRange is `ORDER BY key ASC` only, and
+// pkg/shmevent.EventListRange/shmclient.Session.ListRange inherit that),
+// so "most recent" still costs walking peerID's whole index ascending
+// and keeping a sliding window of the last maxExecutionsByPeer entries
+// seen -- bounded by this one peer's own dispatch count, not a cheap
+// tail read.
+func ListExecutionsByPeer(peerID string) (string, error) {
+	if peerID == "" {
+		return "", fmt.Errorf("kvmobile: ListExecutionsByPeer: peerID must not be empty")
+	}
+	sess, err := currentSession()
+	if err != nil {
+		return "", err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	lo, hi := kindPrefixBounds(commandExecIndexKind(peerID))
+
+	var window []CommandExecution
+	for {
+		key, value, ok, err := sess.ListRange(ctx, lo, hi)
+		if err != nil {
+			return "", fmt.Errorf("kvmobile: list executions by peer: %w", err)
+		}
+		if !ok {
+			break
+		}
+		rec, err := logrecord.Decode(value)
+		if err != nil {
+			return "", fmt.Errorf("kvmobile: list executions by peer: decode: %w", err)
+		}
+		groupID, commandID := rec.Fields["group_id"], rec.Fields["command_id"]
+
+		exec := CommandExecution{
+			InstanceID:  rec.UnitID,
+			GroupID:     groupID,
+			CommandID:   commandID,
+			RequestedBy: rec.AuthorPeerID,
+			RequestedAt: rec.Timestamp,
+		}
+		if rec.Fields["role"] == execIndexRoleTarget {
+			exec.Role = "target"
+			exec.TargetPeerID = peerID
+		} else {
+			exec.Role = "requester"
+			exec.TargetPeerID = targetPeerIDForCommand(groupID, commandID)
+		}
+
+		window = append(window, exec)
+		if len(window) > maxExecutionsByPeer {
+			window = window[1:]
+		}
+		lo = append(append([]byte{}, key...), 0x00)
+	}
+
+	for i, j := 0, len(window)-1; i < j; i, j = i+1, j-1 {
+		window[i], window[j] = window[j], window[i]
+	}
+	if window == nil {
+		window = []CommandExecution{}
+	}
+
+	out, err := json.Marshal(window)
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: encode executions: %w", err)
+	}
+	return string(out), nil
+}
+
 // AppendCommandLog writes one execution-log entry for instanceID --
 // SubmitCommand's target device calls this as it works through a
 // command, and QueryCommandLog/WatchCommandLog is how the requester (and
@@ -324,6 +507,64 @@ func AppendCommandLog(requesterPeerID, instanceID, fieldsJSON, narrative string)
 // count or "" (no limit).
 func QueryCommandLog(instanceID, since, until, limit string) (string, error) {
 	return LogQuery(logCommandExecKind, instanceID, since, until, limit)
+}
+
+// LatestCommandLog returns instanceID's single most recent
+// AppendCommandLog entry -- its Fields and Narrative, i.e. the command's
+// output as of now -- as a JSON pkg/logrecord.Record. Returns an error if
+// instanceID has no log entries yet. The result is always well within
+// pkg/shmevent.ValueSize (512 bytes): every AppendCommandLog entry is
+// individually bound to that same wire limit at write time (LogAppend ->
+// shmclient.LogAppend -> shmevent.Encode), so there is nothing here that
+// could ever exceed it -- no separate truncation needed on the read
+// side.
+//
+// Like ListExecutionsByPeer, there is no reverse-scan primitive in this
+// stack, so "latest" costs a full walk of instanceID's own log range
+// (bounded to just that one instance, not the whole cmdlog kind) rather
+// than a cheap tail read -- callers that already track the last
+// timestamp they saw (e.g. WatchCommandLog) should keep using
+// QueryCommandLog's since parameter instead of polling this repeatedly.
+func LatestCommandLog(instanceID string) (string, error) {
+	if instanceID == "" {
+		return "", fmt.Errorf("kvmobile: LatestCommandLog: instanceID must not be empty")
+	}
+	sess, err := currentSession()
+	if err != nil {
+		return "", err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	lo, hi := logrecord.ScanBounds(logCommandExecKind, instanceID, time.Unix(0, 0), time.Now())
+
+	var latest logrecord.Record
+	found := false
+	for {
+		key, value, ok, err := sess.ListRange(ctx, lo, hi)
+		if err != nil {
+			return "", fmt.Errorf("kvmobile: latest command log: %w", err)
+		}
+		if !ok {
+			break
+		}
+		rec, err := logrecord.Decode(value)
+		if err != nil {
+			return "", fmt.Errorf("kvmobile: latest command log: decode: %w", err)
+		}
+		latest = rec
+		found = true
+		lo = append(append([]byte{}, key...), 0x00)
+	}
+	if !found {
+		return "", fmt.Errorf("kvmobile: no command log entries for instance %s", instanceID)
+	}
+
+	out, err := json.Marshal(latest)
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: encode command log: %w", err)
+	}
+	return string(out), nil
 }
 
 // LogCallback is a gomobile-bindable interface Kotlin implements to
