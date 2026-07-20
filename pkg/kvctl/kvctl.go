@@ -101,11 +101,33 @@ func addNode(reg *registry.Registry, binPath string, extraDaemonArgs []string, p
 }
 
 func addNew(reg *registry.Registry, binPath string, extraDaemonArgs []string, role registry.Role, leaderPeerID string) (string, error) {
-	peerID, dataDir, keyPath, err := generateIdentity(reg.NodeDataDir)
+	dataDirFor, err := clusterDataDirFor(reg, leaderPeerID)
+	if err != nil {
+		return "", err
+	}
+	peerID, dataDir, keyPath, err := generateIdentity(dataDirFor)
 	if err != nil {
 		return "", err
 	}
 	return bootUp(reg, binPath, extraDaemonArgs, peerID, dataDir, keyPath, role, leaderPeerID)
+}
+
+// clusterDataDirFor returns the dataDirFor callback generateIdentity/
+// importIdentity need: leaderPeerID == "" (bootstrap) uses reg.NodeDataDir
+// (peerID's own solo dir); otherwise it resolves leaderPeerID to a bare peer
+// id (see registry.ExtractPeerID -- leaderPeerID may be a full multiaddr for
+// a leader on another machine) and uses reg.ClusterDataDir, so this identity
+// ends up in a directory dedicated to that specific cluster -- see
+// registry.NodeInfo.ClusterPeerID's doc comment.
+func clusterDataDirFor(reg *registry.Registry, leaderPeerID string) (func(peerID string) string, error) {
+	if leaderPeerID == "" {
+		return reg.NodeDataDir, nil
+	}
+	remotePID, err := registry.ExtractPeerID(leaderPeerID)
+	if err != nil {
+		return nil, err
+	}
+	return func(peerID string) string { return reg.ClusterDataDir(peerID, remotePID) }, nil
 }
 
 // AddNodeWithKey is like AddNode but provisions the new node under the
@@ -151,7 +173,11 @@ func addNodeWithKey(reg *registry.Registry, binPath, srcKeyPath string, extraDae
 }
 
 func addNewWithKey(reg *registry.Registry, binPath, srcKeyPath string, extraDaemonArgs []string, role registry.Role, leaderPeerID string) (string, error) {
-	peerID, dataDir, keyPath, err := importIdentity(reg.NodeDataDir, srcKeyPath)
+	dataDirFor, err := clusterDataDirFor(reg, leaderPeerID)
+	if err != nil {
+		return "", err
+	}
+	peerID, dataDir, keyPath, err := importIdentity(dataDirFor, srcKeyPath)
 	if err != nil {
 		return "", err
 	}
@@ -172,7 +198,25 @@ func rejoin(reg *registry.Registry, binPath string, extraDaemonArgs []string, le
 	if err := checkLeaderReachable(reg, leaderPeerID); err != nil {
 		return "", err
 	}
-	return bootUp(reg, binPath, extraDaemonArgs, ownPeerID, info.DataDir, info.KeyPath, info.Role, leaderPeerID)
+
+	// Rejoining the same remote cluster this identity already joined
+	// (info.ClusterPeerID unchanged) reuses info.DataDir exactly as before --
+	// its raft/sqlite state restores in place. Rejoining a *different*
+	// cluster switches to that cluster's own dedicated directory instead
+	// (possibly one this identity used before and is now returning to, or a
+	// brand new one) rather than corrupting the previous cluster's state by
+	// reusing its directory under a mismatched raft configuration -- see
+	// registry.NodeInfo.ClusterPeerID's doc comment.
+	remotePID, err := registry.ExtractPeerID(leaderPeerID)
+	if err != nil {
+		return "", err
+	}
+	dataDir := info.DataDir
+	if info.ClusterPeerID != remotePID {
+		dataDir = reg.ClusterDataDir(ownPeerID, remotePID)
+	}
+
+	return bootUp(reg, binPath, extraDaemonArgs, ownPeerID, dataDir, info.KeyPath, info.Role, leaderPeerID)
 }
 
 // ResumeNode restarts the existing node ownPeerID in place -- reusing its
@@ -279,6 +323,15 @@ func checkLeaderReachable(reg *registry.Registry, leaderPeerID string) error {
 }
 
 func bootUp(reg *registry.Registry, binPath string, extraDaemonArgs []string, peerID, dataDir, keyPath string, role registry.Role, leaderPeerID string) (string, error) {
+	var clusterPeerID string
+	if leaderPeerID != "" {
+		remotePID, err := registry.ExtractPeerID(leaderPeerID)
+		if err != nil {
+			return "", err
+		}
+		clusterPeerID = remotePID
+	}
+
 	proc, err := spawnDaemon(binPath, dataDir, keyPath, extraDaemonArgs)
 	if err != nil {
 		return "", err
@@ -290,13 +343,14 @@ func bootUp(reg *registry.Registry, binPath string, extraDaemonArgs []string, pe
 	}
 
 	if err := reg.Put(registry.NodeInfo{
-		PeerID:       peerID,
-		Role:         role,
-		DataDir:      dataDir,
-		KeyPath:      keyPath,
-		ListenAddrs:  ready.ListenAddrs,
-		LeaderPeerID: leaderPeerID,
-		PID:          proc.Pid,
+		PeerID:        peerID,
+		Role:          role,
+		DataDir:       dataDir,
+		KeyPath:       keyPath,
+		ListenAddrs:   ready.ListenAddrs,
+		LeaderPeerID:  leaderPeerID,
+		PID:           proc.Pid,
+		ClusterPeerID: clusterPeerID,
 	}); err != nil {
 		return "", err
 	}

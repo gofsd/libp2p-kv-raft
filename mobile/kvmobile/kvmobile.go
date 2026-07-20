@@ -33,6 +33,7 @@ import (
 	"github.com/gofsd/libp2p-kv-raft/pkg/e2edata"
 	"github.com/gofsd/libp2p-kv-raft/pkg/ipc"
 	"github.com/gofsd/libp2p-kv-raft/pkg/logrecord"
+	"github.com/gofsd/libp2p-kv-raft/pkg/registry"
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmclient"
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
@@ -92,13 +93,23 @@ const (
 )
 
 var (
-	mu         sync.Mutex
-	started    bool
-	peerID     string
-	curDataDir string
-	runErrC    chan error
-	session    *shmclient.Session
-	cancelRun  context.CancelFunc
+	mu sync.Mutex
+	// started, peerID, curDataDir, curDataDirRoot, session, runErrC,
+	// cancelRun track the single in-process daemon this package runs at a
+	// time. curDataDir is the cluster-paired subdirectory of
+	// curDataDirRoot (the dataDir a caller passed to Start/StartWithKey)
+	// that actually holds the sqlite/raft state -- identity.key lives at
+	// curDataDirRoot itself (see ensureIdentity/importIdentity) -- see
+	// registry.ClusterDirName. Delete compares against curDataDirRoot
+	// since that's the directory callers pass in, not the computed
+	// subdirectory.
+	started        bool
+	peerID         string
+	curDataDir     string
+	curDataDirRoot string
+	runErrC        chan error
+	session        *shmclient.Session
+	cancelRun      context.CancelFunc
 )
 
 // Start brings up the follower daemon in-process under dataDir (an
@@ -138,7 +149,9 @@ func StartWithKey(dataDir, keyHex string) (string, error) {
 	})
 }
 
-func start(dataDir string, resolveIdentity func(dataDir string) (keyPath, peerID string, err error)) (string, error) {
+// start brings up the daemon under dataDirRoot and joins it to the
+// build-time-configured leader.
+func start(dataDirRoot string, resolveIdentity func(dataDir string) (keyPath, peerID string, err error)) (string, error) {
 	mu.Lock()
 	defer mu.Unlock()
 	if started {
@@ -148,25 +161,38 @@ func start(dataDir string, resolveIdentity func(dataDir string) (keyPath, peerID
 		return "", fmt.Errorf("kvmobile: no leader multiaddr baked in at build time")
 	}
 
-	keyPath, id, err := resolveIdentity(dataDir)
+	keyPath, id, err := resolveIdentity(dataDirRoot)
 	if err != nil {
 		return "", err
 	}
 
+	// clusterDir is a subdirectory of dataDirRoot dedicated to whichever
+	// cluster this identity is joining -- identity.key stays at
+	// dataDirRoot itself (resolveIdentity above), unaffected by which
+	// cluster is active. This mirrors desktop's
+	// registry.NodeDataDir/ClusterDataDir split exactly (see that
+	// package's doc comments) so the same identity can hold separate,
+	// non-colliding state per cluster it has ever joined.
+	remotePID, err := registry.ExtractPeerID(leaderMultiaddr)
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: resolve leader peer id: %w", err)
+	}
+	clusterDir := filepath.Join(dataDirRoot, registry.ClusterDirName(id, remotePID))
+
 	// A stale ready file left behind by an earlier Start/Stop cycle against
-	// this same dataDir would let waitForReady below return early -- before
-	// this run has written its own -- since pkg/daemon.Run's
+	// this same directory would let waitForReady below return early --
+	// before this run has written its own -- since pkg/daemon.Run's
 	// writeReadyFile only overwrites it once the new daemon is actually
-	// up, not on the way in. Harmless on a dataDir Start has never touched
-	// before; only relevant once Stop() makes restarting the same dataDir
-	// in one process possible.
-	_ = os.Remove(filepath.Join(dataDir, daemon.ReadyFileName))
+	// up, not on the way in. Harmless on a directory Start has never
+	// touched before; only relevant once Stop() makes restarting the same
+	// directory in one process possible.
+	_ = os.Remove(filepath.Join(clusterDir, daemon.ReadyFileName))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errC := make(chan error, 1)
 	go func() {
 		errC <- daemon.Run(ctx, daemon.Config{
-			DataDir:            dataDir,
+			DataDir:            clusterDir,
 			KeyPath:            keyPath,
 			RelayPeer:          relayMultiaddr,
 			HeartbeatTimeout:   raftHeartbeatTimeout,
@@ -176,7 +202,7 @@ func start(dataDir string, resolveIdentity func(dataDir string) (keyPath, peerID
 		})
 	}()
 
-	if err := waitForReady(dataDir, errC, callTimeout); err != nil {
+	if err := waitForReady(clusterDir, errC, callTimeout); err != nil {
 		cancel()
 		return "", fmt.Errorf("kvmobile: start follower: %w", err)
 	}
@@ -195,7 +221,8 @@ func start(dataDir string, resolveIdentity func(dataDir string) (keyPath, peerID
 
 	session = sess
 	peerID = id
-	curDataDir = dataDir
+	curDataDir = clusterDir
+	curDataDirRoot = dataDirRoot
 	runErrC = errC
 	cancelRun = cancel
 	started = true
@@ -231,6 +258,7 @@ func Stop() error {
 	started = false
 	peerID = ""
 	curDataDir = ""
+	curDataDirRoot = ""
 	session = nil
 	runErrC = nil
 	cancelRun = nil
@@ -246,7 +274,7 @@ func Stop() error {
 // corrupt them.
 func Delete(dataDir string) error {
 	mu.Lock()
-	running := started && curDataDir == dataDir
+	running := started && curDataDirRoot == dataDir
 	mu.Unlock()
 	if running {
 		return fmt.Errorf("kvmobile: node at %s is currently running; call Stop first", dataDir)

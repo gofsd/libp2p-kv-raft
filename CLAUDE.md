@@ -43,6 +43,26 @@ mage set <key> <value>
 mage get <key>
 ```
 
+Catalog/dispatch targets (wrap `pkg/kvctl/catalog.go`+`dispatch.go`, the `mage`-side mirror of
+`mobile/kvmobile`'s Group/Command/execution layer — see README's `kvmobile` section for the
+concepts, since the two are otherwise identical):
+
+```bash
+mage creategroup/updategroup/deletegroup/getgroup/listgroups <args>
+mage requestgroupparticipation/confirmgroupparticipation/revokegroupparticipation <groupID> <peerID> ...
+mage isgroupparticipant <groupID>
+mage createcommand/updatecommand/deletecommand/getcommand/listcommands <args>
+mage submitcommand/getcommandrequest/listcommandrequests <args>
+mage listexecutions <peerID>
+mage appendcommandlog/querycommandlog/latestcommandlog <args>
+```
+
+`mage -l` prints every target's full usage/argument list. Deliberately not ported: kvmobile's
+QR-scan convenience (`getgroup`+`listcommands` already cover the same ground) and
+`WatchExecute`/`WatchCommandLog`'s callback-driven poll loops, which don't fit a one-shot `mage`
+invocation — poll `querycommandlog`/`latestcommandlog`/`pollexecute` yourself if a script needs to
+watch.
+
 End-to-end pipeline (`test/e2e/testdata.json` is the source of truth; see README's "End-to-end
 tests / deploy pipeline" section for the full design):
 

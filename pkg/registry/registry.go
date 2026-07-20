@@ -20,6 +20,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/multiformats/go-multiaddr"
 )
 
 // Role identifies whether a node was created as the initial cluster leader
@@ -42,6 +45,17 @@ type NodeInfo struct {
 	ListenAddrs  []string `json:"listen_addrs"`
 	LeaderPeerID string   `json:"leader_peer_id,omitempty"`
 	PID          int      `json:"pid"`
+
+	// ClusterPeerID is the remote leader peer id this identity is currently
+	// joined through, i.e. which "nodes/<peerID>-<ClusterPeerID>" data
+	// directory DataDir points at (see ClusterDataDir) -- empty means
+	// DataDir is the plain solo "nodes/<peerID>" dir, this identity's own
+	// default single-node cluster. Threaded through by AddNode's join path
+	// so a later rejoin can tell "the same cluster this identity already
+	// joined" (reuse DataDir as-is) apart from "a different cluster"
+	// (switch to a different, possibly brand new, ClusterDataDir) -- see
+	// pkg/kvctl's rejoin.
+	ClusterPeerID string `json:"cluster_peer_id,omitempty"`
 }
 
 // file is the on-disk shape of registry.json.
@@ -81,9 +95,34 @@ func (r *Registry) currentPath() string { return filepath.Join(r.Dir, "current")
 // NodeDataDir returns the directory a node identified by peerID should store
 // its identity key, sqlite data, and raft log under. Callers use this before
 // a NodeInfo even exists in the registry, when provisioning a brand new (or
-// resuming an existing) node.
+// resuming an existing) node. This is peerID's *solo* data dir -- its own
+// default single-node cluster, used when it has never joined another
+// cluster -- as opposed to ClusterDataDir, used while joined to a specific
+// remote cluster.
 func (r *Registry) NodeDataDir(peerID string) string {
 	return filepath.Join(r.Dir, "nodes", peerID)
+}
+
+// ClusterDirName returns the directory name (not a full path) peerID uses
+// while joined to the cluster led through remotePeerID -- a pure naming
+// function taking no filesystem root, so mobile/kvmobile can reuse the exact
+// same convention under its own app-private root instead of duplicating it.
+// Distinct remotePeerID values naturally get distinct directories, which is
+// what lets AddNode/RejoinNode tell "rejoining the same cluster this
+// identity already joined" (the directory already exists, reuse it as-is)
+// apart from "joining a different cluster" (a fresh directory) with no
+// separate replicated cluster-id concept -- see NodeInfo.ClusterPeerID's
+// doc comment.
+func ClusterDirName(peerID, remotePeerID string) string {
+	return peerID + "-" + remotePeerID
+}
+
+// ClusterDataDir is ClusterDirName's desktop counterpart: the data directory
+// peerID should use while joined to the cluster led through remotePeerID,
+// rooted under this registry -- see NodeDataDir (the solo/default
+// counterpart) and NodeInfo.ClusterPeerID's doc comment.
+func (r *Registry) ClusterDataDir(peerID, remotePeerID string) string {
+	return filepath.Join(r.Dir, "nodes", ClusterDirName(peerID, remotePeerID))
 }
 
 func (r *Registry) load() (file, error) {
@@ -198,6 +237,28 @@ func (r *Registry) ResolveAddress(peerID string) (string, error) {
 		return "", fmt.Errorf("registry: peer id %s has no known listen address", peerID)
 	}
 	return info.ListenAddrs[0], nil
+}
+
+// ExtractPeerID returns the bare peer id leaderPeerIDOrMultiaddr identifies:
+// leaderPeerIDOrMultiaddr itself if it's already a bare peer id, or the
+// /p2p/<peer-id> component parsed out of it if it's a full multiaddr (a
+// leader on another machine, resolved the same way daemon.join() already
+// does). This is the one place that turns "whatever the operator typed" into
+// the bare peer id ClusterDataDir's naming scheme and the join-confirm
+// gate's bootstrap-peer allowlist both key on.
+func ExtractPeerID(leaderPeerIDOrMultiaddr string) (string, error) {
+	if !IsMultiaddr(leaderPeerIDOrMultiaddr) {
+		return leaderPeerIDOrMultiaddr, nil
+	}
+	maddr, err := multiaddr.NewMultiaddr(leaderPeerIDOrMultiaddr)
+	if err != nil {
+		return "", fmt.Errorf("registry: invalid multiaddr %q: %w", leaderPeerIDOrMultiaddr, err)
+	}
+	info, err := peer.AddrInfoFromP2pAddr(maddr)
+	if err != nil {
+		return "", fmt.Errorf("registry: multiaddr %q missing peer id: %w", leaderPeerIDOrMultiaddr, err)
+	}
+	return info.ID.String(), nil
 }
 
 // IsMultiaddr reports whether s looks like a multiaddr (e.g.

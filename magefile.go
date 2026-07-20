@@ -991,29 +991,9 @@ func LogAppend(kind, unitID, fieldsJSON, narrative string) error {
 // now). limit is a count or "" (unlimited).
 // Usage: mage logquery <kind> <unitID> <since|""> <until|""> <limit|"">
 func LogQuery(kind, unitID, since, until, limit string) error {
-	start := time.Unix(0, 0)
-	if since != "" {
-		t, err := time.Parse(time.RFC3339, since)
-		if err != nil {
-			return fmt.Errorf("since: %w", err)
-		}
-		start = t
-	}
-	end := time.Now()
-	if until != "" {
-		t, err := time.Parse(time.RFC3339, until)
-		if err != nil {
-			return fmt.Errorf("until: %w", err)
-		}
-		end = t
-	}
-	n := 0
-	if limit != "" {
-		v, err := strconv.Atoi(limit)
-		if err != nil {
-			return fmt.Errorf("limit: %w", err)
-		}
-		n = v
+	start, end, n, err := parseTimeWindow(since, until, limit)
+	if err != nil {
+		return err
 	}
 
 	records, err := kvctl.LogQuery(kind, unitID, start, end, n)
@@ -1027,6 +1007,392 @@ func LogQuery(kind, unitID, since, until, limit string) error {
 		}
 		fmt.Println(string(out))
 	}
+	return nil
+}
+
+// parseTimeWindow parses the since/until/limit string triple every
+// *Query-style mage target (LogQuery, QueryCommandLog) takes on the
+// command line into kvctl.LogQuery's native (start, end time.Time, limit
+// int) shape: since/until are RFC3339 or "" (since "" = unbounded epoch,
+// until "" = now); limit is a count or "" (0, meaning unlimited).
+func parseTimeWindow(since, until, limit string) (start, end time.Time, n int, err error) {
+	start = time.Unix(0, 0)
+	if since != "" {
+		t, err := time.Parse(time.RFC3339, since)
+		if err != nil {
+			return time.Time{}, time.Time{}, 0, fmt.Errorf("since: %w", err)
+		}
+		start = t
+	}
+	end = time.Now()
+	if until != "" {
+		t, err := time.Parse(time.RFC3339, until)
+		if err != nil {
+			return time.Time{}, time.Time{}, 0, fmt.Errorf("until: %w", err)
+		}
+		end = t
+	}
+	if limit != "" {
+		v, err := strconv.Atoi(limit)
+		if err != nil {
+			return time.Time{}, time.Time{}, 0, fmt.Errorf("limit: %w", err)
+		}
+		n = v
+	}
+	return start, end, n, nil
+}
+
+// CreateGroup implements `mage creategroup <id> <name> <description>`:
+// defines a new command group, publicly listable by any cluster member --
+// see pkg/kvctl.CreateGroup's doc comment.
+// Usage: mage creategroup <id> <name> <description>
+func CreateGroup(id, name, description string) error {
+	if err := kvctl.CreateGroup(id, name, description); err != nil {
+		return err
+	}
+	fmt.Println("✅ group created")
+	return nil
+}
+
+// UpdateGroup implements `mage updategroup <id> <name> <description>`:
+// appends a new name/description revision for an existing group. Requires
+// the current node to already be a participant of id.
+// Usage: mage updategroup <id> <name> <description>
+func UpdateGroup(id, name, description string) error {
+	if err := kvctl.UpdateGroup(id, name, description); err != nil {
+		return err
+	}
+	fmt.Println("✅ group updated")
+	return nil
+}
+
+// DeleteGroup implements `mage deletegroup <id>`: tombstones a group so
+// GetGroup/ListGroups exclude it afterward (its Commands remain on disk,
+// just unreachable through the catalog). Requires the current node to
+// already be a participant of id.
+// Usage: mage deletegroup <id>
+func DeleteGroup(id string) error {
+	if err := kvctl.DeleteGroup(id); err != nil {
+		return err
+	}
+	fmt.Println("✅ group deleted")
+	return nil
+}
+
+// GetGroup implements `mage getgroup <id>`: prints id's current
+// definition as one JSON object.
+// Usage: mage getgroup <id>
+func GetGroup(id string) error {
+	group, err := kvctl.GetGroup(id)
+	if err != nil {
+		return err
+	}
+	out, err := json.Marshal(group)
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(out))
+	return nil
+}
+
+// ListGroups implements `mage listgroups`: prints every non-deleted
+// Group, one JSON object per line.
+// Usage: mage listgroups
+func ListGroups() error {
+	groups, err := kvctl.ListGroups()
+	if err != nil {
+		return err
+	}
+	for _, g := range groups {
+		out, err := json.Marshal(g)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(out))
+	}
+	return nil
+}
+
+// IsGroupParticipant implements `mage isgroupparticipant <groupID>`:
+// prints "true"/"false" for whether the current node holds a confirmed
+// participation permit for groupID -- see pkg/kvctl.IsGroupParticipant's
+// doc comment.
+// Usage: mage isgroupparticipant <groupID>
+func IsGroupParticipant(groupID string) error {
+	ok, err := kvctl.IsGroupParticipant(groupID)
+	if err != nil {
+		return err
+	}
+	fmt.Println(ok)
+	return nil
+}
+
+// RequestGroupParticipation implements `mage requestgroupparticipation
+// <groupID> <peerID> <metadata>`: lodges a pending request for peerID to
+// participate in groupID -- a thin wrapper over `mage requestlogpermit`
+// under the hood (see pkg/kvctl.RequestGroupParticipation).
+// Usage: mage requestgroupparticipation <groupID> <peerID> <metadata>
+func RequestGroupParticipation(groupID, peerID, metadata string) error {
+	if err := kvctl.RequestGroupParticipation(groupID, peerID, metadata); err != nil {
+		return err
+	}
+	fmt.Println("✅ participation requested")
+	return nil
+}
+
+// ConfirmGroupParticipation implements `mage confirmgroupparticipation
+// <groupID> <peerID>`: promotes a pending participation request to
+// confirmed. Only takes effect if the current node is itself a raft
+// voter.
+// Usage: mage confirmgroupparticipation <groupID> <peerID>
+func ConfirmGroupParticipation(groupID, peerID string) error {
+	if err := kvctl.ConfirmGroupParticipation(groupID, peerID); err != nil {
+		return err
+	}
+	fmt.Println("✅ participation confirmed")
+	return nil
+}
+
+// RevokeGroupParticipation implements `mage revokegroupparticipation <groupID>
+// <peerID>`: deletes a confirmed participation record outright.
+// Usage: mage revokegroupparticipation <groupID> <peerID>
+func RevokeGroupParticipation(groupID, peerID string) error {
+	if err := kvctl.RevokeGroupParticipation(groupID, peerID); err != nil {
+		return err
+	}
+	fmt.Println("✅ participation revoked")
+	return nil
+}
+
+// CreateCommand implements `mage createcommand <id> <groupID>
+// <targetPeerID> <name> <description> <formSchemaJSON>`: defines a
+// Command belonging to groupID, executed by targetPeerID. formSchemaJSON
+// is a JSON array of pkg/kvctl.FormField, or "" for none. Requires the
+// current node to already be a participant of groupID.
+// Usage: mage createcommand <id> <groupID> <targetPeerID> <name> <description> <formSchemaJSON>
+func CreateCommand(id, groupID, targetPeerID, name, description, formSchemaJSON string) error {
+	schema, err := decodeFormSchema(formSchemaJSON)
+	if err != nil {
+		return err
+	}
+	if err := kvctl.CreateCommand(id, groupID, targetPeerID, name, description, schema); err != nil {
+		return err
+	}
+	fmt.Println("✅ command created")
+	return nil
+}
+
+// UpdateCommand implements `mage updatecommand <id> <groupID>
+// <targetPeerID> <name> <description> <formSchemaJSON>`: CreateCommand's
+// alias for the "this id already exists" case -- see
+// pkg/kvctl.CreateCommand's doc comment.
+// Usage: mage updatecommand <id> <groupID> <targetPeerID> <name> <description> <formSchemaJSON>
+func UpdateCommand(id, groupID, targetPeerID, name, description, formSchemaJSON string) error {
+	schema, err := decodeFormSchema(formSchemaJSON)
+	if err != nil {
+		return err
+	}
+	if err := kvctl.UpdateCommand(id, groupID, targetPeerID, name, description, schema); err != nil {
+		return err
+	}
+	fmt.Println("✅ command updated")
+	return nil
+}
+
+// decodeFormSchema decodes formSchemaJSON (a JSON array of
+// pkg/kvctl.FormField, or "") for CreateCommand/UpdateCommand -- the same
+// "magefile decodes the JSON, kvctl takes a native value" split LogAppend
+// already uses for fieldsJSON.
+func decodeFormSchema(formSchemaJSON string) ([]kvctl.FormField, error) {
+	if formSchemaJSON == "" {
+		return nil, nil
+	}
+	var schema []kvctl.FormField
+	if err := json.Unmarshal([]byte(formSchemaJSON), &schema); err != nil {
+		return nil, fmt.Errorf("decode formSchemaJSON: %w", err)
+	}
+	return schema, nil
+}
+
+// DeleteCommand implements `mage deletecommand <groupID> <id>`:
+// tombstones a Command so GetCommand/ListCommands exclude it afterward.
+// Requires the current node to already be a participant of groupID.
+// Usage: mage deletecommand <groupID> <id>
+func DeleteCommand(groupID, id string) error {
+	if err := kvctl.DeleteCommand(groupID, id); err != nil {
+		return err
+	}
+	fmt.Println("✅ command deleted")
+	return nil
+}
+
+// GetCommand implements `mage getcommand <groupID> <id>`: prints id's
+// current definition within groupID as one JSON object. Requires the
+// current node to already be a participant of groupID.
+// Usage: mage getcommand <groupID> <id>
+func GetCommand(groupID, id string) error {
+	cmd, err := kvctl.GetCommand(groupID, id)
+	if err != nil {
+		return err
+	}
+	out, err := json.Marshal(cmd)
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(out))
+	return nil
+}
+
+// ListCommands implements `mage listcommands <groupID>`: prints every
+// non-deleted Command currently defined under groupID, one JSON object
+// per line. Requires the current node to already be a participant of
+// groupID.
+// Usage: mage listcommands <groupID>
+func ListCommands(groupID string) error {
+	commands, err := kvctl.ListCommands(groupID)
+	if err != nil {
+		return err
+	}
+	for _, c := range commands {
+		out, err := json.Marshal(c)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(out))
+	}
+	return nil
+}
+
+// SubmitCommand implements `mage submitcommand <groupID> <commandID>
+// <inputsJSON>`: dispatches commandID as a durable, replicated request
+// plus a low-latency Execute poke to its TargetPeerID, and prints the new
+// instance id -- see pkg/kvctl.SubmitCommand's doc comment.
+// Usage: mage submitcommand <groupID> <commandID> <inputsJSON>
+func SubmitCommand(groupID, commandID, inputsJSON string) error {
+	instanceID, err := kvctl.SubmitCommand(groupID, commandID, inputsJSON)
+	if err != nil {
+		return err
+	}
+	fmt.Println(instanceID)
+	return nil
+}
+
+// GetCommandRequest implements `mage getcommandrequest <groupID>
+// <instanceID>`: prints instanceID's dispatch record within groupID as
+// one JSON object.
+// Usage: mage getcommandrequest <groupID> <instanceID>
+func GetCommandRequest(groupID, instanceID string) error {
+	req, err := kvctl.GetCommandRequest(groupID, instanceID)
+	if err != nil {
+		return err
+	}
+	out, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(out))
+	return nil
+}
+
+// ListCommandRequests implements `mage listcommandrequests <groupID>`:
+// prints every dispatch request currently recorded for groupID, oldest
+// first, one JSON object per line -- the target's catch-up path for a
+// missed Execute poke.
+// Usage: mage listcommandrequests <groupID>
+func ListCommandRequests(groupID string) error {
+	requests, err := kvctl.ListCommandRequests(groupID)
+	if err != nil {
+		return err
+	}
+	for _, r := range requests {
+		out, err := json.Marshal(r)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(out))
+	}
+	return nil
+}
+
+// ListExecutions implements `mage listexecutions <peerID>`: prints up to
+// the 200 most recent SubmitCommand dispatches touching peerID, as either
+// requester or target, most recent first, one JSON object per line -- see
+// pkg/kvctl.ListExecutionsByPeer's doc comment.
+// Usage: mage listexecutions <peerID>
+func ListExecutions(peerID string) error {
+	executions, err := kvctl.ListExecutionsByPeer(peerID)
+	if err != nil {
+		return err
+	}
+	for _, e := range executions {
+		out, err := json.Marshal(e)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(out))
+	}
+	return nil
+}
+
+// AppendCommandLog implements `mage appendcommandlog <requesterPeerID>
+// <instanceID> <fieldsJSON> <narrative>`: writes one execution-log entry
+// for instanceID and pokes requesterPeerID (pass "" to skip the poke) --
+// see pkg/kvctl.AppendCommandLog's doc comment.
+// Usage: mage appendcommandlog <requesterPeerID> <instanceID> <fieldsJSON> <narrative>
+func AppendCommandLog(requesterPeerID, instanceID, fieldsJSON, narrative string) error {
+	var fields map[string]string
+	if fieldsJSON != "" {
+		if err := json.Unmarshal([]byte(fieldsJSON), &fields); err != nil {
+			return fmt.Errorf("decode fieldsJSON: %w", err)
+		}
+	}
+	if err := kvctl.AppendCommandLog(requesterPeerID, instanceID, fields, narrative); err != nil {
+		return err
+	}
+	fmt.Println("✅ command log appended")
+	return nil
+}
+
+// QueryCommandLog implements `mage querycommandlog <instanceID> <since>
+// <until> <limit>`: lists every AppendCommandLog entry for instanceID
+// whose timestamp falls in [since, until], oldest first, one JSON object
+// per line -- see LogQuery's doc comment for the since/until/limit
+// argument shape.
+// Usage: mage querycommandlog <instanceID> <since|""> <until|""> <limit|"">
+func QueryCommandLog(instanceID, since, until, limit string) error {
+	start, end, n, err := parseTimeWindow(since, until, limit)
+	if err != nil {
+		return err
+	}
+
+	records, err := kvctl.QueryCommandLog(instanceID, start, end, n)
+	if err != nil {
+		return err
+	}
+	for _, rec := range records {
+		out, err := json.Marshal(rec)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(out))
+	}
+	return nil
+}
+
+// LatestCommandLog implements `mage latestcommandlog <instanceID>`:
+// prints instanceID's single most recent AppendCommandLog entry as one
+// JSON object -- see pkg/kvctl.LatestCommandLog's doc comment.
+// Usage: mage latestcommandlog <instanceID>
+func LatestCommandLog(instanceID string) error {
+	rec, err := kvctl.LatestCommandLog(instanceID)
+	if err != nil {
+		return err
+	}
+	out, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(out))
 	return nil
 }
 
