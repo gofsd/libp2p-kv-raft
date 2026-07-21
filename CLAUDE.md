@@ -39,9 +39,18 @@ mage resumenode <peerID>                        # restart a node from persisted 
 mage rejoinnode <leaderAddr> <peerID>            # restart + re-send the join request
 mage use <peerID>                                # select the active node for set/get
 mage deletenode <peerID>                         # permanently delete a (stopped) node's data + registry entry
+mage listclusters                                # show every raft cluster known to this machine's registry
+mage listnodes <peerID>                          # query a running node for its cluster's full live peer id list
 mage set <key> <value>
 mage get <key>
 ```
+
+`listclusters` is a pure local registry read (grouped by whichever peer id originally bootstrapped each
+cluster) -- no daemon needs to be running, but for the same reason it only ever shows clusters this
+machine has itself created or joined a node into, never a network-wide view. `listnodes <peerID>`, by
+contrast, needs `peerID` to actually be running: it queries that node's own locally-replicated
+`shmevent.KindClusterMember` records for its raft cluster's current live membership (every voter/
+learner/leader, including peers this machine never created and so has no registry entry for at all).
 
 Cluster-membership lifecycle targets (wrap `pkg/kvctl/cluster.go`; let the *current* node -- `mage use` --
 change which cluster it belongs to, rather than spawning a new identity the way `addnode`/`addfollower`

@@ -98,6 +98,22 @@ const (
 	RoleLeader  byte = 0x03
 )
 
+// RoleName returns a human-readable name for a KindClusterMember role byte
+// -- "unknown(N)" for anything else. Mirrors KindName/EventName, for CLI
+// use (mage/kvctl-cli's listnodes command).
+func RoleName(role byte) string {
+	switch role {
+	case RoleVoter:
+		return "voter"
+	case RoleLearner:
+		return "learner"
+	case RoleLeader:
+		return "leader"
+	default:
+		return fmt.Sprintf("unknown(%d)", role)
+	}
+}
+
 // Status bytes -- where a system record is in its two-stage
 // request/confirm lifecycle (see SystemKey).
 const (
@@ -159,6 +175,24 @@ const clusterMemberStatusPlaceholder = 0x00
 // record -- see that constant's doc comment.
 func ClusterMemberKey(peerID []byte) []byte {
 	return SystemKey(KindClusterMember, clusterMemberStatusPlaceholder, peerID)
+}
+
+// ClusterMemberKeyBounds returns the [lo, hi] key range covering every
+// currently-stored KindClusterMember record -- the enumeration counterpart
+// to ClusterMemberKey's single-record lookup, for a raw range scan (see
+// pkg/shmclient.Session.ListRange/EventListRange). hi pads well past any
+// real peer id's byte length (base58-encoded Ed25519 peer ids run well
+// under 64 bytes), mirroring pkg/kvctl's own kindPrefixBounds pattern for
+// logrecord kinds.
+func ClusterMemberKeyBounds() (lo, hi []byte) {
+	prefix := SystemKey(KindClusterMember, clusterMemberStatusPlaceholder, nil)
+	lo = prefix
+	hi = make([]byte, len(prefix)+64)
+	copy(hi, prefix)
+	for i := len(prefix); i < len(hi); i++ {
+		hi[i] = 0xFF
+	}
+	return lo, hi
 }
 
 // EncodeClusterMemberPayload packs pub and role into a single

@@ -896,6 +896,65 @@ func DeleteNode(peerID string) error {
 	return nil
 }
 
+// ListClusters shows every raft cluster known to this machine's registry
+// (grouped by whichever peer id originally bootstrapped it -- see
+// kvctl.ListClusters), and every locally-created node identity that
+// belongs to each one. This is purely a local registry read: no daemon
+// needs to be running, but for the same reason it only ever shows clusters
+// this machine has itself created or joined a node into -- there is no
+// network-wide cluster discovery. Pass any listed peer id (one whose
+// daemon is currently running) to `mage listnodes` to see that cluster's
+// full live raft membership instead.
+//
+// Usage: mage listclusters
+func ListClusters() error {
+	clusters, err := kvctl.ListClusters()
+	if err != nil {
+		return err
+	}
+	if len(clusters) == 0 {
+		fmt.Println("no nodes registered on this machine")
+		return nil
+	}
+	for _, c := range clusters {
+		fmt.Printf("cluster %s\n", c.ClusterID)
+		for _, m := range c.Members {
+			running := "stopped"
+			if m.Running {
+				running = "running"
+			}
+			fmt.Printf("  %s  role=%s  %s\n", m.PeerID, m.Role, running)
+		}
+	}
+	return nil
+}
+
+// ListNodes queries the already-running node localPeerID for its raft
+// cluster's full live membership (every peer id currently a voter/learner/
+// leader, including peers this machine never created and so has no
+// registry entry for) -- read from that node's own locally-replicated
+// shmevent.KindClusterMember records, see kvctl.ListClusterMembers.
+// localPeerID would typically be one of the peer ids `mage listclusters`
+// just printed, but it must actually be running: unlike raft's own
+// AppendEntries/InstallSnapshot traffic, this query only ever reaches a
+// daemon over local shmring IPC, never a remote peer directly.
+//
+// Usage: mage listnodes <localPeerID>
+func ListNodes(localPeerID string) error {
+	members, err := kvctl.ListClusterMembers(localPeerID)
+	if err != nil {
+		return err
+	}
+	if len(members) == 0 {
+		fmt.Printf("no cluster-member records found via %s\n", localPeerID)
+		return nil
+	}
+	for _, m := range members {
+		fmt.Printf("%s  role=%s\n", m.PeerID, m.Role)
+	}
+	return nil
+}
+
 // Set stores key=value through raft on the current node.
 // Usage: mage set <key> <value>
 func Set(key, value string) error {

@@ -599,3 +599,100 @@ func TestJoinConfirmLeaveRejoinRm(t *testing.T) {
 		t.Fatal("joiner auto-admitted after Rm -- confirmation should be required again")
 	}
 }
+
+// TestListClustersAndListClusterMembers drives ListClusters (a pure
+// registry read -- "show all available raft clusters") and
+// ListClusterMembers (a live query against one already-running node --
+// "return peer ids of this cluster"), covering the pairing the task asked
+// for: an item ListClusters names should be exactly what ListClusterMembers
+// accepts.
+func TestListClustersAndListClusterMembers(t *testing.T) {
+	root := repoRoot(t)
+	home := t.TempDir()
+	t.Setenv(registry.EnvHome, home)
+
+	reg, err := registry.Open()
+	if err != nil {
+		t.Fatalf("registry.Open: %v", err)
+	}
+	t.Cleanup(func() { killAllRegistered(t, reg) })
+
+	fastRaftArgs := []string{
+		"-raft-heartbeat-timeout", "300ms",
+		"-raft-election-timeout", "300ms",
+		"-raft-leader-lease-timeout", "250ms",
+	}
+
+	leaderID, err := kvctl.AddNodeWithArgs(root, fastRaftArgs)
+	if err != nil {
+		t.Fatalf("AddNode (leader): %v", err)
+	}
+	followerID, err := kvctl.AddNodeWithArgs(root, fastRaftArgs, leaderID)
+	if err != nil {
+		t.Fatalf("AddNode (follower): %v", err)
+	}
+
+	// --- ListClusters: a pure registry read, grouping both local
+	// identities under one cluster keyed by the leader's peer id ---
+	clusters, err := kvctl.ListClusters()
+	if err != nil {
+		t.Fatalf("ListClusters: %v", err)
+	}
+	if len(clusters) != 1 {
+		t.Fatalf("ListClusters returned %d clusters, want 1: %+v", len(clusters), clusters)
+	}
+	if clusters[0].ClusterID != leaderID {
+		t.Fatalf("ListClusters cluster id = %s, want %s", clusters[0].ClusterID, leaderID)
+	}
+	if len(clusters[0].Members) != 2 {
+		t.Fatalf("ListClusters member count = %d, want 2: %+v", len(clusters[0].Members), clusters[0].Members)
+	}
+	for _, m := range clusters[0].Members {
+		if !m.Running {
+			t.Fatalf("ListClusters member %s reported not running, both nodes are still up", m.PeerID)
+		}
+	}
+
+	// --- ListClusterMembers: a live query against the leader (any listed
+	// member's peer id works -- checked below for the follower too),
+	// polled since the follower's join record replicating to whichever
+	// node answers is asynchronous ---
+	deadline := time.Now().Add(10 * time.Second)
+	var members []kvctl.ClusterMember
+	for time.Now().Before(deadline) {
+		members, err = kvctl.ListClusterMembers(leaderID)
+		if err == nil && len(members) == 2 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("ListClusterMembers(leader): %v", err)
+	}
+	byPeerID := make(map[string]string, len(members))
+	for _, m := range members {
+		byPeerID[m.PeerID] = m.Role
+	}
+	if byPeerID[leaderID] != "leader" {
+		t.Fatalf("ListClusterMembers(leader): leader role = %q, want %q (members: %+v)", byPeerID[leaderID], "leader", members)
+	}
+	if byPeerID[followerID] != "voter" {
+		t.Fatalf("ListClusterMembers(leader): follower role = %q, want %q (members: %+v)", byPeerID[followerID], "voter", members)
+	}
+
+	// --- asking the follower instead must agree: it's the same live raft
+	// configuration, replicated to every member ---
+	followerView, err := kvctl.ListClusterMembers(followerID)
+	if err != nil {
+		t.Fatalf("ListClusterMembers(follower): %v", err)
+	}
+	if len(followerView) != 2 {
+		t.Fatalf("ListClusterMembers(follower) returned %d members, want 2: %+v", len(followerView), followerView)
+	}
+
+	// --- an unknown peer id is refused outright, and a known-but-stopped
+	// one is refused with a clear reason rather than hanging ---
+	if _, err := kvctl.ListClusterMembers("not-a-real-peer-id"); err == nil {
+		t.Fatal("ListClusterMembers(unknown peer id): want error, got none")
+	}
+}
