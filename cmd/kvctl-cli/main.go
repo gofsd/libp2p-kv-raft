@@ -43,6 +43,10 @@ func main() {
 		cmdSet(os.Args[2:])
 	case "get":
 		cmdGet(os.Args[2:])
+	case "listclusters":
+		cmdListClusters(os.Args[2:])
+	case "listnodes":
+		cmdListNodes(os.Args[2:])
 	case "requestpermit":
 		cmdRequestPermit(os.Args[2:])
 	case "confirmpermit":
@@ -78,6 +82,8 @@ func usage() {
   kvctl-cli use <peerID>
   kvctl-cli set <key> <value>
   kvctl-cli get <key>
+  kvctl-cli listclusters
+  kvctl-cli listnodes <peerID>
   kvctl-cli requestpermit <kind: peer|bootstrap> <peerID> <metadata>
   kvctl-cli confirmpermit <kind: peer|bootstrap> <peerID>
   kvctl-cli revokepermit <kind: peer|bootstrap> <peerID>
@@ -218,6 +224,52 @@ func cmdGet(args []string) {
 		os.Exit(1)
 	}
 	fmt.Println(value)
+}
+
+// cmdListClusters prints, one JSON object per line, every raft cluster
+// known to this machine's registry (kvctl.ListClusters) -- a pure local
+// registry read, no running daemon required.
+func cmdListClusters(args []string) {
+	if len(args) != 0 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli listclusters")
+		os.Exit(2)
+	}
+	clusters, err := kvctl.ListClusters()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "listclusters: %v\n", err)
+		os.Exit(1)
+	}
+	for _, c := range clusters {
+		out, err := json.Marshal(c)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "listclusters: encode result: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(out))
+	}
+}
+
+// cmdListNodes prints, one JSON object per line, every peer id currently
+// in the raft cluster that the already-running node peerID belongs to
+// (kvctl.ListClusterMembers) -- a live query, unlike cmdListClusters.
+func cmdListNodes(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli listnodes <peerID>")
+		os.Exit(2)
+	}
+	members, err := kvctl.ListClusterMembers(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "listnodes: %v\n", err)
+		os.Exit(1)
+	}
+	for _, m := range members {
+		out, err := json.Marshal(m)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "listnodes: encode result: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(out))
+	}
 }
 
 func cmdRequestPermit(args []string) {
