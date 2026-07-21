@@ -232,6 +232,103 @@ func (s *Session) RevokePermit(ctx context.Context, kind byte, peerID []byte) er
 	return nil
 }
 
+// catalogCall is the shared round trip behind every group-based ACL
+// catalog Session method below (PutGroup, DeleteGroupCommand, etc.) --
+// each of the eight just builds its own payload and event type, then
+// reduces to this one send-and-check-for-EventError call.
+func (s *Session) catalogCall(ctx context.Context, eventType uint8, payload []byte) error {
+	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
+		EventType: eventType,
+		Value:     payload,
+		ID:        newID(),
+	}, s.priv)
+	if err != nil {
+		return fmt.Errorf("shmclient: %s: %w", shmevent.EventName(eventType), err)
+	}
+	if resp.EventType == shmevent.EventError {
+		return fmt.Errorf("shmclient: %s: %s", shmevent.EventName(eventType), resp.Value)
+	}
+	return nil
+}
+
+// PutGroup creates or updates (single-step, no separate create/update --
+// see shmevent.KindGroup's doc comment) the Group record id=name on the
+// session's node. Only a current raft voter may do this -- see
+// shmevent.EventGroupPut's doc comment.
+func (s *Session) PutGroup(ctx context.Context, id, name string) error {
+	payload, err := shmevent.EncodeGroupPutPayload(id, name)
+	if err != nil {
+		return fmt.Errorf("shmclient: group_put: %w", err)
+	}
+	return s.catalogCall(ctx, shmevent.EventGroupPut, payload)
+}
+
+// DeleteGroup deletes the Group record id, cascading to every
+// GroupCommand/PeerGroup record referencing it (see
+// kvfsm.OpCascadeDelete). Only a current raft voter may do this.
+func (s *Session) DeleteGroup(ctx context.Context, id string) error {
+	return s.catalogCall(ctx, shmevent.EventGroupDelete, []byte(id))
+}
+
+// PutCommand creates or updates the Command record id={name, peerID}
+// (peerID is where the command may be executed) on the session's node.
+// Only a current raft voter may do this.
+func (s *Session) PutCommand(ctx context.Context, id, name string, peerID []byte) error {
+	payload, err := shmevent.EncodeCommandPutPayload(id, name, peerID)
+	if err != nil {
+		return fmt.Errorf("shmclient: command_put: %w", err)
+	}
+	return s.catalogCall(ctx, shmevent.EventCommandPut, payload)
+}
+
+// DeleteCommand deletes the Command record id, cascading to every
+// GroupCommand record referencing it. Only a current raft voter may do
+// this.
+func (s *Session) DeleteCommand(ctx context.Context, id string) error {
+	return s.catalogCall(ctx, shmevent.EventCommandDelete, []byte(id))
+}
+
+// PutGroupCommand links commandID to groupID -- peers in groupID (see
+// PutPeerGroup) become permitted to submit/execute commandID. Only a
+// current raft voter may do this.
+func (s *Session) PutGroupCommand(ctx context.Context, commandID, groupID []byte) error {
+	payload, err := shmevent.EncodeGroupCommandPayload(commandID, groupID)
+	if err != nil {
+		return fmt.Errorf("shmclient: group_command_put: %w", err)
+	}
+	return s.catalogCall(ctx, shmevent.EventGroupCommandPut, payload)
+}
+
+// DeleteGroupCommand unlinks commandID from groupID. Only a current raft
+// voter may do this.
+func (s *Session) DeleteGroupCommand(ctx context.Context, commandID, groupID []byte) error {
+	payload, err := shmevent.EncodeGroupCommandPayload(commandID, groupID)
+	if err != nil {
+		return fmt.Errorf("shmclient: group_command_delete: %w", err)
+	}
+	return s.catalogCall(ctx, shmevent.EventGroupCommandDelete, payload)
+}
+
+// PutPeerGroup adds peerID as a member of groupID -- see PutGroupCommand
+// for what that grants. Only a current raft voter may do this.
+func (s *Session) PutPeerGroup(ctx context.Context, peerID, groupID []byte) error {
+	payload, err := shmevent.EncodePeerGroupPayload(peerID, groupID)
+	if err != nil {
+		return fmt.Errorf("shmclient: peer_group_put: %w", err)
+	}
+	return s.catalogCall(ctx, shmevent.EventPeerGroupPut, payload)
+}
+
+// DeletePeerGroup removes peerID from groupID. Only a current raft voter
+// may do this.
+func (s *Session) DeletePeerGroup(ctx context.Context, peerID, groupID []byte) error {
+	payload, err := shmevent.EncodePeerGroupPayload(peerID, groupID)
+	if err != nil {
+		return fmt.Errorf("shmclient: peer_group_delete: %w", err)
+	}
+	return s.catalogCall(ctx, shmevent.EventPeerGroupDelete, payload)
+}
+
 // RequestLogPermit lodges a pending permission for peerID to
 // append/query pkg/logrecord records of logKind on the session's node.
 // metadata is opaque, as with RequestPermit. See
@@ -521,6 +618,85 @@ func RevokePermit(ctx context.Context, peerID string, kind byte, targetPeerID []
 		return err
 	}
 	return s.RevokePermit(ctx, kind, targetPeerID)
+}
+
+// PutGroup is the one-shot convenience wrapper around Open+Session.PutGroup.
+func PutGroup(ctx context.Context, peerID, id, name string) error {
+	s, err := Open(ctx, peerID)
+	if err != nil {
+		return err
+	}
+	return s.PutGroup(ctx, id, name)
+}
+
+// DeleteGroup is the one-shot convenience wrapper around
+// Open+Session.DeleteGroup.
+func DeleteGroup(ctx context.Context, peerID, id string) error {
+	s, err := Open(ctx, peerID)
+	if err != nil {
+		return err
+	}
+	return s.DeleteGroup(ctx, id)
+}
+
+// PutCommand is the one-shot convenience wrapper around
+// Open+Session.PutCommand.
+func PutCommand(ctx context.Context, peerID, id, name string, targetPeerID []byte) error {
+	s, err := Open(ctx, peerID)
+	if err != nil {
+		return err
+	}
+	return s.PutCommand(ctx, id, name, targetPeerID)
+}
+
+// DeleteCommand is the one-shot convenience wrapper around
+// Open+Session.DeleteCommand.
+func DeleteCommand(ctx context.Context, peerID, id string) error {
+	s, err := Open(ctx, peerID)
+	if err != nil {
+		return err
+	}
+	return s.DeleteCommand(ctx, id)
+}
+
+// PutGroupCommand is the one-shot convenience wrapper around
+// Open+Session.PutGroupCommand.
+func PutGroupCommand(ctx context.Context, peerID string, commandID, groupID []byte) error {
+	s, err := Open(ctx, peerID)
+	if err != nil {
+		return err
+	}
+	return s.PutGroupCommand(ctx, commandID, groupID)
+}
+
+// DeleteGroupCommand is the one-shot convenience wrapper around
+// Open+Session.DeleteGroupCommand.
+func DeleteGroupCommand(ctx context.Context, peerID string, commandID, groupID []byte) error {
+	s, err := Open(ctx, peerID)
+	if err != nil {
+		return err
+	}
+	return s.DeleteGroupCommand(ctx, commandID, groupID)
+}
+
+// PutPeerGroup is the one-shot convenience wrapper around
+// Open+Session.PutPeerGroup.
+func PutPeerGroup(ctx context.Context, peerID string, targetPeerID, groupID []byte) error {
+	s, err := Open(ctx, peerID)
+	if err != nil {
+		return err
+	}
+	return s.PutPeerGroup(ctx, targetPeerID, groupID)
+}
+
+// DeletePeerGroup is the one-shot convenience wrapper around
+// Open+Session.DeletePeerGroup.
+func DeletePeerGroup(ctx context.Context, peerID string, targetPeerID, groupID []byte) error {
+	s, err := Open(ctx, peerID)
+	if err != nil {
+		return err
+	}
+	return s.DeletePeerGroup(ctx, targetPeerID, groupID)
 }
 
 // RequestLogPermit is the one-shot convenience wrapper around

@@ -1244,6 +1244,167 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		}
 		return shmevent.Msg{EventType: shmevent.EventLeave, ID: m.ID}
 
+	// EventGroupPut/Delete, EventCommandPut/Delete,
+	// EventGroupCommandPut/Delete, and EventPeerGroupPut/Delete implement
+	// the group-based ACL catalog's single-step CRUD (see
+	// shmevent.KindGroup's doc comment): each does the identical inline
+	// "only a raft voter may act" early-reject EventPermitRevoke/
+	// EventLogPermitConfirm above already do for a directly-reached remote
+	// caller (correctness for every other path -- local, or remote hitting
+	// a non-leader node -- still comes from handleConfirmForward's
+	// forward-to-leader hop, whose handleForwardConfirmStream re-checks
+	// voter status against the authenticated forwarding identity
+	// regardless), then decodes its payload, builds the record's key, and
+	// applies via handleConfirmForward -- kvfsm.OpSet for Put (a direct
+	// overwrite: create and update are the same operation, no separate
+	// revision history the way pkg/logrecord keeps), kvfsm.OpDel for a
+	// relation Delete, kvfsm.OpCascadeDelete for a Group/Command Delete
+	// (which also removes every GroupCommand/PeerGroup record referencing
+	// the deleted id -- see kvfsm.Apply's OpCascadeDelete case).
+	case shmevent.EventGroupPut:
+		if caller.remotePeer != "" {
+			rf := n.getRaft()
+			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
+				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
+			}
+		}
+		id, name, err := shmevent.DecodeGroupPutPayload(m.Value)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		key := shmevent.GroupKey([]byte(id))
+		if err := n.handleConfirmForward(ctx, kvfsm.OpSet, key, shmevent.EncodeGroupPayload(name), true); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventGroupPut, ID: m.ID}
+
+	case shmevent.EventGroupDelete:
+		if caller.remotePeer != "" {
+			rf := n.getRaft()
+			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
+				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
+			}
+		}
+		key := shmevent.GroupKey(m.Value)
+		if err := n.handleConfirmForward(ctx, kvfsm.OpCascadeDelete, key, nil, true); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventGroupDelete, ID: m.ID}
+
+	case shmevent.EventCommandPut:
+		if caller.remotePeer != "" {
+			rf := n.getRaft()
+			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
+				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
+			}
+		}
+		id, name, peerID, err := shmevent.DecodeCommandPutPayload(m.Value)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		key := shmevent.CommandKey([]byte(id))
+		value, err := shmevent.EncodeCommandPayload(name, peerID)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		if err := n.handleConfirmForward(ctx, kvfsm.OpSet, key, value, true); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventCommandPut, ID: m.ID}
+
+	case shmevent.EventCommandDelete:
+		if caller.remotePeer != "" {
+			rf := n.getRaft()
+			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
+				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
+			}
+		}
+		key := shmevent.CommandKey(m.Value)
+		if err := n.handleConfirmForward(ctx, kvfsm.OpCascadeDelete, key, nil, true); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventCommandDelete, ID: m.ID}
+
+	case shmevent.EventGroupCommandPut:
+		if caller.remotePeer != "" {
+			rf := n.getRaft()
+			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
+				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
+			}
+		}
+		commandID, groupID, err := shmevent.DecodeGroupCommandPayload(m.Value)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		key, err := shmevent.GroupCommandKey(commandID, groupID)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		if err := n.handleConfirmForward(ctx, kvfsm.OpSet, key, nil, true); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventGroupCommandPut, ID: m.ID}
+
+	case shmevent.EventGroupCommandDelete:
+		if caller.remotePeer != "" {
+			rf := n.getRaft()
+			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
+				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
+			}
+		}
+		commandID, groupID, err := shmevent.DecodeGroupCommandPayload(m.Value)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		key, err := shmevent.GroupCommandKey(commandID, groupID)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		if err := n.handleConfirmForward(ctx, kvfsm.OpDel, key, nil, true); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventGroupCommandDelete, ID: m.ID}
+
+	case shmevent.EventPeerGroupPut:
+		if caller.remotePeer != "" {
+			rf := n.getRaft()
+			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
+				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
+			}
+		}
+		peerID, groupID, err := shmevent.DecodePeerGroupPayload(m.Value)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		key, err := shmevent.PeerGroupKey(peerID, groupID)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		if err := n.handleConfirmForward(ctx, kvfsm.OpSet, key, nil, true); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventPeerGroupPut, ID: m.ID}
+
+	case shmevent.EventPeerGroupDelete:
+		if caller.remotePeer != "" {
+			rf := n.getRaft()
+			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
+				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
+			}
+		}
+		peerID, groupID, err := shmevent.DecodePeerGroupPayload(m.Value)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		key, err := shmevent.PeerGroupKey(peerID, groupID)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		if err := n.handleConfirmForward(ctx, kvfsm.OpDel, key, nil, true); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventPeerGroupDelete, ID: m.ID}
+
 	case shmevent.EventExecute:
 		if err := n.dispatchExecute(ctx, m); err != nil {
 			return errorMsg(m.ID, err)
@@ -1895,18 +2056,25 @@ func (n *Node) handleForwardSetStream(s network.Stream) {
 }
 
 // handleConfirmForward is EventPermitConfirm/EventPermitRevoke's shared
-// counterpart to handleSetForward: applies directly if this node is the
-// leader, or forwards to the leader (one hop only, same allowForward
-// -guarded pattern) if not. op is kvfsm.OpConfirm (key1 = the pending
-// record's key, key2 = the confirmed record's key it's promoted to) or
-// kvfsm.OpDel (key1 = the confirmed record's key being revoked outright,
-// key2 unused -- see kvfsm.Apply's OpDel case). When this node *is* the
-// leader, no separate voter check is needed here -- hashicorp/raft
-// guarantees only a Voter can ever hold leader state, so isLeader==true
-// already implies the caller is a voter. The forwarded path's voter
-// check happens in handleForwardConfirmStream instead, against the
-// authenticated identity of whichever node actually opened the stream --
-// it applies identically regardless of which op is being forwarded.
+// counterpart to handleSetForward -- and, since it's exactly "apply
+// directly if I'm the voter-implying leader, else forward to a voter-
+// checked leader," also the group-based ACL catalog's Put/Delete events'
+// (see shmevent.KindGroup's doc comment): applies directly if this node
+// is the leader, or forwards to the leader (one hop only, same
+// allowForward-guarded pattern) if not. op is kvfsm.OpConfirm (key1 = the
+// pending record's key, key2 = the confirmed record's key it's promoted
+// to), kvfsm.OpDel (key1 = the confirmed record's key being revoked/
+// deleted outright, key2 unused), kvfsm.OpSet (key1 = key, key2 = value,
+// a direct single-step write -- used by EventGroupPut et al., never by
+// EventPermitConfirm/EventPermitRevoke), or kvfsm.OpCascadeDelete (key1 =
+// the Group/Command record's own key, key2 unused -- see kvfsm.Apply's
+// respective cases). When this node *is* the leader, no separate voter
+// check is needed here -- hashicorp/raft guarantees only a Voter can ever
+// hold leader state, so isLeader==true already implies the caller is a
+// voter. The forwarded path's voter check happens in
+// handleForwardConfirmStream instead, against the authenticated identity
+// of whichever node actually opened the stream -- it applies identically
+// regardless of which op is being forwarded.
 func (n *Node) handleConfirmForward(ctx context.Context, op kvfsm.OpType, key1, key2 []byte, allowForward bool) error {
 	rf, isLeader, leaderID, err := n.resolveWriteTarget(5 * n.electionTimeout)
 	if err != nil {
@@ -2007,21 +2175,26 @@ func (n *Node) forwardConfirm(ctx context.Context, leaderID raft.ServerID, op kv
 }
 
 // handleForwardConfirmStream is the leader-side handler for
-// ForwardConfirmProtocolID, shared by EventPermitConfirm (OpConfirm) and
-// EventPermitRevoke (OpDel). Unlike handleForwardSetStream, it checks the
-// stream's libp2p-authenticated remote peer -- s.Conn().RemotePeer(),
-// established by the connection's own handshake and so unforgeable by
-// whatever a caller puts in the message itself -- against the leader's
-// live raft configuration before applying anything, rejecting unless
-// that peer is currently a Voter. This is the actual enforcement of
-// EventPermitConfirm/EventPermitRevoke's "only a raft voter may
-// confirm/revoke" rule: the generic per-message Ed25519 signature check
-// every event type already gets (see handleShmEvent) only proves the
-// message wasn't corrupted and was signed with whoever's key it was
-// checked against -- for local same-machine shmring IPC that's
-// inherently this same node's own key (see pkg/shmevent's doc comment),
-// which doesn't by itself say anything about cluster membership. The
-// RemotePeer check here is what does, uniformly for either op.
+// ForwardConfirmProtocolID, shared by EventPermitConfirm (OpConfirm),
+// EventPermitRevoke (OpDel), and -- reusing this same machinery wholesale
+// rather than building a parallel set of protocols/handlers -- the
+// group-based ACL catalog's single-step Put (OpSet)/Delete (OpDel)/
+// cascading Delete (OpCascadeDelete) events (EventGroupPut,
+// EventGroupCommandDelete, etc.; see shmevent.KindGroup's doc comment).
+// Unlike handleForwardSetStream, it checks the stream's
+// libp2p-authenticated remote peer -- s.Conn().RemotePeer(), established
+// by the connection's own handshake and so unforgeable by whatever a
+// caller puts in the message itself -- against the leader's live raft
+// configuration before applying anything, rejecting unless that peer is
+// currently a Voter. This is the actual enforcement of "only a raft voter
+// may confirm/revoke/put/delete" for every op it accepts: the generic
+// per-message Ed25519 signature check every event type already gets (see
+// handleShmEvent) only proves the message wasn't corrupted and was signed
+// with whoever's key it was checked against -- for local same-machine
+// shmring IPC that's inherently this same node's own key (see
+// pkg/shmevent's doc comment), which doesn't by itself say anything about
+// cluster membership. The RemotePeer check here is what does, uniformly
+// for every op.
 func (n *Node) handleForwardConfirmStream(s network.Stream) {
 	defer s.Close()
 
@@ -2042,8 +2215,8 @@ func (n *Node) handleForwardConfirmStream(s network.Stream) {
 		fmt.Fprintf(s, "forward confirm: decode command: %v", err)
 		return
 	}
-	if op != kvfsm.OpConfirm && op != kvfsm.OpDel {
-		fmt.Fprintf(s, "forward confirm: expected OpConfirm or OpDel, got op %d", op)
+	if op != kvfsm.OpConfirm && op != kvfsm.OpDel && op != kvfsm.OpSet && op != kvfsm.OpCascadeDelete {
+		fmt.Fprintf(s, "forward confirm: unsupported op %d", op)
 		return
 	}
 

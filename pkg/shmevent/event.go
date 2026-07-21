@@ -222,6 +222,38 @@ const (
 	// remote (ClientProtocolID) caller has no legitimate use for it,
 	// since only this node's own operator decides to leave.
 	EventLeave uint8 = 19
+	// EventGroupPut/EventGroupDelete, EventCommandPut/EventCommandDelete,
+	// EventGroupCommandPut/EventGroupCommandDelete, and
+	// EventPeerGroupPut/EventPeerGroupDelete implement direct,
+	// single-step CRUD (create and update both collapse into one Put,
+	// overwriting whatever was at that key -- see
+	// shmevent.KindGroup's doc comment) for the group-based ACL catalog:
+	// any single current raft voter may Put or Delete one of these
+	// records unilaterally, no second-voter confirmation, reusing
+	// EventPermitConfirm/EventPermitRevoke's existing voter-gated
+	// forwarding machinery (pkg/daemon's handleConfirmForward, widened to
+	// also accept kvfsm.OpSet) rather than the two-stage
+	// pending->confirmed pattern EventPermitRequest/EventPermitConfirm
+	// use. Put's Value is EncodeGroupPayload(name)/EncodeCommandPayload
+	// (name, peerID) -- Group/Command's key already carries id
+	// (GroupKey/CommandKey); GroupCommand/PeerGroup Put carries no
+	// payload at all, since both fields of the relation are already in
+	// the key (GroupCommandKey(commandID, groupID)/
+	// PeerGroupKey(peerID, groupID)) and there's nothing else to store.
+	// Delete's Value is the same key-encoding each kind's Put used to
+	// build its key from. Deleting a Group or a Command additionally
+	// cascades: every GroupCommand/PeerGroup record referencing the
+	// deleted id is removed in the same raft Apply (see
+	// pkg/kvfsm.OpCascadeDelete), so a delete never leaves a dangling
+	// relation behind.
+	EventGroupPut           uint8 = 20
+	EventGroupDelete        uint8 = 21
+	EventCommandPut         uint8 = 22
+	EventCommandDelete      uint8 = 23
+	EventGroupCommandPut    uint8 = 24
+	EventGroupCommandDelete uint8 = 25
+	EventPeerGroupPut       uint8 = 26
+	EventPeerGroupDelete    uint8 = 27
 	// EventError is response-only: Value carries a UTF-8 error message,
 	// ID echoes the failed request's ID. Not part of the fields the
 	// protocol was specified with -- added because the struct has no
@@ -272,6 +304,22 @@ func EventName(e uint8) string {
 		return "log_permit_revoke"
 	case EventLeave:
 		return "leave"
+	case EventGroupPut:
+		return "group_put"
+	case EventGroupDelete:
+		return "group_delete"
+	case EventCommandPut:
+		return "command_put"
+	case EventCommandDelete:
+		return "command_delete"
+	case EventGroupCommandPut:
+		return "group_command_put"
+	case EventGroupCommandDelete:
+		return "group_command_delete"
+	case EventPeerGroupPut:
+		return "peer_group_put"
+	case EventPeerGroupDelete:
+		return "peer_group_delete"
 	case EventError:
 		return "error"
 	default:
@@ -324,6 +372,22 @@ func EventFromName(name string) (uint8, bool) {
 		return EventLogPermitRevoke, true
 	case "leave":
 		return EventLeave, true
+	case "group_put":
+		return EventGroupPut, true
+	case "group_delete":
+		return EventGroupDelete, true
+	case "command_put":
+		return EventCommandPut, true
+	case "command_delete":
+		return EventCommandDelete, true
+	case "group_command_put":
+		return EventGroupCommandPut, true
+	case "group_command_delete":
+		return EventGroupCommandDelete, true
+	case "peer_group_put":
+		return EventPeerGroupPut, true
+	case "peer_group_delete":
+		return EventPeerGroupDelete, true
 	case "error":
 		return EventError, true
 	default:

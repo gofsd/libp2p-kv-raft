@@ -11,11 +11,8 @@ import "fmt"
 const SystemKeyPrefix = 0x00
 
 // Kind bytes -- what a system record (see SystemKey) is about. Values
-// 0x05 and above are still unassigned, reserved for future system
-// operations built on this same EventPermitRequest/EventPermitConfirm
-// two-stage workflow (e.g. a raft voter adding or removing another raft
-// voter/learner), so that work can slot in without changing this key
-// layout.
+// 0x0A and above are still unassigned, reserved for future system
+// operations.
 const (
 	KindPermitPeer    byte = 0x01 // permission for a peer to join/use the cluster's relay
 	KindBootstrapNode byte = 0x02 // registration of a stable relay/bootstrap point
@@ -52,6 +49,24 @@ const (
 	// this package and pkg/kvfsm, KindClusterJoin is opaque, handled
 	// identically to any other kind.
 	KindClusterJoin byte = 0x05
+	// KindGroup, KindCommand, KindGroupCommand, and KindPeerGroup
+	// implement the group-based ACL catalog (see pkg/kvctl/catalog.go's
+	// package doc comment): KindGroup/KindCommand are direct records
+	// (GroupKey/CommandKey, one variable ID field, same shape as
+	// ClusterMemberKey); KindGroupCommand/KindPeerGroup are many-to-many
+	// relation records with no pending/confirmed lifecycle of their own
+	// (GroupCommandKey/PeerGroupKey, two variable fields, same shape as
+	// LogPermitKey). Unlike KindPermitPeer/KindClusterJoin, every one of
+	// these four is written directly (kvfsm.OpSet/OpDel) by any single
+	// current raft voter -- no separate confirmation step -- reusing the
+	// existing EventPermitConfirm/EventPermitRevoke voter-gated forwarding
+	// machinery (see pkg/daemon's handleConfirmForward) widened to also
+	// accept OpSet, rather than the two-stage pending->confirmed pattern
+	// every other client-facing kind above uses.
+	KindGroup        byte = 0x06
+	KindCommand      byte = 0x07
+	KindGroupCommand byte = 0x08
+	KindPeerGroup    byte = 0x09
 )
 
 // KindName returns a human-readable name for k, for CLI use (mage/
@@ -67,6 +82,14 @@ func KindName(k byte) string {
 		return "cluster-member"
 	case KindClusterJoin:
 		return "cluster-join"
+	case KindGroup:
+		return "group"
+	case KindCommand:
+		return "command"
+	case KindGroupCommand:
+		return "group-command"
+	case KindPeerGroup:
+		return "peer-group"
 	default:
 		return fmt.Sprintf("unknown(%d)", k)
 	}
@@ -85,6 +108,14 @@ func KindFromName(name string) (byte, bool) {
 		return KindClusterMember, true
 	case "cluster-join":
 		return KindClusterJoin, true
+	case "group":
+		return KindGroup, true
+	case "command":
+		return KindCommand, true
+	case "group-command":
+		return KindGroupCommand, true
+	case "peer-group":
+		return KindPeerGroup, true
 	default:
 		return 0, false
 	}
@@ -247,6 +278,28 @@ func DecodePermitRequestPayload(payload []byte) (kind byte, peerID, metadata []b
 		return 0, nil, nil, fmt.Errorf("shmevent: permit request peerID length %d exceeds payload size %d", idLen, len(payload))
 	}
 	return kind, payload[3 : 3+idLen], payload[3+idLen:], nil
+}
+
+// EncodePermitPeerPayload packs peerID as a confirmed KindPermitPeer
+// record's explicit "id" field -- previously this record's value was
+// always empty, since isPermittedPeer only ever checks key existence, not
+// its value. peerID is already the record's own key (SystemKey's trailing
+// field), so this is trivial (the whole payload IS the id, no other
+// field) -- named and paired with a decoder anyway for symmetry with
+// every other EncodeXPayload/DecodeXPayload pair in this package, and so
+// a future field could be added here without another call-site change.
+func EncodePermitPeerPayload(peerID []byte) []byte {
+	buf := make([]byte, len(peerID))
+	copy(buf, peerID)
+	return buf
+}
+
+// DecodePermitPeerPayload is the inverse of EncodePermitPeerPayload.
+func DecodePermitPeerPayload(payload []byte) (peerID []byte, err error) {
+	if len(payload) == 0 {
+		return nil, fmt.Errorf("shmevent: permit peer payload empty")
+	}
+	return payload, nil
 }
 
 // EncodePermitConfirmPayload packs kind and peerID (the rest of the
