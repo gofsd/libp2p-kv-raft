@@ -449,6 +449,14 @@ does not by itself grant any log-kind access, and vice versa. As with
 `ClientProtocolID`) — a local caller is always trusted as this node's own operator and is
 never gated by it, regardless of raft membership.
 
+The gate covers the *entire* scanned range, not just where it starts: `EventListRange`
+checks whether `[start, end]` overlaps the logrecord namespace at all (any key beginning
+with `logrecord.LogKeyPrefix`), not only whether `start` itself happens to land inside it.
+`pkg/store.Store.ScanRange` is a raw byte range with no concept of namespaces on its own,
+so a `start` chosen from entirely outside the namespace (even the empty string) paired
+with an `end` reaching past it would otherwise still return real logrecord data — bypassing
+the per-kind permit check completely rather than just returning nothing.
+
 ## Vendored dependency patch
 
 `thirdparty/anet` is a local, patched copy of `github.com/wlynxg/anet` (pinned via a `replace`
