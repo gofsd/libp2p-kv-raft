@@ -6,6 +6,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
 import kvmobile.Kvmobile
+import org.json.JSONArray
 
 // Thin UI over mobile/kvmobile.Start/Submit/Get: this device runs a raft
 // follower in-process (see kvmobile's package doc) and every Submit is
@@ -18,6 +19,7 @@ class MainActivity : Activity() {
     private lateinit var resultText: TextView
     private lateinit var submitButton: Button
     private lateinit var getButton: Button
+    private lateinit var clusterButton: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -29,11 +31,14 @@ class MainActivity : Activity() {
         resultText = findViewById(R.id.resultText)
         submitButton = findViewById(R.id.submitButton)
         getButton = findViewById(R.id.getButton)
+        clusterButton = findViewById(R.id.clusterButton)
 
         submitButton.isEnabled = false
         getButton.isEnabled = false
+        clusterButton.isEnabled = false
         submitButton.setOnClickListener { onSubmit() }
         getButton.setOnClickListener { onGet() }
+        clusterButton.setOnClickListener { onListCluster() }
 
         Thread {
             try {
@@ -42,6 +47,7 @@ class MainActivity : Activity() {
                     statusText.text = "Connected as $peerID"
                     submitButton.isEnabled = true
                     getButton.isEnabled = true
+                    clusterButton.isEnabled = true
                 }
             } catch (e: Exception) {
                 runOnUiThread { statusText.text = "Failed to start: ${e.message}" }
@@ -76,6 +82,38 @@ class MainActivity : Activity() {
                 runOnUiThread { resultText.text = "Get failed: ${e.message}" }
             } finally {
                 runOnUiThread { getButton.isEnabled = true }
+            }
+        }.start()
+    }
+
+    // onListCluster shows which cluster this device is currently joined to
+    // (Kvmobile.listClusters, 0 or 1 entries -- see that function's doc
+    // comment for why kvmobile can't report more than that) and that
+    // cluster's full live raft membership (Kvmobile.listClusterMembers),
+    // both JSON arrays.
+    private fun onListCluster() {
+        clusterButton.isEnabled = false
+        Thread {
+            try {
+                val clusters = JSONArray(Kvmobile.listClusters())
+                val members = JSONArray(Kvmobile.listClusterMembers())
+
+                val text = StringBuilder()
+                if (clusters.length() == 0) {
+                    text.append("Not joined to a cluster")
+                } else {
+                    text.append("Cluster: ${clusters.getJSONObject(0).getString("cluster_id")}")
+                }
+                text.append("\nMembers:")
+                for (i in 0 until members.length()) {
+                    val member = members.getJSONObject(i)
+                    text.append("\n  ${member.getString("peer_id")} (${member.getString("role")})")
+                }
+                runOnUiThread { resultText.text = text.toString() }
+            } catch (e: Exception) {
+                runOnUiThread { resultText.text = "Cluster query failed: ${e.message}" }
+            } finally {
+                runOnUiThread { clusterButton.isEnabled = true }
             }
         }.start()
     }
