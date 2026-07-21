@@ -276,49 +276,49 @@ one-shot manual drain; `WatchExecute` is the continuous-delivery alternative, e.
 live "command execution log" view fed by whichever peer is running the command (see that peer's
 own `LogAppend` calls, watched for and re-fetched via `LogQuery` on each poke).
 
-`kvmobile` also has a `Group`/`Command` catalog layer (`catalog.go`), built entirely on
-`LogAppend`/`EventListRange` — no new capnp wire schema: `CreateGroup`/`UpdateGroup`/`DeleteGroup`,
-`GetGroup`/`ListGroups`, and the `Command` counterparts `CreateCommand`/`UpdateCommand`/
-`DeleteCommand`/`GetCommand`/`ListCommands`. Both are `pkg/logrecord.Record` chains — append-only,
-"update" is a fresh revision under the same ID, "delete" a tombstone revision, readers always fold
-down to the latest. A `Command` names a `TargetPeerID` (who executes it) and a `FormSchema` (JSON
-`[]FormField`) describing the inputs its submission form should collect — `kvmobile` only stores
-and discovers a `Command`'s definition, it doesn't interpret or run one. **This is a separate,
-older model from desktop's own `mage`/`pkg/kvctl` Group/Command catalog** (see "Group/command ACL"
-below), which was rewritten onto real daemon-enforced ACL records; `mobile/kvmobile/catalog.go` has
-not been rewired onto that newer model and still works exactly as described in this section.
-
-"Participant of group G" is `IsGroupParticipant(G)`: a confirmed `KindLogPermit` record for
-`logKind = "command:"+G`, the *same* string `G`'s commands are stored under (see `commandLogKind`)
-— granted/revoked via the group-scoped wrappers `RequestGroupParticipation`/
-`ConfirmGroupParticipation`/`RevokeGroupParticipation` (thin wrappers over `*LogPermit`). `Group`
-listing/reading has no participation gate (a public catalog any cluster member may browse or
-propose one into); every `Command` operation, reads included, requires it. This is enforced
-client-side only, inside `kvmobile` itself — nothing in `pkg/daemon` independently blocks a local
-caller from reading/writing its own already-replicated store (`Config.RequirePermitForLog` only
-gates a *different* peer's forwarded request), so it holds only as long as callers go through these
-bindings rather than around them.
+`kvmobile` also has a `Group`/`Command` catalog layer (`catalog.go`), built on the same
+daemon-enforced ACL records desktop's `mage`/`pkg/kvctl` catalog uses (`KindGroup`/`KindCommand`/
+`KindGroupCommand`/`KindPeerGroup` — see "Group/command ACL" above for the full model; this is not
+a separate implementation, just a gomobile-bound wrapper around the identical
+`EventGroupPut`/`EventCommandPut`/`EventGroupCommandPut`/`EventPeerGroupPut` calls). `CreateGroup(id,
+name)`/`UpdateGroup(id, name)`/`DeleteGroup(id)`/`GetGroup(id)`/`ListGroups()` and the `Command`
+counterparts `CreateCommand(id, name, targetPeerID)`/`UpdateCommand`/`DeleteCommand(id)`/
+`GetCommand(id)`/`ListCommands()` mirror `mage creategroup`/`createcommand`/etc. exactly, each
+returning its result as a JSON string (gomobile bindings only support one non-error return value).
+`AddCommandToGroup(commandID, groupID)`/`RemoveCommandFromGroup`/`ListGroupsForCommand(commandID)`
+and `AddPeerToGroup(peerID, groupID)`/`RemovePeerFromGroup`/`ListGroupsForPeer(peerID)` mirror the
+matching `mage` targets — a `Command` no longer names a single owning group directly (it may belong
+to several via `AddCommandToGroup`), and there is no participation permit anymore: any current raft
+voter may write any of these four kinds unilaterally, enforced by `pkg/daemon` itself, not by
+`kvmobile` client-side. Not carried over from the pre-rewrite version: `Group.Description` and
+`Command.Description`/`FormSchema` (the new daemon-enforced records have no room for free-form
+metadata), and `ResolveQRGroup`/`GroupView` — `GroupCommand`'s key is commandID-first, so there's no
+efficient "every command linked to this group" primitive to build a QR-resolved command list from
+anymore; a caller decodes the scanned group id itself and calls `GetGroup` + `ListCommands`
+(the full catalog) instead.
 
 `kvmobile`'s dispatch layer (`dispatch.go`) turns a `Command` from the catalog into an actual
-request/response flow, still with no new capnp wire schema. `ResolveQRGroup` decodes a scanned QR
-payload (`{"group_id":...}`) into a `GroupView` (a `Group` plus its `ListCommands` result) in one
-call. `SubmitCommand(groupID, commandID, inputsJSON)` writes a durable `CommandRequest` under a
-per-group log kind and sends the command's `TargetPeerID` a best-effort `Execute` poke, returning
-an `instanceID` the caller tracks the dispatch by; `GetCommandRequest`/`ListCommandRequests` read
-it back (the latter is a target device's catch-up path for a poke it might have missed). The
-target reports progress with `AppendCommandLog(requesterPeerID, instanceID, fieldsJSON,
-narrative)`, read back via `QueryCommandLog`/`WatchCommandLog` (a 1.5s poll, accelerated but not
-replaced by `AppendCommandLog`'s own poke back to the requester) or `LatestCommandLog(instanceID)`
-for just the newest entry.
+request/response flow, still with no new capnp wire schema — mirrors desktop's
+`pkg/kvctl/dispatch.go` closely enough that the two files carry near-identical doc comments.
+`SubmitCommand(commandID, inputsJSON)` — gated by the same `isPermittedForCommand` join described
+above, evaluated client-side in `kvmobile` itself — writes a durable `CommandRequest` under a
+per-command log kind and sends the command's `TargetPeerID` a best-effort `Execute` poke, returning
+an `instanceID` the caller tracks the dispatch by; `GetCommandRequest(commandID,
+instanceID)`/`ListCommandRequests(commandID)` read it back (the latter is a target device's
+catch-up path for a poke it might have missed). The target reports progress with
+`AppendCommandLog(requesterPeerID, instanceID, fieldsJSON, narrative)`, read back via
+`QueryCommandLog`/`WatchCommandLog` (a 1.5s poll, accelerated but not replaced by
+`AppendCommandLog`'s own poke back to the requester) or `LatestCommandLog(instanceID)` for just the
+newest entry.
 
-`ListExecutionsByPeer(peerID)` answers "every command execution touching this peer, across every
-group" without iterating `ListCommandRequests` per group: `SubmitCommand` writes a small per-peer
-index entry (`commandExecIndexKind`) alongside the `CommandRequest` itself, once for the requester
-and once for the target (skipped if they're the same peer), and `ListExecutionsByPeer` walks just
-that one peer's index, most-recent-first, capped at 200. The index is deliberately thin — it
-stores only `group_id`/`command_id`/a one-byte role code, not `requested_by` (already the record's
-own `AuthorPeerID`) or `target_peer_id` (redundant when the role is target; looked up via
-`GetCommand` for a requester-role entry instead) — because every `pkg/logrecord` write shares
+`ListExecutionsByPeer(peerID)` answers "every command execution touching this peer" without
+iterating `ListCommandRequests` per command: `SubmitCommand` writes a small per-peer index entry
+(`commandExecIndexKind`) alongside the `CommandRequest` itself, once for the requester and once for
+the target (skipped if they're the same peer), and `ListExecutionsByPeer` walks just that one
+peer's index, most-recent-first, capped at 200. The index is deliberately thin — it stores only
+`command_id`/a one-byte role code, not `requested_by` (already the record's own `AuthorPeerID`) or
+`target_peer_id` (redundant when the role is target; looked up via `GetCommand` for a
+requester-role entry instead) — because every `pkg/logrecord` write shares
 `pkg/shmevent.ValueSize`'s 512-byte budget across its *key* (which already embeds a full peer id
 once for this index, via `commandExecIndexKind`) and value combined; an earlier version of this
 index stored both peer ids directly and blew that budget the moment two real ~52-byte peer ids
@@ -462,10 +462,11 @@ the per-kind permit check completely rather than just returning nothing.
 
 ## Group/command ACL
 
-Desktop's `mage`/`pkg/kvctl` has its own group-based command ACL, separate from (and, unlike, see
-above) `mobile/kvmobile`'s older client-side-only catalog: `Group` (`id`, `name`) and `Command`
-(`id`, `name`, `peer_id` — the command's `TargetPeerID`) are direct records, and `GroupCommand`/
-`PeerGroup` are many-to-many relations linking commands to groups and peers to groups
+Desktop's `mage`/`pkg/kvctl` and `mobile/kvmobile` (see `kvmobile`'s own section above for its
+gomobile-bound equivalents) share one group-based command ACL, not two separate implementations:
+`Group` (`id`, `name`) and `Command` (`id`, `name`, `peer_id` — the command's `TargetPeerID`) are
+direct records, and `GroupCommand`/`PeerGroup` are many-to-many relations linking commands to
+groups and peers to groups
 respectively. All four are real `shmevent.SystemKeyPrefix` records (`KindGroup`/`KindCommand`/
 `KindGroupCommand`/`KindPeerGroup`), daemon-enforced rather than a client-side convention:
 

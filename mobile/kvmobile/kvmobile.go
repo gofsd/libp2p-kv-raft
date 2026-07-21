@@ -625,7 +625,7 @@ func LogAppend(kind, unitID, fieldsJSON, narrative string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
-	if err := appendRecord(ctx, sess, kind, unitID, fields, narrative); err != nil {
+	if err := appendRecord(ctx, sess, kind, unitID, PeerID(), fields, narrative); err != nil {
 		return fmt.Errorf("kvmobile: log append: %w", err)
 	}
 	return nil

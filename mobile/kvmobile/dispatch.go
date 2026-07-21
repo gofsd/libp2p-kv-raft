@@ -13,15 +13,15 @@ import (
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmclient"
 )
 
-// This file ties the QR-scan -> catalog -> dispatch -> execution-log flow
-// together: ResolveQRGroup turns a scanned QR payload into the group and
-// its available commands (catalog.go), SubmitCommand dispatches one as a
-// durable, replicated request plus a low-latency Execute poke to whoever
-// executes it, and WatchCommandLog/QueryCommandLog read back the
-// execution log the target device writes with AppendCommandLog as it
-// works. Like catalog.go, every operation here is a plain EventGet/
-// EventLogAppend/EventListRange/EventExecute call -- no new capnp wire
-// schema.
+// This file ties the catalog -> dispatch -> execution-log flow together:
+// SubmitCommand dispatches a catalog.go Command as a durable, replicated
+// request plus a low-latency Execute poke to whoever executes it, and
+// WatchCommandLog/QueryCommandLog read back the execution log the target
+// device writes with AppendCommandLog as it works. Like catalog.go, every
+// operation here is a plain EventGet/EventLogAppend/EventListRange/
+// EventExecute call -- no new capnp wire schema. This is the mobile
+// counterpart of desktop's pkg/kvctl/dispatch.go, and stays deliberately
+// close to it.
 //
 // kvmobile only dispatches and records; it never interprets or runs a
 // Command itself -- that's the target device's own application logic,
@@ -30,91 +30,26 @@ import (
 // delivery alone isn't reliable enough to be the only path) and reporting
 // back via AppendCommandLog.
 
-// qrGroupPayload is the JSON a scanned QR code should decode to --
-// deliberately minimal (just the group id), not a raw capnp
-// pkg/shmevent.Msg: that's this daemon's internal wire format between a
-// caller and its own node, the wrong tool for a printed/displayed QR
-// code.
-type qrGroupPayload struct {
-	GroupID string `json:"group_id"`
-}
-
-// GroupView bundles a Group with its currently available Commands --
-// ResolveQRGroup's result shape, so the calling UI can render the command
-// list screen from one call instead of GetGroup + ListCommands.
-type GroupView struct {
-	Group    Group     `json:"group"`
-	Commands []Command `json:"commands"`
-}
-
-// ResolveQRGroup decodes qrPayloadJSON (see qrGroupPayload), checks the
-// caller is a participant of the named group, and returns a GroupView --
-// the group's definition plus its current command list -- as one JSON
-// object. Returns an error if the payload is malformed, the group doesn't
-// exist, or the caller isn't a participant of it.
-func ResolveQRGroup(qrPayloadJSON string) (string, error) {
-	var payload qrGroupPayload
-	if err := json.Unmarshal([]byte(qrPayloadJSON), &payload); err != nil {
-		return "", fmt.Errorf("kvmobile: decode QR payload: %w", err)
-	}
-	if payload.GroupID == "" {
-		return "", fmt.Errorf("kvmobile: QR payload missing group_id")
-	}
-
-	// Checked explicitly (rather than just letting ListCommands's own
-	// check below surface it) so a non-participant gets a clear error
-	// immediately instead of GetGroup succeeding first and being thrown
-	// away.
-	if err := requireGroupParticipant(payload.GroupID); err != nil {
-		return "", err
-	}
-
-	groupJSON, err := GetGroup(payload.GroupID)
-	if err != nil {
-		return "", err
-	}
-	var group Group
-	if err := json.Unmarshal([]byte(groupJSON), &group); err != nil {
-		return "", fmt.Errorf("kvmobile: decode group: %w", err)
-	}
-
-	commandsJSON, err := ListCommands(payload.GroupID)
-	if err != nil {
-		return "", err
-	}
-	var commands []Command
-	if err := json.Unmarshal([]byte(commandsJSON), &commands); err != nil {
-		return "", fmt.Errorf("kvmobile: decode commands: %w", err)
-	}
-
-	out, err := json.Marshal(GroupView{Group: group, Commands: commands})
-	if err != nil {
-		return "", fmt.Errorf("kvmobile: encode group view: %w", err)
-	}
-	return string(out), nil
-}
-
 // logCommandExecKind is the fixed pkg/logrecord Kind every
 // AppendCommandLog entry is stored under, keyed by instance id (globally
-// unique, not scoped to a group -- see newInstanceID) rather than a
-// per-group Kind the way Command/CommandRequest are, since a caller
-// tracking one dispatch already knows exactly which instance id it wants,
-// with no need to enumerate "every log entry in group G".
+// unique, not scoped to a command -- see newInstanceID) rather than a
+// per-command Kind the way CommandRequest is, since a caller tracking one
+// dispatch already knows exactly which instance id it wants, with no need
+// to enumerate "every log entry for command C".
 const logCommandExecKind = "cmdlog"
 
-// commandRequestLogKind returns the pkg/logrecord Kind every
-// SubmitCommand dispatch (CommandRequest) belonging to groupID is stored
-// under -- same per-group-namespacing reasoning as commandLogKind in
-// catalog.go, so ListCommandRequests can enumerate a group's pending
-// requests with one prefix scan.
-func commandRequestLogKind(groupID string) string {
-	return "cmdreq:" + groupID
+// commandRequestLogKind returns the pkg/logrecord Kind every SubmitCommand
+// dispatch (CommandRequest) of commandID is stored under, so
+// ListCommandRequests can enumerate a command's pending requests with one
+// prefix scan.
+func commandRequestLogKind(commandID string) string {
+	return "cmdreq:" + commandID
 }
 
 // commandExecIndexKind returns the pkg/logrecord Kind SubmitCommand
 // indexes a dispatch under for peerID's sake, once per role (requester,
 // target) peerID plays in it -- see ListExecutionsByPeer, which this
-// makes a single per-peer prefix scan instead of iterating every group's
+// makes a single per-peer prefix scan instead of iterating every command's
 // ListCommandRequests looking for peerID's dispatches.
 func commandExecIndexKind(peerID string) string {
 	return "cmdexec:" + peerID
@@ -131,30 +66,28 @@ const (
 )
 
 // appendCommandExecIndex writes one commandExecIndexKind(peerID) entry
-// for instanceID, naming groupID/commandID and peerID's role in this
-// dispatch (execIndexRoleRequester/execIndexRoleTarget) -- SubmitCommand
-// calls this once per role peerID plays in a dispatch.
+// for instanceID, naming commandID and peerID's role in this dispatch
+// (execIndexRoleRequester/execIndexRoleTarget), attributed to
+// requesterPeerID -- SubmitCommand calls this once per role peerID plays
+// in a dispatch.
 //
 // Deliberately thin: it stores only what ListExecutionsByPeer can't
-// otherwise derive. It does not store requesterPeerID (that's already
-// the record's own AuthorPeerID -- appendRecord always sets it to
-// PeerID(), the dispatching device, regardless of which peer's index
-// this entry belongs to) or targetPeerID (redundant with peerID itself
-// when role is target; ListExecutionsByPeer looks it up via GetCommand
-// for a role-requester entry instead). This matters because
-// commandExecIndexKind(peerID) already embeds a full peer id in the
-// pkg/logrecord key (see BuildKey), and every record here shares
-// pkg/shmevent.ValueSize's single 512-byte budget across key *and*
-// value combined -- an earlier version of this function also stored
+// otherwise derive. It does not store requesterPeerID as a Fields entry
+// (that's already the record's own AuthorPeerID) or targetPeerID
+// (redundant with peerID itself when role is target; ListExecutionsByPeer
+// looks it up via GetCommand for a role-requester entry instead). This
+// matters because commandExecIndexKind(peerID) already embeds a full peer
+// id in the pkg/logrecord key (see BuildKey), and every record here shares
+// pkg/shmevent.ValueSize's single 512-byte budget across key *and* value
+// combined -- an earlier version of this function also stored
 // requested_by/target_peer_id directly and blew that budget the moment
 // two real peer ids (~52 bytes each) were involved at once.
-func appendCommandExecIndex(ctx context.Context, sess *shmclient.Session, peerID, instanceID, groupID, commandID, role string) error {
+func appendCommandExecIndex(ctx context.Context, sess *shmclient.Session, peerID, instanceID, commandID, requesterPeerID, role string) error {
 	fields := map[string]string{
-		"group_id":   groupID,
 		"command_id": commandID,
 		"role":       role,
 	}
-	return appendRecord(ctx, sess, commandExecIndexKind(peerID), instanceID, fields, "")
+	return appendRecord(ctx, sess, commandExecIndexKind(peerID), instanceID, requesterPeerID, fields, "")
 }
 
 // executePoke is the small JSON envelope SubmitCommand/AppendCommandLog
@@ -166,13 +99,12 @@ func appendCommandExecIndex(ctx context.Context, sess *shmclient.Session, peerID
 // what to react to.
 type executePoke struct {
 	Type       string `json:"type"`
-	GroupID    string `json:"group_id,omitempty"`
 	CommandID  string `json:"command_id,omitempty"`
 	InstanceID string `json:"instance_id"`
 }
 
 // newInstanceID returns a fresh random hex id for one SubmitCommand
-// dispatch -- globally unique (not scoped to a group) since
+// dispatch -- globally unique (not scoped to a command) since
 // GetCommandRequest/QueryCommandLog/WatchCommandLog all key off it alone.
 func newInstanceID() (string, error) {
 	var b [16]byte
@@ -187,7 +119,6 @@ func newInstanceID() (string, error) {
 // update/delete for these, only the single revision SubmitCommand writes.
 type CommandRequest struct {
 	InstanceID  string    `json:"instance_id"`
-	GroupID     string    `json:"group_id"`
 	CommandID   string    `json:"command_id"`
 	RequestedBy string    `json:"requested_by"`
 	Inputs      string    `json:"inputs,omitempty"` // caller-defined JSON, opaque to kvmobile
@@ -197,7 +128,6 @@ type CommandRequest struct {
 func recordToCommandRequest(h revisionHistory) CommandRequest {
 	return CommandRequest{
 		InstanceID:  h.latest.UnitID,
-		GroupID:     h.latest.Fields["group_id"],
 		CommandID:   h.latest.Fields["command_id"],
 		RequestedBy: h.latest.AuthorPeerID,
 		Inputs:      h.latest.Fields["inputs"],
@@ -205,42 +135,61 @@ func recordToCommandRequest(h revisionHistory) CommandRequest {
 	}
 }
 
-// SubmitCommand dispatches commandID (which must already exist in
-// groupID -- see CreateCommand) with inputsJSON (caller-defined, opaque
-// to kvmobile -- typically the JSON object a form built from the
-// Command's FormSchema produced) as a durable, replicated
-// CommandRequest, then sends the command's TargetPeerID a low-latency
-// Execute poke naming the new instance id (best-effort: a failed poke
-// doesn't fail the dispatch, since the durable request is the real
-// source of truth -- see ListCommandRequests for the target's catch-up
-// path if the poke never arrives). Returns the instance id, which the
-// caller uses with GetCommandRequest/QueryCommandLog/WatchCommandLog to
-// track this specific dispatch. Requires the caller to already be a
-// participant of groupID.
+// SubmitCommand dispatches commandID (which must already exist -- see
+// CreateCommand) with inputsJSON (caller-defined, opaque to kvmobile --
+// typically the JSON object a form built around the command's known
+// inputs produced) as a durable, replicated CommandRequest, then sends the
+// command's TargetPeerID a low-latency Execute poke naming the new
+// instance id (best-effort: a failed poke doesn't fail the dispatch,
+// since the durable request is the real source of truth -- see
+// ListCommandRequests for the target's catch-up path if the poke never
+// arrives). Returns the instance id, which the caller uses with
+// GetCommandRequest/QueryCommandLog/WatchCommandLog to track this specific
+// dispatch.
+//
+// Requires this device's own current peer id to be permitted for
+// commandID (isPermittedForCommand: some group both commandID is linked
+// to via AddCommandToGroup and this device is a member of via
+// AddPeerToGroup) -- see catalog.go's doc comment for the full ACL model.
+// Unlike the group-participation check this replaces,
+// CreateGroup/CreateCommand/AddCommandToGroup/AddPeerToGroup themselves
+// are pkg/daemon-enforced (voter-gated), but this specific check -- "is
+// the submitting peer currently entitled to this command" -- is still
+// evaluated here in kvmobile, not independently inside pkg/daemon's
+// generic EventLogAppend handling, so it's only as strong as every caller
+// actually going through SubmitCommand rather than writing a
+// commandRequestLogKind record directly.
 //
 // kvmobile only dispatches and records the request; actually running
 // commandID is the target device's own application logic (see
 // AppendCommandLog for how it reports back).
-func SubmitCommand(groupID, commandID, inputsJSON string) (string, error) {
+func SubmitCommand(commandID, inputsJSON string) (string, error) {
 	sess, err := currentSession()
 	if err != nil {
 		return "", err
 	}
-	if err := requireGroupParticipant(groupID); err != nil {
-		return "", err
-	}
+	requesterPeerID := PeerID()
 
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
 
-	h, err := scanRevisions(ctx, sess, commandLogKind(groupID), commandID)
+	ok, err := isPermittedForCommand(ctx, sess, requesterPeerID, commandID)
 	if err != nil {
 		return "", fmt.Errorf("kvmobile: submit command: %w", err)
 	}
-	if !h.found || h.latest.Fields["deleted"] == "true" {
-		return "", fmt.Errorf("kvmobile: command %s not found in group %s", commandID, groupID)
+	if !ok {
+		return "", fmt.Errorf("kvmobile: %s is not permitted to submit command %s", requesterPeerID, commandID)
 	}
-	targetPeerID := h.latest.Fields["target_peer_id"]
+
+	cmdJSON, err := GetCommand(commandID)
+	if err != nil {
+		return "", err
+	}
+	var cmd Command
+	if err := json.Unmarshal([]byte(cmdJSON), &cmd); err != nil {
+		return "", fmt.Errorf("kvmobile: submit command: decode %s: %w", commandID, err)
+	}
+	targetPeerID := cmd.TargetPeerID
 
 	instanceID, err := newInstanceID()
 	if err != nil {
@@ -248,55 +197,51 @@ func SubmitCommand(groupID, commandID, inputsJSON string) (string, error) {
 	}
 
 	fields := map[string]string{
-		"group_id":   groupID,
 		"command_id": commandID,
 	}
 	if inputsJSON != "" {
 		fields["inputs"] = inputsJSON
 	}
-	if err := appendRecord(ctx, sess, commandRequestLogKind(groupID), instanceID, fields, ""); err != nil {
+	if err := appendRecord(ctx, sess, commandRequestLogKind(commandID), instanceID, requesterPeerID, fields, ""); err != nil {
 		return "", fmt.Errorf("kvmobile: submit command: %w", err)
 	}
 
-	requesterPeerID := PeerID()
-	if err := appendCommandExecIndex(ctx, sess, requesterPeerID, instanceID, groupID, commandID, execIndexRoleRequester); err != nil {
+	if err := appendCommandExecIndex(ctx, sess, requesterPeerID, instanceID, commandID, requesterPeerID, execIndexRoleRequester); err != nil {
 		return "", fmt.Errorf("kvmobile: submit command: %w", err)
 	}
 	if targetPeerID != requesterPeerID {
-		if err := appendCommandExecIndex(ctx, sess, targetPeerID, instanceID, groupID, commandID, execIndexRoleTarget); err != nil {
+		if err := appendCommandExecIndex(ctx, sess, targetPeerID, instanceID, commandID, requesterPeerID, execIndexRoleTarget); err != nil {
 			return "", fmt.Errorf("kvmobile: submit command: %w", err)
 		}
 	}
 
-	if poke, err := json.Marshal(executePoke{Type: "cmd_req", GroupID: groupID, CommandID: commandID, InstanceID: instanceID}); err == nil {
+	if poke, err := json.Marshal(executePoke{Type: "cmd_req", CommandID: commandID, InstanceID: instanceID}); err == nil {
 		_ = Execute(targetPeerID, string(poke))
 	}
 
 	return instanceID, nil
 }
 
-// GetCommandRequest returns instanceID's dispatch record within groupID
-// as a JSON CommandRequest, or an error if it doesn't exist or the caller
-// isn't a participant of groupID. Typically called by the target device
-// after receiving a "cmd_req" Execute poke (see executePoke), to learn
-// which command and inputs it names.
-func GetCommandRequest(groupID, instanceID string) (string, error) {
+// GetCommandRequest returns instanceID's dispatch record for commandID as
+// a JSON CommandRequest, or an error if it doesn't exist. commandID is
+// needed to know which storage namespace to look in
+// (commandRequestLogKind) -- typically already known to the caller, since
+// it's also named in the "cmd_req" Execute poke that usually prompts this
+// call (see executePoke).
+func GetCommandRequest(commandID, instanceID string) (string, error) {
 	sess, err := currentSession()
 	if err != nil {
-		return "", err
-	}
-	if err := requireGroupParticipant(groupID); err != nil {
 		return "", err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
-	h, err := scanRevisions(ctx, sess, commandRequestLogKind(groupID), instanceID)
+	h, err := scanRevisions(ctx, sess, commandRequestLogKind(commandID), instanceID)
 	if err != nil {
 		return "", fmt.Errorf("kvmobile: get command request: %w", err)
 	}
 	if !h.found {
-		return "", fmt.Errorf("kvmobile: command request %s not found in group %s", instanceID, groupID)
+		return "", fmt.Errorf("kvmobile: command request %s not found for command %s", instanceID, commandID)
 	}
 
 	out, err := json.Marshal(recordToCommandRequest(h))
@@ -307,31 +252,28 @@ func GetCommandRequest(groupID, instanceID string) (string, error) {
 }
 
 // ListCommandRequests returns every dispatch request currently recorded
-// for groupID as a JSON array of CommandRequest (`"[]"` when none exist),
-// oldest first. How a target device catches up on requests it might have
-// missed an Execute poke for -- pokes are unreplicated and dropped if the
-// device wasn't running to receive them (see SubmitCommand's doc
-// comment) -- e.g. on app startup, or polled periodically alongside
-// WatchExecute as a reliability fallback.
-func ListCommandRequests(groupID string) (string, error) {
+// for commandID as a JSON array of CommandRequest (`"[]"` when none
+// exist), oldest first. How a target device catches up on requests it
+// might have missed an Execute poke for -- pokes are unreplicated and
+// dropped if the device wasn't running to receive them (see
+// SubmitCommand's doc comment) -- e.g. on app startup, or polled
+// periodically alongside WatchExecute as a reliability fallback.
+func ListCommandRequests(commandID string) (string, error) {
 	sess, err := currentSession()
 	if err != nil {
-		return "", err
-	}
-	if err := requireGroupParticipant(groupID); err != nil {
 		return "", err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
-	ids, err := listUnitIDs(ctx, sess, commandRequestLogKind(groupID))
+	ids, err := listUnitIDs(ctx, sess, commandRequestLogKind(commandID))
 	if err != nil {
 		return "", fmt.Errorf("kvmobile: list command requests: %w", err)
 	}
 
 	requests := []CommandRequest{}
 	for _, id := range ids {
-		h, err := scanRevisions(ctx, sess, commandRequestLogKind(groupID), id)
+		h, err := scanRevisions(ctx, sess, commandRequestLogKind(commandID), id)
 		if err != nil {
 			return "", fmt.Errorf("kvmobile: list command requests: %w", err)
 		}
@@ -360,11 +302,9 @@ const maxExecutionsByPeer = 200
 // peerID was on. The same instance appears twice, once under each role's
 // peer, if requester and target differ. TargetPeerID is "" for a
 // requester-role entry if this device could not resolve it (see
-// targetPeerIDForCommand) -- e.g. the command was since deleted, or this
-// device isn't a participant of that group.
+// targetPeerIDForCommand) -- e.g. the command was since deleted.
 type CommandExecution struct {
 	InstanceID   string    `json:"instance_id"`
-	GroupID      string    `json:"group_id"`
 	CommandID    string    `json:"command_id"`
 	RequestedBy  string    `json:"requested_by"`
 	TargetPeerID string    `json:"target_peer_id"`
@@ -373,15 +313,13 @@ type CommandExecution struct {
 }
 
 // targetPeerIDForCommand best-effort resolves commandID's current
-// TargetPeerID within groupID -- ListExecutionsByPeer's fallback for a
-// role-requester index entry, which (see appendCommandExecIndex's doc
-// comment on why the index is deliberately thin) doesn't store
-// target_peer_id itself. Returns "" rather than an error if the command
-// was since deleted or this device isn't (or is no longer) a participant
-// of groupID -- a missing detail on one history entry shouldn't fail the
-// whole list.
-func targetPeerIDForCommand(groupID, commandID string) string {
-	out, err := GetCommand(groupID, commandID)
+// TargetPeerID -- ListExecutionsByPeer's fallback for a role-requester
+// index entry, which (see appendCommandExecIndex's doc comment on why the
+// index is deliberately thin) doesn't store target_peer_id itself.
+// Returns "" rather than an error if the command was since deleted -- a
+// missing detail on one history entry shouldn't fail the whole list.
+func targetPeerIDForCommand(commandID string) string {
+	out, err := GetCommand(commandID)
 	if err != nil {
 		return ""
 	}
@@ -395,11 +333,11 @@ func targetPeerIDForCommand(groupID, commandID string) string {
 // ListExecutionsByPeer returns up to the maxExecutionsByPeer most recent
 // SubmitCommand dispatches touching peerID, as either requester or
 // target, most recent first -- the binding behind "show me every command
-// execution involving this peer, across every group, without me
-// iterating ListCommandRequests per group myself." Backed by the
-// dedicated per-peer index SubmitCommand writes at dispatch time (see
+// execution involving this peer, without me iterating
+// ListCommandRequests per command myself." Backed by the dedicated
+// per-peer index SubmitCommand writes at dispatch time (see
 // commandExecIndexKind/appendCommandExecIndex), so this costs one prefix
-// scan over peerID's own dispatch history, not O(groups) -- plus one
+// scan over peerID's own dispatch history, not O(commands) -- plus one
 // GetCommand lookup per requester-role entry to resolve TargetPeerID
 // (see targetPeerIDForCommand), since the index itself doesn't carry it.
 //
@@ -436,11 +374,10 @@ func ListExecutionsByPeer(peerID string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("kvmobile: list executions by peer: decode: %w", err)
 		}
-		groupID, commandID := rec.Fields["group_id"], rec.Fields["command_id"]
+		commandID := rec.Fields["command_id"]
 
 		exec := CommandExecution{
 			InstanceID:  rec.UnitID,
-			GroupID:     groupID,
 			CommandID:   commandID,
 			RequestedBy: rec.AuthorPeerID,
 			RequestedAt: rec.Timestamp,
@@ -450,7 +387,7 @@ func ListExecutionsByPeer(peerID string) (string, error) {
 			exec.TargetPeerID = peerID
 		} else {
 			exec.Role = "requester"
-			exec.TargetPeerID = targetPeerIDForCommand(groupID, commandID)
+			exec.TargetPeerID = targetPeerIDForCommand(commandID)
 		}
 
 		window = append(window, exec)

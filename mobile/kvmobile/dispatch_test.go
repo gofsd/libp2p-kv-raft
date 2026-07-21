@@ -10,6 +10,35 @@ import (
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
 
+// grantCommandAccess links commandID to groupID (AddCommandToGroup) and
+// adds peerID to groupID (AddPeerToGroup) -- the two-step ACL setup
+// SubmitCommand's isPermittedForCommand check requires, replacing the old
+// single grantSelfParticipation call now that participation has been
+// replaced by real GroupCommand/PeerGroup records.
+func grantCommandAccess(t *testing.T, commandID, groupID, peerID string) {
+	t.Helper()
+	if err := CreateGroup(groupID, groupID); err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	if err := AddCommandToGroup(commandID, groupID); err != nil {
+		t.Fatalf("AddCommandToGroup: %v", err)
+	}
+	if err := AddPeerToGroup(peerID, groupID); err != nil {
+		t.Fatalf("AddPeerToGroup: %v", err)
+	}
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		out, err := ListGroupsForPeer(peerID)
+		if err != nil {
+			return false, err
+		}
+		var groupIDs []string
+		if err := json.Unmarshal([]byte(out), &groupIDs); err != nil {
+			return false, err
+		}
+		return len(groupIDs) == 1, nil
+	})
+}
+
 // TestSubmitCommandIndexesExecutionsByPeer drives SubmitCommand and checks
 // ListExecutionsByPeer surfaces the resulting dispatch under both the
 // requester's and the target's peer id, with the right Role each time --
@@ -30,20 +59,19 @@ func TestSubmitCommandIndexesExecutionsByPeer(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	const groupID = "grp-exec"
 	const targetPeerID = "some-target-peer-id"
 	requesterPeerID := PeerID()
 
-	grantSelfParticipation(t, groupID)
-	if err := CreateCommand("cmd-1", groupID, targetPeerID, "Reboot", "restart", ""); err != nil {
+	if err := CreateCommand("cmd-1", "Reboot", targetPeerID); err != nil {
 		t.Fatalf("CreateCommand: %v", err)
 	}
 	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
-		_, err := GetCommand(groupID, "cmd-1")
+		_, err := GetCommand("cmd-1")
 		return err == nil, nil
 	})
+	grantCommandAccess(t, "cmd-1", "grp-exec", requesterPeerID)
 
-	instanceID, err := SubmitCommand(groupID, "cmd-1", `{"delay":5}`)
+	instanceID, err := SubmitCommand("cmd-1", `{"delay":5}`)
 	if err != nil {
 		t.Fatalf("SubmitCommand: %v", err)
 	}
@@ -75,7 +103,7 @@ func TestSubmitCommandIndexesExecutionsByPeer(t *testing.T) {
 		return ok, nil
 	})
 	if requesterEntry.Role != "requester" || requesterEntry.RequestedBy != requesterPeerID ||
-		requesterEntry.TargetPeerID != targetPeerID || requesterEntry.GroupID != groupID || requesterEntry.CommandID != "cmd-1" {
+		requesterEntry.TargetPeerID != targetPeerID || requesterEntry.CommandID != "cmd-1" {
 		t.Fatalf("ListExecutionsByPeer(requester) entry = %+v, unexpected", requesterEntry)
 	}
 
@@ -120,18 +148,18 @@ func TestSubmitCommandSelfTargetWritesOneIndexEntry(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	const groupID = "grp-self-target"
 	selfPeerID := PeerID()
 
-	grantSelfParticipation(t, groupID)
-	if err := CreateCommand("cmd-self", groupID, selfPeerID, "Self", "", ""); err != nil {
+	if err := CreateCommand("cmd-self", "Self", selfPeerID); err != nil {
 		t.Fatalf("CreateCommand: %v", err)
 	}
 	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
-		_, err := GetCommand(groupID, "cmd-self")
+		_, err := GetCommand("cmd-self")
 		return err == nil, nil
 	})
-	instanceID, err := SubmitCommand(groupID, "cmd-self", "")
+	grantCommandAccess(t, "cmd-self", "grp-self-target", selfPeerID)
+
+	instanceID, err := SubmitCommand("cmd-self", "")
 	if err != nil {
 		t.Fatalf("SubmitCommand: %v", err)
 	}

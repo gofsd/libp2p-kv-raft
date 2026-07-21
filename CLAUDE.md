@@ -88,11 +88,11 @@ Catalog/dispatch targets (wrap `pkg/kvctl/catalog.go`+`dispatch.go`). The Group/
 itself (`creategroup`/`createcommand`/etc.) is **daemon-enforced ACL state** — real
 `shmevent.SystemKeyPrefix` records (`KindGroup`/`KindCommand`/`KindGroupCommand`/`KindPeerGroup`),
 voter-gated CRUD, same as permits — see README's "Group/command ACL" section for the model.
-`SubmitCommand`/dispatch itself is still `pkg/logrecord`-based, same as before. **This is not the
-same model `mobile/kvmobile`'s own Group/Command catalog uses** — `mobile/kvmobile/catalog.go`
-still has its own, older, client-side-only participation model (`pkg/logrecord` chains + a
-`KindLogPermit` grant, enforced only inside `kvmobile` itself) and has not been rewired onto the
-daemon-enforced kinds; see README's `kvmobile` section for that one specifically:
+`SubmitCommand`/dispatch itself is still `pkg/logrecord`-based, same as before.
+`mobile/kvmobile/catalog.go`+`dispatch.go` were ported onto this identical model (no more separate
+`pkg/logrecord`-based participation scheme) -- see README's `kvmobile` section for the
+gomobile-bound equivalents (`CreateGroup`/`AddPeerToGroup`/`SubmitCommand`/etc.), which mirror
+these `mage` targets one-for-one:
 
 ```bash
 mage creategroup/updategroup/deletegroup/getgroup/listgroups <id> [name]

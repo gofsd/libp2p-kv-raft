@@ -9,9 +9,8 @@ import (
 
 // pollUntilTrue retries check until it reports true, or fails the test
 // after timeout -- the shared retry shape every catalog test below needs
-// since a write forwarded through raft (LogAppend, permit
-// request/confirm) becomes locally readable asynchronously, same reason
-// pkg/kvctl's own cross-node tests poll.
+// since a write forwarded through raft becomes locally readable
+// asynchronously, same reason pkg/kvctl's own cross-node tests poll.
 func pollUntilTrue(t *testing.T, timeout time.Duration, check func() (bool, error)) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -28,28 +27,10 @@ func pollUntilTrue(t *testing.T, timeout time.Duration, check func() (bool, erro
 	t.Fatalf("condition not met within %s (last error: %v)", timeout, lastErr)
 }
 
-// grantSelfParticipation makes this device a confirmed participant of
-// groupID -- request-then-confirm against its own session, which works
-// because a kvmobile follower always joins as a full raft voter (see
-// ConfirmLogPermit's doc comment), not because of any special-casing
-// here.
-func grantSelfParticipation(t *testing.T, groupID string) {
-	t.Helper()
-	if err := RequestGroupParticipation(groupID, PeerID(), ""); err != nil {
-		t.Fatalf("RequestGroupParticipation: %v", err)
-	}
-	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
-		return true, ConfirmGroupParticipation(groupID, PeerID())
-	})
-	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
-		return IsGroupParticipant(groupID)
-	})
-}
-
 // TestGroupCRUD drives Create/Get/List/Update/Delete against a real
-// leader: Update/Delete must refuse before this device is a confirmed
-// participant of the group and succeed after, and Delete's tombstone must
-// exclude the group from both Get and List afterward.
+// leader -- a kvmobile follower always joins as a full raft voter (see
+// pkg/daemon's join path), so every write here succeeds unconditionally,
+// no participation gate exists anymore (see catalog.go's doc comment).
 func TestGroupCRUD(t *testing.T) {
 	leaderAddr := spawnTestLeader(t, t.TempDir())
 
@@ -66,7 +47,7 @@ func TestGroupCRUD(t *testing.T) {
 	}
 
 	const groupID = "grp-1"
-	if err := CreateGroup(groupID, "Group One", "first group"); err != nil {
+	if err := CreateGroup(groupID, "Group One"); err != nil {
 		t.Fatalf("CreateGroup: %v", err)
 	}
 
@@ -78,7 +59,7 @@ func TestGroupCRUD(t *testing.T) {
 		}
 		return true, json.Unmarshal([]byte(out), &g)
 	})
-	if g.ID != groupID || g.Name != "Group One" || g.Description != "first group" {
+	if g.ID != groupID || g.Name != "Group One" {
 		t.Fatalf("GetGroup = %+v, unexpected", g)
 	}
 
@@ -99,13 +80,7 @@ func TestGroupCRUD(t *testing.T) {
 		return false, nil
 	})
 
-	if err := UpdateGroup(groupID, "Renamed", "updated desc"); err == nil {
-		t.Fatalf("UpdateGroup before participation: want error, got none")
-	}
-
-	grantSelfParticipation(t, groupID)
-
-	if err := UpdateGroup(groupID, "Renamed", "updated desc"); err != nil {
+	if err := UpdateGroup(groupID, "Renamed"); err != nil {
 		t.Fatalf("UpdateGroup: %v", err)
 	}
 	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
@@ -118,9 +93,6 @@ func TestGroupCRUD(t *testing.T) {
 		}
 		return g.Name == "Renamed", nil
 	})
-	if g.Description != "updated desc" {
-		t.Fatalf("GetGroup after update Description = %q, want %q", g.Description, "updated desc")
-	}
 
 	if err := DeleteGroup(groupID); err != nil {
 		t.Fatalf("DeleteGroup: %v", err)
@@ -147,51 +119,7 @@ func TestGroupCRUD(t *testing.T) {
 	})
 }
 
-// TestGroupParticipationLifecycle drives IsGroupParticipant/
-// RequestGroupParticipation/ConfirmGroupParticipation/
-// RevokeGroupParticipation end to end.
-func TestGroupParticipationLifecycle(t *testing.T) {
-	leaderAddr := spawnTestLeader(t, t.TempDir())
-
-	prevLeader := leaderMultiaddr
-	leaderMultiaddr = leaderAddr
-	t.Cleanup(func() {
-		leaderMultiaddr = prevLeader
-		if err := Stop(); err != nil {
-			t.Errorf("Stop: %v", err)
-		}
-	})
-	if _, err := Start(t.TempDir()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-
-	const groupID = "grp-participation"
-
-	ok, err := IsGroupParticipant(groupID)
-	if err != nil {
-		t.Fatalf("IsGroupParticipant (before): %v", err)
-	}
-	if ok {
-		t.Fatalf("IsGroupParticipant (before) = true, want false")
-	}
-
-	grantSelfParticipation(t, groupID)
-
-	if err := RevokeGroupParticipation(groupID, PeerID()); err != nil {
-		t.Fatalf("RevokeGroupParticipation: %v", err)
-	}
-	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
-		ok, err := IsGroupParticipant(groupID)
-		if err != nil {
-			return false, err
-		}
-		return !ok, nil
-	})
-}
-
-// TestCommandCRUD drives Create/Get/List/Update/Delete for Commands,
-// including the participation gate (unlike Group, every Command operation
-// -- reads included -- requires it) and the FormSchema JSON round-trip.
+// TestCommandCRUD drives Create/Get/List/Update/Delete for Commands.
 func TestCommandCRUD(t *testing.T) {
 	leaderAddr := spawnTestLeader(t, t.TempDir())
 
@@ -208,40 +136,24 @@ func TestCommandCRUD(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	const groupID = "grp-cmds"
-
-	if err := CreateCommand("cmd-1", groupID, followerID, "Reboot", "restart the device", ""); err == nil {
-		t.Fatalf("CreateCommand before participation: want error, got none")
-	}
-
-	grantSelfParticipation(t, groupID)
-
-	schema := []FormField{{Name: "delay_seconds", Label: "Delay (seconds)", Type: "number", Required: true}}
-	schemaJSON, err := json.Marshal(schema)
-	if err != nil {
-		t.Fatalf("marshal schema: %v", err)
-	}
-	if err := CreateCommand("cmd-1", groupID, followerID, "Reboot", "restart the device", string(schemaJSON)); err != nil {
+	if err := CreateCommand("cmd-1", "Reboot", followerID); err != nil {
 		t.Fatalf("CreateCommand: %v", err)
 	}
 
 	var cmd Command
 	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
-		out, err := GetCommand(groupID, "cmd-1")
+		out, err := GetCommand("cmd-1")
 		if err != nil {
 			return false, err
 		}
 		return true, json.Unmarshal([]byte(out), &cmd)
 	})
-	if cmd.Name != "Reboot" || cmd.TargetPeerID != followerID || cmd.GroupID != groupID {
+	if cmd.Name != "Reboot" || cmd.TargetPeerID != followerID {
 		t.Fatalf("GetCommand = %+v, unexpected", cmd)
-	}
-	if len(cmd.FormSchema) != 1 || cmd.FormSchema[0].Name != "delay_seconds" {
-		t.Fatalf("GetCommand FormSchema = %+v, want one field named delay_seconds", cmd.FormSchema)
 	}
 
 	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
-		out, err := ListCommands(groupID)
+		out, err := ListCommands()
 		if err != nil {
 			return false, err
 		}
@@ -257,18 +169,14 @@ func TestCommandCRUD(t *testing.T) {
 		return false, nil
 	})
 
-	if err := UpdateCommand("cmd-1", groupID, followerID, "Reboot Now", "restart immediately", ""); err != nil {
+	if err := UpdateCommand("cmd-1", "Reboot Now", followerID); err != nil {
 		t.Fatalf("UpdateCommand: %v", err)
 	}
 	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
-		out, err := GetCommand(groupID, "cmd-1")
+		out, err := GetCommand("cmd-1")
 		if err != nil {
 			return false, err
 		}
-		// A fresh Command per attempt: json.Unmarshal only overwrites
-		// fields present in the source JSON, so reusing the outer cmd
-		// across iterations would leave a stale FormSchema (omitempty,
-		// absent once cleared) from an earlier revision's decode.
 		var fresh Command
 		if err := json.Unmarshal([]byte(out), &fresh); err != nil {
 			return false, err
@@ -276,19 +184,16 @@ func TestCommandCRUD(t *testing.T) {
 		cmd = fresh
 		return cmd.Name == "Reboot Now", nil
 	})
-	if len(cmd.FormSchema) != 0 {
-		t.Fatalf("GetCommand after update FormSchema = %+v, want empty (update passed no schema)", cmd.FormSchema)
-	}
 
-	if err := DeleteCommand(groupID, "cmd-1"); err != nil {
+	if err := DeleteCommand("cmd-1"); err != nil {
 		t.Fatalf("DeleteCommand: %v", err)
 	}
 	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
-		_, err := GetCommand(groupID, "cmd-1")
+		_, err := GetCommand("cmd-1")
 		return err != nil, nil
 	})
 	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
-		out, err := ListCommands(groupID)
+		out, err := ListCommands()
 		if err != nil {
 			return false, err
 		}
@@ -298,10 +203,229 @@ func TestCommandCRUD(t *testing.T) {
 		}
 		return len(cmds) == 0, nil
 	})
+}
 
-	if _, err := ListCommands("some-other-group-never-joined"); err == nil {
-		t.Fatalf("ListCommands for non-participant group: want error, got none")
+// TestGroupCommandAndPeerGroupLinkingGatesSubmitCommand drives the full
+// group-based ACL chain end to end: a peer with no PeerGroup membership at
+// all must be refused by SubmitCommand; linking commandID to a group
+// (AddCommandToGroup) alone still isn't enough; adding the peer to that
+// group (AddPeerToGroup) is what finally permits it; removing the peer
+// from the group revokes access again. Mirrors
+// pkg/kvctl/catalog_test.go's identical test.
+func TestGroupCommandAndPeerGroupLinkingGatesSubmitCommand(t *testing.T) {
+	leaderAddr := spawnTestLeader(t, t.TempDir())
+
+	prevLeader := leaderMultiaddr
+	leaderMultiaddr = leaderAddr
+	t.Cleanup(func() {
+		leaderMultiaddr = prevLeader
+		if err := Stop(); err != nil {
+			t.Errorf("Stop: %v", err)
+		}
+	})
+	followerID, err := Start(t.TempDir())
+	if err != nil {
+		t.Fatalf("Start: %v", err)
 	}
+
+	if err := CreateGroup("grp-1", "Group One"); err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	if err := CreateCommand("cmd-1", "Reboot", followerID); err != nil {
+		t.Fatalf("CreateCommand: %v", err)
+	}
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		_, err := GetCommand("cmd-1")
+		return err == nil, nil
+	})
+
+	if _, err := SubmitCommand("cmd-1", ""); err == nil {
+		t.Fatalf("SubmitCommand before any group link: want error, got none")
+	}
+
+	if err := AddCommandToGroup("cmd-1", "grp-1"); err != nil {
+		t.Fatalf("AddCommandToGroup: %v", err)
+	}
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		out, err := ListGroupsForCommand("cmd-1")
+		if err != nil {
+			return false, err
+		}
+		var groupIDs []string
+		if err := json.Unmarshal([]byte(out), &groupIDs); err != nil {
+			return false, err
+		}
+		return len(groupIDs) == 1 && groupIDs[0] == "grp-1", nil
+	})
+
+	// Linked to a group, but followerID isn't a member of it yet.
+	if _, err := SubmitCommand("cmd-1", ""); err == nil {
+		t.Fatalf("SubmitCommand before peer joined the group: want error, got none")
+	}
+
+	if err := AddPeerToGroup(followerID, "grp-1"); err != nil {
+		t.Fatalf("AddPeerToGroup: %v", err)
+	}
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		out, err := ListGroupsForPeer(followerID)
+		if err != nil {
+			return false, err
+		}
+		var groupIDs []string
+		if err := json.Unmarshal([]byte(out), &groupIDs); err != nil {
+			return false, err
+		}
+		return len(groupIDs) == 1 && groupIDs[0] == "grp-1", nil
+	})
+
+	var instanceID string
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		var err error
+		instanceID, err = SubmitCommand("cmd-1", `{"delay":5}`)
+		return err == nil, err
+	})
+	if instanceID == "" {
+		t.Fatalf("SubmitCommand returned empty instance id")
+	}
+
+	if err := RemovePeerFromGroup(followerID, "grp-1"); err != nil {
+		t.Fatalf("RemovePeerFromGroup: %v", err)
+	}
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		_, err := SubmitCommand("cmd-1", "")
+		return err != nil, nil
+	})
+}
+
+// TestDeleteGroupCascadesToRelations checks DeleteGroup removes every
+// GroupCommand/PeerGroup record referencing it (pkg/kvfsm.OpCascadeDelete),
+// so a peer that was only permitted via the deleted group loses access,
+// and ListGroupsForCommand/ListGroupsForPeer no longer mention it.
+func TestDeleteGroupCascadesToRelations(t *testing.T) {
+	leaderAddr := spawnTestLeader(t, t.TempDir())
+
+	prevLeader := leaderMultiaddr
+	leaderMultiaddr = leaderAddr
+	t.Cleanup(func() {
+		leaderMultiaddr = prevLeader
+		if err := Stop(); err != nil {
+			t.Errorf("Stop: %v", err)
+		}
+	})
+	followerID, err := Start(t.TempDir())
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if err := CreateGroup("grp-cascade", "Cascade Group"); err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	if err := CreateCommand("cmd-cascade", "Reboot", followerID); err != nil {
+		t.Fatalf("CreateCommand: %v", err)
+	}
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		_, err := GetCommand("cmd-cascade")
+		return err == nil, nil
+	})
+	if err := AddCommandToGroup("cmd-cascade", "grp-cascade"); err != nil {
+		t.Fatalf("AddCommandToGroup: %v", err)
+	}
+	if err := AddPeerToGroup(followerID, "grp-cascade"); err != nil {
+		t.Fatalf("AddPeerToGroup: %v", err)
+	}
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		_, err := SubmitCommand("cmd-cascade", "")
+		return err == nil, err
+	})
+
+	if err := DeleteGroup("grp-cascade"); err != nil {
+		t.Fatalf("DeleteGroup: %v", err)
+	}
+
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		out, err := ListGroupsForCommand("cmd-cascade")
+		if err != nil {
+			return false, err
+		}
+		var groupIDs []string
+		if err := json.Unmarshal([]byte(out), &groupIDs); err != nil {
+			return false, err
+		}
+		return len(groupIDs) == 0, nil
+	})
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		out, err := ListGroupsForPeer(followerID)
+		if err != nil {
+			return false, err
+		}
+		var groupIDs []string
+		if err := json.Unmarshal([]byte(out), &groupIDs); err != nil {
+			return false, err
+		}
+		return len(groupIDs) == 0, nil
+	})
+	if _, err := SubmitCommand("cmd-cascade", ""); err == nil {
+		t.Fatalf("SubmitCommand after group cascade-deleted: want error, got none")
+	}
+}
+
+// TestDeleteCommandCascadesToGroupCommand checks DeleteCommand removes
+// every GroupCommand record referencing it.
+func TestDeleteCommandCascadesToGroupCommand(t *testing.T) {
+	leaderAddr := spawnTestLeader(t, t.TempDir())
+
+	prevLeader := leaderMultiaddr
+	leaderMultiaddr = leaderAddr
+	t.Cleanup(func() {
+		leaderMultiaddr = prevLeader
+		if err := Stop(); err != nil {
+			t.Errorf("Stop: %v", err)
+		}
+	})
+	followerID, err := Start(t.TempDir())
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if err := CreateGroup("grp-cmd-cascade", "Group"); err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	if err := CreateCommand("cmd-to-delete", "Reboot", followerID); err != nil {
+		t.Fatalf("CreateCommand: %v", err)
+	}
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		_, err := GetCommand("cmd-to-delete")
+		return err == nil, nil
+	})
+	if err := AddCommandToGroup("cmd-to-delete", "grp-cmd-cascade"); err != nil {
+		t.Fatalf("AddCommandToGroup: %v", err)
+	}
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		out, err := ListGroupsForCommand("cmd-to-delete")
+		if err != nil {
+			return false, err
+		}
+		var groupIDs []string
+		if err := json.Unmarshal([]byte(out), &groupIDs); err != nil {
+			return false, err
+		}
+		return len(groupIDs) == 1, nil
+	})
+
+	if err := DeleteCommand("cmd-to-delete"); err != nil {
+		t.Fatalf("DeleteCommand: %v", err)
+	}
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		out, err := ListGroupsForCommand("cmd-to-delete")
+		if err != nil {
+			return false, err
+		}
+		var groupIDs []string
+		if err := json.Unmarshal([]byte(out), &groupIDs); err != nil {
+			return false, err
+		}
+		return len(groupIDs) == 0, nil
+	})
 }
 
 // TestCatalogEmptyListsAreEmptyArrays checks ListGroups/ListCommands
@@ -330,8 +454,7 @@ func TestCatalogEmptyListsAreEmptyArrays(t *testing.T) {
 		t.Fatalf("ListGroups (empty) = %q, want %q", out, "[]")
 	}
 
-	grantSelfParticipation(t, "empty-group")
-	out, err = ListCommands("empty-group")
+	out, err = ListCommands()
 	if err != nil {
 		t.Fatalf("ListCommands: %v", err)
 	}
@@ -340,8 +463,8 @@ func TestCatalogEmptyListsAreEmptyArrays(t *testing.T) {
 	}
 }
 
-// TestCatalogIDValidation checks CreateGroup rejects an empty or
-// oversized id before ever touching the daemon.
+// TestCatalogIDValidation checks CreateGroup rejects an empty or oversized
+// id before ever touching the daemon.
 func TestCatalogIDValidation(t *testing.T) {
 	leaderAddr := spawnTestLeader(t, t.TempDir())
 
@@ -357,10 +480,10 @@ func TestCatalogIDValidation(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	if err := CreateGroup("", "x", "y"); err == nil {
+	if err := CreateGroup("", "x"); err == nil {
 		t.Fatalf("CreateGroup with empty id: want error, got none")
 	}
-	if err := CreateGroup(strings.Repeat("a", maxCatalogIDLen+1), "x", "y"); err == nil {
+	if err := CreateGroup(strings.Repeat("a", maxCatalogIDLen+1), "x"); err == nil {
 		t.Fatalf("CreateGroup with oversized id: want error, got none")
 	}
 }
