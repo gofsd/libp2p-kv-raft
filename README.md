@@ -577,6 +577,45 @@ never leaves a dangling relation behind. `Group` and `Command` records each have
 — 200 groups, 2000 commands (`pkg/kvfsm`'s `systemListLimits`) — tighter than the 65000-entry
 default every other `SystemKeyPrefix` kind (including `GroupCommand`/`PeerGroup` themselves) gets.
 
+### One-time execution invites
+
+`submitcommand` above always runs against the *caller's own* node, dispatching on behalf of whichever
+peer id that node already is. `shmevent.KindExecInvite` is a different mechanism for handing a
+specific, one-time "run this command with these inputs" ticket to another peer out-of-band (e.g. a
+Data Matrix barcode) — modeled closely on `KindJoinInvite` above, but for triggering an execution
+instead of admitting a device:
+
+```bash
+mage createexecinvite c1 '{"qty":"20"}'                      # (on a current voter) prints a fresh tokenHex
+kvctl-cli printexecinvitedatamatrix <sourceMultiaddr> <tokenHex> <outFile.png>   # barcode it
+mage redeemexecinvite "<sourceMultiaddr>#<tokenHex>"          # the redeeming peer, elsewhere, scans & runs this
+mage revokeexecinvite <tokenHex>                              # invalidate one before it's ever redeemed
+```
+
+`createexecinvite` binds `commandID`+`inputsJSON` to a random 16-byte token (only a current raft
+voter may do this); `printexecinvitedatamatrix` barcodes the plain string
+`"<sourceMultiaddr>#<tokenHex>"` (not a signed event — the token itself is the credential, same
+reasoning as `printjoininvitedatamatrix`). `redeemexecinvite`, run on the *redeeming* peer's own
+node, splits that string, then has its own daemon sign a small self-contained message with its own
+key (`shmevent.EncodeExecuteNotification`, the same self-contained-signature recipe `EventExecute`
+already uses — verified by whoever receives it against the *claimed* sender peer id's own extracted
+pubkey, not against the connection that happened to carry it, so it verifies identically whether it
+lands directly or after one internal forward to the real raft leader) and dials it straight at
+`sourceMultiaddr`.
+
+The receiving cluster's raft leader then runs `kvfsm.OpConsumeExecInvite`: in one atomic `Apply`, it
+re-checks the redeeming peer's *real* `GroupCommand`/`PeerGroup` ACL standing against the invite's
+commandID and only then deletes the invite record — so execution happens only if the peer is
+authorized **and** the invite hasn't already been redeemed. This is strictly stronger than
+`submitcommand`'s own `isPermittedForCommand` check above (documented there as evaluated
+client-side, "only as strong as every caller actually going through `SubmitCommand`"): here the ACL
+check is raft-authoritative, since the caller is a genuinely untrusted remote peer rather than a
+locally-driven client. An unauthorized redemption attempt is rejected *without* consuming the
+invite, so a legitimate peer can still redeem it afterward; only a successful, permitted redemption
+burns the ticket. On success, `redeemexecinvite` prints a new instance id — track it with
+`getcommandrequest`/`querycommandlog`/`latestcommandlog` against the target's own node, same as any
+other `submitcommand` dispatch.
+
 ## Vendored dependency patch
 
 `thirdparty/anet` is a local, patched copy of `github.com/wlynxg/anet` (pinned via a `replace`

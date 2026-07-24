@@ -265,6 +265,30 @@ const (
 	// pkg/kvfsm.OpConsumeInvite), entirely outside this event pair.
 	EventJoinInviteCreate uint8 = 28
 	EventJoinInviteRevoke uint8 = 29
+	// EventExecInviteCreate/EventExecInviteRevoke are
+	// EventJoinInviteCreate/EventJoinInviteRevoke's counterpart for a
+	// one-time execution invite (shmevent.KindExecInvite): a direct write,
+	// voter-gated the identical way, binding a random token to a
+	// commandID+inputsJSON pair instead of a suffrage grant. Create's
+	// Value is EncodeExecInviteCreatePayload, Revoke's is
+	// EncodeExecInviteRevokePayload. Neither actually triggers execution --
+	// that's EventExecInviteRedeem below.
+	EventExecInviteCreate uint8 = 30
+	EventExecInviteRevoke uint8 = 31
+	// EventExecInviteRedeem is local-only (pkg/daemon rejects it from a
+	// remote/ClientProtocolID caller -- see handleShmEvent): it tells this
+	// node's own daemon "dial sourceAddr and redeem token on my behalf,"
+	// Value is EncodeExecInviteRedeemRequest(sourceAddr, token). The
+	// daemon does the actual network work itself (dialing
+	// pkg/daemon.ExecInviteRedeemProtocolID, signing a self-contained
+	// redeem message with this node's own key -- see
+	// EncodeExecuteNotification, reused for that wire message -- the same
+	// way EventExecute's own notification is self-contained rather than
+	// depending on the connection's identity) and returns the new
+	// instance id as Value on success. The actual atomic ACL-check+consume
+	// (pkg/kvfsm.OpConsumeExecInvite) happens on whichever node turns out
+	// to be the current raft leader, entirely outside this local event.
+	EventExecInviteRedeem uint8 = 32
 	// EventError is response-only: Value carries a UTF-8 error message,
 	// ID echoes the failed request's ID. Not part of the fields the
 	// protocol was specified with -- added because the struct has no
@@ -335,6 +359,12 @@ func EventName(e uint8) string {
 		return "join_invite_create"
 	case EventJoinInviteRevoke:
 		return "join_invite_revoke"
+	case EventExecInviteCreate:
+		return "exec_invite_create"
+	case EventExecInviteRevoke:
+		return "exec_invite_revoke"
+	case EventExecInviteRedeem:
+		return "exec_invite_redeem"
 	case EventError:
 		return "error"
 	default:
@@ -407,6 +437,12 @@ func EventFromName(name string) (uint8, bool) {
 		return EventJoinInviteCreate, true
 	case "join_invite_revoke":
 		return EventJoinInviteRevoke, true
+	case "exec_invite_create":
+		return EventExecInviteCreate, true
+	case "exec_invite_revoke":
+		return EventExecInviteRevoke, true
+	case "exec_invite_redeem":
+		return EventExecInviteRedeem, true
 	case "error":
 		return EventError, true
 	default:

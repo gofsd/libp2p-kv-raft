@@ -91,6 +91,19 @@ const (
 	// is set, which is the entire feature: no live voter needs to be
 	// present at the moment the new device actually shows up.
 	KindJoinInvite byte = 0x0A
+	// KindExecInvite is a one-time execution invite: a raft voter binds a
+	// commandID+inputsJSON pair (see pkg/kvctl/dispatch.go's SubmitCommand
+	// for what those mean) to a random token, exactly the way
+	// KindJoinInvite binds a suffrage grant to one -- keyed by the token
+	// alone, written directly (kvfsm.OpSet, same voter-gated
+	// handleConfirmForward path KindJoinInvite/KindGroup use), no
+	// pending/confirmed lifecycle. Unlike KindJoinInvite, redeeming one
+	// (kvfsm.OpConsumeExecInvite) also re-checks the redeeming peer's real
+	// Group/Command/PeerGroup ACL standing in the same atomic Apply before
+	// deleting it -- see that op's doc comment -- so an unauthorized
+	// redemption attempt is rejected without consuming the invite, letting
+	// a legitimate peer still redeem it later.
+	KindExecInvite byte = 0x0B
 )
 
 // KindName returns a human-readable name for k, for CLI use (mage/
@@ -116,6 +129,8 @@ func KindName(k byte) string {
 		return "peer-group"
 	case KindJoinInvite:
 		return "join-invite"
+	case KindExecInvite:
+		return "exec-invite"
 	default:
 		return fmt.Sprintf("unknown(%d)", k)
 	}
@@ -144,6 +159,8 @@ func KindFromName(name string) (byte, bool) {
 		return KindPeerGroup, true
 	case "join-invite":
 		return KindJoinInvite, true
+	case "exec-invite":
+		return KindExecInvite, true
 	default:
 		return 0, false
 	}

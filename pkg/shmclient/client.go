@@ -346,6 +346,47 @@ func (s *Session) RevokeJoinInvite(ctx context.Context, token []byte) error {
 	return s.catalogCall(ctx, shmevent.EventJoinInviteRevoke, shmevent.EncodeJoinInviteRevokePayload(token))
 }
 
+// CreateExecInvite lodges a one-time shmevent.KindExecInvite record for
+// token, binding commandID+inputsJSON, on the session's node. Only a
+// current raft voter may do this -- see shmevent.EventExecInviteCreate's
+// doc comment.
+func (s *Session) CreateExecInvite(ctx context.Context, token []byte, commandID, inputsJSON string) error {
+	payload, err := shmevent.EncodeExecInviteCreatePayload(token, commandID, inputsJSON)
+	if err != nil {
+		return fmt.Errorf("shmclient: exec_invite_create: %w", err)
+	}
+	return s.catalogCall(ctx, shmevent.EventExecInviteCreate, payload)
+}
+
+// RevokeExecInvite deletes the KindExecInvite record for token outright,
+// before it's ever redeemed. Only a current raft voter may do this.
+func (s *Session) RevokeExecInvite(ctx context.Context, token []byte) error {
+	return s.catalogCall(ctx, shmevent.EventExecInviteRevoke, shmevent.EncodeExecInviteRevokePayload(token))
+}
+
+// RedeemExecInvite tells the session's own node to dial sourceAddr and
+// redeem token there on this node's own behalf -- see
+// shmevent.EventExecInviteRedeem's doc comment. Returns the new instance
+// id on success.
+func (s *Session) RedeemExecInvite(ctx context.Context, sourceAddr string, token []byte) (string, error) {
+	payload, err := shmevent.EncodeExecInviteRedeemRequest(sourceAddr, token)
+	if err != nil {
+		return "", fmt.Errorf("shmclient: exec_invite_redeem: %w", err)
+	}
+	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
+		EventType: shmevent.EventExecInviteRedeem,
+		Value:     payload,
+		ID:        newID(),
+	}, s.priv)
+	if err != nil {
+		return "", fmt.Errorf("shmclient: exec_invite_redeem: %w", err)
+	}
+	if resp.EventType == shmevent.EventError {
+		return "", fmt.Errorf("shmclient: exec_invite_redeem: %s", resp.Value)
+	}
+	return string(resp.Value), nil
+}
+
 // RequestLogPermit lodges a pending permission for peerID to
 // append/query pkg/logrecord records of logKind on the session's node.
 // metadata is opaque, as with RequestPermit. See

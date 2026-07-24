@@ -104,12 +104,42 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/gofsd/shmring"
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
+
+// callerLocks serializes every Call/CallRaw round trip against a given
+// peerID's request channel, one at a time -- enforcing this package's own
+// documented constraint ("one in-flight request per node at a time," see
+// above) for callers *within the same process*, not just the single
+// sequential CLI invocation that constraint originally assumed. shmring's
+// CreateShm on the fixed-name request channel is single-producer: two
+// genuinely concurrent callers (e.g. two goroutines racing to Call the
+// same peerID at once -- a background command-dispatch loop alongside
+// ordinary foreground calls, say) would otherwise race to create/write/
+// tear down the same segment and corrupt each other rather than queue
+// safely. This does nothing for two separate OS processes calling at
+// once, which was never safe and still isn't (no cross-process lock is
+// taken) -- only Go-level concurrency within one process is fixed here.
+var (
+	callerLocksMu sync.Mutex
+	callerLocks   = map[string]*sync.Mutex{}
+)
+
+func callerLock(peerID string) *sync.Mutex {
+	callerLocksMu.Lock()
+	defer callerLocksMu.Unlock()
+	l, ok := callerLocks[peerID]
+	if !ok {
+		l = &sync.Mutex{}
+		callerLocks[peerID] = l
+	}
+	return l
+}
 
 // capacity is the shared-memory data region size for both channels. It must
 // be a power of two and comfortably fit the larger of an encoded
@@ -137,6 +167,10 @@ func respChannel(peerID string, id uint16) string {
 // EventGetPublicKey/EventGetPrivateKey -- see shmevent.Sign), and returns
 // its response. It blocks until the daemon replies or ctx is done.
 func Call(ctx context.Context, peerID string, m shmevent.Msg, priv shmevent.PrivateKey) (shmevent.Msg, error) {
+	lock := callerLock(peerID)
+	lock.Lock()
+	defer lock.Unlock()
+
 	rn := reqChannel(peerID)
 	w, err := shmring.CreateShm(rn, capacity, shmring.WithPollInterval(minPoll, maxPoll))
 	if err != nil {
@@ -192,6 +226,10 @@ func Call(ctx context.Context, peerID string, m shmevent.Msg, priv shmevent.Priv
 // encoded here only reads m.ID back out (to address the response channel)
 // and validates the framing; it never re-encodes or re-signs it.
 func CallRaw(ctx context.Context, peerID string, encoded []byte) (shmevent.Msg, error) {
+	lock := callerLock(peerID)
+	lock.Lock()
+	defer lock.Unlock()
+
 	m, _, _, err := shmevent.Decode(encoded)
 	if err != nil {
 		return shmevent.Msg{}, fmt.Errorf("ipc: decode raw request: %w", err)

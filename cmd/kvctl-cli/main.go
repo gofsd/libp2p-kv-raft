@@ -66,6 +66,14 @@ func main() {
 		cmdRevokeJoinInvite(os.Args[2:])
 	case "printjoininvitedatamatrix":
 		cmdPrintJoinInviteDataMatrix(os.Args[2:])
+	case "createexecinvite":
+		cmdCreateExecInvite(os.Args[2:])
+	case "revokeexecinvite":
+		cmdRevokeExecInvite(os.Args[2:])
+	case "redeemexecinvite":
+		cmdRedeemExecInvite(os.Args[2:])
+	case "printexecinvitedatamatrix":
+		cmdPrintExecInviteDataMatrix(os.Args[2:])
 	case "execute":
 		cmdExecute(os.Args[2:])
 	case "pollexecute":
@@ -108,6 +116,10 @@ func usage() {
   kvctl-cli createjoininvite <voter|learner>
   kvctl-cli revokejoininvite <tokenHex>
   kvctl-cli printjoininvitedatamatrix <leaderMultiaddr> <tokenHex> <outFile.png>
+  kvctl-cli createexecinvite <commandID> <inputsJSON>
+  kvctl-cli revokeexecinvite <tokenHex>
+  kvctl-cli redeemexecinvite <sourceAddr#tokenHex>
+  kvctl-cli printexecinvitedatamatrix <sourceMultiaddr> <tokenHex> <outFile.png>
   kvctl-cli execute <destPeerID> <value>
   kvctl-cli pollexecute
   kvctl-cli logappend <kind> <unitID> <fieldsJSON> <narrative>
@@ -170,6 +182,25 @@ event -- there's nothing to sign here, the token itself is the
 credential); scanning it and passing the decoded string straight to mage
 addfollower/addnode (or kvctl-cli addnode) is the entire redemption step.
 revokejoininvite deletes a token outright before it's ever redeemed.
+
+createexecinvite/revokeexecinvite/redeemexecinvite/printexecinvitedatamatrix
+are join-invite's counterpart for triggering a specific command execution
+instead of admitting a device: createexecinvite generates a fresh random
+token and lodges it as a shmevent.KindExecInvite record binding
+commandID+inputsJSON (only a current raft voter may do this).
+printexecinvitedatamatrix barcodes the plain string
+"<sourceMultiaddr>#<tokenHex>" (not a signed event, same reasoning as
+printjoininvitedatamatrix -- the token itself is the credential).
+redeemexecinvite splits that scanned string and has this node's own daemon
+dial sourceAddr, sign a redemption message with this node's own key, and
+send it -- the receiving cluster's raft leader atomically re-checks this
+node's real Group/Command ACL standing *and* consumes the token in one
+step, so an unauthorized or already-used redemption is rejected without
+this node needing any prior relationship with that cluster beyond already
+having a Group/Command ACL grant there. Prints the new instance id on
+success; track it with getcommandrequest/querycommandlog/latestcommandlog
+(mage) against the target's own node. revokeexecinvite deletes a token
+outright before it's ever redeemed.
 
 raft flags (all default to hashicorp/raft's own WAN-appropriate values):
   -raft-heartbeat-timeout, -raft-election-timeout, -raft-commit-timeout, -raft-leader-lease-timeout`)
@@ -489,6 +520,84 @@ func cmdPrintJoinInviteDataMatrix(args []string) {
 
 	fmt.Printf("wrote %s\n", outFile)
 	fmt.Println(joinString)
+}
+
+func cmdCreateExecInvite(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli createexecinvite <commandID> <inputsJSON>")
+		os.Exit(2)
+	}
+	tokenHex, err := kvctl.CreateExecInvite(args[0], args[1])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "createexecinvite: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(tokenHex)
+}
+
+func cmdRevokeExecInvite(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli revokeexecinvite <tokenHex>")
+		os.Exit(2)
+	}
+	if err := kvctl.RevokeExecInvite(args[0]); err != nil {
+		fmt.Fprintf(os.Stderr, "revokeexecinvite: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdRedeemExecInvite(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli redeemexecinvite <sourceAddr#tokenHex>")
+		os.Exit(2)
+	}
+	instanceID, err := kvctl.RedeemExecInvite(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "redeemexecinvite: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(instanceID)
+}
+
+// cmdPrintExecInviteDataMatrix implements `kvctl-cli
+// printexecinvitedatamatrix <sourceMultiaddr> <tokenHex> <outFile.png>` --
+// mirrors cmdPrintJoinInviteDataMatrix exactly: barcodes a plain string,
+// not a signed shmevent.Msg, since the token itself is the credential (see
+// createexecinvite's doc comment above).
+func cmdPrintExecInviteDataMatrix(args []string) {
+	if len(args) != 3 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli printexecinvitedatamatrix <sourceMultiaddr> <tokenHex> <outFile.png>")
+		os.Exit(2)
+	}
+	sourceAddr, tokenHex, outFile := args[0], args[1], args[2]
+
+	redeemString := sourceAddr + "#" + tokenHex
+
+	code, err := datamatrix.Encode(redeemString)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "printexecinvitedatamatrix: encode data matrix: %v\n", err)
+		os.Exit(1)
+	}
+	bounds := code.Bounds()
+	scaled, err := barcode.Scale(code, bounds.Dx()*dataMatrixModuleSize, bounds.Dy()*dataMatrixModuleSize)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "printexecinvitedatamatrix: scale data matrix: %v\n", err)
+		os.Exit(1)
+	}
+
+	f, err := os.Create(outFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "printexecinvitedatamatrix: create %s: %v\n", outFile, err)
+		os.Exit(1)
+	}
+	defer f.Close()
+	if err := png.Encode(f, scaled); err != nil {
+		fmt.Fprintf(os.Stderr, "printexecinvitedatamatrix: write %s: %v\n", outFile, err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("wrote %s\n", outFile)
+	fmt.Println(redeemString)
 }
 
 func cmdRequestLogPermit(args []string) {

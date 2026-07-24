@@ -113,6 +113,29 @@ const (
 	// resolve to exactly one winner, since Apply runs in strict raft log
 	// order and whichever entry commits second finds nothing left to read.
 	OpConsumeInvite OpType = 5
+	// OpConsumeExecInvite atomically reads a shmevent.KindExecInvite
+	// record, checks the redeeming peer's real Group/Command/PeerGroup ACL
+	// standing against the command it names, and -- only if that check
+	// passes -- deletes it, all inside this single Apply call: key is the
+	// invite's own key (shmevent.ExecInviteKey), value is the redeeming
+	// peer's id (raw bytes, no wrapper needed for one field). Unlike
+	// OpConsumeInvite, whose caller (pkg/daemon's consumeJoinInvite) is
+	// trusted by construction (only reached once this node's own raft
+	// join-request handling has already decided to admit the request),
+	// this op's ACL check is the actual, raft-authoritative enforcement
+	// point -- see shmevent.KindExecInvite's doc comment on why that
+	// matters here specifically (the redeeming peer is a genuinely
+	// untrusted remote caller, not a locally-driven client). On success,
+	// ApplyResult.Value carries the deleted record's own value back to the
+	// caller (see pkg/daemon's applyConsumeExecInvite), same convention as
+	// OpConsumeInvite. An ACL failure returns an error without deleting
+	// anything -- an unauthorized redemption attempt doesn't burn the
+	// ticket, so a legitimate peer can still redeem it later; only a
+	// successful, permitted redemption consumes it, which combined with
+	// Apply's strict raft log ordering is what makes two concurrent
+	// legitimate redemption attempts for the same token still resolve to
+	// exactly one winner.
+	OpConsumeExecInvite OpType = 6
 )
 
 // EncodeCommand builds the raft log payload for a Set/Delete operation.
@@ -234,9 +257,67 @@ func (f *FSM) Apply(l *raft.Log) any {
 			return ApplyResult{Err: err}
 		}
 		return ApplyResult{Value: v}
+	case OpConsumeExecInvite:
+		v, err := f.Store.Get(key)
+		if err != nil {
+			return ApplyResult{Err: fmt.Errorf("kvfsm: consume exec invite: no such invite: %w", err)}
+		}
+		commandID, _, err := shmevent.DecodeExecInviteRecord(v)
+		if err != nil {
+			return ApplyResult{Err: fmt.Errorf("kvfsm: consume exec invite: decode record: %w", err)}
+		}
+		permitted, err := isPermittedForCommand(f.Store, []byte(commandID), value)
+		if err != nil {
+			return ApplyResult{Err: fmt.Errorf("kvfsm: consume exec invite: acl check: %w", err)}
+		}
+		if !permitted {
+			return ApplyResult{Err: fmt.Errorf("kvfsm: consume exec invite: %s is not permitted for command %s", value, commandID)}
+		}
+		if err := f.Store.Delete(key); err != nil {
+			return ApplyResult{Err: err}
+		}
+		return ApplyResult{Value: v}
 	default:
 		return ApplyResult{Err: fmt.Errorf("kvfsm: unknown op %d", op)}
 	}
+}
+
+// isPermittedForCommand reports whether peerID may redeem/execute
+// commandID: true if some group G satisfies both PeerGroupKey(peerID, G)
+// and GroupCommandKey(commandID, G). Mirrors pkg/kvctl/catalog.go's
+// client-side isPermittedForCommand check exactly (scan the commandID side
+// first -- a command is expected to be linked to few groups, unlike a peer,
+// which may belong to many -- then point-check PeerGroupKey for each hit),
+// but evaluated directly against s: called only from inside Apply (see
+// OpConsumeExecInvite), so this is the raft-authoritative counterpart that
+// client-side check doesn't have. GroupCommandKey's own first field
+// (commandID) is length-prefixed, so the fixed part of
+// GroupCommandKey(commandID, nil) is already a safe, unpadded ScanPrefix
+// prefix -- the same trick applyCascadeDelete's KindCommand case above
+// uses -- no need for GroupCommandBounds' 0xFF-padded range here.
+func isPermittedForCommand(s *store.Store, commandID, peerID []byte) (bool, error) {
+	prefix, err := shmevent.GroupCommandKey(commandID, nil)
+	if err != nil {
+		return false, err
+	}
+	matches, err := s.ScanPrefix(prefix, 0)
+	if err != nil {
+		return false, err
+	}
+	for _, m := range matches {
+		_, groupID, err := shmevent.ParseGroupCommandKey(m.Key)
+		if err != nil {
+			return false, err
+		}
+		peerGroupKey, err := shmevent.PeerGroupKey(peerID, groupID)
+		if err != nil {
+			return false, err
+		}
+		if _, err := s.Get(peerGroupKey); err == nil {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // applyCascadeDelete deletes a Group or Command record (key) and every

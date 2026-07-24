@@ -1088,6 +1088,53 @@ func RevokeJoinInvite(tokenHex string) error {
 	return nil
 }
 
+// CreateExecInvite generates a fresh one-time execution-invite token
+// binding commandID+inputsJSON and prints it -- append it to this node's
+// own advertised multiaddr as "<multiaddr>#<tokenHex>" (see
+// printexecinvitedatamatrix) for a redeeming peer to scan and pass to
+// `mage redeemexecinvite`. Only takes effect if the current node is itself
+// a raft voter.
+// Usage: mage createexecinvite <commandID> <inputsJSON>
+func CreateExecInvite(commandID, inputsJSON string) error {
+	tokenHex, err := kvctl.CreateExecInvite(commandID, inputsJSON)
+	if err != nil {
+		return err
+	}
+	fmt.Println(tokenHex)
+	return nil
+}
+
+// RevokeExecInvite deletes an execution-invite token outright before it's
+// ever redeemed. Only takes effect if the current node is itself a raft
+// voter.
+// Usage: mage revokeexecinvite <tokenHex>
+func RevokeExecInvite(tokenHex string) error {
+	if err := kvctl.RevokeExecInvite(tokenHex); err != nil {
+		return err
+	}
+	fmt.Println("✅ exec invite revoked")
+	return nil
+}
+
+// RedeemExecInvite tells the current node's own daemon to dial sourceAddr
+// and redeem token there on this node's own behalf, signing the
+// redemption with this node's own key -- the receiving cluster's raft
+// leader atomically re-checks this node's real Group/Command ACL standing
+// and consumes the token in one step. sourceAddrAndToken is exactly the
+// string printexecinvitedatamatrix barcodes
+// ("<sourceMultiaddr>#<tokenHex>"). Prints the new instance id on success;
+// track it with getcommandrequest/querycommandlog/latestcommandlog against
+// the target's own node.
+// Usage: mage redeemexecinvite <sourceAddr#tokenHex>
+func RedeemExecInvite(sourceAddrAndToken string) error {
+	instanceID, err := kvctl.RedeemExecInvite(sourceAddrAndToken)
+	if err != nil {
+		return err
+	}
+	fmt.Println(instanceID)
+	return nil
+}
+
 // RequestLogPermit lodges a pending permission for peerID to
 // append/query pkg/logrecord records of logKind, forwarded to the leader
 // like any other Set. metadata may be "".

@@ -14,8 +14,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	cryptorand "crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -120,6 +122,31 @@ const ClientProtocolID = protocol.ID("/libp2p-kv-raft/client/1.0.0")
 // receiving Node's executeInbox for a local caller to drain via
 // EventPollExecute.
 const ExecuteProtocolID = protocol.ID("/libp2p-kv-raft/execute/1.0.0")
+
+// ExecInviteRedeemProtocolID is the libp2p protocol a redeeming peer's own
+// daemon dials directly at a shmevent.KindExecInvite invite's sourceAddr to
+// redeem it -- see dialAndRedeemExecInvite. The message it carries is
+// self-contained the same way ExecuteProtocolID's is (EncodeExecuteNotification,
+// reused here, wraps the redeeming peer's own claimed id + the raw token,
+// signed with that peer's own key and verified against that same claimed
+// id's extracted pubkey -- see handleExecInviteRedeemStream), not against
+// whichever connection happened to carry it -- which is what lets the exact
+// same verify-then-apply-or-forward logic (processExecInviteRedeem) run
+// unchanged whether this is where the redeeming peer's connection actually
+// landed or a one-hop-forwarded relay from that node to the real leader
+// (see ForwardExecInviteRedeemProtocolID).
+const ExecInviteRedeemProtocolID = protocol.ID("/libp2p-kv-raft/exec-invite-redeem/1.0.0")
+
+// ForwardExecInviteRedeemProtocolID is the libp2p protocol a non-leader node
+// uses to relay an already-verified exec-invite redemption to the current
+// raft leader, mirroring ForwardJoinProtocolID's single-hop-only role for
+// Join. Unlike ForwardConfirmProtocolID, its handler does no additional
+// identity check of its own: the redeeming peer's identity was already
+// cryptographically pinned by processExecInviteRedeem's signature check
+// before either protocol ever sees it, so there's nothing further to
+// authenticate at this hop -- only "is this node actually the leader" (see
+// handleForwardExecInviteRedeemStream).
+const ForwardExecInviteRedeemProtocolID = protocol.ID("/libp2p-kv-raft/forward-exec-invite-redeem/1.0.0")
 
 // ReadyFileName is written to Config.DataDir once the daemon's host and IPC
 // server are up, so the spawning `mage addnode` can learn the node's peer id
@@ -543,6 +570,8 @@ func start(cfg Config) (*Node, error) {
 	h.SetStreamHandler(ForwardJoinProtocolID, n.handleForwardJoinStream)
 	h.SetStreamHandler(ForwardLeaveProtocolID, n.handleForwardLeaveStream)
 	h.SetStreamHandler(ClientProtocolID, n.handleClientStream)
+	h.SetStreamHandler(ExecInviteRedeemProtocolID, n.handleExecInviteRedeemStream)
+	h.SetStreamHandler(ForwardExecInviteRedeemProtocolID, n.handleForwardExecInviteRedeemStream)
 	return n, nil
 }
 
@@ -1129,6 +1158,9 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 	if caller.remotePeer != "" && m.EventType == shmevent.EventLeave {
 		return errorMsg(m.ID, fmt.Errorf("leave: not available to a remote caller -- only this node's own operator decides to leave"))
 	}
+	if caller.remotePeer != "" && m.EventType == shmevent.EventExecInviteRedeem {
+		return errorMsg(m.ID, fmt.Errorf("exec_invite_redeem: not available to a remote caller -- this node dials sourceAddr on its own operator's behalf, never on an arbitrary remote caller's"))
+	}
 	if shmevent.RequiresSignature(m.EventType) {
 		if err := shmevent.Verify(caller.verifyPub, m, crc, sig); err != nil {
 			return errorMsg(m.ID, err)
@@ -1521,6 +1553,61 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 			return errorMsg(m.ID, err)
 		}
 		return shmevent.Msg{EventType: shmevent.EventJoinInviteRevoke, ID: m.ID}
+
+	// EventExecInviteCreate/Revoke are direct writes gated the identical
+	// "only a raft voter may act" way EventJoinInviteCreate/Revoke are (see
+	// those cases' comments) -- creating one is the entire authorization
+	// step for what commandID+inputsJSON a token may trigger. Redeeming a
+	// token happens entirely over ExecInviteRedeemProtocolID instead (see
+	// dialAndRedeemExecInvite/handleExecInviteRedeemStream), not here.
+	case shmevent.EventExecInviteCreate:
+		if caller.remotePeer != "" {
+			rf := n.getRaft()
+			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
+				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
+			}
+		}
+		token, commandID, inputsJSON, err := shmevent.DecodeExecInviteCreatePayload(m.Value)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		key := shmevent.ExecInviteKey(token)
+		if err := n.handleConfirmForward(ctx, kvfsm.OpSet, key, shmevent.EncodeExecInviteRecord(commandID, inputsJSON), true); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventExecInviteCreate, ID: m.ID}
+
+	case shmevent.EventExecInviteRevoke:
+		if caller.remotePeer != "" {
+			rf := n.getRaft()
+			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
+				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
+			}
+		}
+		token, err := shmevent.DecodeExecInviteRevokePayload(m.Value)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		key := shmevent.ExecInviteKey(token)
+		if err := n.handleConfirmForward(ctx, kvfsm.OpDel, key, nil, true); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventExecInviteRevoke, ID: m.ID}
+
+	// EventExecInviteRedeem is local-only (rejected above if
+	// caller.remotePeer != ""): it tells this node's own daemon to dial
+	// sourceAddr and redeem token there on its own operator's behalf -- see
+	// dialAndRedeemExecInvite for the actual network leg.
+	case shmevent.EventExecInviteRedeem:
+		sourceAddr, token, err := shmevent.DecodeExecInviteRedeemRequest(m.Value)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		instanceID, err := n.dialAndRedeemExecInvite(ctx, sourceAddr, token)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventExecInviteRedeem, ID: m.ID, Value: []byte(instanceID)}
 
 	case shmevent.EventExecute:
 		if err := n.dispatchExecute(ctx, m); err != nil {
@@ -2035,6 +2122,382 @@ func (n *Node) consumeJoinInvite(rf *raft.Raft, token []byte) (raft.ServerSuffra
 		return raft.Nonvoter, nil
 	}
 	return raft.Voter, nil
+}
+
+// dialAndRedeemExecInvite is EventExecInviteRedeem's local-only handler: it
+// resolves sourceAddr (a multiaddr, or a bare peer id already known to this
+// machine's local registry -- same resolution handleAdd's leaderAddr
+// already does), builds a self-contained EventExecInviteRedeem message
+// naming this node's own peer id and token (EncodeExecuteNotification,
+// reused from EventExecute's identical need), signs it with this node's
+// own key (n.ed25519Priv -- the actual "peer signs it" step), and dials
+// ExecInviteRedeemProtocolID directly at sourceAddr. Returns the new
+// instance id on success.
+func (n *Node) dialAndRedeemExecInvite(ctx context.Context, sourceAddr string, token []byte) (string, error) {
+	addr := sourceAddr
+	if !registry.IsMultiaddr(addr) {
+		reg, err := registry.Open()
+		if err != nil {
+			return "", err
+		}
+		addr, err = reg.ResolveAddress(addr)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	maddr, err := multiaddr.NewMultiaddr(addr)
+	if err != nil {
+		return "", fmt.Errorf("invalid source address %q: %w", addr, err)
+	}
+	info, err := peer.AddrInfoFromP2pAddr(maddr)
+	if err != nil {
+		return "", fmt.Errorf("source address %q missing peer id: %w", addr, err)
+	}
+	if err := n.host.Connect(ctx, *info); err != nil {
+		return "", fmt.Errorf("connect to %s: %w", info.ID, err)
+	}
+
+	value, err := shmevent.EncodeExecuteNotification([]byte(n.peerID), token)
+	if err != nil {
+		return "", fmt.Errorf("exec invite redeem: encode notification: %w", err)
+	}
+	buf, err := shmevent.Encode(shmevent.Msg{EventType: shmevent.EventExecInviteRedeem, Value: value}, n.ed25519Priv)
+	if err != nil {
+		return "", fmt.Errorf("exec invite redeem: encode message: %w", err)
+	}
+
+	s, err := n.host.NewStream(ctx, info.ID, ExecInviteRedeemProtocolID)
+	if err != nil {
+		return "", fmt.Errorf("open exec invite redeem stream to %s: %w", info.ID, err)
+	}
+	defer s.Close()
+
+	if _, err := s.Write(buf); err != nil {
+		return "", fmt.Errorf("exec invite redeem: write to %s: %w", info.ID, err)
+	}
+	if err := s.CloseWrite(); err != nil {
+		return "", fmt.Errorf("exec invite redeem: close write to %s: %w", info.ID, err)
+	}
+
+	scanner := bufio.NewScanner(s)
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return "", fmt.Errorf("exec invite redeem: read response from %s: %w", info.ID, err)
+		}
+		return "", fmt.Errorf("no response from %s", info.ID)
+	}
+	line := scanner.Text()
+	if rest, ok := strings.CutPrefix(line, "OK "); ok {
+		return rest, nil
+	}
+	return "", fmt.Errorf("exec invite redeem rejected: %s", strings.TrimPrefix(line, "ERR: "))
+}
+
+// errExecInviteNotLeader is processExecInviteRedeem's sentinel for "this
+// node isn't the raft leader" -- checked via errors.Is by both
+// handleExecInviteRedeemStream (which forwards once) and
+// handleForwardExecInviteRedeemStream (which doesn't forward again).
+var errExecInviteNotLeader = errors.New("exec invite redeem: not leader")
+
+// processExecInviteRedeem decodes and verifies buf (a signed
+// EventExecInviteRedeem Msg, as built by dialAndRedeemExecInvite) the same
+// self-contained way handleExecuteStream verifies an EventExecute
+// notification: against the *claimed* sender peer id's own extracted
+// pubkey, not against s.Conn().RemotePeer() -- see
+// ExecInviteRedeemProtocolID's doc comment for why that's what lets this
+// same function run correctly whether called directly off the client
+// stream or after being forwarded once. If this node is currently the raft
+// leader, it runs the actual redemption (applyConsumeExecInvite);
+// otherwise it returns errExecInviteNotLeader, leaving the forward
+// decision to the caller.
+func (n *Node) processExecInviteRedeem(ctx context.Context, buf []byte) (string, error) {
+	m, crc, sig, err := shmevent.Decode(buf)
+	if err != nil {
+		return "", fmt.Errorf("exec invite redeem: decode: %w", err)
+	}
+	if m.EventType != shmevent.EventExecInviteRedeem {
+		return "", fmt.Errorf("exec invite redeem: expected EventExecInviteRedeem, got %s", shmevent.EventName(m.EventType))
+	}
+	redeemerPeerIDBytes, token, err := shmevent.DecodeExecuteNotification(m.Value)
+	if err != nil {
+		return "", fmt.Errorf("exec invite redeem: decode notification: %w", err)
+	}
+	redeemerPeer, err := peer.Decode(string(redeemerPeerIDBytes))
+	if err != nil {
+		return "", fmt.Errorf("exec invite redeem: invalid redeemer peer id %q: %w", redeemerPeerIDBytes, err)
+	}
+	redeemerPub, err := redeemerPeer.ExtractPublicKey()
+	if err != nil {
+		return "", fmt.Errorf("exec invite redeem: extract redeemer public key: %w", err)
+	}
+	rawRedeemerPub, err := redeemerPub.Raw()
+	if err != nil {
+		return "", fmt.Errorf("exec invite redeem: redeemer public key raw bytes: %w", err)
+	}
+	if err := shmevent.Verify(shmevent.PublicKey(rawRedeemerPub), m, crc, sig); err != nil {
+		return "", fmt.Errorf("exec invite redeem: %w", err)
+	}
+
+	rf, isLeader, _, err := n.resolveWriteTarget(5 * n.electionTimeout)
+	if err != nil {
+		return "", err
+	}
+	if !isLeader {
+		return "", errExecInviteNotLeader
+	}
+	return n.applyConsumeExecInvite(ctx, rf, token, redeemerPeer.String())
+}
+
+// applyConsumeExecInvite runs kvfsm.OpConsumeExecInvite (the atomic
+// ACL-check+consume) and, only once that succeeds, writes the durable
+// CommandRequest record and its exec-index entries and sends the target a
+// best-effort Execute poke -- the same "Apply, then do the dependent
+// follow-up work outside that Apply" shape applyConfirm's own
+// admitClusterJoinIfConfirmed call already uses for KindClusterJoin.
+func (n *Node) applyConsumeExecInvite(ctx context.Context, rf *raft.Raft, token []byte, redeemerPeerID string) (string, error) {
+	key := shmevent.ExecInviteKey(token)
+	cmd := kvfsm.EncodeCommand(kvfsm.OpConsumeExecInvite, key, []byte(redeemerPeerID))
+	future := rf.Apply(cmd, 10*n.electionTimeout)
+	if err := future.Error(); err != nil {
+		return "", fmt.Errorf("exec invite: %w", err)
+	}
+	res, ok := future.Response().(kvfsm.ApplyResult)
+	if !ok {
+		return "", fmt.Errorf("exec invite: unexpected apply response type %T", future.Response())
+	}
+	if res.Err != nil {
+		return "", fmt.Errorf("invalid, already-used, or unauthorized invite: %w", res.Err)
+	}
+	commandID, inputsJSON, err := shmevent.DecodeExecInviteRecord(res.Value)
+	if err != nil {
+		return "", fmt.Errorf("exec invite: %w", err)
+	}
+
+	instanceID, err := newExecInviteInstanceID()
+	if err != nil {
+		return "", err
+	}
+
+	cmdValue, err := n.store.Get(shmevent.CommandKey([]byte(commandID)))
+	if err != nil {
+		return "", fmt.Errorf("exec invite: command %s not found: %w", commandID, err)
+	}
+	_, targetPeerID, err := shmevent.DecodeCommandPayload(cmdValue)
+	if err != nil {
+		return "", fmt.Errorf("exec invite: decode command %s: %w", commandID, err)
+	}
+	targetPeerIDStr := string(targetPeerID)
+
+	if err := n.writeExecInviteCommandRequest(rf, instanceID, commandID, inputsJSON, redeemerPeerID, targetPeerIDStr); err != nil {
+		return "", err
+	}
+
+	if poke, err := json.Marshal(execInviteExecutePoke{Type: "cmd_req", CommandID: commandID, InstanceID: instanceID}); err == nil {
+		if dest, err := peer.Decode(targetPeerIDStr); err == nil {
+			_ = n.sendExecute(ctx, dest, poke)
+		}
+	}
+
+	return instanceID, nil
+}
+
+// execInviteCommandRequestLogKind/execInviteCommandExecIndexKind mirror
+// pkg/kvctl/dispatch.go's commandRequestLogKind/commandExecIndexKind naming
+// convention exactly (same "cmdreq:"/"cmdexec:" prefixes, so
+// ListCommandRequests/ListExecutionsByPeer see these dispatches too) --
+// duplicated here rather than imported, since pkg/daemon sits below
+// pkg/kvctl in this project's dependency graph and those helpers are
+// unexported anyway. Same accepted precedent as executePoke's own
+// duplication between pkg/kvctl and mobile/kvmobile.
+func execInviteCommandRequestLogKind(commandID string) string {
+	return "cmdreq:" + commandID
+}
+
+func execInviteCommandExecIndexKind(peerID string) string {
+	return "cmdexec:" + peerID
+}
+
+const (
+	execInviteIndexRoleRequester = "r"
+	execInviteIndexRoleTarget    = "t"
+)
+
+// execInviteExecutePoke mirrors pkg/kvctl/dispatch.go's executePoke.
+type execInviteExecutePoke struct {
+	Type       string `json:"type"`
+	CommandID  string `json:"command_id,omitempty"`
+	InstanceID string `json:"instance_id"`
+}
+
+// newExecInviteInstanceID mirrors pkg/kvctl/dispatch.go's newInstanceID.
+func newExecInviteInstanceID() (string, error) {
+	var b [16]byte
+	if _, err := cryptorand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("exec invite: generate instance id: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+// writeExecInviteCommandRequest writes the durable CommandRequest record
+// (pkg/kvctl/dispatch.go's own type, encoded the identical way
+// pkg/kvctl's appendRecord does) plus its requester/target exec-index
+// entries, via n.applySet -- already-leader at this call site (see
+// applyConsumeExecInvite), so no forwarding is needed for any of these
+// writes.
+func (n *Node) writeExecInviteCommandRequest(rf *raft.Raft, instanceID, commandID, inputsJSON, redeemerPeerID, targetPeerID string) error {
+	fields := map[string]string{"command_id": commandID}
+	if inputsJSON != "" {
+		fields["inputs"] = inputsJSON
+	}
+	if err := n.appendExecInviteLogRecord(rf, execInviteCommandRequestLogKind(commandID), instanceID, redeemerPeerID, fields, ""); err != nil {
+		return fmt.Errorf("exec invite: write command request: %w", err)
+	}
+	if err := n.appendExecInviteLogRecord(rf, execInviteCommandExecIndexKind(redeemerPeerID), instanceID, redeemerPeerID, map[string]string{
+		"command_id": commandID,
+		"role":       execInviteIndexRoleRequester,
+	}, ""); err != nil {
+		return fmt.Errorf("exec invite: write requester index: %w", err)
+	}
+	if targetPeerID != redeemerPeerID {
+		if err := n.appendExecInviteLogRecord(rf, execInviteCommandExecIndexKind(targetPeerID), instanceID, redeemerPeerID, map[string]string{
+			"command_id": commandID,
+			"role":       execInviteIndexRoleTarget,
+		}, ""); err != nil {
+			return fmt.Errorf("exec invite: write target index: %w", err)
+		}
+	}
+	return nil
+}
+
+// appendExecInviteLogRecord builds one pkg/logrecord entry the identical
+// way pkg/kvctl's appendRecord does (logrecord.NewRand + BuildKey +
+// Record.Encode) and writes it via n.applySet.
+func (n *Node) appendExecInviteLogRecord(rf *raft.Raft, kind, unitID, authorPeerID string, fields map[string]string, narrative string) error {
+	rnd, err := logrecord.NewRand()
+	if err != nil {
+		return err
+	}
+	ts := time.Now()
+	key, err := logrecord.BuildKey(kind, unitID, ts, rnd)
+	if err != nil {
+		return err
+	}
+	rec := logrecord.Record{
+		Kind:         kind,
+		UnitID:       unitID,
+		Timestamp:    ts,
+		AuthorPeerID: authorPeerID,
+		Fields:       fields,
+		Narrative:    narrative,
+	}
+	value, err := rec.Encode()
+	if err != nil {
+		return err
+	}
+	return n.applySet(rf, key, value)
+}
+
+// handleExecInviteRedeemStream is the receiving side of
+// ExecInviteRedeemProtocolID -- see that protocol's doc comment. Forwards
+// once (unmodified bytes, no re-signing needed -- see
+// processExecInviteRedeem) to the current leader over
+// ForwardExecInviteRedeemProtocolID if this node isn't it.
+func (n *Node) handleExecInviteRedeemStream(s network.Stream) {
+	defer s.Close()
+
+	buf, err := io.ReadAll(s)
+	if err != nil {
+		fmt.Fprintf(s, "ERR: exec invite redeem: read: %v\n", err)
+		return
+	}
+
+	instanceID, err := n.processExecInviteRedeem(context.Background(), buf)
+	if err == nil {
+		fmt.Fprintf(s, "OK %s\n", instanceID)
+		return
+	}
+	if !errors.Is(err, errExecInviteNotLeader) {
+		fmt.Fprintf(s, "ERR: %v\n", err)
+		return
+	}
+
+	line, err := n.forwardExecInviteRedeem(context.Background(), buf)
+	if err != nil {
+		fmt.Fprintf(s, "ERR: forward exec invite redeem: %v\n", err)
+		return
+	}
+	fmt.Fprintf(s, "%s\n", line)
+}
+
+// forwardExecInviteRedeem relays buf (already signature-verified by
+// processExecInviteRedeem) to the current leader over
+// ForwardExecInviteRedeemProtocolID, unmodified -- see that protocol's doc
+// comment on why no re-signing is needed.
+func (n *Node) forwardExecInviteRedeem(ctx context.Context, buf []byte) (string, error) {
+	rf := n.getRaft()
+	if rf == nil {
+		return "", fmt.Errorf("not leader and no leader known")
+	}
+	_, leaderID := rf.LeaderWithID()
+	if leaderID == "" {
+		return "", fmt.Errorf("not leader and no leader known")
+	}
+	pid, err := peer.Decode(string(leaderID))
+	if err != nil {
+		return "", fmt.Errorf("invalid leader id %s: %w", leaderID, err)
+	}
+	s, err := n.host.NewStream(ctx, pid, ForwardExecInviteRedeemProtocolID)
+	if err != nil {
+		return "", fmt.Errorf("open forward stream to leader %s: %w", leaderID, err)
+	}
+	defer s.Close()
+
+	if _, err := s.Write(buf); err != nil {
+		return "", fmt.Errorf("write to leader %s: %w", leaderID, err)
+	}
+	if err := s.CloseWrite(); err != nil {
+		return "", fmt.Errorf("close write to leader %s: %w", leaderID, err)
+	}
+
+	scanner := bufio.NewScanner(s)
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return "", fmt.Errorf("read response from leader %s: %w", leaderID, err)
+		}
+		return "", fmt.Errorf("no response from leader %s", leaderID)
+	}
+	return scanner.Text(), nil
+}
+
+// handleForwardExecInviteRedeemStream is the leader-side handler for
+// ForwardExecInviteRedeemProtocolID: single-hop only, mirroring every other
+// Forward* handler in this file -- if this node also isn't leader (a
+// leadership change mid-flight), it fails outward instead of forwarding
+// again.
+func (n *Node) handleForwardExecInviteRedeemStream(s network.Stream) {
+	defer s.Close()
+
+	buf, err := io.ReadAll(s)
+	if err != nil {
+		fmt.Fprintf(s, "ERR: forward exec invite redeem: read: %v\n", err)
+		return
+	}
+
+	instanceID, err := n.processExecInviteRedeem(context.Background(), buf)
+	if err == nil {
+		fmt.Fprintf(s, "OK %s\n", instanceID)
+		return
+	}
+	if errors.Is(err, errExecInviteNotLeader) {
+		var leaderID raft.ServerID
+		if rf := n.getRaft(); rf != nil {
+			_, leaderID = rf.LeaderWithID()
+		}
+		fmt.Fprintf(s, "ERR: not leader; current leader is %s (already forwarded once)\n", leaderID)
+		return
+	}
+	fmt.Fprintf(s, "ERR: %v\n", err)
 }
 
 // lodgeJoinRequest records joinPeerID's join request as a pending

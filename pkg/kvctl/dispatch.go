@@ -489,3 +489,153 @@ func LatestCommandLog(instanceID string) (logrecord.Record, error) {
 	}
 	return latest, nil
 }
+
+// CommandHandler processes one dispatched CommandRequest and returns the
+// fields/narrative RunCommandDispatcher should record via AppendCommandLog
+// -- exactly AppendCommandLog's own (fields, narrative) parameters, so a
+// handler with nothing structured to report can just return (nil, "some
+// text"). Called at most once per instance id by a given
+// RunCommandDispatcher process -- see that function's doc comment on why
+// running more than one dispatcher process against the same commandID
+// isn't safe.
+type CommandHandler func(req CommandRequest) (fields map[string]string, narrative string)
+
+// defaultDispatchPollInterval/defaultDispatchRescanInterval are
+// RunCommandDispatcher's fixed polling cadences -- tuned the same way
+// mobile/kvmobile's own WatchCommandLog poll is ("a 1.5s poll, accelerated
+// but not replaced" by a low-latency poke): frequent enough that a poke
+// feels responsive, infrequent enough not to hammer the local daemon with
+// ListCommandRequests scans while idle.
+const (
+	defaultDispatchPollInterval   = 250 * time.Millisecond
+	defaultDispatchRescanInterval = 3 * time.Second
+)
+
+// RunCommandDispatcher is the concrete implementation of the dispatch loop
+// SubmitCommand's own doc comment describes but deliberately doesn't
+// provide ("kvctl only dispatches and records; it never interprets or runs
+// a Command itself -- that's the target's own application logic"): it
+// watches for CommandRequests against commandID and calls handler exactly
+// once for each one it hasn't already logged a result for, until stop is
+// closed.
+//
+// Two mechanisms combine to decide when to look for new requests, neither
+// sufficient alone: a fast, non-blocking PollExecute check every
+// defaultDispatchPollInterval catches SubmitCommand's low-latency Execute
+// poke almost immediately, but that poke is unreplicated and silently
+// dropped if this process wasn't running to receive it (see SubmitCommand's
+// own doc comment); a slower defaultDispatchRescanInterval full
+// ListCommandRequests re-scan, independent of whether any poke arrived, is
+// what actually guarantees nothing is missed. A rescan also always runs
+// once immediately, before waiting on anything, so requests already
+// pending when this function is first called aren't held up for a full
+// rescan interval.
+//
+// "Already handled" is decided by QueryCommandLog: if any log entry
+// already exists for an instance id, RunCommandDispatcher assumes some
+// call to handler (this one or an earlier process's) already ran for it
+// and skips it -- which is also why handler's return value is always
+// recorded via AppendCommandLog even when it represents a caller-visible
+// failure (set fields/narrative to reflect that yourself): an instance
+// nothing ever wrote a result for would be retried forever, and one that
+// legitimately failed generally shouldn't be silently retried and re-run
+// its side effects. This dedup check is a plain read, not a claim/lock --
+// running more than one RunCommandDispatcher process against the same
+// commandID at once can race two of them into both deciding a request is
+// unhandled and running handler concurrently for it. RunCommandDispatcher
+// assumes exactly one live dispatcher per commandID, the same single-owner
+// assumption Command.PeerID itself already encodes.
+//
+// A panic inside handler is recovered and recorded as an error result
+// (via AppendCommandLog) the same as a returned failure would be, and does
+// not stop the loop -- one bad request must not take down every future one
+// on the same commandID.
+//
+// onError, if non-nil, is called with every error RunCommandDispatcher
+// itself hits along the way (a failed ListCommandRequests/PollExecute/
+// QueryCommandLog/AppendCommandLog call) -- these are treated as
+// transient and never stop the loop either; pass nil to ignore them.
+func RunCommandDispatcher(commandID string, handler CommandHandler, stop <-chan struct{}, onError func(error)) {
+	report := func(err error) {
+		if err != nil && onError != nil {
+			onError(err)
+		}
+	}
+
+	dispatchPendingCommandRequests(commandID, handler, report)
+
+	pollTicker := time.NewTicker(defaultDispatchPollInterval)
+	defer pollTicker.Stop()
+	rescanTicker := time.NewTicker(defaultDispatchRescanInterval)
+	defer rescanTicker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-rescanTicker.C:
+			dispatchPendingCommandRequests(commandID, handler, report)
+		case <-pollTicker.C:
+			_, _, ok, err := PollExecute()
+			if err != nil {
+				report(fmt.Errorf("kvctl: run command dispatcher: poll execute: %w", err))
+				continue
+			}
+			if ok {
+				dispatchPendingCommandRequests(commandID, handler, report)
+			}
+		}
+	}
+}
+
+// dispatchPendingCommandRequests is RunCommandDispatcher's single scan
+// pass: list every CommandRequest for commandID, skip any instance id
+// commandRequestAlreadyHandled already has a result for, and run handler
+// (via runCommandHandlerSafely) for the rest, recording each outcome with
+// AppendCommandLog.
+func dispatchPendingCommandRequests(commandID string, handler CommandHandler, report func(error)) {
+	reqs, err := ListCommandRequests(commandID)
+	if err != nil {
+		report(fmt.Errorf("kvctl: run command dispatcher: list command requests: %w", err))
+		return
+	}
+	for _, req := range reqs {
+		handled, err := commandRequestAlreadyHandled(req.InstanceID)
+		if err != nil {
+			report(fmt.Errorf("kvctl: run command dispatcher: check %s: %w", req.InstanceID, err))
+			continue
+		}
+		if handled {
+			continue
+		}
+		fields, narrative := runCommandHandlerSafely(handler, req)
+		if err := AppendCommandLog(req.RequestedBy, req.InstanceID, fields, narrative); err != nil {
+			report(fmt.Errorf("kvctl: run command dispatcher: append command log for %s: %w", req.InstanceID, err))
+		}
+	}
+}
+
+// commandRequestAlreadyHandled reports whether instanceID already has at
+// least one AppendCommandLog entry -- RunCommandDispatcher's dedup check,
+// see that function's doc comment on why this, not a separate claim/lock,
+// is what "already handled" means here.
+func commandRequestAlreadyHandled(instanceID string) (bool, error) {
+	entries, err := QueryCommandLog(instanceID, time.Unix(0, 0), time.Now(), 1)
+	if err != nil {
+		return false, err
+	}
+	return len(entries) > 0, nil
+}
+
+// runCommandHandlerSafely calls handler, recovering a panic into an error
+// result instead of letting it escape and take down RunCommandDispatcher's
+// whole loop -- see that function's doc comment.
+func runCommandHandlerSafely(handler CommandHandler, req CommandRequest) (fields map[string]string, narrative string) {
+	defer func() {
+		if r := recover(); r != nil {
+			fields = map[string]string{"status": "error"}
+			narrative = fmt.Sprintf("handler panic: %v", r)
+		}
+	}()
+	return handler(req)
+}
