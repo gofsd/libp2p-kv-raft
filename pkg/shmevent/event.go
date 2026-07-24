@@ -254,6 +254,17 @@ const (
 	EventGroupCommandDelete uint8 = 25
 	EventPeerGroupPut       uint8 = 26
 	EventPeerGroupDelete    uint8 = 27
+	// EventJoinInviteCreate lodges a one-time shmevent.KindJoinInvite
+	// record (Value: EncodeJoinInviteCreatePayload) -- a direct write, no
+	// pending/confirmed lifecycle, same as EventGroupPut, gated on the
+	// caller being a current raft voter the same way. EventJoinInviteRevoke
+	// deletes one outright (Value: EncodeJoinInviteRevokePayload) before
+	// it's ever redeemed, mirroring EventGroupDelete. Neither is what
+	// actually admits a new device -- that happens inside handleJoinStream
+	// when a join request presents a still-valid token (see
+	// pkg/kvfsm.OpConsumeInvite), entirely outside this event pair.
+	EventJoinInviteCreate uint8 = 28
+	EventJoinInviteRevoke uint8 = 29
 	// EventError is response-only: Value carries a UTF-8 error message,
 	// ID echoes the failed request's ID. Not part of the fields the
 	// protocol was specified with -- added because the struct has no
@@ -320,6 +331,10 @@ func EventName(e uint8) string {
 		return "peer_group_put"
 	case EventPeerGroupDelete:
 		return "peer_group_delete"
+	case EventJoinInviteCreate:
+		return "join_invite_create"
+	case EventJoinInviteRevoke:
+		return "join_invite_revoke"
 	case EventError:
 		return "error"
 	default:
@@ -388,6 +403,10 @@ func EventFromName(name string) (uint8, bool) {
 		return EventPeerGroupPut, true
 	case "peer_group_delete":
 		return EventPeerGroupDelete, true
+	case "join_invite_create":
+		return EventJoinInviteCreate, true
+	case "join_invite_revoke":
+		return EventJoinInviteRevoke, true
 	case "error":
 		return EventError, true
 	default:

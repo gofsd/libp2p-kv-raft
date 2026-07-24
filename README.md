@@ -226,6 +226,33 @@ auto-admitted by a stale confirmed record) and deletes the composite cluster dir
 `deletenode`'s counterpart for "leave a cluster and don't keep its local data around", as opposed
 to `deletenode`'s "erase this identity entirely."
 
+#### One-time join invites: admitting a device the cluster has never seen before
+
+`cluster-join`'s pending/confirmed flow above always addresses a specific, already-known peer id —
+fine for `join`/`rejoinnode` reconnecting an identity that already exists, but no help for a brand
+new device (nothing to name until it shows up). `shmevent.KindJoinInvite` is a different
+mechanism for exactly that case: a random, unguessable token stands in for a peer id, and *any*
+device presenting a still-valid one gets admitted immediately — with `-require-confirm-for-join`
+on or off — with no live voter approving anything at the moment it actually joins.
+
+```bash
+mage createjoininvite <voter|learner>              # (on a current voter) prints a fresh tokenHex
+mage addfollower "<leaderMultiaddr>#<tokenHex>"     # any new device, redeems it by joining
+mage revokejoininvite <tokenHex>                    # invalidate one before it's ever redeemed
+```
+
+The token rides along inside the same `leaderPeerID`/`leaderAddr` string every join path already
+threads through unchanged (`EventAdd`'s own wire payload, `kvctl.AddNode`, `mobile/kvmobile.Join`)
+— `#` never appears in a multiaddr or peer id, so `pkg/daemon`'s `splitInviteToken` just strips it
+back off before resolving the address, no new parameter anywhere above `handleAdd`. Redemption
+(`kvfsm.OpConsumeInvite`) reads and deletes the invite record in one atomic raft `Apply` call, the
+same way `OpConfirm` already guarantees a pending record is only ever promoted once — so a second
+device presenting an already-consumed token is rejected outright, not silently downgraded to the
+slower pending-confirm path. `kvctl-cli printjoininvitedatamatrix <leaderMultiaddr> <tokenHex>
+<outFile.png>` barcodes the plain `"<leaderMultiaddr>#<tokenHex>"` string (not a signed event —
+the token itself is the credential, there's nothing to sign) for a device to scan and pass
+straight to its own `addfollower`/`addnode` call.
+
 ### Follower on Android
 
 The Android app (`android-app/`) runs the same follower daemon in-process via

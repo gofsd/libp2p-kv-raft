@@ -106,6 +106,77 @@ func TestApplyOpConfirmWithNoPendingRecordFails(t *testing.T) {
 	}
 }
 
+// TestApplyOpConsumeInviteReadsAndDeletes checks OpConsumeInvite's core
+// contract: a valid record's value comes back via ApplyResult.Value, and
+// the record is gone afterward -- the "one time" property a join invite
+// relies on (see pkg/daemon's consumeJoinInvite), with no separate
+// bookkeeping beyond this single Apply call.
+func TestApplyOpConsumeInviteReadsAndDeletes(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "sqlite"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer s.Close()
+
+	f := kvfsm.New(s)
+
+	inviteKey := []byte{0x00, 0x0A, 0x00, 'a', 'b', 'c'}
+
+	setCmd := kvfsm.EncodeCommand(kvfsm.OpSet, inviteKey, []byte{0x02})
+	if res, ok := f.Apply(&raft.Log{Data: setCmd}).(kvfsm.ApplyResult); !ok || res.Err != nil {
+		t.Fatalf("Apply OpSet: %+v", res)
+	}
+
+	consumeCmd := kvfsm.EncodeCommand(kvfsm.OpConsumeInvite, inviteKey, nil)
+	res, ok := f.Apply(&raft.Log{Data: consumeCmd}).(kvfsm.ApplyResult)
+	if !ok {
+		t.Fatalf("Apply did not return kvfsm.ApplyResult")
+	}
+	if res.Err != nil {
+		t.Fatalf("Apply OpConsumeInvite: %v", res.Err)
+	}
+	if len(res.Value) != 1 || res.Value[0] != 0x02 {
+		t.Fatalf("got ApplyResult.Value %v, want [0x02]", res.Value)
+	}
+
+	if _, err := s.Get(inviteKey); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("invite key: got %v, want ErrNotFound (should be deleted after consume)", err)
+	}
+}
+
+// TestApplyOpConsumeInviteTwiceFailsSecondTime is what actually makes an
+// invite "one time": redeeming the same token again after it was already
+// consumed must fail, not silently succeed a second time.
+func TestApplyOpConsumeInviteTwiceFailsSecondTime(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "sqlite"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer s.Close()
+
+	f := kvfsm.New(s)
+
+	inviteKey := []byte{0x00, 0x0A, 0x00, 'x', 'y', 'z'}
+
+	setCmd := kvfsm.EncodeCommand(kvfsm.OpSet, inviteKey, []byte{0x01})
+	if res, ok := f.Apply(&raft.Log{Data: setCmd}).(kvfsm.ApplyResult); !ok || res.Err != nil {
+		t.Fatalf("Apply OpSet: %+v", res)
+	}
+
+	consumeCmd := kvfsm.EncodeCommand(kvfsm.OpConsumeInvite, inviteKey, nil)
+	if res, ok := f.Apply(&raft.Log{Data: consumeCmd}).(kvfsm.ApplyResult); !ok || res.Err != nil {
+		t.Fatalf("first Apply OpConsumeInvite: %+v", res)
+	}
+
+	res, ok := f.Apply(&raft.Log{Data: consumeCmd}).(kvfsm.ApplyResult)
+	if !ok {
+		t.Fatalf("second Apply did not return kvfsm.ApplyResult")
+	}
+	if res.Err == nil {
+		t.Fatal("second Apply OpConsumeInvite unexpectedly succeeded -- invite should already be consumed")
+	}
+}
+
 // TestApplyOpDel exercises kvfsm.OpDel directly -- EventPermitRevoke is
 // its first real caller (see pkg/daemon's handleConfirmForward/
 // applyConfirm), but OpDel itself was already fully implemented and

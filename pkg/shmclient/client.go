@@ -329,6 +329,23 @@ func (s *Session) DeletePeerGroup(ctx context.Context, peerID, groupID []byte) e
 	return s.catalogCall(ctx, shmevent.EventPeerGroupDelete, payload)
 }
 
+// CreateJoinInvite lodges a one-time shmevent.KindJoinInvite record for
+// token, granting suffrage, on the session's node. Only a current raft
+// voter may do this -- see shmevent.EventJoinInviteCreate's doc comment.
+func (s *Session) CreateJoinInvite(ctx context.Context, token []byte, suffrage byte) error {
+	payload, err := shmevent.EncodeJoinInviteCreatePayload(token, suffrage)
+	if err != nil {
+		return fmt.Errorf("shmclient: join_invite_create: %w", err)
+	}
+	return s.catalogCall(ctx, shmevent.EventJoinInviteCreate, payload)
+}
+
+// RevokeJoinInvite deletes the KindJoinInvite record for token outright,
+// before it's ever redeemed. Only a current raft voter may do this.
+func (s *Session) RevokeJoinInvite(ctx context.Context, token []byte) error {
+	return s.catalogCall(ctx, shmevent.EventJoinInviteRevoke, shmevent.EncodeJoinInviteRevokePayload(token))
+}
+
 // RequestLogPermit lodges a pending permission for peerID to
 // append/query pkg/logrecord records of logKind on the session's node.
 // metadata is opaque, as with RequestPermit. See

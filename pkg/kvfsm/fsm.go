@@ -98,6 +98,21 @@ const (
 	// byte (SystemKey's second byte) is what selects which cascade runs;
 	// value is unused.
 	OpCascadeDelete OpType = 4
+	// OpConsumeInvite atomically reads and deletes a
+	// shmevent.KindJoinInvite record: key is the invite's own key
+	// (shmevent.JoinInviteKey), value is unused. On success, the
+	// ApplyResult's Value field carries the deleted record's own value
+	// (its encoded suffrage byte -- shmevent.EncodeJoinInviteRecord/
+	// DecodeJoinInviteRecord) back to the caller (see pkg/daemon's
+	// consumeJoinInvite), which is what actually lets a join request
+	// bypass Config.RequireConfirmForJoin. Read-then-delete in one Apply
+	// call is what makes "one time" real with no extra bookkeeping,
+	// exactly like OpConfirm's existing read-then-write-then-delete
+	// already guarantees for every pending->confirmed kind: two
+	// concurrent redemption attempts for the same token deterministically
+	// resolve to exactly one winner, since Apply runs in strict raft log
+	// order and whichever entry commits second finds nothing left to read.
+	OpConsumeInvite OpType = 5
 )
 
 // EncodeCommand builds the raft log payload for a Set/Delete operation.
@@ -157,9 +172,13 @@ func New(s *store.Store) *FSM {
 	return &FSM{Store: s}
 }
 
-// ApplyResult is returned to the raft ApplyFuture caller.
+// ApplyResult is returned to the raft ApplyFuture caller. Value is only
+// ever populated by OpConsumeInvite (the deleted invite record's own
+// value) -- every other op's caller already knows what it wrote/deleted
+// and has no use for it.
 type ApplyResult struct {
-	Err error
+	Err   error
+	Value []byte
 }
 
 // Apply implements raft.FSM.
@@ -200,6 +219,21 @@ func (f *FSM) Apply(l *raft.Log) any {
 		return ApplyResult{Err: f.Store.Delete(key)}
 	case OpCascadeDelete:
 		return applyCascadeDelete(f.Store, key)
+	case OpConsumeInvite:
+		// Read-then-delete, atomic within this single Apply call for the
+		// identical reason OpConfirm's read-modify-write is (see that
+		// case's comment): this is the only place any raft replica ever
+		// mutates a KindJoinInvite record after creation, so there's no
+		// concurrent-Apply race to protect against beyond what raft's own
+		// strict log ordering already guarantees.
+		v, err := f.Store.Get(key)
+		if err != nil {
+			return ApplyResult{Err: fmt.Errorf("kvfsm: consume invite: no such invite: %w", err)}
+		}
+		if err := f.Store.Delete(key); err != nil {
+			return ApplyResult{Err: err}
+		}
+		return ApplyResult{Value: v}
 	default:
 		return ApplyResult{Err: fmt.Errorf("kvfsm: unknown op %d", op)}
 	}

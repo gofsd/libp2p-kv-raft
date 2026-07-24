@@ -1482,6 +1482,46 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		}
 		return shmevent.Msg{EventType: shmevent.EventPeerGroupDelete, ID: m.ID}
 
+	// EventJoinInviteCreate/Revoke are direct writes gated the identical
+	// "only a raft voter may act" way EventGroupPut/Delete are (see that
+	// case's comment) -- creating one is the entire authorization step for
+	// a one-time raft join, so it needs the same live-voter check any
+	// other privileged direct write gets. Redeeming a token happens
+	// entirely inside handleJoinStream/admitOrLodgeJoin instead, not here.
+	case shmevent.EventJoinInviteCreate:
+		if caller.remotePeer != "" {
+			rf := n.getRaft()
+			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
+				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
+			}
+		}
+		token, suffrage, err := shmevent.DecodeJoinInviteCreatePayload(m.Value)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		key := shmevent.JoinInviteKey(token)
+		if err := n.handleConfirmForward(ctx, kvfsm.OpSet, key, shmevent.EncodeJoinInviteRecord(suffrage), true); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventJoinInviteCreate, ID: m.ID}
+
+	case shmevent.EventJoinInviteRevoke:
+		if caller.remotePeer != "" {
+			rf := n.getRaft()
+			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
+				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
+			}
+		}
+		token, err := shmevent.DecodeJoinInviteRevokePayload(m.Value)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		key := shmevent.JoinInviteKey(token)
+		if err := n.handleConfirmForward(ctx, kvfsm.OpDel, key, nil, true); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventJoinInviteRevoke, ID: m.ID}
+
 	case shmevent.EventExecute:
 		if err := n.dispatchExecute(ctx, m); err != nil {
 			return errorMsg(m.ID, err)
@@ -1639,6 +1679,23 @@ func (n *Node) handleAddDispatch(ctx context.Context, m shmevent.Msg, remotePeer
 	return n.handleAdd(ctx, string(m.Value))
 }
 
+// splitInviteToken splits a trailing "#<inviteTokenHex>" off addr, if
+// present, decoding the hex into raw token bytes -- see handleAdd's doc
+// comment on why the token rides along inside the same string every
+// existing leaderPeerID/leaderAddr caller already passes through
+// unchanged, rather than a new parameter threaded through all of them.
+func splitInviteToken(addr string) (cleanAddr string, token []byte, err error) {
+	i := strings.IndexByte(addr, '#')
+	if i < 0 {
+		return addr, nil, nil
+	}
+	token, err = hex.DecodeString(addr[i+1:])
+	if err != nil {
+		return "", nil, fmt.Errorf("invalid invite token in %q: %w", addr, err)
+	}
+	return addr[:i], token, nil
+}
+
 func (n *Node) handleAdd(ctx context.Context, leaderPeerID string) (string, error) {
 	rf, err := n.initRaft()
 	if err != nil {
@@ -1670,6 +1727,18 @@ func (n *Node) handleAdd(ctx context.Context, leaderPeerID string) (string, erro
 		return n.peerID, nil
 	}
 
+	// A trailing "#<inviteTokenHex>" (peer ids/multiaddrs never contain
+	// '#') carries a one-time shmevent.KindJoinInvite token -- see
+	// EncodeJoinInviteCreatePayload -- packaged into the exact same
+	// leaderPeerID string every existing caller already threads through
+	// unchanged (mage addfollower/kvctl.AddNode/kvmobile.Join, EventAdd's
+	// own wire payload), so redeeming one needs no new API surface
+	// anywhere above this function.
+	leaderPeerID, inviteToken, err := splitInviteToken(leaderPeerID)
+	if err != nil {
+		return "", err
+	}
+
 	// leaderPeerID is either a full multiaddr (a leader on another machine,
 	// e.g. a remote deployment -- there's no shared registry to resolve it
 	// from) or a bare peer id created on this same machine, resolved
@@ -1686,7 +1755,7 @@ func (n *Node) handleAdd(ctx context.Context, leaderPeerID string) (string, erro
 		}
 	}
 
-	status, err := n.join(ctx, leaderAddr)
+	status, err := n.join(ctx, leaderAddr, inviteToken)
 	if err != nil {
 		return "", fmt.Errorf("join: %w", err)
 	}
@@ -1705,8 +1774,11 @@ func (n *Node) handleAdd(ctx context.Context, leaderPeerID string) (string, erro
 // join asks the leader reachable at leaderAddr to add this node as a
 // voter, and returns "ok" (admitted immediately) or "pending" (lodged as a
 // pending join request awaiting a confirmed voter's approval -- see
-// Config.RequireConfirmForJoin) on success.
-func (n *Node) join(ctx context.Context, leaderAddr string) (string, error) {
+// Config.RequireConfirmForJoin) on success. inviteToken, if non-empty, is
+// a shmevent.KindJoinInvite token (see EncodeJoinInviteCreatePayload) that
+// -- if it's still valid -- gets this request admitted immediately
+// regardless of Config.RequireConfirmForJoin; see admitOrLodgeJoin.
+func (n *Node) join(ctx context.Context, leaderAddr string, inviteToken []byte) (string, error) {
 	// If this node needs a relay reservation to be reachable at all (see
 	// Config.RelayPeer), give it a moment to complete before doing anything
 	// else: AutoRelay's reservation happens asynchronously in the background
@@ -1763,7 +1835,11 @@ func (n *Node) join(ctx context.Context, leaderAddr string) (string, error) {
 	defer s.Close()
 
 	selfAddr := n.advertisedAddrs()[0]
-	if _, err := fmt.Fprintf(s, "%s %s voter\n", n.peerID, selfAddr); err != nil {
+	reqLine := fmt.Sprintf("%s %s voter", n.peerID, selfAddr)
+	if len(inviteToken) > 0 {
+		reqLine += " " + hex.EncodeToString(inviteToken)
+	}
+	if _, err := fmt.Fprintf(s, "%s\n", reqLine); err != nil {
 		return "", fmt.Errorf("send join request: %w", err)
 	}
 	if err := s.CloseWrite(); err != nil {
@@ -1797,7 +1873,7 @@ func (n *Node) join(ctx context.Context, leaderAddr string) (string, error) {
 func (n *Node) handleJoinStream(s network.Stream) {
 	defer s.Close()
 
-	joinPeerID, joinAddr, suffrage, err := parseJoinRequest(s)
+	joinPeerID, joinAddr, suffrage, inviteToken, err := parseJoinRequest(s)
 	if err != nil {
 		fmt.Fprintf(s, "ERR: malformed join request: %v\n", err)
 		return
@@ -1805,7 +1881,7 @@ func (n *Node) handleJoinStream(s network.Stream) {
 
 	rf := n.getRaft()
 	if rf != nil && rf.State() == raft.Leader {
-		fmt.Fprintf(s, "%s\n", n.admitOrLodgeJoin(context.Background(), rf, joinPeerID, joinAddr, suffrage))
+		fmt.Fprintf(s, "%s\n", n.admitOrLodgeJoin(context.Background(), rf, joinPeerID, joinAddr, suffrage, inviteToken))
 		return
 	}
 
@@ -1818,7 +1894,7 @@ func (n *Node) handleJoinStream(s network.Stream) {
 		return
 	}
 
-	line, err := n.forwardJoin(context.Background(), leaderID, joinPeerID, joinAddr, suffrage)
+	line, err := n.forwardJoin(context.Background(), leaderID, joinPeerID, joinAddr, suffrage, inviteToken)
 	if err != nil {
 		fmt.Fprintf(s, "ERR: forward join: %v\n", err)
 		return
@@ -1835,7 +1911,7 @@ func (n *Node) handleJoinStream(s network.Stream) {
 func (n *Node) handleForwardJoinStream(s network.Stream) {
 	defer s.Close()
 
-	joinPeerID, joinAddr, suffrage, err := parseJoinRequest(s)
+	joinPeerID, joinAddr, suffrage, inviteToken, err := parseJoinRequest(s)
 	if err != nil {
 		fmt.Fprintf(s, "ERR: malformed join request: %v\n", err)
 		return
@@ -1851,7 +1927,7 @@ func (n *Node) handleForwardJoinStream(s network.Stream) {
 		return
 	}
 
-	fmt.Fprintf(s, "%s\n", n.admitOrLodgeJoin(context.Background(), rf, joinPeerID, joinAddr, suffrage))
+	fmt.Fprintf(s, "%s\n", n.admitOrLodgeJoin(context.Background(), rf, joinPeerID, joinAddr, suffrage, inviteToken))
 }
 
 // parseJoinRequest reads and parses the single
@@ -1860,15 +1936,15 @@ func (n *Node) handleForwardJoinStream(s network.Stream) {
 // defaults to "voter" if absent, so a line written by an older build of
 // this same code (before ClientProtocolID's browser-learner join existed)
 // still parses the same way it always has.
-func parseJoinRequest(s network.Stream) (peerID, addr string, suffrage raft.ServerSuffrage, err error) {
+func parseJoinRequest(s network.Stream) (peerID, addr string, suffrage raft.ServerSuffrage, inviteToken []byte, err error) {
 	scanner := bufio.NewScanner(s)
 	if !scanner.Scan() {
 		if err := scanner.Err(); err != nil {
-			return "", "", raft.Voter, err
+			return "", "", raft.Voter, nil, err
 		}
-		return "", "", raft.Voter, fmt.Errorf("empty join request")
+		return "", "", raft.Voter, nil, fmt.Errorf("empty join request")
 	}
-	var suffrageWord string
+	var suffrageWord, tokenHex string
 	fields := strings.Fields(scanner.Text())
 	switch len(fields) {
 	case 2:
@@ -1876,8 +1952,10 @@ func parseJoinRequest(s network.Stream) (peerID, addr string, suffrage raft.Serv
 		suffrageWord = "voter"
 	case 3:
 		peerID, addr, suffrageWord = fields[0], fields[1], fields[2]
+	case 4:
+		peerID, addr, suffrageWord, tokenHex = fields[0], fields[1], fields[2], fields[3]
 	default:
-		return "", "", raft.Voter, fmt.Errorf("expected \"<peer-id> <multiaddr> [voter|learner]\", got %q", scanner.Text())
+		return "", "", raft.Voter, nil, fmt.Errorf("expected \"<peer-id> <multiaddr> [voter|learner] [inviteToken]\", got %q", scanner.Text())
 	}
 	switch suffrageWord {
 	case "voter":
@@ -1885,24 +1963,78 @@ func parseJoinRequest(s network.Stream) (peerID, addr string, suffrage raft.Serv
 	case "learner":
 		suffrage = raft.Nonvoter
 	default:
-		return "", "", raft.Voter, fmt.Errorf("unknown suffrage %q", suffrageWord)
+		return "", "", raft.Voter, nil, fmt.Errorf("unknown suffrage %q", suffrageWord)
 	}
-	return peerID, addr, suffrage, nil
+	if tokenHex != "" {
+		inviteToken, err = hex.DecodeString(tokenHex)
+		if err != nil {
+			return "", "", raft.Voter, nil, fmt.Errorf("invalid invite token %q: %w", tokenHex, err)
+		}
+	}
+	return peerID, addr, suffrage, inviteToken, nil
 }
 
 // admitOrLodgeJoin is handleJoinStream/handleForwardJoinStream's shared
 // decision point, called only once rf.State()==Leader is already
-// confirmed: it runs addServerLine immediately (today's behavior) unless
-// Config.RequireConfirmForJoin is set, in which case it instead lodges a
-// pending shmevent.KindClusterJoin record and replies "PENDING" -- the
-// actual raft.AddVoter/AddNonvoter only happens later, once some other
-// confirmed voter promotes that record (see applyConfirm's
-// KindClusterJoin handling).
-func (n *Node) admitOrLodgeJoin(ctx context.Context, rf *raft.Raft, joinPeerID, joinAddr string, suffrage raft.ServerSuffrage) string {
+// confirmed. A non-empty inviteToken takes priority over everything else:
+// if it names a still-valid shmevent.KindJoinInvite record, this admits
+// immediately with *that record's own* suffrage (never joinAddr's
+// requested one -- see consumeJoinInvite's doc comment on why the
+// invite's grant, not the requester's ask, is authoritative) regardless of
+// Config.RequireConfirmForJoin, and a malformed/already-consumed token is
+// a hard error rather than a silent fall-through to the slower path
+// below. With no token, this runs addServerLine immediately (today's
+// behavior) unless Config.RequireConfirmForJoin is set, in which case it
+// instead lodges a pending shmevent.KindClusterJoin record and replies
+// "PENDING" -- the actual raft.AddVoter/AddNonvoter only happens later,
+// once some other confirmed voter promotes that record (see
+// applyConfirm's KindClusterJoin handling).
+func (n *Node) admitOrLodgeJoin(ctx context.Context, rf *raft.Raft, joinPeerID, joinAddr string, suffrage raft.ServerSuffrage, inviteToken []byte) string {
+	if len(inviteToken) > 0 {
+		grantedSuffrage, err := n.consumeJoinInvite(rf, inviteToken)
+		if err != nil {
+			return fmt.Sprintf("ERR: %v", err)
+		}
+		return n.addServerLine(ctx, rf, joinPeerID, joinAddr, grantedSuffrage)
+	}
 	if !n.cfg.RequireConfirmForJoin {
 		return n.addServerLine(ctx, rf, joinPeerID, joinAddr, suffrage)
 	}
 	return n.lodgeJoinRequest(ctx, joinPeerID, joinAddr, suffrage)
+}
+
+// consumeJoinInvite atomically redeems token via kvfsm.OpConsumeInvite
+// (rf.Apply directly, not handleConfirmForward -- every call site already
+// only reaches here once rf.State()==Leader is confirmed, exactly like
+// addServerLine's own precedent) and returns the suffrage it granted.
+// Returns an error for a token that doesn't name a currently-valid invite
+// (never created, already redeemed, or already revoked) -- deliberately
+// never falls back to Config.RequireConfirmForJoin's pending-lodge
+// behavior in that case, so a caller that supplied a bad token gets a
+// clear rejection instead of silently landing in a different, slower
+// admission path it didn't ask for.
+func (n *Node) consumeJoinInvite(rf *raft.Raft, token []byte) (raft.ServerSuffrage, error) {
+	key := shmevent.JoinInviteKey(token)
+	cmd := kvfsm.EncodeCommand(kvfsm.OpConsumeInvite, key, nil)
+	future := rf.Apply(cmd, 10*n.electionTimeout)
+	if err := future.Error(); err != nil {
+		return raft.Voter, fmt.Errorf("invite: %w", err)
+	}
+	res, ok := future.Response().(kvfsm.ApplyResult)
+	if !ok {
+		return raft.Voter, fmt.Errorf("invite: unexpected apply response type %T", future.Response())
+	}
+	if res.Err != nil {
+		return raft.Voter, fmt.Errorf("invalid or already-used invite: %w", res.Err)
+	}
+	sf, err := shmevent.DecodeJoinInviteRecord(res.Value)
+	if err != nil {
+		return raft.Voter, fmt.Errorf("invite: %w", err)
+	}
+	if sf == shmevent.SuffrageLearner {
+		return raft.Nonvoter, nil
+	}
+	return raft.Voter, nil
 }
 
 // lodgeJoinRequest records joinPeerID's join request as a pending
@@ -1980,12 +2112,13 @@ func (n *Node) recordClusterMember(ctx context.Context, peerIDStr string, role b
 	return n.handleSetForward(ctx, key, value, true)
 }
 
-// forwardJoin relays a join request (joinPeerID, joinAddr, suffrage) to
-// leaderID over ForwardJoinProtocolID and returns its response line
-// verbatim (without the trailing newline). Mirrors forwardSet's reasoning:
-// the libp2p host already knows how to reach leaderID via this node's own
-// raft transport, so no address resolution beyond the peer id is needed.
-func (n *Node) forwardJoin(ctx context.Context, leaderID raft.ServerID, joinPeerID, joinAddr string, suffrage raft.ServerSuffrage) (string, error) {
+// forwardJoin relays a join request (joinPeerID, joinAddr, suffrage,
+// inviteToken) to leaderID over ForwardJoinProtocolID and returns its
+// response line verbatim (without the trailing newline). Mirrors
+// forwardSet's reasoning: the libp2p host already knows how to reach
+// leaderID via this node's own raft transport, so no address resolution
+// beyond the peer id is needed.
+func (n *Node) forwardJoin(ctx context.Context, leaderID raft.ServerID, joinPeerID, joinAddr string, suffrage raft.ServerSuffrage, inviteToken []byte) (string, error) {
 	pid, err := peer.Decode(string(leaderID))
 	if err != nil {
 		return "", fmt.Errorf("invalid leader id %s: %w", leaderID, err)
@@ -2000,7 +2133,11 @@ func (n *Node) forwardJoin(ctx context.Context, leaderID raft.ServerID, joinPeer
 	if suffrage == raft.Nonvoter {
 		suffrageWord = "learner"
 	}
-	if _, err := fmt.Fprintf(s, "%s %s %s\n", joinPeerID, joinAddr, suffrageWord); err != nil {
+	line := fmt.Sprintf("%s %s %s", joinPeerID, joinAddr, suffrageWord)
+	if len(inviteToken) > 0 {
+		line += " " + hex.EncodeToString(inviteToken)
+	}
+	if _, err := fmt.Fprintf(s, "%s\n", line); err != nil {
 		return "", fmt.Errorf("write to leader %s: %w", leaderID, err)
 	}
 	if err := s.CloseWrite(); err != nil {
@@ -2620,7 +2757,7 @@ func (n *Node) handleAddLearner(ctx context.Context, joinPeerID, joinAddr string
 		return "", fmt.Errorf("client add: not leader and no leader known")
 	}
 
-	line, err := n.forwardJoin(ctx, leaderID, joinPeerID, joinAddr, raft.Nonvoter)
+	line, err := n.forwardJoin(ctx, leaderID, joinPeerID, joinAddr, raft.Nonvoter, nil)
 	if err != nil {
 		return "", fmt.Errorf("client add: forward: %w", err)
 	}

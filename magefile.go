@@ -1052,6 +1052,42 @@ func RevokePermit(kind, peerID string) error {
 	return nil
 }
 
+// CreateJoinInvite generates a fresh one-time join-invite token and
+// prints it -- append it to a leader multiaddr as
+// "<multiaddr>#<tokenHex>" and pass that to mage addfollower/addnode to
+// have that join admitted immediately even with -require-confirm-for-join
+// on, with no separate confirmpermit step. Only takes effect if the
+// current node is itself a raft voter.
+// Usage: mage createjoininvite <voter|learner>
+func CreateJoinInvite(suffrage string) error {
+	var sf byte
+	switch suffrage {
+	case "voter":
+		sf = shmevent.SuffrageVoter
+	case "learner":
+		sf = shmevent.SuffrageLearner
+	default:
+		return fmt.Errorf("unknown suffrage %q (want \"voter\" or \"learner\")", suffrage)
+	}
+	tokenHex, err := kvctl.CreateJoinInvite(sf)
+	if err != nil {
+		return err
+	}
+	fmt.Println(tokenHex)
+	return nil
+}
+
+// RevokeJoinInvite deletes a join-invite token outright before it's ever
+// redeemed. Only takes effect if the current node is itself a raft voter.
+// Usage: mage revokejoininvite <tokenHex>
+func RevokeJoinInvite(tokenHex string) error {
+	if err := kvctl.RevokeJoinInvite(tokenHex); err != nil {
+		return err
+	}
+	fmt.Println("✅ join invite revoked")
+	return nil
+}
+
 // RequestLogPermit lodges a pending permission for peerID to
 // append/query pkg/logrecord records of logKind, forwarded to the leader
 // like any other Set. metadata may be "".

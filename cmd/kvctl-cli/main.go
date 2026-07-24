@@ -60,6 +60,12 @@ func main() {
 		cmdConfirmPermit(os.Args[2:])
 	case "revokepermit":
 		cmdRevokePermit(os.Args[2:])
+	case "createjoininvite":
+		cmdCreateJoinInvite(os.Args[2:])
+	case "revokejoininvite":
+		cmdRevokeJoinInvite(os.Args[2:])
+	case "printjoininvitedatamatrix":
+		cmdPrintJoinInviteDataMatrix(os.Args[2:])
 	case "execute":
 		cmdExecute(os.Args[2:])
 	case "pollexecute":
@@ -99,6 +105,9 @@ func usage() {
   kvctl-cli requestpermit <kind: peer|bootstrap> <peerID> <metadata>
   kvctl-cli confirmpermit <kind: peer|bootstrap> <peerID>
   kvctl-cli revokepermit <kind: peer|bootstrap> <peerID>
+  kvctl-cli createjoininvite <voter|learner>
+  kvctl-cli revokejoininvite <tokenHex>
+  kvctl-cli printjoininvitedatamatrix <leaderMultiaddr> <tokenHex> <outFile.png>
   kvctl-cli execute <destPeerID> <value>
   kvctl-cli pollexecute
   kvctl-cli logappend <kind> <unitID> <fieldsJSON> <narrative>
@@ -144,6 +153,23 @@ instead of transmitting it now, writes a Data Matrix barcode image of the
 resulting bytes to outFile.png and prints the base64 payload to stdout --
 the latter is what a script feeds straight into sendrawevent for testing,
 without needing to decode the image at all.
+
+createjoininvite/revokejoininvite/printjoininvitedatamatrix are a
+different one-time mechanism, for admitting a brand-new device the
+cluster has never seen before (sendrawevent's ticket always needs a
+device's peer id already known in advance -- an invite doesn't).
+createjoininvite generates a fresh random token and lodges it as a
+shmevent.KindJoinInvite record (only a current raft voter may do this);
+whichever device's join request presents that still-valid token gets
+admitted immediately -- raft.AddVoter/AddNonvoter -- even with
+-require-confirm-for-join on, with no live voter confirming anything at
+that moment, and the token is consumed atomically so a second device
+presenting the same one is rejected outright. printjoininvitedatamatrix
+barcodes the plain string "<leaderMultiaddr>#<tokenHex>" (not a signed
+event -- there's nothing to sign here, the token itself is the
+credential); scanning it and passing the decoded string straight to mage
+addfollower/addnode (or kvctl-cli addnode) is the entire redemption step.
+revokejoininvite deletes a token outright before it's ever redeemed.
 
 raft flags (all default to hashicorp/raft's own WAN-appropriate values):
   -raft-heartbeat-timeout, -raft-election-timeout, -raft-commit-timeout, -raft-leader-lease-timeout`)
@@ -384,6 +410,85 @@ func cmdRevokePermit(args []string) {
 		fmt.Fprintf(os.Stderr, "revokepermit: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func cmdCreateJoinInvite(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli createjoininvite <voter|learner>")
+		os.Exit(2)
+	}
+	var suffrage byte
+	switch args[0] {
+	case "voter":
+		suffrage = shmevent.SuffrageVoter
+	case "learner":
+		suffrage = shmevent.SuffrageLearner
+	default:
+		fmt.Fprintf(os.Stderr, "createjoininvite: unknown suffrage %q (want \"voter\" or \"learner\")\n", args[0])
+		os.Exit(2)
+	}
+	tokenHex, err := kvctl.CreateJoinInvite(suffrage)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "createjoininvite: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(tokenHex)
+}
+
+func cmdRevokeJoinInvite(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli revokejoininvite <tokenHex>")
+		os.Exit(2)
+	}
+	if err := kvctl.RevokeJoinInvite(args[0]); err != nil {
+		fmt.Fprintf(os.Stderr, "revokejoininvite: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// cmdPrintJoinInviteDataMatrix implements `kvctl-cli
+// printjoininvitedatamatrix <leaderMultiaddr> <tokenHex> <outFile.png>` --
+// unlike printeventdatamatrix, this barcodes a plain string, not a signed
+// shmevent.Msg: "<leaderMultiaddr>#<tokenHex>" is exactly the format
+// pkg/daemon's splitInviteToken (handleAdd) expects when passed to mage
+// addfollower/addnode, so scanning this code and feeding the decoded
+// string straight into that command is the entire redemption step -- no
+// separate sendrawevent call needed, since createjoininvite's token isn't
+// itself a signed event.
+func cmdPrintJoinInviteDataMatrix(args []string) {
+	if len(args) != 3 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli printjoininvitedatamatrix <leaderMultiaddr> <tokenHex> <outFile.png>")
+		os.Exit(2)
+	}
+	leaderAddr, tokenHex, outFile := args[0], args[1], args[2]
+
+	joinString := leaderAddr + "#" + tokenHex
+
+	code, err := datamatrix.Encode(joinString)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "printjoininvitedatamatrix: encode data matrix: %v\n", err)
+		os.Exit(1)
+	}
+	bounds := code.Bounds()
+	scaled, err := barcode.Scale(code, bounds.Dx()*dataMatrixModuleSize, bounds.Dy()*dataMatrixModuleSize)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "printjoininvitedatamatrix: scale data matrix: %v\n", err)
+		os.Exit(1)
+	}
+
+	f, err := os.Create(outFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "printjoininvitedatamatrix: create %s: %v\n", outFile, err)
+		os.Exit(1)
+	}
+	defer f.Close()
+	if err := png.Encode(f, scaled); err != nil {
+		fmt.Fprintf(os.Stderr, "printjoininvitedatamatrix: write %s: %v\n", outFile, err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("wrote %s\n", outFile)
+	fmt.Println(joinString)
 }
 
 func cmdRequestLogPermit(args []string) {

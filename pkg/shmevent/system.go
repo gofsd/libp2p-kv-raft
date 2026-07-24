@@ -15,7 +15,7 @@ import (
 const SystemKeyPrefix = 0x00
 
 // Kind bytes -- what a system record (see SystemKey) is about. Values
-// 0x0A and above are still unassigned, reserved for future system
+// 0x0B and above are still unassigned, reserved for future system
 // operations.
 const (
 	KindPermitPeer    byte = 0x01 // permission for a peer to join/use the cluster's relay
@@ -71,6 +71,26 @@ const (
 	KindCommand      byte = 0x07
 	KindGroupCommand byte = 0x08
 	KindPeerGroup    byte = 0x09
+	// KindJoinInvite is a one-time raft-join invite: unlike KindClusterJoin
+	// (always addressed to a peer id the cluster already knows about
+	// before it's redeemed -- either because a live voter is confirming a
+	// request that already landed, or a ticket was pre-signed for that
+	// specific known peer id, see EncodePermitPeerPayload's doc comment on
+	// last session's work), a KindJoinInvite record is keyed by a random
+	// token instead of any peer id at all, because the whole point is
+	// admitting a device the cluster has never seen before -- there is no
+	// peer id to address it to until the moment it shows up and presents
+	// the token. Written directly (kvfsm.OpSet), same as KindGroup/
+	// KindCommand -- no pending/confirmed lifecycle, since there's nothing
+	// to promote; a single current raft voter creating one is the entire
+	// authorization step. Redeeming one is different from every other
+	// kind's confirm/delete pattern too: kvfsm.OpConsumeInvite reads and
+	// deletes it in one atomic Apply (see that op's doc comment), and a
+	// join request presenting a still-valid token is admitted immediately
+	// -- raft.AddVoter/AddNonvoter -- even when Config.RequireConfirmForJoin
+	// is set, which is the entire feature: no live voter needs to be
+	// present at the moment the new device actually shows up.
+	KindJoinInvite byte = 0x0A
 )
 
 // KindName returns a human-readable name for k, for CLI use (mage/
@@ -94,6 +114,8 @@ func KindName(k byte) string {
 		return "group-command"
 	case KindPeerGroup:
 		return "peer-group"
+	case KindJoinInvite:
+		return "join-invite"
 	default:
 		return fmt.Sprintf("unknown(%d)", k)
 	}
@@ -120,6 +142,8 @@ func KindFromName(name string) (byte, bool) {
 		return KindGroupCommand, true
 	case "peer-group":
 		return KindPeerGroup, true
+	case "join-invite":
+		return KindJoinInvite, true
 	default:
 		return 0, false
 	}
