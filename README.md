@@ -171,6 +171,25 @@ comment), so a local caller already had unrestricted read access to its own node
 this just exposes it conveniently instead of requiring a raw `sendevent` call. Also exposed on
 `kvctl-cli` as `rangescan <start> <end> [-limit N]`.
 
+`kvctl-cli sendrawevent <peerID> <base64Payload>` and `kvctl-cli printeventdatamatrix <peerID>
+<eventJSON> <outFile.png>` extend `sendevent` for one-time, pre-signed events. `sendevent` always
+signs fresh with whoever it's calling; `printeventdatamatrix` instead builds and signs the event
+(same `eventJSON` shape, same peerID-key-fetch-if-needed signing step) but writes the resulting
+bytes as a Data Matrix barcode to `outFile.png` and prints the base64 payload, without sending it
+yet. `sendrawevent` is the reverse: it delivers a base64 payload to `peerID` completely
+unchanged, over `pkg/ipc.CallRaw` — no re-signing, so whatever signature was baked in earlier (by
+this peer's own key, at whatever time `printeventdatamatrix` ran) survives intact. Together
+they're what a "one-time join ticket" is: a current raft voter runs `printeventdatamatrix` once,
+in advance, to pre-sign an `EventPermitConfirm` for a specific not-yet-arrived `KindClusterJoin`
+request; replaying that payload later via `sendrawevent` (still locally, on that same voter's own
+node — shmring IPC is same-machine only, see `pkg/shmevent`'s package doc comment) completes the
+confirm without the operator composing/signing anything at redemption time. No new server-side
+ticket-tracking was needed for the "one-time" part: `kvfsm`'s existing `OpConfirm` already deletes
+the pending record it consumes (see `SystemKey`'s doc comment), so replaying the same payload
+twice just fails the second time on its own. The identical pair works for any other event too
+(e.g. a pre-signed `EventExecute`, for a one-time command-execution ticket) — neither command is
+tied to one event type.
+
 #### Changing which cluster a node belongs to: `join`/`leave`/`rm`
 
 `addnode`/`addfollower` above always mint a *new* identity. `mage join <targetPeerID>` instead

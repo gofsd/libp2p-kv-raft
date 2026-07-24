@@ -3,7 +3,9 @@ module github.com/gofsd/libp2p-kv-raft
 go 1.25.9
 
 require (
+	capnproto.org/go/capnp/v3 v3.1.0-alpha.2
 	github.com/Masterminds/semver/v3 v3.5.0
+	github.com/boombuler/barcode v1.1.0
 	github.com/gofsd/shmring v0.1.0
 	github.com/hashicorp/raft v1.7.3
 	github.com/hashicorp/raft-boltdb/v2 v2.3.1
@@ -15,7 +17,6 @@ require (
 )
 
 require (
-	capnproto.org/go/capnp/v3 v3.1.0-alpha.2 // indirect
 	filippo.io/bigmod v0.1.1-0.20260103110540-f8a47775ebe5 // indirect
 	filippo.io/keygen v0.0.0-20260114151900-8e2790ea4c5b // indirect
 	github.com/armon/go-metrics v0.4.1 // indirect
@@ -147,3 +148,5 @@ tool (
 )
 
 replace github.com/wlynxg/anet => ./thirdparty/anet
+
+replace modernc.org/libc => ./thirdparty/libc

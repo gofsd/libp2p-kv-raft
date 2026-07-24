@@ -181,6 +181,59 @@ func Call(ctx context.Context, peerID string, m shmevent.Msg, priv shmevent.Priv
 	return resp, nil
 }
 
+// CallRaw is Call's pass-through counterpart: encoded is already a complete,
+// signed shmevent.Encode output -- built earlier, possibly by a different
+// signer, and handed to this call verbatim -- rather than a Msg this
+// package signs itself. It's what lets a one-time ticket (e.g. a
+// pre-signed EventPermitConfirm built and barcoded well before whoever
+// redeems it runs this) actually reach the daemon with its original
+// signature intact: Call always re-signs with priv, which would discard
+// that signature and substitute this caller's own key instead. Decoding
+// encoded here only reads m.ID back out (to address the response channel)
+// and validates the framing; it never re-encodes or re-signs it.
+func CallRaw(ctx context.Context, peerID string, encoded []byte) (shmevent.Msg, error) {
+	m, _, _, err := shmevent.Decode(encoded)
+	if err != nil {
+		return shmevent.Msg{}, fmt.Errorf("ipc: decode raw request: %w", err)
+	}
+
+	rn := reqChannel(peerID)
+	w, err := shmring.CreateShm(rn, capacity, shmring.WithPollInterval(minPoll, maxPoll))
+	if err != nil {
+		return shmevent.Msg{}, fmt.Errorf("ipc: create request channel: %w", err)
+	}
+
+	if _, err := w.WriteContext(ctx, encoded); err != nil {
+		w.CloseStorage()
+		return shmevent.Msg{}, fmt.Errorf("ipc: write request: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		w.CloseStorage()
+		return shmevent.Msg{}, fmt.Errorf("ipc: close request writer: %w", err)
+	}
+
+	r, err := openRespWithRetry(ctx, peerID, m.ID)
+	if err != nil {
+		w.CloseStorage()
+		return shmevent.Msg{}, err
+	}
+
+	respBuf, err := readAll(ctx, r)
+	r.Close()
+	if err != nil {
+		w.CloseStorage()
+		return shmevent.Msg{}, fmt.Errorf("ipc: read response: %w", err)
+	}
+
+	w.CloseStorage()
+
+	resp, _, _, err := shmevent.Decode(respBuf)
+	if err != nil {
+		return shmevent.Msg{}, err
+	}
+	return resp, nil
+}
+
 func openRespWithRetry(ctx context.Context, peerID string, id uint16) (*shmring.Reader, error) {
 	name := respChannel(peerID, id)
 	for {

@@ -12,13 +12,18 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"image/png"
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/boombuler/barcode"
+	"github.com/boombuler/barcode/datamatrix"
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/e2edata"
 	"github.com/gofsd/libp2p-kv-raft/pkg/ipc"
@@ -71,6 +76,10 @@ func main() {
 		cmdRevokeLogPermit(os.Args[2:])
 	case "sendevent":
 		cmdSendEvent(os.Args[2:])
+	case "sendrawevent":
+		cmdSendRawEvent(os.Args[2:])
+	case "printeventdatamatrix":
+		cmdPrintEventDataMatrix(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -98,6 +107,8 @@ func usage() {
   kvctl-cli confirmlogpermit <logKind> <peerID>
   kvctl-cli revokelogpermit <logKind> <peerID>
   kvctl-cli sendevent <peerID> <eventJSON>
+  kvctl-cli sendrawevent <peerID> <base64Payload>
+  kvctl-cli printeventdatamatrix <peerID> <eventJSON> <outFile.png>
 
 sendevent sends one raw pkg/shmevent.Msg (JSON-encoded, human-readable, e.g.
 '{"event":"get_field","value":"hello"}' -- see pkg/e2edata.Event for the
@@ -110,6 +121,29 @@ is EventError (255) or the call itself failed. This is the low-level
 primitive the e2e test pipeline drives -- both locally and, since this
 binary is the one already cross-compiled and copied to remote deployment
 targets, identically over SSH against a remote node.
+
+sendrawevent sends base64Payload -- a complete shmevent.Encode output
+(capnp framing + CRC + signature), produced ahead of time by
+printeventdatamatrix or anything else that emits the same shape -- to
+peerID verbatim, over pkg/ipc.CallRaw: unlike sendevent, it never re-signs
+or otherwise touches the payload, so whatever signature was baked into it
+(possibly by a different peerID's key, possibly long before this call)
+survives unchanged. This is what actually redeems a one-time ticket: e.g. a
+raft voter runs printeventdatamatrix once, in advance, to pre-sign an
+EventPermitConfirm for a specific not-yet-arrived KindClusterJoin request;
+later, replaying those same bytes here (locally, on that same voter's own
+node, since shmring is same-machine-only) completes the confirm without
+that operator needing to compose/sign anything at redemption time -- and
+kvfsm's own OpConfirm already deletes the pending record it consumes, so a
+second replay attempt fails on its own with no extra bookkeeping needed
+here.
+
+printeventdatamatrix builds and signs the exact same event sendevent would
+(same eventJSON shape, same peerID-key-fetch-if-needed signing step), but
+instead of transmitting it now, writes a Data Matrix barcode image of the
+resulting bytes to outFile.png and prints the base64 payload to stdout --
+the latter is what a script feeds straight into sendrawevent for testing,
+without needing to decode the image at all.
 
 raft flags (all default to hashicorp/raft's own WAN-appropriate values):
   -raft-heartbeat-timeout, -raft-election-timeout, -raft-commit-timeout, -raft-leader-lease-timeout`)
@@ -477,8 +511,51 @@ func cmdLogQuery(args []string) {
 }
 
 // sendEventTimeout bounds both the optional GetPrivateKey signing-key
-// fetch and the event call itself.
-const sendEventTimeout = 10 * time.Second
+// fetch and the event call itself. Generous relative to how fast a local
+// shmring round trip normally is: a node that's also a raft voter can get
+// busy servicing real WAN-latency raft traffic (heartbeats/AppendEntries
+// retries against a genuinely distant leader) and briefly fall behind on
+// its local IPC responder -- observed directly running e2e against a real
+// cross-continental deployment, where 10s wasn't always enough even for a
+// local, non-network call like get_public_key.
+const sendEventTimeout = 30 * time.Second
+
+// signEventForCurrentKey fetches peerID's own private key (via an unsigned
+// EventGetPrivateKey call) and signs m with it if m's event type requires a
+// signature, returning the complete shmevent.Encode output. Shared by
+// cmdSendEvent (transmits the result immediately) and
+// cmdPrintEventDataMatrix (barcodes the result for a later
+// cmdSendRawEvent replay) so both build a signed event through the
+// identical path -- any divergence here would mean a barcoded "ticket"
+// isn't actually signed the same way an ordinary sendevent call is.
+func signEventForCurrentKey(ctx context.Context, peerID string, m shmevent.Msg) ([]byte, error) {
+	var priv shmevent.PrivateKey
+	if shmevent.RequiresSignature(m.EventType) {
+		keyResp, err := ipc.Call(ctx, peerID, shmevent.Msg{EventType: shmevent.EventGetPrivateKey, ID: randomID()}, nil)
+		if err != nil {
+			return nil, fmt.Errorf("fetch signing key: %w", err)
+		}
+		if keyResp.EventType == shmevent.EventError {
+			return nil, fmt.Errorf("fetch signing key: %s", keyResp.Value)
+		}
+		priv = shmevent.PrivateKey(keyResp.Value)
+	}
+	return shmevent.Encode(m, priv)
+}
+
+// parseEventArg parses eventJSON into a shmevent.Msg, defaulting ID to a
+// fresh random value when the caller left it unset (0) -- shared by
+// cmdSendEvent and cmdPrintEventDataMatrix.
+func parseEventArg(eventJSON string) (shmevent.Msg, error) {
+	var ev e2edata.Event
+	if err := json.Unmarshal([]byte(eventJSON), &ev); err != nil {
+		return shmevent.Msg{}, fmt.Errorf("parse event json: %w", err)
+	}
+	if ev.ID == 0 {
+		ev.ID = randomID()
+	}
+	return ev.ToMsg(), nil
+}
 
 func cmdSendEvent(args []string) {
 	if len(args) != 2 {
@@ -487,33 +564,22 @@ func cmdSendEvent(args []string) {
 	}
 	peerID := args[0]
 
-	var ev e2edata.Event
-	if err := json.Unmarshal([]byte(args[1]), &ev); err != nil {
-		fmt.Fprintf(os.Stderr, "sendevent: parse event json: %v\n", err)
+	m, err := parseEventArg(args[1])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sendevent: %v\n", err)
 		os.Exit(2)
-	}
-	if ev.ID == 0 {
-		ev.ID = randomID()
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), sendEventTimeout)
 	defer cancel()
 
-	var priv shmevent.PrivateKey
-	if shmevent.RequiresSignature(ev.EventType) {
-		keyResp, err := ipc.Call(ctx, peerID, shmevent.Msg{EventType: shmevent.EventGetPrivateKey, ID: randomID()}, nil)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "sendevent: fetch signing key: %v\n", err)
-			os.Exit(1)
-		}
-		if keyResp.EventType == shmevent.EventError {
-			fmt.Fprintf(os.Stderr, "sendevent: fetch signing key: %s\n", keyResp.Value)
-			os.Exit(1)
-		}
-		priv = shmevent.PrivateKey(keyResp.Value)
+	encoded, err := signEventForCurrentKey(ctx, peerID, m)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sendevent: %v\n", err)
+		os.Exit(1)
 	}
 
-	resp, err := ipc.Call(ctx, peerID, ev.ToMsg(), priv)
+	resp, err := ipc.CallRaw(ctx, peerID, encoded)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sendevent: %v\n", err)
 		os.Exit(1)
@@ -528,6 +594,100 @@ func cmdSendEvent(args []string) {
 	if resp.EventType == shmevent.EventError {
 		os.Exit(1)
 	}
+}
+
+// cmdSendRawEvent implements `kvctl-cli sendrawevent <peerID>
+// <base64Payload>` -- see usage()'s doc comment on this being CallRaw's
+// pass-through (no re-signing) counterpart to sendevent.
+func cmdSendRawEvent(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli sendrawevent <peerID> <base64Payload>")
+		os.Exit(2)
+	}
+	peerID := args[0]
+
+	encoded, err := base64.StdEncoding.DecodeString(args[1])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sendrawevent: decode base64 payload: %v\n", err)
+		os.Exit(2)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), sendEventTimeout)
+	defer cancel()
+
+	resp, err := ipc.CallRaw(ctx, peerID, encoded)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sendrawevent: %v\n", err)
+		os.Exit(1)
+	}
+
+	out, err := json.Marshal(e2edata.EventFromMsg(resp))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sendrawevent: encode response: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(out))
+	if resp.EventType == shmevent.EventError {
+		os.Exit(1)
+	}
+}
+
+// dataMatrixModuleSize scales each Data Matrix module up to this many
+// pixels square -- boombuler/barcode's raw encoder output is one pixel per
+// module, unreadable by any real scanner/decoder at that size.
+const dataMatrixModuleSize = 8
+
+// cmdPrintEventDataMatrix implements `kvctl-cli printeventdatamatrix
+// <peerID> <eventJSON> <outFile.png>` -- see usage()'s doc comment.
+func cmdPrintEventDataMatrix(args []string) {
+	if len(args) != 3 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli printeventdatamatrix <peerID> <eventJSON> <outFile.png>")
+		os.Exit(2)
+	}
+	peerID, eventJSONArg, outFile := args[0], args[1], args[2]
+
+	m, err := parseEventArg(eventJSONArg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "printeventdatamatrix: %v\n", err)
+		os.Exit(2)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), sendEventTimeout)
+	defer cancel()
+
+	encoded, err := signEventForCurrentKey(ctx, peerID, m)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "printeventdatamatrix: %v\n", err)
+		os.Exit(1)
+	}
+
+	payload := base64.StdEncoding.EncodeToString(encoded)
+
+	code, err := datamatrix.Encode(payload)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "printeventdatamatrix: encode data matrix: %v\n", err)
+		os.Exit(1)
+	}
+	bounds := code.Bounds()
+	scaled, err := barcode.Scale(code, bounds.Dx()*dataMatrixModuleSize, bounds.Dy()*dataMatrixModuleSize)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "printeventdatamatrix: scale data matrix: %v\n", err)
+		os.Exit(1)
+	}
+
+	f, err := os.Create(outFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "printeventdatamatrix: create %s: %v\n", outFile, err)
+		os.Exit(1)
+	}
+	defer f.Close()
+	if err := png.Encode(f, scaled); err != nil {
+		fmt.Fprintf(os.Stderr, "printeventdatamatrix: write %s: %v\n", outFile, err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("wrote %s\n", outFile)
+	fmt.Println(payload)
 }
 
 // randomID returns a random non-zero id -- 0 is reserved meaning
