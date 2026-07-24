@@ -1,6 +1,10 @@
 package shmevent
 
-import "fmt"
+import (
+	"encoding/binary"
+	"fmt"
+	"time"
+)
 
 // SystemKeyPrefix marks a pkg/store key as reserved for internal cluster
 // bookkeeping -- permitted peers, bootstrap nodes, and (planned, not yet
@@ -280,26 +284,97 @@ func DecodePermitRequestPayload(payload []byte) (kind byte, peerID, metadata []b
 	return kind, payload[3 : 3+idLen], payload[3+idLen:], nil
 }
 
-// EncodePermitPeerPayload packs peerID as a confirmed KindPermitPeer
-// record's explicit "id" field -- previously this record's value was
-// always empty, since isPermittedPeer only ever checks key existence, not
-// its value. peerID is already the record's own key (SystemKey's trailing
-// field), so this is trivial (the whole payload IS the id, no other
-// field) -- named and paired with a decoder anyway for symmetry with
-// every other EncodeXPayload/DecodeXPayload pair in this package, and so
-// a future field could be added here without another call-site change.
-func EncodePermitPeerPayload(peerID []byte) []byte {
-	buf := make([]byte, len(peerID))
-	copy(buf, peerID)
+// RelayLimits is the per-peer circuit-relay v2 resource allotment a
+// KindPermitPeer record's payload carries (see EncodePermitPeerPayload):
+// what pkg/daemon's newHost hands go-libp2p as v2relay.Resources.MaxCircuits/
+// Limit.Data/Limit.Duration/MaxReservationsPerIP/MaxReservationsPerPeer,
+// stamped onto every permit at request time (see pkg/daemon's
+// handleShmEvent EventPermitRequest case) so a confirmed permit records what
+// allotment its peer was registered under -- not a per-peer override:
+// go-libp2p's circuitv2 relay applies a single Resources value to every
+// ACL-approved peer alike (there is no hook to give one peer a bigger
+// allotment than another without forking that package), so every peer
+// currently gets the same node-configured values here. Kept as an explicit
+// record anyway rather than left implicit, so a later differentiated-limits
+// feature (or just `rangescan`-based audit of who was promised what) has
+// something to read without a wire-format change.
+type RelayLimits struct {
+	MaxCircuitsPerPeer     int32         // concurrent open relayed circuits this peer may hold
+	LimitData              int64         // bytes relayed (each direction) before a circuit is reset
+	LimitDuration          time.Duration // wall-clock life of a circuit before it's reset
+	MaxReservationsPerIP   int32         // active relay-slot reservations allowed from one IP
+	MaxReservationsPerPeer int32         // active relay-slot reservations allowed from one peer
+}
+
+// Default relay resource values -- pkg/daemon's Config fields fall back to
+// these when left at their zero value (see Config.RelayMaxCircuitsPerPeer
+// et al.'s doc comments), and EventPermitRequest stamps them onto every new
+// KindPermitPeer record unless the requesting node's own Config overrides
+// them. One concurrent circuit and one reservation per peer/IP is
+// deliberately tight (a single-purpose kv-raft client has no legitimate
+// need for more); the 1GB/30-day circuit ceiling is loose enough not to
+// interrupt a long-lived, low-traffic follower's relayed connection under
+// normal operation while still forcing an eventual reset.
+const (
+	DefaultRelayMaxCircuitsPerPeer     int32         = 1
+	DefaultRelayLimitData              int64         = 1 << 30 // 1 GB
+	DefaultRelayLimitDuration          time.Duration = 30 * 24 * time.Hour
+	DefaultRelayMaxReservationsPerIP   int32         = 5
+	DefaultRelayMaxReservationsPerPeer int32         = 1
+)
+
+// DefaultRelayLimits returns the RelayLimits built from the Default* values
+// above.
+func DefaultRelayLimits() RelayLimits {
+	return RelayLimits{
+		MaxCircuitsPerPeer:     DefaultRelayMaxCircuitsPerPeer,
+		LimitData:              DefaultRelayLimitData,
+		LimitDuration:          DefaultRelayLimitDuration,
+		MaxReservationsPerIP:   DefaultRelayMaxReservationsPerIP,
+		MaxReservationsPerPeer: DefaultRelayMaxReservationsPerPeer,
+	}
+}
+
+// relayLimitsEncodedSize is RelayLimits' fixed on-wire size: 4 (int32) + 8
+// (int64) + 8 (int64, LimitDuration in nanoseconds) + 4 (int32) + 4 (int32),
+// all big-endian.
+const relayLimitsEncodedSize = 4 + 8 + 8 + 4 + 4
+
+// EncodePermitPeerPayload packs peerID and its registered RelayLimits into
+// a KindPermitPeer record's value -- limits first, fixed-size, so peerID
+// (variable-length, already the record's own key -- see SystemKey) can
+// trail with no length prefix of its own, mirroring
+// EncodePermitConfirmPayload's fixed-then-variable layout. Previously this
+// record's value only ever held peerID with no limits at all, since
+// isPermittedPeer used to check just key existence -- see DecodePermitPeerPayload.
+func EncodePermitPeerPayload(peerID []byte, limits RelayLimits) []byte {
+	buf := make([]byte, relayLimitsEncodedSize+len(peerID))
+	binary.BigEndian.PutUint32(buf[0:4], uint32(limits.MaxCircuitsPerPeer))
+	binary.BigEndian.PutUint64(buf[4:12], uint64(limits.LimitData))
+	binary.BigEndian.PutUint64(buf[12:20], uint64(limits.LimitDuration))
+	binary.BigEndian.PutUint32(buf[20:24], uint32(limits.MaxReservationsPerIP))
+	binary.BigEndian.PutUint32(buf[24:28], uint32(limits.MaxReservationsPerPeer))
+	copy(buf[relayLimitsEncodedSize:], peerID)
 	return buf
 }
 
 // DecodePermitPeerPayload is the inverse of EncodePermitPeerPayload.
-func DecodePermitPeerPayload(payload []byte) (peerID []byte, err error) {
-	if len(payload) == 0 {
-		return nil, fmt.Errorf("shmevent: permit peer payload empty")
+func DecodePermitPeerPayload(payload []byte) (peerID []byte, limits RelayLimits, err error) {
+	if len(payload) < relayLimitsEncodedSize {
+		return nil, RelayLimits{}, fmt.Errorf("shmevent: permit peer payload too short: %d bytes", len(payload))
 	}
-	return payload, nil
+	limits = RelayLimits{
+		MaxCircuitsPerPeer:     int32(binary.BigEndian.Uint32(payload[0:4])),
+		LimitData:              int64(binary.BigEndian.Uint64(payload[4:12])),
+		LimitDuration:          time.Duration(binary.BigEndian.Uint64(payload[12:20])),
+		MaxReservationsPerIP:   int32(binary.BigEndian.Uint32(payload[20:24])),
+		MaxReservationsPerPeer: int32(binary.BigEndian.Uint32(payload[24:28])),
+	}
+	peerID = payload[relayLimitsEncodedSize:]
+	if len(peerID) == 0 {
+		return nil, RelayLimits{}, fmt.Errorf("shmevent: permit peer payload missing peerID")
+	}
+	return peerID, limits, nil
 }
 
 // EncodePermitConfirmPayload packs kind and peerID (the rest of the

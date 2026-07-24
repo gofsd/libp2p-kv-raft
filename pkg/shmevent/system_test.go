@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"testing"
+	"time"
 )
 
 func TestSystemKeyLayout(t *testing.T) {
@@ -48,6 +49,45 @@ func TestPermitRequestPayloadRoundTrip(t *testing.T) {
 	}
 	if _, _, _, err := DecodePermitRequestPayload([]byte{KindPermitPeer, 0, 10}); err == nil {
 		t.Fatal("DecodePermitRequestPayload unexpectedly accepted a peerID length exceeding the payload size")
+	}
+}
+
+func TestPermitPeerPayloadRoundTrip(t *testing.T) {
+	limits := RelayLimits{
+		MaxCircuitsPerPeer:     3,
+		LimitData:              5 << 20,
+		LimitDuration:          17 * time.Minute,
+		MaxReservationsPerIP:   9,
+		MaxReservationsPerPeer: 2,
+	}
+	payload := EncodePermitPeerPayload([]byte("peer-123"), limits)
+	peerID, gotLimits, err := DecodePermitPeerPayload(payload)
+	if err != nil {
+		t.Fatalf("DecodePermitPeerPayload: %v", err)
+	}
+	if string(peerID) != "peer-123" {
+		t.Fatalf("got peerID %q, want %q", peerID, "peer-123")
+	}
+	if gotLimits != limits {
+		t.Fatalf("got limits %+v, want %+v", gotLimits, limits)
+	}
+
+	// The defaults round-trip too, since EventPermitRequest stamps these
+	// onto every KindPermitPeer record unless Config overrides them.
+	payload = EncodePermitPeerPayload([]byte("peer-456"), DefaultRelayLimits())
+	peerID, gotLimits, err = DecodePermitPeerPayload(payload)
+	if err != nil {
+		t.Fatalf("DecodePermitPeerPayload with defaults: %v", err)
+	}
+	if string(peerID) != "peer-456" || gotLimits != DefaultRelayLimits() {
+		t.Fatalf("got peerID=%q limits=%+v, want peerID=peer-456 limits=%+v", peerID, gotLimits, DefaultRelayLimits())
+	}
+
+	if _, _, err := DecodePermitPeerPayload(nil); err == nil {
+		t.Fatal("DecodePermitPeerPayload unexpectedly accepted an empty payload")
+	}
+	if _, _, err := DecodePermitPeerPayload(make([]byte, relayLimitsEncodedSize)); err == nil {
+		t.Fatal("DecodePermitPeerPayload unexpectedly accepted a payload with no peerID")
 	}
 }
 

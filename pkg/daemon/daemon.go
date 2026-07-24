@@ -164,6 +164,34 @@ type Config struct {
 	// would just be wasted overhead.
 	RelayPeer string
 
+	// Relay resource knobs, only meaningful alongside RelayService. Zero
+	// means "use shmevent.DefaultRelay*" (see those constants' doc
+	// comments for the reasoning behind each default). These are the same
+	// values newHost hands go-libp2p as v2relay.Resources, and the same
+	// values EventPermitRequest stamps onto every new KindPermitPeer
+	// record for this node (see shmevent.RelayLimits) -- go-libp2p applies
+	// one Resources value to every ACL-approved peer alike, so today every
+	// permitted peer gets this same node-wide allotment; there is no
+	// per-individual-peer override.
+	//
+	// RelayMaxCircuitsPerPeer bounds concurrent open relayed circuits for
+	// a single peer (v2relay.Resources.MaxCircuits -- misleadingly named
+	// in go-libp2p itself, it's already enforced per source/destination
+	// peer, not as one shared global count).
+	RelayMaxCircuitsPerPeer int
+	// RelayLimitData bounds bytes relayed, each direction, before a
+	// circuit is reset (v2relay.RelayLimit.Data).
+	RelayLimitData int64
+	// RelayLimitDuration bounds a circuit's wall-clock lifetime before
+	// it's reset (v2relay.RelayLimit.Duration).
+	RelayLimitDuration time.Duration
+	// RelayMaxReservationsPerIP bounds active relay-slot reservations
+	// from one IP address (v2relay.Resources.MaxReservationsPerIP).
+	RelayMaxReservationsPerIP int
+	// RelayMaxReservationsPerPeer bounds active relay-slot reservations
+	// from one peer (v2relay.Resources.MaxReservationsPerPeer).
+	RelayMaxReservationsPerPeer int
+
 	// Raft timing knobs. Zero means "use hashicorp/raft's own default"
 	// (1s heartbeat/election, 50ms commit, 500ms leader lease) -- values
 	// the raft project itself considers safe for real networks, not just
@@ -530,6 +558,33 @@ func start(cfg Config) (*Node, error) {
 // ahead of any *Node existing, because the ACL closure needs to read
 // confirmed KindPermitPeer records live -- one already-open *store.Store,
 // not a snapshot taken at host-construction time.
+// relayLimits resolves cfg's relay resource fields, substituting
+// shmevent.DefaultRelay* for whichever were left at their zero value --
+// mirrors the same zero-means-default pattern this Config already uses for
+// its raft timing/snapshot fields. Shared by newHost (what go-libp2p
+// actually enforces) and handleShmEvent's EventPermitRequest case (what
+// gets stamped onto a new KindPermitPeer record), so both always agree on
+// what "this node's default relay allotment" currently is.
+func relayLimits(cfg Config) shmevent.RelayLimits {
+	limits := shmevent.DefaultRelayLimits()
+	if cfg.RelayMaxCircuitsPerPeer != 0 {
+		limits.MaxCircuitsPerPeer = int32(cfg.RelayMaxCircuitsPerPeer)
+	}
+	if cfg.RelayLimitData != 0 {
+		limits.LimitData = cfg.RelayLimitData
+	}
+	if cfg.RelayLimitDuration != 0 {
+		limits.LimitDuration = cfg.RelayLimitDuration
+	}
+	if cfg.RelayMaxReservationsPerIP != 0 {
+		limits.MaxReservationsPerIP = int32(cfg.RelayMaxReservationsPerIP)
+	}
+	if cfg.RelayMaxReservationsPerPeer != 0 {
+		limits.MaxReservationsPerPeer = int32(cfg.RelayMaxReservationsPerPeer)
+	}
+	return limits
+}
+
 func newHost(priv crypto.PrivKey, cfg Config, st *store.Store) (lp2phost.Host, error) {
 	opts := []libp2p.Option{
 		libp2p.Identity(priv),
@@ -556,15 +611,18 @@ func newHost(priv crypto.PrivKey, cfg Config, st *store.Store) (lp2phost.Host, e
 	}
 
 	if cfg.RelayService {
+		limits := relayLimits(cfg)
 		rc := v2relay.DefaultResources()
 		rc.Limit = &v2relay.RelayLimit{
-			Duration: time.Hour,
-			Data:     1 << 30, // 1 GB
+			Duration: limits.LimitDuration,
+			Data:     limits.LimitData,
 		}
 		rc.ReservationTTL = time.Hour
 		rc.MaxReservations = 256
-		rc.MaxCircuits = 256
+		rc.MaxCircuits = int(limits.MaxCircuitsPerPeer)
 		rc.BufferSize = 4096
+		rc.MaxReservationsPerIP = int(limits.MaxReservationsPerIP)
+		rc.MaxReservationsPerPeer = int(limits.MaxReservationsPerPeer)
 
 		relayOpts := []v2relay.Option{v2relay.WithResources(rc)}
 		if cfg.RequirePermitForRelay {
@@ -995,6 +1053,16 @@ func rejectReservedKey(key []byte) error {
 // that's trying to use *this* node's relay service -- the destination in
 // AllowConnect is who src is dialing through the relay, not itself
 // requesting anything, so it's never checked here.
+//
+// Every peer this gate admits is registered under the same
+// shmevent.RelayLimits (EventPermitRequest stamps this node's current
+// defaults onto the record at request time -- see relayLimits/
+// EncodePermitPeerPayload): go-libp2p's circuitv2 relay hands one
+// v2relay.Resources value to every ACL-approved peer alike (see newHost),
+// with no hook for a per-individual-peer override, so the gate here is
+// binary admission (has this peer been registered at all?), not a
+// per-peer quota check -- the actual circuit/data/reservation ceilings
+// are enforced uniformly, for every admitted peer, by go-libp2p itself.
 type relayACL struct {
 	store *store.Store
 }
@@ -1116,6 +1184,15 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		kind, peerID, metadata, err := shmevent.DecodePermitRequestPayload(m.Value)
 		if err != nil {
 			return errorMsg(m.ID, err)
+		}
+		// A KindPermitPeer request registers peerID with this node's
+		// current default relay allotment (see relayLimits/
+		// shmevent.RelayLimits) rather than trusting whatever metadata
+		// the caller sent -- the whole point is that a peer ends up
+		// bound to a standard, node-decided allotment on request, not
+		// one it gets to name for itself.
+		if kind == shmevent.KindPermitPeer {
+			metadata = shmevent.EncodePermitPeerPayload(peerID, relayLimits(n.cfg))
 		}
 		key := shmevent.SystemKey(kind, shmevent.StatusPending, peerID)
 		if err := n.handleSetForward(ctx, key, metadata, true); err != nil {

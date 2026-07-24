@@ -160,6 +160,21 @@ func TestPermitRequestConfirmWorkflow(t *testing.T) {
 		t.Fatalf("confirmed record missing after voter confirm: %s", getResp.Value)
 	}
 
+	// EventPermitRequest must have stamped the leader's own default relay
+	// allotment onto the record (see relayLimits/EncodePermitPeerPayload),
+	// not the empty metadata this test's request actually sent -- proving
+	// registration, not just the caller, decides a peer's limits.
+	gotPeerID, gotLimits, err := shmevent.DecodePermitPeerPayload(getResp.Value)
+	if err != nil {
+		t.Fatalf("DecodePermitPeerPayload: %v", err)
+	}
+	if string(gotPeerID) != string(targetPeerID) {
+		t.Fatalf("got stamped peerID %q, want %q", gotPeerID, targetPeerID)
+	}
+	if gotLimits != shmevent.DefaultRelayLimits() {
+		t.Fatalf("got stamped limits %+v, want defaults %+v", gotLimits, shmevent.DefaultRelayLimits())
+	}
+
 	getResp = call(leader, shmevent.Msg{EventType: shmevent.EventGetField, Value: pendingKey, ID: 6})
 	if getResp.EventType != shmevent.EventError {
 		t.Fatal("pending record still present after successful confirm -- should have been consumed")

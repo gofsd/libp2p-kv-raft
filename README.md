@@ -83,6 +83,24 @@ independent of `-require-permit-for-remote` (not yet exposed as a flag), which i
 remote `Set`/`Get`/etc. requests over `ClientProtocolID` — a node can require a permit for one
 without the other.
 
+A `-relay-service` node's resource limits (per-peer circuit/reservation caps, not gated by
+`-require-permit-for-relay` — these apply to every peer using the relay, allow-listed or not)
+are also flag-configurable: `-relay-max-circuits-per-peer` (default 1) bounds concurrent open
+relayed circuits a single peer may hold; `-relay-limit-data-bytes` (default 1GB) and
+`-relay-limit-duration` (default 720h/30 days) bound a circuit's data/lifetime before it's
+reset; `-relay-max-reservations-per-ip`/`-relay-max-reservations-per-peer` (defaults 5/1) bound
+active relay-slot reservations from one IP/peer. All five default to
+`pkg/shmevent`'s `DefaultRelay*` constants when left at 0. go-libp2p's circuit-relay v2 applies
+these as one uniform `v2relay.Resources` value to every peer alike — there's no way to give one
+peer a bigger allotment than another without forking that package. `mage requestpermit peer
+<peerID>` stamps this node's *current* values onto the resulting `KindPermitPeer` record
+regardless of what metadata the caller passed (`shmevent.RelayLimits`, carried through
+`ConfirmPermit` unchanged) — a peer is registered under a node's standard allotment by the act
+of requesting a permit, not something the requester gets to choose for itself. Since
+enforcement is still the uniform `Resources` value above, this is currently a record of what a
+peer was promised (inspectable via `mage rangescan` over the `KindPermitPeer` record, or a
+future differentiated-limits feature) rather than a separate enforcement path.
+
 The same confirmed permit record also doubles as the allow-list for `EventExecute`
 (`mage execute <destPeerID> <value>` / `mage pollexecute`, a direct unreplicated
 peer-to-peer notification between two node processes — see `pkg/shmevent`'s
