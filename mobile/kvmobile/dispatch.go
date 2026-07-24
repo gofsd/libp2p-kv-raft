@@ -620,3 +620,220 @@ func runCommandLogWatch(ctx context.Context, done chan struct{}, instanceID stri
 		since = records[len(records)-1].Timestamp.Add(time.Nanosecond)
 	}
 }
+
+// CommandDispatchHandler is a gomobile-bindable interface Kotlin
+// implements to actually execute a dispatched CommandRequest --
+// RunCommandDispatcher's reverse-binding counterpart to
+// ExecuteCallback/LogCallback, the mobile port of desktop's
+// pkg/kvctl.CommandHandler (a plain Go func there; gomobile has no
+// func-parameter support, only interfaces, hence this shape instead).
+type CommandDispatchHandler interface {
+	// Handle processes one CommandRequest -- its fields passed
+	// individually rather than as a struct, gomobile has no
+	// struct-passing either -- and returns a JSON object
+	// `{"fields":{...},"narrative":"..."}` naming the AppendCommandLog
+	// result RunCommandDispatcher should record for it. Called on
+	// RunCommandDispatcher's own goroutine, never the caller's, at most
+	// once per instance id (see RunCommandDispatcher's own doc comment on
+	// why running more than one dispatcher for the same commandID at once
+	// isn't safe). If the returned JSON doesn't parse, the result is
+	// recorded as an error rather than silently dropped -- the same as a
+	// panic inside Handle is (see runCommandHandlerSafely).
+	Handle(instanceID, commandID, requestedBy, inputs string) string
+}
+
+// dispatcherPollInterval is RunCommandDispatcher's fixed rescan cadence.
+// Unlike desktop's pkg/kvctl.RunCommandDispatcher, this has *no*
+// PollExecute-based fast path at all, purely timer-based like
+// WatchCommandLog above (same interval, for the same reason):
+// pkg/daemon's executeInbox is a single-consumer queue per device (see
+// WatchCommandLog's own doc comment on this identical constraint) -- a
+// second independent PollExecute drainer here would race a real app's own
+// WatchExecute callback (the normal, expected shape for a kvmobile app)
+// and silently steal notifications meant for it. AppendCommandLog still
+// sends its own low-latency "cmd_log" Execute poke as an optional
+// accelerant for an app that's already watching Execute itself and wants
+// to react by triggering an immediate rescan, but RunCommandDispatcher
+// doesn't depend on that -- it works standalone, at the cost of up to
+// dispatcherPollInterval of added latency versus a genuine push.
+const dispatcherPollInterval = watchCommandLogPollInterval
+
+// commandDispatch is one active RunCommandDispatcher loop's stop handle.
+type commandDispatch struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+var (
+	dispatchMu sync.Mutex
+	dispatches = map[string]commandDispatch{}
+)
+
+// RunCommandDispatcher is kvmobile's port of desktop's
+// pkg/kvctl.RunCommandDispatcher -- the first real implementation of the
+// "target device's own application logic" this file's own doc comment
+// (and SubmitCommand's) describes but never provided: it watches for
+// CommandRequests against commandID and calls handler.Handle exactly once
+// for each one it hasn't already logged a result for, until
+// StopCommandDispatcher(commandID) is called. A second RunCommandDispatcher
+// call for the same commandID replaces the first (stopping it first);
+// different commandIDs run independently and concurrently -- the same
+// "replace, don't stack" / "independent per key" shape WatchCommandLog
+// already uses, keyed by commandID here instead of instanceID.
+//
+// "Already handled" is decided by QueryCommandLog: if any log entry
+// already exists for an instance id, RunCommandDispatcher assumes some
+// call to handler.Handle (this run or an earlier one's) already ran for
+// it and skips it -- which is also why Handle's return value is always
+// recorded via AppendCommandLog even when it represents a caller-visible
+// failure (encode that into the returned JSON's fields/narrative
+// yourself): an instance nothing ever wrote a result for would be
+// retried forever, and one that legitimately failed generally shouldn't
+// be silently retried and re-run its side effects. This dedup check is a
+// plain read, not a claim/lock -- running more than one
+// RunCommandDispatcher against the same commandID at once (even from two
+// different devices sharing that command's target peer id, which
+// shouldn't normally happen) can race two of them into both deciding a
+// request is unhandled and calling Handle concurrently for it.
+//
+// Like every other watch loop in this file, a torn-down daemon
+// (currentSession erroring, e.g. between Stop and the next Start) just
+// makes this loop wait and retry rather than exiting -- a later
+// Start/StartWithKey picks it back up with no action needed from the
+// caller.
+func RunCommandDispatcher(commandID string, handler CommandDispatchHandler) error {
+	if handler == nil {
+		return fmt.Errorf("kvmobile: RunCommandDispatcher: handler must not be nil")
+	}
+	if commandID == "" {
+		return fmt.Errorf("kvmobile: RunCommandDispatcher: commandID must not be empty")
+	}
+
+	dispatchMu.Lock()
+	defer dispatchMu.Unlock()
+	stopCommandDispatcherLocked(commandID)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	dispatches[commandID] = commandDispatch{cancel: cancel, done: done}
+
+	go runCommandDispatch(ctx, done, commandID, handler)
+	return nil
+}
+
+// StopCommandDispatcher stops commandID's dispatcher, if any, and waits
+// for it to actually exit before returning. Safe to call when nothing is
+// running for it (a no-op).
+func StopCommandDispatcher(commandID string) {
+	dispatchMu.Lock()
+	defer dispatchMu.Unlock()
+	stopCommandDispatcherLocked(commandID)
+}
+
+// stopCommandDispatcherLocked requires dispatchMu already held.
+func stopCommandDispatcherLocked(commandID string) {
+	w, ok := dispatches[commandID]
+	if !ok {
+		return
+	}
+	w.cancel()
+	<-w.done
+	delete(dispatches, commandID)
+}
+
+// runCommandDispatch is RunCommandDispatcher's background loop body -- an
+// immediate first pass (so anything already pending when this is called
+// isn't held up for a full dispatcherPollInterval), then a fixed-interval
+// rescan until ctx is canceled.
+func runCommandDispatch(ctx context.Context, done chan struct{}, commandID string, handler CommandDispatchHandler) {
+	defer close(done)
+
+	dispatchPendingCommandRequests(commandID, handler)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(dispatcherPollInterval):
+		}
+		dispatchPendingCommandRequests(commandID, handler)
+	}
+}
+
+// dispatchPendingCommandRequests is RunCommandDispatcher's single scan
+// pass: list every CommandRequest for commandID, skip any instance id
+// commandRequestAlreadyHandled already has a result for, and run
+// handler.Handle (via runCommandHandlerSafely) for the rest, recording
+// each outcome with AppendCommandLog. A failure listing/decoding requests
+// here (a torn-down daemon, a transient IPC error) is swallowed and
+// simply retried on the next tick -- there's no onError callback the way
+// desktop's pkg/kvctl.RunCommandDispatcher has one, since gomobile can't
+// accept a func parameter the way that Go-only signature can; a caller
+// that wants visibility into these should have Handle itself log/report
+// through whatever the app's own Android logging path is.
+func dispatchPendingCommandRequests(commandID string, handler CommandDispatchHandler) {
+	out, err := ListCommandRequests(commandID)
+	if err != nil {
+		return
+	}
+	var reqs []CommandRequest
+	if err := json.Unmarshal([]byte(out), &reqs); err != nil {
+		return
+	}
+	for _, req := range reqs {
+		handled, err := commandRequestAlreadyHandled(req.InstanceID)
+		if err != nil || handled {
+			continue
+		}
+		fieldsJSON, narrative := runCommandHandlerSafely(handler, req)
+		_ = AppendCommandLog(req.RequestedBy, req.InstanceID, fieldsJSON, narrative)
+	}
+}
+
+// commandRequestAlreadyHandled reports whether instanceID already has at
+// least one AppendCommandLog entry -- RunCommandDispatcher's dedup check,
+// see that function's own doc comment on why this, not a separate
+// claim/lock, is what "already handled" means here.
+func commandRequestAlreadyHandled(instanceID string) (bool, error) {
+	out, err := QueryCommandLog(instanceID, "", "", "1")
+	if err != nil {
+		return false, err
+	}
+	var records []logrecord.Record
+	if err := json.Unmarshal([]byte(out), &records); err != nil {
+		return false, err
+	}
+	return len(records) > 0, nil
+}
+
+// dispatchHandlerResult is the JSON shape CommandDispatchHandler.Handle
+// must return -- see that interface's own doc comment.
+type dispatchHandlerResult struct {
+	Fields    map[string]string `json:"fields,omitempty"`
+	Narrative string            `json:"narrative,omitempty"`
+}
+
+// runCommandHandlerSafely calls handler.Handle, recovering a panic --
+// same as an escaped Kotlin exception surfaces to gomobile's Go side --
+// and a malformed return value both into an error result instead of
+// letting either take down RunCommandDispatcher's whole loop. Returns the
+// fieldsJSON/narrative pair AppendCommandLog itself expects.
+func runCommandHandlerSafely(handler CommandDispatchHandler, req CommandRequest) (fieldsJSON, narrative string) {
+	defer func() {
+		if r := recover(); r != nil {
+			fieldsJSON = `{"status":"error"}`
+			narrative = fmt.Sprintf("handler panic: %v", r)
+		}
+	}()
+
+	resultJSON := handler.Handle(req.InstanceID, req.CommandID, req.RequestedBy, req.Inputs)
+	var result dispatchHandlerResult
+	if err := json.Unmarshal([]byte(resultJSON), &result); err != nil {
+		return `{"status":"error"}`, fmt.Sprintf("handler returned malformed result: %v", err)
+	}
+	fields, err := json.Marshal(result.Fields)
+	if err != nil {
+		return `{"status":"error"}`, "handler result fields could not be encoded"
+	}
+	return string(fields), result.Narrative
+}

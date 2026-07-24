@@ -405,6 +405,31 @@ once for this index, via `commandExecIndexKind`) and value combined; an earlier 
 index stored both peer ids directly and blew that budget the moment two real ~52-byte peer ids
 were involved in the same dispatch.
 
+`CreateExecInvite(commandID, inputsJSON)`/`RevokeExecInvite(tokenHex)`/`RedeemExecInvite(sourceAddr#tokenHex)`
+are `kvmobile`'s port of desktop's one-time execution invites (see "One-time execution invites"
+above for the full design — identical daemon-side ACL/consume guarantees, this is purely the
+gomobile-bindable client wrapper). Unlike desktop's `kvctl-cli printexecinvitedatamatrix`, there's no
+barcode-rendering call here: `CreateExecInvite` just returns the raw `tokenHex`, and the app combines
+it with its own advertised multiaddr and renders the barcode itself (e.g. a Kotlin QR/Data-Matrix
+library) — the same "this Go layer hands back data, presentation is the app's job" reasoning
+`catalog.go`'s doc comment gives for why `ResolveQRGroup` wasn't carried over either.
+
+`RunCommandDispatcher(commandID, handler)`/`StopCommandDispatcher(commandID)` are `kvmobile`'s port of
+desktop's `pkg/kvctl.RunCommandDispatcher` — the first real implementation of the "target device's own
+application logic" this section's own dispatch-layer description above leaves unspecified. Since
+gomobile has no func-parameter support, `handler` is a `CommandDispatchHandler` interface Kotlin
+implements (the same reverse-binding pattern `ExecuteCallback`/`LogCallback` already use):
+`Handle(instanceID, commandID, requestedBy, inputs string) string` runs at most once per instance id
+(deduped via `QueryCommandLog`, a panic-safe call) and returns a JSON
+`{"fields":{...},"narrative":"..."}` object naming the `AppendCommandLog` result to record. A second
+`RunCommandDispatcher` call for the same `commandID` replaces the first — independent `commandID`s run
+concurrently, the same "replace, don't stack" shape `WatchCommandLog` already uses, keyed the same way.
+One real difference from the desktop port: this has **no** `PollExecute`-based fast path at all, purely
+timer-based (`watchCommandLogPollInterval`, 1.5s) — `pkg/daemon`'s `executeInbox` is a single-consumer
+queue per device (see `WatchCommandLog`'s own doc comment on this identical constraint), so a second
+independent `PollExecute` drainer here would race a real app's own `WatchExecute` callback — the normal
+shape a `kvmobile` app already runs — and silently steal notifications meant for it.
+
 `Kvmobile.sendEvent` (not used by `MainActivity`, only by the e2e pipeline's `E2ETest`
 instrumented test) exposes the same raw `pkg/shmevent` event dispatch `submit`/`get` are themselves
 built on, for tests that need the exact event kvctl-cli's `sendevent` can send on desktop/remote
