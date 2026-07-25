@@ -40,8 +40,7 @@
         "event": "add",
         "value": "BOOTSTRAP"
       },
-      "status": 1,
-      "error": "join: leader rejected join: ERR: not leader"
+      "status": 0
     },
     {
       "version": 1,
@@ -69,8 +68,7 @@
         "source_id": 100,
         "value": "world"
       },
-      "status": 1,
-      "error": "leadership lost while committing log"
+      "status": 0
     },
     {
       "version": 1,
@@ -88,8 +86,7 @@
         "event": "add",
         "value": "BOOTSTRAP"
       },
-      "status": 2,
-      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)"
+      "status": 0
     },
     {
       "version": 2,
@@ -97,8 +94,7 @@
       "event": {
         "event": "get_public_key"
       },
-      "status": 2,
-      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)"
+      "status": 0
     },
     {
       "version": 2,
@@ -108,8 +104,7 @@
         "value": "hello-android",
         "id": 200
       },
-      "status": 2,
-      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)"
+      "status": 0
     },
     {
       "version": 2,
@@ -119,8 +114,7 @@
         "source_id": 200,
         "value": "world-android"
       },
-      "status": 2,
-      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)"
+      "status": 0
     },
     {
       "version": 2,
@@ -129,8 +123,7 @@
         "event": "get_field",
         "value": "hello-android"
       },
-      "status": 2,
-      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)"
+      "status": 0
     },
     {
       "version": 3,
@@ -139,8 +132,7 @@
         "event": "add",
         "value": "BOOTSTRAP"
       },
-      "status": 1,
-      "error": "p2p: client add: not leader and no leader known"
+      "status": 0
     },
     {
       "version": 3,
@@ -168,8 +160,7 @@
         "source_id": 300,
         "value": "world-web"
       },
-      "status": 1,
-      "error": "p2p: not leader and no leader known"
+      "status": 0
     },
     {
       "version": 3,
@@ -178,8 +169,7 @@
         "event": "get_field",
         "value": "hello-web"
       },
-      "status": 1,
-      "error": "p2p: key \"hello-web\" not found"
+      "status": 0
     },
     {
       "version": 4,
@@ -188,8 +178,7 @@
         "event": "add",
         "value": "BOOTSTRAP"
       },
-      "status": 1,
-      "error": "join: leader rejected join: ERR: not leader; current leader is  (already forwarded once)"
+      "status": 0
     },
     {
       "version": 4,
@@ -235,8 +224,7 @@
         "event": "add",
         "value": "BOOTSTRAP"
       },
-      "status": 2,
-      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)"
+      "status": 0
     },
     {
       "version": 4,
@@ -244,8 +232,7 @@
       "event": {
         "event": "get_public_key"
       },
-      "status": 2,
-      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)"
+      "status": 0
     },
     {
       "version": 4,
@@ -255,8 +242,7 @@
         "value": "hello-android",
         "id": 200
       },
-      "status": 2,
-      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)"
+      "status": 0
     },
     {
       "version": 4,
@@ -266,8 +252,7 @@
         "source_id": 200,
         "value": "world-android"
       },
-      "status": 2,
-      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)"
+      "status": 0
     },
     {
       "version": 4,
@@ -276,8 +261,7 @@
         "event": "get_field",
         "value": "hello-android"
       },
-      "status": 2,
-      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)"
+      "status": 0
     },
     {
       "version": 4,
@@ -286,8 +270,7 @@
         "event": "add",
         "value": "BOOTSTRAP"
       },
-      "status": 1,
-      "error": "p2p: client add: not leader and no leader known"
+      "status": 0
     },
     {
       "version": 4,
@@ -315,8 +298,7 @@
         "source_id": 300,
         "value": "world-web"
       },
-      "status": 1,
-      "error": "p2p: not leader and no leader known"
+      "status": 0
     },
     {
       "version": 4,
@@ -325,8 +307,7 @@
         "event": "get_field",
         "value": "hello-web"
       },
-      "status": 1,
-      "error": "p2p: key \"hello-web\" not found"
+      "status": 0
     }
   ]
 }

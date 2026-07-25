@@ -361,13 +361,32 @@ async fn do_connect(
 
     let signing_key = state.borrow().signing_key.clone();
 
-    let store = SqliteStore::open(&format!("kv-raft-web-{self_id}.sqlite3"), None)
-        .map_err(|e| p2p::Error(e.to_string()))?;
-    let learner = Rc::new(Learner::new(
-        store,
-        self_id.to_bytes(),
-        self_addr.to_string().into_bytes(),
-    ));
+    // A tab replays every recorded row for its identity across however many
+    // e2e versions it has history in (see `do_get`'s doc comment on the
+    // shared leader's ever-growing log), so `do_connect` can legitimately
+    // run more than once in the same session -- e.g. a later version's own
+    // "add" row. `libp2p_stream::Control::accept` errors if the same
+    // protocol is registered twice, and recreating the `Learner`/
+    // `SqliteStore` here would silently orphan the first `serve_raft` loop
+    // (still delivering `AppendEntries` to the *first* learner) while
+    // `state.learner` pointed at a second one nothing ever drives -- caught
+    // directly: a second `add` in one tab left every following `get_field`
+    // unable to find a key `set_field` had just reported success for.
+    // Reusing the existing learner (same `self_id`, same store filename
+    // either way) and skipping the second `serve_raft` spawn keeps the
+    // original, still-working accept loop as the single source of truth.
+    let already_connected = state.borrow().learner.is_some();
+    let learner = if let Some(existing) = state.borrow().learner.clone() {
+        existing
+    } else {
+        let store = SqliteStore::open(&format!("kv-raft-web-{self_id}.sqlite3"), None)
+            .map_err(|e| p2p::Error(e.to_string()))?;
+        Rc::new(Learner::new(
+            store,
+            self_id.to_bytes(),
+            self_addr.to_string().into_bytes(),
+        ))
+    };
 
     {
         let mut guard = state.borrow_mut();
@@ -375,9 +394,9 @@ async fn do_connect(
         guard.leader = Some(target_peer);
     }
 
-    // Accept inbound raft-protocol streams forever -- spawned once, using
-    // its own cloned Handle (see this module's doc comment).
-    {
+    if !already_connected {
+        // Accept inbound raft-protocol streams forever -- spawned once, using
+        // its own cloned Handle (see this module's doc comment).
         let mut handle = handle.clone();
         wasm_bindgen_futures::spawn_local(async move {
             if let Err(e) = handle.serve_raft(learner).await {
@@ -510,7 +529,13 @@ async fn do_set(
 /// leader's log keeps accumulating, until raft's own snapshotting kicks in
 /// and collapses a fresh join back down to one `InstallSnapshot` again.
 async fn do_get(state: &Rc<RefCell<WorkerState>>, key: &str) -> Result<String, p2p::Error> {
-    const GET_RETRY_BUDGET_MS: u32 = 30_000;
+    // Was 30_000 -- too short against the shared e2e leader's log as of
+    // 2026-07-24 (see this fn's doc comment): every `get_field` row failed
+    // outright after burning the full 30s retrying, not just running
+    // close to the edge. Still comfortably under tests/e2e.spec.js's
+    // per-row 200s backstop and the outer 300s test timeout even with two
+    // such calls in one session (a node's history replaying two versions).
+    const GET_RETRY_BUDGET_MS: u32 = 90_000;
     const GET_RETRY_INTERVAL_MS: u32 = 100;
 
     let learner = state

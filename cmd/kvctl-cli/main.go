@@ -732,7 +732,16 @@ func cmdLogQuery(args []string) {
 // its local IPC responder -- observed directly running e2e against a real
 // cross-continental deployment, where 10s wasn't always enough even for a
 // local, non-network call like get_public_key.
-const sendEventTimeout = 30 * time.Second
+//
+// Must comfortably exceed pkg/daemon.Node.join's own internal
+// awaitRelayAddr(45 * time.Second) wait: an EventAdd on a node that hasn't
+// joined a cluster yet runs that whole join() synchronously before the
+// daemon ever writes an IPC response, so a cold node's first relay
+// reservation alone can legitimately eat 45s before the raft AddVoter call
+// even starts. 30s made that "add" call fail every single time (context
+// deadline exceeded well before the daemon replied), not just occasionally
+// -- confirmed directly against a real deploy target.
+const sendEventTimeout = 60 * time.Second
 
 // signEventForCurrentKey fetches peerID's own private key (via an unsigned
 // EventGetPrivateKey call) and signs m with it if m's event type requires a
