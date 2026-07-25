@@ -301,4 +301,11 @@ impl Learner {
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         self.store.kv_get(key)
     }
+
+    /// This tab's own locally replicated range read -- see
+    /// `SqliteStore::kv_scan_range`'s doc comment. Same
+    /// possibly-slightly-lagging caveat as [`Learner::get`].
+    pub fn scan_range(&self, start: &[u8], end: &[u8]) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+        self.store.kv_scan_range(start, end)
+    }
 }

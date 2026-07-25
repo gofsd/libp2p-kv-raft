@@ -3,8 +3,13 @@
 //! for the architecture; module-level doc comments below cover each piece.
 
 mod app;
+mod catalog;
+mod client;
+mod dispatch;
 pub mod fsm;
 pub mod learner;
+pub mod logrecord;
+mod main_ops;
 pub mod msgpack;
 pub mod p2p;
 pub mod raft_wire;

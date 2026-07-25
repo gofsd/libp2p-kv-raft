@@ -42,16 +42,19 @@
 //! `pkg/daemon.TestAddLearnerThroughRelay` exercises from the Go side.
 #![cfg(target_arch = "wasm32")]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use ed25519_dalek::{SigningKey, VerifyingKey};
+use futures::channel::oneshot;
 use libp2p::{identity, multiaddr::Protocol, Multiaddr, PeerId};
 use wasm_bindgen::prelude::*;
 use web_sys::DedicatedWorkerGlobalScope;
 
+use crate::client;
 use crate::learner::Learner;
+use crate::main_ops;
 use crate::p2p::{self, Node};
 use crate::shmevent::{self, Msg};
 use crate::shmring_ipc;
@@ -60,7 +63,7 @@ use crate::sqlite_store::SqliteStore;
 /// Random non-zero id for a new message -- 0 is reserved meaning
 /// "SourceID/DestinationID not used" (see `api/shmevent.capnp`), so a real
 /// message's own id avoids it too. Mirrors `pkg/shmclient.newID`.
-fn new_id() -> u16 {
+pub(crate) fn new_id() -> u16 {
     loop {
         let v = (js_sys::Math::random() * 65536.0) as u32 as u16;
         if v != 0 {
@@ -69,17 +72,17 @@ fn new_id() -> u16 {
     }
 }
 
-struct WorkerState {
-    handle: p2p::Handle,
-    learner: Option<Rc<Learner>>,
-    leader: Option<PeerId>,
+pub(crate) struct WorkerState {
+    pub(crate) handle: p2p::Handle,
+    pub(crate) learner: Option<Rc<Learner>>,
+    pub(crate) leader: Option<PeerId>,
     /// Backs `EVENT_SET_KEY`/`EVENT_GET_KEY` for the main-thread<->Worker
     /// hop -- this Worker's own mirror of `pkg/shmevent.Registry`.
     registry: HashMap<u16, Vec<u8>>,
     /// This Worker's own identity key, doubling as the main-thread<->Worker
     /// hop's signing key -- see this module's doc comment, key
     /// relationship 1.
-    signing_key: SigningKey,
+    pub(crate) signing_key: SigningKey,
     verifying_key: VerifyingKey,
 }
 
@@ -310,6 +313,69 @@ async fn handle_request(
             }
         }
 
+        // Generic proxy for every remaining single-round-trip event that's
+        // actually reachable from a non-voting learner (see
+        // crate::client's doc comment for the twelve voter-gated events
+        // deliberately absent here): the Worker forwards req.value to the
+        // leader unchanged and hands the response straight back, exactly
+        // the shape RemoteSession::call already is.
+        shmevent::EVENT_SET
+        | shmevent::EVENT_PERMIT_REQUEST
+        | shmevent::EVENT_LOG_APPEND
+        | shmevent::EVENT_LOG_PERMIT_REQUEST
+        | shmevent::EVENT_POLL_EXECUTE => {
+            let event_type = req.event_type;
+            let result = async {
+                let mut sess = client::RemoteSession::from_worker_state(&state)?;
+                sess.call(event_type, req.value.clone()).await
+            }
+            .await;
+            match result {
+                Ok(resp) => Msg {
+                    event_type,
+                    id: req_id,
+                    value: resp.value,
+                    ..Default::default()
+                },
+                Err(e) => Msg::error(req_id, e.to_string()),
+            }
+        }
+
+        // Main-thread-facing EVENT_EXECUTE packs dest_peer_id and payload
+        // together via encode_set_payload -- a private convention of this
+        // hop only (do_execute unpacks it and drives the real two-
+        // EventSetKey-then-EventExecute wire sequence against the leader
+        // itself, see RemoteSession::execute).
+        shmevent::EVENT_EXECUTE => {
+            match shmevent::decode_set_payload(&req.value) {
+                Ok((dest_peer_id, payload)) => {
+                    let dest_peer_id = String::from_utf8_lossy(dest_peer_id).into_owned();
+                    match do_execute(&state, &dest_peer_id, payload).await {
+                        Ok(()) => Msg {
+                            event_type: shmevent::EVENT_EXECUTE,
+                            id: req_id,
+                            ..Default::default()
+                        },
+                        Err(e) => Msg::error(req_id, e.to_string()),
+                    }
+                }
+                Err(e) => Msg::error(req_id, e.to_string()),
+            }
+        }
+
+        // main_ops's own op-code band (100-127) -- multi-step/local-read
+        // operations that don't reduce to one shmevent wire event. See
+        // main_ops's doc comment.
+        op if op >= main_ops::OP_BASE => match main_ops::dispatch(&state, op, &req.value).await {
+            Ok(value) => Msg {
+                event_type: op,
+                id: req_id,
+                value,
+                ..Default::default()
+            },
+            Err(e) => Msg::error(req_id, e),
+        },
+
         other => Msg::error(req_id, format!("unknown event {other}")),
     };
 
@@ -449,7 +515,7 @@ async fn call_remote(
         .await
 }
 
-fn reject_if_error(resp: &Msg) -> Result<(), p2p::Error> {
+pub(crate) fn reject_if_error(resp: &Msg) -> Result<(), p2p::Error> {
     if resp.event_type == shmevent::EVENT_ERROR {
         return Err(p2p::Error(
             String::from_utf8_lossy(&resp.value).into_owned(),
@@ -506,6 +572,19 @@ async fn do_set(
     reject_if_error(&set_field_resp)
 }
 
+/// Direct, unreplicated peer-to-peer notification to `dest_peer_id` -- see
+/// `crate::client::RemoteSession::execute`'s doc comment for the two
+/// `EVENT_SET_KEY` registrations this hides on the Worker<->leader hop.
+/// Not voter-gated.
+async fn do_execute(
+    state: &Rc<RefCell<WorkerState>>,
+    dest_peer_id: &str,
+    payload: &[u8],
+) -> Result<(), p2p::Error> {
+    let mut sess = client::RemoteSession::from_worker_state(state)?;
+    sess.execute(dest_peer_id, payload).await
+}
+
 /// This tab's own locally replicated read (via the raft learner applied up
 /// through its own `commit_index`) -- may lag a moment behind a Set that
 /// just committed on the leader, same caveat any raft follower's local
@@ -559,15 +638,115 @@ async fn do_get(state: &Rc<RefCell<WorkerState>>, key: &str) -> Result<String, p
 }
 
 /// Main-thread handle: the UI's only entry point (see `web-app/README.md`'s
-/// `main.js`), wrapping [`shmring_ipc::MainChannel`] with the three
-/// operations a page actually needs, matching how `MainActivity.kt` drives
-/// Android's in-process daemon through `pkg/ipc.Call`. `ensure_key` fetches
-/// and caches the Worker's signing key on first use (see this module's doc
-/// comment, key relationship 1) -- mirroring `pkg/shmclient.Session`.
+/// `main.js`), wrapping [`shmring_ipc::MainChannel`] with the operations a
+/// page actually needs, matching how `MainActivity.kt` drives Android's
+/// in-process daemon through `pkg/ipc.Call`. A thin `Rc<MainHandleInner>`
+/// wrapper -- required so [`MainHandle::watch_execute`]/
+/// [`MainHandle::watch_command_log`] can clone a `'static` handle into a
+/// [`wasm_bindgen_futures::spawn_local`] background loop, which a bare
+/// `&self`-borrowing method can't do (nothing would keep the borrow alive
+/// once the initiating call returns). Every other method still just calls
+/// straight through `self.inner`, unaffected by the indirection.
 #[wasm_bindgen]
 pub struct MainHandle {
+    inner: Rc<MainHandleInner>,
+}
+
+struct MainHandleInner {
     channel: shmring_ipc::MainChannel,
     signing_key: RefCell<Option<SigningKey>>,
+    /// `shmring_ipc::MainChannel` is single-in-flight by design (one
+    /// `SharedArrayBuffer`+`onmessage` slot, see that module's own doc
+    /// comment) -- unlike `pkg/ipc`'s Android transport, which genuinely
+    /// supports concurrent callers (what lets Android's `WatchExecute`
+    /// background poll run alongside a foreground `Submit` safely). A
+    /// background watch-loop tick calling `channel.call()` while a
+    /// foreground call is also in flight would silently corrupt one of
+    /// them (the second call's pending-response slot clobbers the
+    /// first). This mutex, acquired by every call site that reaches
+    /// `channel.call`, serializes all of them -- a correctness fix for
+    /// the pre-existing `connect`/`set`/`get`/`send_event` methods too,
+    /// not just the new watch loops, none of which were previously
+    /// guarded against a concurrent second call either.
+    call_lock: futures::lock::Mutex<()>,
+    /// This tab's own peer id, cached once [`MainHandle::connect`]
+    /// succeeds -- exposed synchronously via [`MainHandle::peer_id`].
+    peer_id: RefCell<Option<String>>,
+}
+
+impl MainHandleInner {
+    /// [`shmring_ipc::MainChannel::call`], serialized through
+    /// [`MainHandleInner::call_lock`] -- see that field's doc comment.
+    async fn call(&self, req: &Msg, priv_key: Option<&SigningKey>) -> Result<Msg, JsValue> {
+        let _guard = self.call_lock.lock().await;
+        self.channel.call(req, priv_key).await.map_err(js_err)
+    }
+
+    async fn ensure_key(&self) -> Result<SigningKey, JsValue> {
+        if let Some(k) = self.signing_key.borrow().clone() {
+            return Ok(k);
+        }
+        let resp = self
+            .call(
+                &Msg {
+                    event_type: shmevent::EVENT_GET_PRIVATE_KEY,
+                    id: new_id(),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await?;
+        if resp.event_type == shmevent::EVENT_ERROR {
+            // Not routed through into_js_result: that lossy-UTF8-decodes
+            // `value`, which is correct for an actual error message but
+            // would corrupt the raw key bytes on the success path below.
+            return Err(JsValue::from_str(&String::from_utf8_lossy(&resp.value)));
+        }
+        let seed: [u8; 32] = resp
+            .value
+            .get(..32)
+            .and_then(|s| s.try_into().ok())
+            .ok_or_else(|| JsValue::from_str("invalid private key length in response"))?;
+        let key = SigningKey::from_bytes(&seed);
+        *self.signing_key.borrow_mut() = Some(key.clone());
+        Ok(key)
+    }
+
+    /// Signs and sends `Msg{event_type, value, id: new_id()}` (the shape
+    /// every single-round-trip call below reduces to), rejecting an
+    /// `EVENT_ERROR` response.
+    async fn call_signed(&self, event_type: u8, value: Vec<u8>) -> Result<Msg, JsValue> {
+        let signing_key = self.ensure_key().await?;
+        let resp = self
+            .call(
+                &Msg {
+                    event_type,
+                    value,
+                    id: new_id(),
+                    ..Default::default()
+                },
+                Some(&signing_key),
+            )
+            .await?;
+        if resp.event_type == shmevent::EVENT_ERROR {
+            return Err(JsValue::from_str(&String::from_utf8_lossy(&resp.value)));
+        }
+        Ok(resp)
+    }
+
+    /// [`MainHandleInner::call_signed`] with a JSON-encoded request body
+    /// against one of `main_ops`'s `OP_*` codes, returning the raw
+    /// response bytes (JSON, decoded by the caller into whatever shape
+    /// that op returns).
+    async fn call_op<Req: serde::Serialize>(&self, op: u8, req: &Req) -> Result<Vec<u8>, JsValue> {
+        let value = serde_json::to_vec(req).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(self.call_signed(op, value).await?.value)
+    }
+
+    async fn call_op_str<Req: serde::Serialize>(&self, op: u8, req: &Req) -> Result<String, JsValue> {
+        let bytes = self.call_op(op, req).await?;
+        String::from_utf8(bytes).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
 }
 
 #[wasm_bindgen]
@@ -575,18 +754,30 @@ impl MainHandle {
     #[wasm_bindgen(constructor)]
     pub fn new(worker: web_sys::Worker) -> MainHandle {
         MainHandle {
-            channel: shmring_ipc::MainChannel::new(worker),
-            signing_key: RefCell::new(None),
+            inner: Rc::new(MainHandleInner {
+                channel: shmring_ipc::MainChannel::new(worker),
+                signing_key: RefCell::new(None),
+                call_lock: futures::lock::Mutex::new(()),
+                peer_id: RefCell::new(None),
+            }),
         }
+    }
+
+    /// This tab's own peer id, if [`MainHandle::connect`] has succeeded --
+    /// `None` beforehand. Synchronous: purely a cached read, no round
+    /// trip. Matches `mobile/kvmobile.PeerID`.
+    #[wasm_bindgen(js_name = peerId)]
+    pub fn peer_id(&self) -> Option<String> {
+        self.inner.peer_id.borrow().clone()
     }
 
     /// Connects to `target_multiaddr` (any cluster member's WebTransport
     /// multiaddr) and joins this tab as a non-voting learner. Resolves to
     /// this tab's own peer id.
     pub async fn connect(&self, target_multiaddr: String) -> Result<String, JsValue> {
-        let key = self.ensure_key().await?;
+        let key = self.inner.ensure_key().await?;
         let resp = self
-            .channel
+            .inner
             .call(
                 &Msg {
                     event_type: shmevent::EVENT_ADD,
@@ -596,16 +787,17 @@ impl MainHandle {
                 },
                 Some(&key),
             )
-            .await
-            .map_err(js_err)?;
-        into_js_result(resp)
+            .await?;
+        let peer_id = into_js_result(resp)?;
+        *self.inner.peer_id.borrow_mut() = Some(peer_id.clone());
+        Ok(peer_id)
     }
 
     pub async fn set(&self, key: String, value: String) -> Result<String, JsValue> {
-        let signing_key = self.ensure_key().await?;
+        let signing_key = self.inner.ensure_key().await?;
         let set_key_id = new_id();
         let set_key_resp = self
-            .channel
+            .inner
             .call(
                 &Msg {
                     event_type: shmevent::EVENT_SET_KEY,
@@ -615,12 +807,11 @@ impl MainHandle {
                 },
                 Some(&signing_key),
             )
-            .await
-            .map_err(js_err)?;
+            .await?;
         into_js_result(set_key_resp)?;
 
         let set_field_resp = self
-            .channel
+            .inner
             .call(
                 &Msg {
                     event_type: shmevent::EVENT_SET_FIELD,
@@ -631,15 +822,14 @@ impl MainHandle {
                 },
                 Some(&signing_key),
             )
-            .await
-            .map_err(js_err)?;
+            .await?;
         into_js_result(set_field_resp)
     }
 
     pub async fn get(&self, key: String) -> Result<String, JsValue> {
-        let signing_key = self.ensure_key().await?;
+        let signing_key = self.inner.ensure_key().await?;
         let resp = self
-            .channel
+            .inner
             .call(
                 &Msg {
                     event_type: shmevent::EVENT_GET_FIELD,
@@ -649,8 +839,7 @@ impl MainHandle {
                 },
                 Some(&signing_key),
             )
-            .await
-            .map_err(js_err)?;
+            .await?;
         into_js_result(resp)
     }
 
@@ -678,48 +867,303 @@ impl MainHandle {
             req.id = new_id();
         }
         let signing_key = if shmevent::requires_signature(req.event_type) {
-            Some(self.ensure_key().await?)
+            Some(self.inner.ensure_key().await?)
         } else {
             None
         };
-        let resp = self
-            .channel
-            .call(&req, signing_key.as_ref())
-            .await
-            .map_err(js_err)?;
+        let resp = self.inner.call(&req, signing_key.as_ref()).await?;
         shmevent::msg_to_json(&resp).map_err(js_shmevent_err)
     }
 
-    async fn ensure_key(&self) -> Result<SigningKey, JsValue> {
-        if let Some(k) = self.signing_key.borrow().clone() {
-            return Ok(k);
-        }
-        let resp = self
-            .channel
-            .call(
-                &Msg {
-                    event_type: shmevent::EVENT_GET_PRIVATE_KEY,
-                    id: new_id(),
-                    ..Default::default()
-                },
-                None,
+    // --- Permits (RequestPermit/RequestLogPermit only -- Confirm/Revoke
+    // are voter-gated server-side and permanently unreachable from a
+    // non-voting learner, see crate::client's doc comment) ---
+
+    /// Lodges a pending permit record. `kind` is `"peer"` or
+    /// `"bootstrap"` (see `shmevent::system::kind_from_name`). Matches
+    /// `mobile/kvmobile.RequestPermit`.
+    #[wasm_bindgen(js_name = requestPermit)]
+    pub async fn request_permit(
+        &self,
+        kind: String,
+        target_peer_id: String,
+        metadata: String,
+    ) -> Result<(), JsValue> {
+        let kind_byte = shmevent::system::kind_from_name(&kind)
+            .ok_or_else(|| JsValue::from_str(&format!("unknown permit kind {kind:?}")))?;
+        let payload = shmevent::system::encode_permit_request_payload(
+            kind_byte,
+            target_peer_id.as_bytes(),
+            metadata.as_bytes(),
+        )
+        .map_err(js_shmevent_err)?;
+        self.inner
+            .call_signed(shmevent::EVENT_PERMIT_REQUEST, payload)
+            .await?;
+        Ok(())
+    }
+
+    /// Lodges a pending log-permit record, scoped by an arbitrary
+    /// `log_kind` string. Matches `mobile/kvmobile.RequestLogPermit`.
+    #[wasm_bindgen(js_name = requestLogPermit)]
+    pub async fn request_log_permit(
+        &self,
+        log_kind: String,
+        target_peer_id: String,
+        metadata: String,
+    ) -> Result<(), JsValue> {
+        let payload = shmevent::logpermit::encode_log_permit_request_payload(
+            &log_kind,
+            target_peer_id.as_bytes(),
+            metadata.as_bytes(),
+        )
+        .map_err(js_shmevent_err)?;
+        self.inner
+            .call_signed(shmevent::EVENT_LOG_PERMIT_REQUEST, payload)
+            .await?;
+        Ok(())
+    }
+
+    // --- Catalog reads (no Create/Update/Delete/AddXToY -- voter-gated
+    // server-side, see crate::catalog's doc comment) ---
+
+    #[wasm_bindgen(js_name = getGroup)]
+    pub async fn get_group(&self, id: String) -> Result<String, JsValue> {
+        self.inner
+            .call_op_str(main_ops::OP_GET_GROUP, &serde_json::json!({ "id": id }))
+            .await
+    }
+
+    #[wasm_bindgen(js_name = listGroups)]
+    pub async fn list_groups(&self) -> Result<String, JsValue> {
+        self.inner
+            .call_op_str(main_ops::OP_LIST_GROUPS, &serde_json::json!({}))
+            .await
+    }
+
+    #[wasm_bindgen(js_name = getCommand)]
+    pub async fn get_command(&self, id: String) -> Result<String, JsValue> {
+        self.inner
+            .call_op_str(main_ops::OP_GET_COMMAND, &serde_json::json!({ "id": id }))
+            .await
+    }
+
+    #[wasm_bindgen(js_name = listCommands)]
+    pub async fn list_commands(&self) -> Result<String, JsValue> {
+        self.inner
+            .call_op_str(main_ops::OP_LIST_COMMANDS, &serde_json::json!({}))
+            .await
+    }
+
+    #[wasm_bindgen(js_name = listGroupsForCommand)]
+    pub async fn list_groups_for_command(&self, command_id: String) -> Result<String, JsValue> {
+        self.inner
+            .call_op_str(
+                main_ops::OP_LIST_GROUPS_FOR_COMMAND,
+                &serde_json::json!({ "command_id": command_id }),
             )
             .await
-            .map_err(js_err)?;
-        if resp.event_type == shmevent::EVENT_ERROR {
-            // Not routed through into_js_result: that lossy-UTF8-decodes
-            // `value`, which is correct for an actual error message but
-            // would corrupt the raw key bytes on the success path below.
-            return Err(JsValue::from_str(&String::from_utf8_lossy(&resp.value)));
-        }
-        let seed: [u8; 32] = resp
-            .value
-            .get(..32)
-            .and_then(|s| s.try_into().ok())
-            .ok_or_else(|| JsValue::from_str("invalid private key length in response"))?;
-        let key = SigningKey::from_bytes(&seed);
-        *self.signing_key.borrow_mut() = Some(key.clone());
-        Ok(key)
+    }
+
+    #[wasm_bindgen(js_name = listGroupsForPeer)]
+    pub async fn list_groups_for_peer(&self, peer_id: String) -> Result<String, JsValue> {
+        self.inner
+            .call_op_str(
+                main_ops::OP_LIST_GROUPS_FOR_PEER,
+                &serde_json::json!({ "peer_id": peer_id }),
+            )
+            .await
+    }
+
+    // --- Dispatch ---
+
+    #[wasm_bindgen(js_name = submitCommand)]
+    pub async fn submit_command(&self, command_id: String, inputs_json: String) -> Result<String, JsValue> {
+        let resp = self
+            .inner
+            .call_op(
+                main_ops::OP_SUBMIT_COMMAND,
+                &serde_json::json!({ "command_id": command_id, "inputs_json": inputs_json }),
+            )
+            .await?;
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&resp).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        parsed
+            .get("instance_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| JsValue::from_str("submit_command: malformed response"))
+    }
+
+    #[wasm_bindgen(js_name = getCommandRequest)]
+    pub async fn get_command_request(&self, command_id: String, instance_id: String) -> Result<String, JsValue> {
+        self.inner
+            .call_op_str(
+                main_ops::OP_GET_COMMAND_REQUEST,
+                &serde_json::json!({ "command_id": command_id, "instance_id": instance_id }),
+            )
+            .await
+    }
+
+    #[wasm_bindgen(js_name = listCommandRequests)]
+    pub async fn list_command_requests(&self, command_id: String) -> Result<String, JsValue> {
+        self.inner
+            .call_op_str(
+                main_ops::OP_LIST_COMMAND_REQUESTS,
+                &serde_json::json!({ "command_id": command_id }),
+            )
+            .await
+    }
+
+    #[wasm_bindgen(js_name = listExecutionsByPeer)]
+    pub async fn list_executions_by_peer(&self, peer_id: String) -> Result<String, JsValue> {
+        self.inner
+            .call_op_str(
+                main_ops::OP_LIST_EXECUTIONS_BY_PEER,
+                &serde_json::json!({ "peer_id": peer_id }),
+            )
+            .await
+    }
+
+    #[wasm_bindgen(js_name = appendCommandLog)]
+    pub async fn append_command_log(
+        &self,
+        requester_peer_id: String,
+        instance_id: String,
+        fields_json: String,
+        narrative: String,
+    ) -> Result<(), JsValue> {
+        self.inner
+            .call_op(
+                main_ops::OP_APPEND_COMMAND_LOG,
+                &serde_json::json!({
+                    "requester_peer_id": requester_peer_id,
+                    "instance_id": instance_id,
+                    "fields_json": fields_json,
+                    "narrative": narrative,
+                }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    #[wasm_bindgen(js_name = queryCommandLog)]
+    pub async fn query_command_log(
+        &self,
+        instance_id: String,
+        since: String,
+        until: String,
+        limit: String,
+    ) -> Result<String, JsValue> {
+        self.inner
+            .call_op_str(
+                main_ops::OP_QUERY_COMMAND_LOG,
+                &serde_json::json!({ "instance_id": instance_id, "since": since, "until": until, "limit": limit }),
+            )
+            .await
+    }
+
+    #[wasm_bindgen(js_name = latestCommandLog)]
+    pub async fn latest_command_log(&self, instance_id: String) -> Result<String, JsValue> {
+        self.inner
+            .call_op_str(
+                main_ops::OP_LATEST_COMMAND_LOG,
+                &serde_json::json!({ "instance_id": instance_id }),
+            )
+            .await
+    }
+
+    // --- Generic log records ---
+
+    #[wasm_bindgen(js_name = logAppend)]
+    pub async fn log_append(
+        &self,
+        kind: String,
+        unit_id: String,
+        fields_json: String,
+        narrative: String,
+    ) -> Result<(), JsValue> {
+        self.inner
+            .call_op(
+                main_ops::OP_LOG_APPEND,
+                &serde_json::json!({ "kind": kind, "unit_id": unit_id, "fields_json": fields_json, "narrative": narrative }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    #[wasm_bindgen(js_name = logQuery)]
+    pub async fn log_query(
+        &self,
+        kind: String,
+        unit_id: String,
+        since: String,
+        until: String,
+        limit: String,
+    ) -> Result<String, JsValue> {
+        self.inner
+            .call_op_str(
+                main_ops::OP_LOG_QUERY,
+                &serde_json::json!({ "kind": kind, "unit_id": unit_id, "since": since, "until": until, "limit": limit }),
+            )
+            .await
+    }
+
+    // --- Execute ---
+
+    /// Direct, unreplicated peer-to-peer notification to `dest_peer_id`.
+    /// Matches `mobile/kvmobile.Execute`.
+    pub async fn execute(&self, dest_peer_id: String, value: String) -> Result<(), JsValue> {
+        let payload = shmevent::encode_set_payload(dest_peer_id.as_bytes(), value.as_bytes())
+            .map_err(js_shmevent_err)?;
+        self.inner.call_signed(shmevent::EVENT_EXECUTE, payload).await?;
+        Ok(())
+    }
+
+    /// Drains one queued [`MainHandle::execute`] notification addressed to
+    /// this node, JSON-encoded as `{"pending":bool,"sender_peer_id":...,
+    /// "value":...}` (matching `mobile/kvmobile.PollExecute`'s
+    /// `pollExecuteResult` shape exactly).
+    #[wasm_bindgen(js_name = pollExecute)]
+    pub async fn poll_execute(&self) -> Result<String, JsValue> {
+        let resp = self
+            .inner
+            .call_signed(shmevent::EVENT_POLL_EXECUTE, Vec::new())
+            .await?;
+        let out = if resp.value.is_empty() {
+            serde_json::json!({ "pending": false })
+        } else {
+            let (sender_peer_id, payload) =
+                shmevent::decode_execute_notification(&resp.value).map_err(js_shmevent_err)?;
+            serde_json::json!({
+                "pending": true,
+                "sender_peer_id": String::from_utf8_lossy(sender_peer_id),
+                "value": String::from_utf8_lossy(payload),
+            })
+        };
+        serde_json::to_string(&out).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Polls [`MainHandle::poll_execute`] in the background (tight loop
+    /// while draining a backlog, `WATCH_EXECUTE_POLL_INTERVAL_MS` between
+    /// empty polls -- matches `mobile/kvmobile`'s
+    /// `watchExecutePollInterval`), invoking `cb(sender_peer_id, value)`
+    /// for each notification found, until the returned [`WatchHandle`] is
+    /// stopped. Matches `mobile/kvmobile.WatchExecute`.
+    #[wasm_bindgen(js_name = watchExecute)]
+    pub fn watch_execute(&self, cb: js_sys::Function) -> WatchHandle {
+        spawn_watch_loop(self.inner.clone(), WatchKind::Execute, cb)
+    }
+
+    /// Polls [`MainHandle::query_command_log`] for `instance_id` every
+    /// `WATCH_COMMAND_LOG_POLL_INTERVAL_MS` (matches `mobile/kvmobile`'s
+    /// `watchCommandLogPollInterval`), invoking `cb(records_json)` with
+    /// whatever's new since the last poll, until the returned
+    /// [`WatchHandle`] is stopped. Matches
+    /// `mobile/kvmobile.WatchCommandLog`.
+    #[wasm_bindgen(js_name = watchCommandLog)]
+    pub fn watch_command_log(&self, instance_id: String, cb: js_sys::Function) -> WatchHandle {
+        spawn_watch_loop(self.inner.clone(), WatchKind::CommandLog(instance_id), cb)
     }
 }
 
@@ -736,5 +1180,157 @@ fn into_js_result(resp: Msg) -> Result<String, JsValue> {
         Err(JsValue::from_str(&String::from_utf8_lossy(&resp.value)))
     } else {
         Ok(String::from_utf8_lossy(&resp.value).into_owned())
+    }
+}
+
+// --- watch_execute / watch_command_log ---
+
+/// How often `watch_execute` polls when nothing's queued -- tight-loops
+/// (no wait) instead while draining a backlog, to catch up fast. Matches
+/// `mobile/kvmobile`'s `watchExecutePollInterval`.
+const WATCH_EXECUTE_POLL_INTERVAL_MS: u32 = 200;
+
+/// How often `watch_command_log` re-queries -- a real replicated-store
+/// read each tick (unlike `watch_execute`'s in-memory queue drain), so
+/// deliberately longer. Matches `mobile/kvmobile`'s
+/// `watchCommandLogPollInterval`.
+const WATCH_COMMAND_LOG_POLL_INTERVAL_MS: u32 = 1_500;
+
+enum WatchKind {
+    Execute,
+    CommandLog(String),
+}
+
+/// A background [`MainHandle::watch_execute`]/
+/// [`MainHandle::watch_command_log`] loop's stop handle -- mirrors
+/// `mobile/kvmobile`'s `StopWatchExecute`/`StopWatchCommandLog`, which
+/// block until the loop has actually exited rather than
+/// firing-and-forgetting.
+#[wasm_bindgen]
+pub struct WatchHandle {
+    stop_flag: Rc<Cell<bool>>,
+    done: Rc<RefCell<Option<oneshot::Receiver<()>>>>,
+}
+
+#[wasm_bindgen]
+impl WatchHandle {
+    /// Signals the loop to stop and returns a `Promise` that resolves
+    /// once it actually has. Not cosmetic: without waiting, a caller
+    /// could `stop()` and immediately start a new watch for the same
+    /// thing, and the old loop's very next tick could still be in
+    /// flight, racing the new one for `MainHandleInner::call_lock`.
+    pub fn stop(&self) -> js_sys::Promise {
+        self.stop_flag.set(true);
+        let done = self.done.clone();
+        wasm_bindgen_futures::future_to_promise(async move {
+            if let Some(rx) = done.borrow_mut().take() {
+                let _ = rx.await;
+            }
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+}
+
+fn spawn_watch_loop(inner: Rc<MainHandleInner>, kind: WatchKind, cb: js_sys::Function) -> WatchHandle {
+    let stop_flag = Rc::new(Cell::new(false));
+    let (tx, rx) = oneshot::channel();
+
+    let loop_stop_flag = stop_flag.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        match kind {
+            WatchKind::Execute => run_execute_watch(inner, &loop_stop_flag, &cb).await,
+            WatchKind::CommandLog(instance_id) => {
+                run_command_log_watch(inner, &instance_id, &loop_stop_flag, &cb).await
+            }
+        }
+        let _ = tx.send(());
+    });
+
+    WatchHandle {
+        stop_flag,
+        done: Rc::new(RefCell::new(Some(rx))),
+    }
+}
+
+/// [`MainHandle::watch_execute`]'s loop body -- drains
+/// `EVENT_POLL_EXECUTE` in a tight loop while notifications keep being
+/// found, sleeping [`WATCH_EXECUTE_POLL_INTERVAL_MS`] between polls once
+/// the queue is empty.
+async fn run_execute_watch(inner: Rc<MainHandleInner>, stop_flag: &Cell<bool>, cb: &js_sys::Function) {
+    loop {
+        if stop_flag.get() {
+            return;
+        }
+        let found = match inner.call_signed(shmevent::EVENT_POLL_EXECUTE, Vec::new()).await {
+            Ok(msg) if !msg.value.is_empty() => match shmevent::decode_execute_notification(&msg.value) {
+                Ok((sender_peer_id, payload)) => {
+                    invoke_callback2(
+                        cb,
+                        &String::from_utf8_lossy(sender_peer_id),
+                        &String::from_utf8_lossy(payload),
+                    );
+                    true
+                }
+                Err(_) => false,
+            },
+            _ => false,
+        };
+        if stop_flag.get() {
+            return;
+        }
+        if !found {
+            gloo_timers::future::TimeoutFuture::new(WATCH_EXECUTE_POLL_INTERVAL_MS).await;
+        }
+    }
+}
+
+/// [`MainHandle::watch_command_log`]'s loop body -- re-queries
+/// `instance_id`'s command log every [`WATCH_COMMAND_LOG_POLL_INTERVAL_MS`],
+/// advancing `since` past the newest record already delivered so each
+/// round only asks for what's new.
+async fn run_command_log_watch(
+    inner: Rc<MainHandleInner>,
+    instance_id: &str,
+    stop_flag: &Cell<bool>,
+    cb: &js_sys::Function,
+) {
+    let mut since: Option<time::OffsetDateTime> = None;
+    loop {
+        gloo_timers::future::TimeoutFuture::new(WATCH_COMMAND_LOG_POLL_INTERVAL_MS).await;
+        if stop_flag.get() {
+            return;
+        }
+
+        let since_str = since
+            .and_then(|t| t.format(&time::format_description::well_known::Rfc3339).ok())
+            .unwrap_or_default();
+        let resp = inner
+            .call_op(
+                main_ops::OP_QUERY_COMMAND_LOG,
+                &serde_json::json!({ "instance_id": instance_id, "since": since_str, "until": "", "limit": "" }),
+            )
+            .await;
+        let Ok(bytes) = resp else { continue };
+        let Ok(records) = serde_json::from_slice::<Vec<crate::logrecord::Record>>(&bytes) else {
+            continue;
+        };
+        if records.is_empty() {
+            continue;
+        }
+
+        invoke_callback1(cb, &String::from_utf8_lossy(&bytes));
+        since = records.last().map(|r| r.timestamp + time::Duration::nanoseconds(1));
+    }
+}
+
+fn invoke_callback1(cb: &js_sys::Function, arg: &str) {
+    if let Err(e) = cb.call1(&JsValue::NULL, &JsValue::from_str(arg)) {
+        web_sys::console::error_1(&e);
+    }
+}
+
+fn invoke_callback2(cb: &js_sys::Function, arg1: &str, arg2: &str) {
+    if let Err(e) = cb.call2(&JsValue::NULL, &JsValue::from_str(arg1), &JsValue::from_str(arg2)) {
+        web_sys::console::error_1(&e);
     }
 }

@@ -241,6 +241,31 @@ impl SqliteStore {
         stmt.exec()
     }
 
+    /// Returns the first `(key, value)` pair with `start <= key <= end`
+    /// (both inclusive, ascending, byte-wise BLOB comparison -- matching
+    /// `pkg/store.Store.ScanRange`'s ordering, which `pkg/shmevent`'s
+    /// catalog/logrecord key schemes are designed around), or `None` if
+    /// the range is empty. A single-page primitive: callers wanting every
+    /// match in a range call this repeatedly, narrowing `start` to just
+    /// past the previous hit's key each round (see
+    /// `crate::client::local_scan_all`) -- mirrors `EventListRange`'s own
+    /// one-page-per-call wire shape (see `pkg/shmevent.EventListRange`'s
+    /// doc comment), kept here as a plain local read since this store
+    /// already holds this tab's own raft-replicated state.
+    pub fn kv_scan_range(&self, start: &[u8], end: &[u8]) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+        let stmt = Stmt::prepare(
+            self.db,
+            "SELECT key, value FROM kv WHERE key >= ?1 AND key <= ?2 ORDER BY key ASC LIMIT 1",
+        )?;
+        stmt.bind_blob(1, start)?;
+        stmt.bind_blob(2, end)?;
+        if stmt.step_row()? {
+            Ok(Some((stmt.column_blob(0), stmt.column_blob(1))))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Replaces the entire kv table's contents -- used by InstallSnapshot
     /// restore, matching `pkg/store.LoadAll`'s "delete everything, then
     /// reinsert" semantics.

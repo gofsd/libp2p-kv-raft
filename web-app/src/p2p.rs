@@ -73,6 +73,25 @@ const RELAY_RESERVATION_TIMEOUT_MS: u32 = 45_000;
 /// method's doc comment for why it needs one at all.
 const CLIENT_PROTOCOL_TIMEOUT_MS: u32 = 45_000;
 
+/// How many times [`Node::do_reserve`] retries the initial relay dial
+/// after a transient `OutgoingConnectionError` before giving up. A single
+/// lost handshake round isn't a real failure on a real WAN link: confirmed
+/// directly against this project's own deploy target, where a single dial
+/// attempt can fail with Chromium's own `QUIC_NETWORK_IDLE_TIMEOUT` (its
+/// pre-handshake QUIC connection gives up after ~4s of literally no
+/// packets back, well short of RELAY_RESERVATION_TIMEOUT_MS's 45s ceiling)
+/// even though a fresh dial moments later, or a raw QUIC handshake run
+/// outside the browser entirely, both succeed in well under a second --
+/// i.e. this is ordinary packet loss on that one attempt, not a systemic
+/// unreachability. Kept well inside RELAY_RESERVATION_TIMEOUT_MS's own 45s
+/// budget even in the worst case (a few retries at a few seconds each).
+const DIAL_RETRY_ATTEMPTS: u32 = 3;
+
+/// Delay between [`DIAL_RETRY_ATTEMPTS`] retries -- long enough to not
+/// hammer a link that's already struggling, short enough that all retries
+/// still comfortably fit inside RELAY_RESERVATION_TIMEOUT_MS.
+const DIAL_RETRY_DELAY_MS: u32 = 1_000;
+
 #[derive(NetworkBehaviour)]
 struct Behaviour {
     relay_client: relay::client::Behaviour,
@@ -202,24 +221,52 @@ impl Node {
         }
     }
 
-    async fn do_reserve(&mut self, addr: Multiaddr) -> Result<Multiaddr, Error> {
-        debug_log(&format!("kv-raft-web: do_reserve: dialing {addr}"));
-        self.swarm
-            .dial(addr.clone())
-            .map_err(|e| Error(e.to_string()))?;
-
-        let relay_peer = loop {
-            let event = self.swarm.select_next_some().await;
-            match event {
-                libp2p::swarm::SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                    break peer_id;
-                }
-                libp2p::swarm::SwarmEvent::OutgoingConnectionError { error, .. } => {
-                    return Err(Error(format!("dial relay: {error}")));
-                }
-                _ => {}
+    /// Dials `addr`, retrying up to [`DIAL_RETRY_ATTEMPTS`] times on a
+    /// transient `OutgoingConnectionError` (see that constant's doc
+    /// comment) before giving up. Returns the peer id of the now-connected
+    /// relay.
+    async fn dial_with_retry(&mut self, addr: Multiaddr) -> Result<PeerId, Error> {
+        let mut last_err = None;
+        for attempt in 1..=DIAL_RETRY_ATTEMPTS {
+            if attempt > 1 {
+                debug_log(&format!(
+                    "kv-raft-web: dial_with_retry: retrying {addr} (attempt {attempt}/{DIAL_RETRY_ATTEMPTS}) after: {}",
+                    last_err.as_ref().map(Error::to_string).unwrap_or_default()
+                ));
             }
-        };
+            debug_log(&format!("kv-raft-web: do_reserve: dialing {addr}"));
+            self.swarm
+                .dial(addr.clone())
+                .map_err(|e| Error(e.to_string()))?;
+
+            let result = loop {
+                let event = self.swarm.select_next_some().await;
+                match event {
+                    libp2p::swarm::SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                        break Ok(peer_id);
+                    }
+                    libp2p::swarm::SwarmEvent::OutgoingConnectionError { error, .. } => {
+                        break Err(Error(format!("dial relay: {error}")));
+                    }
+                    _ => {}
+                }
+            };
+
+            match result {
+                Ok(peer_id) => return Ok(peer_id),
+                Err(err) => {
+                    last_err = Some(err);
+                    if attempt < DIAL_RETRY_ATTEMPTS {
+                        gloo_timers::future::TimeoutFuture::new(DIAL_RETRY_DELAY_MS).await;
+                    }
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| Error("dial relay: exhausted retries".to_string())))
+    }
+
+    async fn do_reserve(&mut self, addr: Multiaddr) -> Result<Multiaddr, Error> {
+        let relay_peer = self.dial_with_retry(addr.clone()).await?;
         debug_log(&format!("kv-raft-web: do_reserve: connected to relay {relay_peer}"));
 
         // Must carry the relay's actual dialable address, not just its bare

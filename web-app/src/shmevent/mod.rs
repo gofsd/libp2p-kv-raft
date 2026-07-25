@@ -13,7 +13,17 @@
 //! of `pkg/shmevent`'s Go side, verified against it by the fact both
 //! compile from the identical `api/shmevent.capnp` schema (see
 //! `build.rs`).
+//!
+//! `system`/`logpermit`/`catalog_keys` mirror `pkg/shmevent`'s own
+//! `system.go`/`logpermit.go`/`catalog.go` split -- the `SystemKeyPrefix`
+//! namespace's key-building and payload-framing helpers for permits and
+//! the Group/Command ACL catalog, layered on top of the event framing
+//! this file defines.
 #![allow(clippy::all)]
+
+pub mod catalog_keys;
+pub mod logpermit;
+pub mod system;
 
 pub mod shmevent_capnp {
     include!(concat!(env!("OUT_DIR"), "/shmevent_capnp.rs"));
@@ -31,6 +41,84 @@ pub const EVENT_GET_FIELD: u8 = 4;
 pub const EVENT_GET_PUBLIC_KEY: u8 = 5;
 pub const EVENT_GET_PRIVATE_KEY: u8 = 6;
 pub const EVENT_ADD: u8 = 7;
+/// Single-round-trip alternative to the SetKey+SetField pair -- see
+/// `pkg/shmevent.EventSet`'s doc comment. `Value` is
+/// [`encode_set_payload`]`(key, value)`.
+pub const EVENT_SET: u8 = 8;
+/// Lodges a pending permit record (`KindPermitPeer`/`KindBootstrapNode`).
+/// `Value` is [`system::encode_permit_request_payload`].
+pub const EVENT_PERMIT_REQUEST: u8 = 9;
+/// Promotes a pending permit record to confirmed -- raft-voter-only
+/// server-side. `Value` is [`system::encode_permit_confirm_payload`].
+pub const EVENT_PERMIT_CONFIRM: u8 = 10;
+/// Direct, unreplicated peer-to-peer notification -- see
+/// `pkg/shmevent.EventExecute`'s doc comment. Needs a prior
+/// `EVENT_SET_KEY` pair registering sender/receiver peer ids under
+/// `SourceID`/`DestinationID`.
+pub const EVENT_EXECUTE: u8 = 11;
+/// Drains one queued `EVENT_EXECUTE` notification addressed to this node,
+/// oldest first -- empty `Value` if none queued, otherwise
+/// [`encode_execute_notification`].
+pub const EVENT_POLL_EXECUTE: u8 = 12;
+/// Demotes a confirmed permit record straight back out of existence --
+/// raft-voter-only server-side. Same payload shape as
+/// `EVENT_PERMIT_CONFIRM`.
+pub const EVENT_PERMIT_REVOKE: u8 = 13;
+/// Answers one bounded key-range scan page against the local store --
+/// `Value` is [`encode_list_range_query`]`(start, end)`; the response
+/// reuses the same framing for `(key, value)`, empty if exhausted. See
+/// `pkg/shmevent.EventListRange`'s doc comment: no bulk response, a
+/// caller wanting every match loops, narrowing `start` past the last
+/// returned key each round.
+pub const EVENT_LIST_RANGE: u8 = 14;
+/// Writes one `pkg/logrecord` record -- the one legitimate way into that
+/// reserved key namespace, `EVENT_SET`/`EVENT_SET_FIELD` refuse it. Same
+/// payload framing as `EVENT_SET`.
+pub const EVENT_LOG_APPEND: u8 = 15;
+/// Lodges a pending `KindLogPermit` record, scoped by an arbitrary
+/// `logKind` string in addition to `peerID`. `Value` is
+/// [`logpermit::encode_log_permit_request_payload`].
+pub const EVENT_LOG_PERMIT_REQUEST: u8 = 16;
+/// Promotes a pending log-permit record to confirmed -- raft-voter-only.
+/// `Value` is [`logpermit::encode_log_permit_confirm_payload`].
+pub const EVENT_LOG_PERMIT_CONFIRM: u8 = 17;
+/// Deletes a confirmed log-permit record outright -- raft-voter-only.
+/// Same payload shape as `EVENT_LOG_PERMIT_CONFIRM`.
+pub const EVENT_LOG_PERMIT_REVOKE: u8 = 18;
+/// Asks this node's own current cluster to remove it. **Refused by
+/// `pkg/daemon.handleShmEvent` for any remote (`ClientProtocolID`)
+/// caller** -- "only this node's own operator decides to leave" -- so
+/// this constant exists for wire-table completeness (a message carrying
+/// byte 19 should decode to a real name, not "unknown") only; no web
+/// client capability is built on it, and none ever legitimately can be.
+pub const EVENT_LEAVE: u8 = 19;
+/// Create-or-update a Group ACL catalog record (`Value` is
+/// [`catalog_keys::encode_group_put_payload`]) -- any current raft voter
+/// may Put unilaterally, no second-voter confirmation.
+pub const EVENT_GROUP_PUT: u8 = 20;
+/// Deletes a Group record (`Value` is the raw id bytes) -- cascades
+/// server-side to every referencing GroupCommand/PeerGroup record in the
+/// same raft Apply.
+pub const EVENT_GROUP_DELETE: u8 = 21;
+/// Create-or-update a Command ACL catalog record (`Value` is
+/// [`catalog_keys::encode_command_put_payload`]).
+pub const EVENT_COMMAND_PUT: u8 = 22;
+/// Deletes a Command record (`Value` is the raw id bytes) -- cascades
+/// server-side like `EVENT_GROUP_DELETE`.
+pub const EVENT_COMMAND_DELETE: u8 = 23;
+/// Links a Command to a Group (`Value` is
+/// [`catalog_keys::encode_group_command_payload`]) -- no stored value,
+/// both fields of the relation already live in the key.
+pub const EVENT_GROUP_COMMAND_PUT: u8 = 24;
+/// Unlinks a Command from a Group. Same payload shape as
+/// `EVENT_GROUP_COMMAND_PUT`.
+pub const EVENT_GROUP_COMMAND_DELETE: u8 = 25;
+/// Adds a peer to a Group (`Value` is
+/// [`catalog_keys::encode_peer_group_payload`]).
+pub const EVENT_PEER_GROUP_PUT: u8 = 26;
+/// Removes a peer from a Group. Same payload shape as
+/// `EVENT_PEER_GROUP_PUT`.
+pub const EVENT_PEER_GROUP_DELETE: u8 = 27;
 /// Response-only; see `pkg/shmevent.EventError`'s doc comment for why
 /// this exists even though it isn't part of `api/shmevent.capnp`'s
 /// originally specified field set.
@@ -233,6 +321,26 @@ pub fn event_name(event_type: u8) -> &'static str {
         EVENT_GET_PUBLIC_KEY => "get_public_key",
         EVENT_GET_PRIVATE_KEY => "get_private_key",
         EVENT_ADD => "add",
+        EVENT_SET => "set",
+        EVENT_PERMIT_REQUEST => "permit_request",
+        EVENT_PERMIT_CONFIRM => "permit_confirm",
+        EVENT_EXECUTE => "execute",
+        EVENT_POLL_EXECUTE => "poll_execute",
+        EVENT_PERMIT_REVOKE => "permit_revoke",
+        EVENT_LIST_RANGE => "list_range",
+        EVENT_LOG_APPEND => "log_append",
+        EVENT_LOG_PERMIT_REQUEST => "log_permit_request",
+        EVENT_LOG_PERMIT_CONFIRM => "log_permit_confirm",
+        EVENT_LOG_PERMIT_REVOKE => "log_permit_revoke",
+        EVENT_LEAVE => "leave",
+        EVENT_GROUP_PUT => "group_put",
+        EVENT_GROUP_DELETE => "group_delete",
+        EVENT_COMMAND_PUT => "command_put",
+        EVENT_COMMAND_DELETE => "command_delete",
+        EVENT_GROUP_COMMAND_PUT => "group_command_put",
+        EVENT_GROUP_COMMAND_DELETE => "group_command_delete",
+        EVENT_PEER_GROUP_PUT => "peer_group_put",
+        EVENT_PEER_GROUP_DELETE => "peer_group_delete",
         EVENT_ERROR => "error",
         _ => "unknown",
     }
@@ -248,9 +356,121 @@ pub fn event_from_name(name: &str) -> Option<u8> {
         "get_public_key" => Some(EVENT_GET_PUBLIC_KEY),
         "get_private_key" => Some(EVENT_GET_PRIVATE_KEY),
         "add" => Some(EVENT_ADD),
+        "set" => Some(EVENT_SET),
+        "permit_request" => Some(EVENT_PERMIT_REQUEST),
+        "permit_confirm" => Some(EVENT_PERMIT_CONFIRM),
+        "execute" => Some(EVENT_EXECUTE),
+        "poll_execute" => Some(EVENT_POLL_EXECUTE),
+        "permit_revoke" => Some(EVENT_PERMIT_REVOKE),
+        "list_range" => Some(EVENT_LIST_RANGE),
+        "log_append" => Some(EVENT_LOG_APPEND),
+        "log_permit_request" => Some(EVENT_LOG_PERMIT_REQUEST),
+        "log_permit_confirm" => Some(EVENT_LOG_PERMIT_CONFIRM),
+        "log_permit_revoke" => Some(EVENT_LOG_PERMIT_REVOKE),
+        "leave" => Some(EVENT_LEAVE),
+        "group_put" => Some(EVENT_GROUP_PUT),
+        "group_delete" => Some(EVENT_GROUP_DELETE),
+        "command_put" => Some(EVENT_COMMAND_PUT),
+        "command_delete" => Some(EVENT_COMMAND_DELETE),
+        "group_command_put" => Some(EVENT_GROUP_COMMAND_PUT),
+        "group_command_delete" => Some(EVENT_GROUP_COMMAND_DELETE),
+        "peer_group_put" => Some(EVENT_PEER_GROUP_PUT),
+        "peer_group_delete" => Some(EVENT_PEER_GROUP_DELETE),
         "error" => Some(EVENT_ERROR),
         _ => None,
     }
+}
+
+/// Packs `key` and `value` into a single `EVENT_SET`/`EVENT_LOG_APPEND`
+/// `Msg.value`: a 2-byte big-endian length prefix for `key`, then `key`
+/// verbatim, then `value` verbatim (the rest of the buffer, no length
+/// prefix of its own). Matches `pkg/shmevent.EncodeSetPayload`.
+pub fn encode_set_payload(key: &[u8], value: &[u8]) -> Result<Vec<u8>, Error> {
+    if key.len() > 0xFFFF {
+        return Err(Error(format!(
+            "set payload key too long: {} bytes",
+            key.len()
+        )));
+    }
+    let mut buf = Vec::with_capacity(2 + key.len() + value.len());
+    buf.push((key.len() >> 8) as u8);
+    buf.push(key.len() as u8);
+    buf.extend_from_slice(key);
+    buf.extend_from_slice(value);
+    Ok(buf)
+}
+
+/// Inverse of [`encode_set_payload`]. Matches
+/// `pkg/shmevent.DecodeSetPayload`.
+pub fn decode_set_payload(payload: &[u8]) -> Result<(&[u8], &[u8]), Error> {
+    if payload.len() < 2 {
+        return Err(Error(format!(
+            "set payload too short: {} bytes",
+            payload.len()
+        )));
+    }
+    let key_len = ((payload[0] as usize) << 8) | payload[1] as usize;
+    if 2 + key_len > payload.len() {
+        return Err(Error(format!(
+            "set payload key length {key_len} exceeds payload size {}",
+            payload.len()
+        )));
+    }
+    Ok((&payload[2..2 + key_len], &payload[2 + key_len..]))
+}
+
+/// Packs `start`/`end` (both inclusive store key bounds) into a single
+/// `EVENT_LIST_RANGE` request `Value` -- identical framing to
+/// [`encode_set_payload`], reused under a name that reads correctly at a
+/// list-range call site. Matches `pkg/shmevent.EncodeListRangeQuery`. Also
+/// used, under this same name, to decode/encode an `EVENT_LIST_RANGE`
+/// response's `(key, value)` pair -- see that event's doc comment.
+pub fn encode_list_range_query(start: &[u8], end: &[u8]) -> Result<Vec<u8>, Error> {
+    encode_set_payload(start, end)
+}
+
+/// Inverse of [`encode_list_range_query`].
+pub fn decode_list_range_query(payload: &[u8]) -> Result<(&[u8], &[u8]), Error> {
+    decode_set_payload(payload)
+}
+
+/// Packs `sender_peer_id` and `payload` into a single value: a 2-byte
+/// big-endian length prefix for `sender_peer_id`, then `sender_peer_id`
+/// verbatim, then `payload` (the rest of the buffer). Used both for the
+/// wire message a peer-to-peer `Execute` delivery carries and for
+/// `EVENT_POLL_EXECUTE`'s response. Matches
+/// `pkg/shmevent.EncodeExecuteNotification`.
+pub fn encode_execute_notification(sender_peer_id: &[u8], payload: &[u8]) -> Result<Vec<u8>, Error> {
+    if sender_peer_id.len() > 0xFFFF {
+        return Err(Error(format!(
+            "execute notification sender peer id too long: {} bytes",
+            sender_peer_id.len()
+        )));
+    }
+    let mut buf = Vec::with_capacity(2 + sender_peer_id.len() + payload.len());
+    buf.push((sender_peer_id.len() >> 8) as u8);
+    buf.push(sender_peer_id.len() as u8);
+    buf.extend_from_slice(sender_peer_id);
+    buf.extend_from_slice(payload);
+    Ok(buf)
+}
+
+/// Inverse of [`encode_execute_notification`].
+pub fn decode_execute_notification(data: &[u8]) -> Result<(&[u8], &[u8]), Error> {
+    if data.len() < 2 {
+        return Err(Error(format!(
+            "execute notification too short: {} bytes",
+            data.len()
+        )));
+    }
+    let id_len = ((data[0] as usize) << 8) | data[1] as usize;
+    if 2 + id_len > data.len() {
+        return Err(Error(format!(
+            "execute notification sender peer id length {id_len} exceeds payload size {}",
+            data.len()
+        )));
+    }
+    Ok((&data[2..2 + id_len], &data[2 + id_len..]))
 }
 
 /// Decodes a hex string to raw bytes -- hand-rolled rather than pulling in
@@ -475,6 +695,26 @@ mod tests {
             EVENT_GET_PUBLIC_KEY,
             EVENT_GET_PRIVATE_KEY,
             EVENT_ADD,
+            EVENT_SET,
+            EVENT_PERMIT_REQUEST,
+            EVENT_PERMIT_CONFIRM,
+            EVENT_EXECUTE,
+            EVENT_POLL_EXECUTE,
+            EVENT_PERMIT_REVOKE,
+            EVENT_LIST_RANGE,
+            EVENT_LOG_APPEND,
+            EVENT_LOG_PERMIT_REQUEST,
+            EVENT_LOG_PERMIT_CONFIRM,
+            EVENT_LOG_PERMIT_REVOKE,
+            EVENT_LEAVE,
+            EVENT_GROUP_PUT,
+            EVENT_GROUP_DELETE,
+            EVENT_COMMAND_PUT,
+            EVENT_COMMAND_DELETE,
+            EVENT_GROUP_COMMAND_PUT,
+            EVENT_GROUP_COMMAND_DELETE,
+            EVENT_PEER_GROUP_PUT,
+            EVENT_PEER_GROUP_DELETE,
             EVENT_ERROR,
         ] {
             let name = event_name(e);
@@ -533,5 +773,58 @@ mod tests {
         assert_eq!(hex_decode(&hex_encode(&raw)).unwrap(), raw);
         assert!(hex_decode("abc").is_err()); // odd length
         assert!(hex_decode("zz").is_err()); // invalid digit
+    }
+
+    #[test]
+    fn set_payload_round_trip() {
+        let (key, value) = (b"my-key".as_slice(), b"my-value".as_slice());
+        let encoded = encode_set_payload(key, value).unwrap();
+        let (got_key, got_value) = decode_set_payload(&encoded).unwrap();
+        assert_eq!(got_key, key);
+        assert_eq!(got_value, value);
+    }
+
+    #[test]
+    fn set_payload_empty_key() {
+        let encoded = encode_set_payload(b"", b"value-only").unwrap();
+        let (got_key, got_value) = decode_set_payload(&encoded).unwrap();
+        assert_eq!(got_key, b"");
+        assert_eq!(got_value, b"value-only");
+    }
+
+    #[test]
+    fn set_payload_too_short_rejected() {
+        assert!(decode_set_payload(&[0u8]).is_err());
+        assert!(decode_set_payload(&[]).is_err());
+    }
+
+    #[test]
+    fn set_payload_key_length_overflow_rejected() {
+        // Claims a 10-byte key but only provides 2 bytes of payload after
+        // the length prefix.
+        assert!(decode_set_payload(&[0x00, 0x0a, 0x01, 0x02]).is_err());
+    }
+
+    #[test]
+    fn list_range_query_round_trip() {
+        let (start, end) = (b"aaa".as_slice(), b"zzz".as_slice());
+        let encoded = encode_list_range_query(start, end).unwrap();
+        let (got_start, got_end) = decode_list_range_query(&encoded).unwrap();
+        assert_eq!(got_start, start);
+        assert_eq!(got_end, end);
+    }
+
+    #[test]
+    fn execute_notification_round_trip() {
+        let (sender, payload) = (b"12D3KooWabc".as_slice(), b"hello-execute".as_slice());
+        let encoded = encode_execute_notification(sender, payload).unwrap();
+        let (got_sender, got_payload) = decode_execute_notification(&encoded).unwrap();
+        assert_eq!(got_sender, sender);
+        assert_eq!(got_payload, payload);
+    }
+
+    #[test]
+    fn execute_notification_too_short_rejected() {
+        assert!(decode_execute_notification(&[0u8]).is_err());
     }
 }
