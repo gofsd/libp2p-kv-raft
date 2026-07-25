@@ -337,6 +337,77 @@ const (
 	// leaderMultiaddr) can just query again a moment later instead of
 	// guessing or constructing the circuit address by hand.
 	EventGetOwnAddr uint8 = 36
+	// EventChannelOpen opens a raw, unreplicated, bidirectional byte pipe
+	// to another peer -- the persistent-session counterpart to
+	// EventExecute's one-shot notification (see that event's doc comment
+	// for the shared self-contained-signature/permit-gate design this
+	// reuses). Value is the target peer id, as a plain string. The daemon
+	// dials pkg/daemon.ChannelProtocolID, performs a signed handshake
+	// (identical in spirit to EncodeExecuteNotification), and on
+	// acceptance registers a live channel session backed by that raw
+	// libp2p stream. Local-only, like EventLeave/EventRecruit -- a remote
+	// (ClientProtocolID) caller has no legitimate use for opening a
+	// channel on this node's behalf. Response Value is a freshly minted
+	// opaque channelID string: a pure local handle this node chose for
+	// its own bookkeeping, never something the two peers need to agree on
+	// -- see EventChannelSend/Poll/Close, which all take it as their own
+	// Value.
+	EventChannelOpen uint8 = 37
+	// EventChannelSend writes one chunk of raw bytes to an already-open
+	// channel (see EventChannelOpen). Value is
+	// EncodeChannelSendPayload(channelID, chunk) -- chunk is written
+	// directly to the underlying stream with no further framing, exactly
+	// the netcat-style raw pipe this feature implements: chunk boundaries
+	// carry no meaning to the receiving side. Local-only.
+	EventChannelSend uint8 = 38
+	// EventChannelPoll drains one buffered chunk received on channelID
+	// (Value, a plain string) since the last poll, oldest first -- the
+	// same "no push transport, a local caller loops this" design
+	// EventPollExecute already uses, for the identical reason (see that
+	// event's doc comment). Response Value is
+	// EncodeChannelPollResponse(status, chunk): status is
+	// ChannelPollNoData (nothing new yet, channel still open),
+	// ChannelPollChunk (chunk follows), or ChannelPollClosed (the channel
+	// has ended -- returned idempotently on every poll after any
+	// already-buffered chunks are drained, never an error, so a caller
+	// that stops polling immediately after seeing it once doesn't miss
+	// anything). Local-only.
+	EventChannelPoll uint8 = 39
+	// EventChannelListen drains one pending *incoming* channel this node
+	// has accepted (via another peer's EventChannelOpen dialing in) but
+	// that no local caller has claimed yet -- the callee-side counterpart
+	// to EventChannelOpen, polled in a loop the same way EventChannelPoll
+	// is. Value is ignored on the request. Response Value is empty if
+	// none are pending, else EncodeChannelAccept(channelID,
+	// remotePeerID): channelID is this node's own local handle (as usual,
+	// not shared with the remote peer -- see EventChannelOpen), from here
+	// on usable with EventChannelSend/Poll/Close exactly like one this
+	// node opened itself. Local-only.
+	EventChannelListen uint8 = 40
+	// EventChannelClose ends channelID (Value, a plain string) outright:
+	// closes the underlying stream (unblocking any goroutine blocked
+	// reading it, same as every other stream in this package's
+	// `defer s.Close()` idiom) and forgets the session. Not required for
+	// a channel that already reached ChannelPollClosed naturally, but
+	// frees it immediately instead of waiting for the daemon's own
+	// opportunistic idle reap. Local-only.
+	EventChannelClose uint8 = 41
+	// EventChannelCloseWrite half-closes channelID's (Value, a plain
+	// string) *outgoing* direction only -- "I have nothing more to send,"
+	// not "end the channel outright" (that's EventChannelClose). Mirrors
+	// a raw TCP connection's shutdown(SHUT_WR): the remote peer's own
+	// pumpChannelReads sees this as a normal EOF on its read side and
+	// reports ChannelPollClosed once its own already-buffered chunks are
+	// drained, exactly like a full close would look from that side, but
+	// this node can still receive (and its own operator can still be
+	// mid-typing when the other side finishes first). A caller whose
+	// local input source (e.g. os.Stdin) reaches a clean EOF should send
+	// this rather than EventChannelClose, then keep polling for whatever
+	// the remote peer still has left to send -- only calling
+	// EventChannelClose once its own receiving side has also finished
+	// (ChannelPollClosed) or it's giving up early (e.g. SIGINT). Value is
+	// ignored on the response.
+	EventChannelCloseWrite uint8 = 42
 	// EventError is response-only: Value carries a UTF-8 error message,
 	// ID echoes the failed request's ID. Not part of the fields the
 	// protocol was specified with -- added because the struct has no
@@ -421,6 +492,18 @@ func EventName(e uint8) string {
 		return "recruit"
 	case EventGetOwnAddr:
 		return "get_own_addr"
+	case EventChannelOpen:
+		return "channel_open"
+	case EventChannelSend:
+		return "channel_send"
+	case EventChannelPoll:
+		return "channel_poll"
+	case EventChannelListen:
+		return "channel_listen"
+	case EventChannelClose:
+		return "channel_close"
+	case EventChannelCloseWrite:
+		return "channel_close_write"
 	case EventError:
 		return "error"
 	default:
@@ -507,6 +590,18 @@ func EventFromName(name string) (uint8, bool) {
 		return EventRecruit, true
 	case "get_own_addr":
 		return EventGetOwnAddr, true
+	case "channel_open":
+		return EventChannelOpen, true
+	case "channel_send":
+		return EventChannelSend, true
+	case "channel_poll":
+		return EventChannelPoll, true
+	case "channel_listen":
+		return EventChannelListen, true
+	case "channel_close":
+		return EventChannelClose, true
+	case "channel_close_write":
+		return EventChannelCloseWrite, true
 	case "error":
 		return EventError, true
 	default:

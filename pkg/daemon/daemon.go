@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"context"
 	cryptorand "crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -122,6 +123,20 @@ const ClientProtocolID = protocol.ID("/libp2p-kv-raft/client/1.0.0")
 // receiving Node's executeInbox for a local caller to drain via
 // EventPollExecute.
 const ExecuteProtocolID = protocol.ID("/libp2p-kv-raft/execute/1.0.0")
+
+// ChannelProtocolID is the libp2p protocol one raft node uses to open a
+// raw, persistent, bidirectional byte pipe directly to another --
+// EventChannelOpen/Send/Poll/Listen/Close's transport, see those events'
+// doc comments in pkg/shmevent. Unlike every other protocol in this file
+// (including ExecuteProtocolID), the stream is never a single
+// write-then-EOF request/response: after a short signed handshake
+// (mirroring ExecuteProtocolID's self-contained-signature design) the
+// stream stays open indefinitely and carries raw, unframed bytes in both
+// directions -- see writeFramed/readFramed (used only for the handshake)
+// and handleChannelStream's own doc comment for the full wire design.
+// Like ExecuteProtocolID, the traffic it carries never touches raft or
+// the store.
+const ChannelProtocolID = protocol.ID("/libp2p-kv-raft/channel/1.0.0")
 
 // ExecInviteRedeemProtocolID is the libp2p protocol a redeeming peer's own
 // daemon dials directly at a shmevent.KindExecInvite invite's sourceAddr to
@@ -336,6 +351,20 @@ type Config struct {
 	// remote caller needs.
 	RequirePermitForLog bool
 
+	// RequirePermitForChannel gates an *incoming* EventChannelOpen
+	// (handleChannelStream) exactly the same way RequirePermitForExecute
+	// gates handleExecuteStream -- same signature-verified-sender check,
+	// same isClusterMember/isPermittedPeer exemption (a cluster member
+	// never needs a separate permit), same confirmed KindPermitPeer
+	// record reused as-is, no new permit kind. Defaults to false:
+	// today's behavior, where handleChannelStream accepts a channel from
+	// any peer whose self-contained handshake signature checks out,
+	// regardless of standing. Independent of every other RequirePermitFor*
+	// flag. Turning this on requires RequestPermit+ConfirmPermit (kind
+	// "peer") for every non-member peer that needs to open a channel to
+	// this node.
+	RequirePermitForChannel bool
+
 	// RequireConfirmForJoin gates JoinProtocolID/ForwardJoinProtocolID
 	// (handleJoinStream/handleForwardJoinStream) on a two-stage
 	// request/confirm workflow instead of today's immediate
@@ -392,6 +421,11 @@ type Node struct {
 	// that's lost on restart is an accepted trade-off, not a correctness
 	// bug (see executeInbox's own doc comment).
 	executeInbox *executeInbox
+
+	// channels holds every live/pending EventChannelOpen session (see
+	// that event's doc comment) -- the persistent-session counterpart to
+	// executeInbox, same "purely in-memory, never persisted" trade-off.
+	channels *channelTable
 
 	// joinRequestMu/joinRequestToken hold this node's own single
 	// outstanding join-request ticket (see EventJoinRequestCreate) --
@@ -470,6 +504,268 @@ func (q *executeInbox) pop() (executeNotification, bool) {
 	n := q.entries[0]
 	q.entries = q.entries[1:]
 	return n, true
+}
+
+// channelIDLength is how many random bytes back a freshly minted
+// channelID (see EventChannelOpen's doc comment) -- hex-encoded, so the
+// wire string is twice this. Purely a local handle, never compared
+// across the two peers of a channel, so collision resistance only needs
+// to hold within one node's own lifetime.
+const channelIDLength = 8
+
+func newChannelID() (string, error) {
+	buf := make([]byte, channelIDLength)
+	if _, err := cryptorand.Read(buf); err != nil {
+		return "", fmt.Errorf("channel: generate id: %w", err)
+	}
+	return hex.EncodeToString(buf), nil
+}
+
+// maxPendingChannels/maxChannelInbox bound channelTable's pending queue
+// and each channelSession's own buffered-chunk inbox, same reasoning as
+// maxExecuteInbox: a queue nothing ever drains would otherwise grow
+// without limit as long as a peer keeps dialing in or sending. Past
+// these many entries, the oldest is dropped/evicted to make room for the
+// newest. Vars, not consts, so tests can lower them rather than sending
+// thousands of real chunks (mirrors pkg/kvfsm.maxSystemListEntries' own
+// reason for being a var).
+var (
+	maxPendingChannels = 64
+	maxChannelInbox    = 4096
+)
+
+// channelIdleTimeout/channelPendingTimeout bound how long, respectively,
+// an established-but-unpolled channel session and an accepted-but-
+// unclaimed incoming channel are kept alive with nobody attending to
+// them. Reaped opportunistically -- see channelTable.reap -- rather than
+// by a dedicated background goroutine, since nothing else in this
+// package ties a goroutine to a Node's lifetime beyond raft's own
+// internals, and tests construct many short-lived Nodes with no
+// goroutine-cancellation plumbing in shutdown to hook into. Vars, not
+// consts, so tests can shrink them instead of actually waiting minutes.
+var (
+	channelIdleTimeout    = 5 * time.Minute
+	channelPendingTimeout = 2 * time.Minute
+)
+
+// channelReadBufferSize is pumpChannelReads' read buffer size -- large
+// enough for reasonable throughput, small enough that one channel can't
+// hog an outsized chunk of memory per Read call.
+const channelReadBufferSize = 4096
+
+// channelSession is one live EventChannelOpen/handleChannelStream
+// session (see ChannelProtocolID's doc comment for the wire design):
+// stream carries raw, unframed bytes in both directions once the initial
+// handshake completes. inbox buffers bytes pumpChannelReads has already
+// read off stream, for EventChannelPoll to drain -- entries are raw
+// chunks straight off the wire, chunk boundaries carry no meaning.
+// writeMu serializes EventChannelSend's writes to stream (in practice
+// only ever this node's own local caller, one at a time, but this
+// matches executeInbox's own defensive-mutex style rather than relying
+// on that).
+type channelSession struct {
+	stream       network.Stream
+	remotePeerID string
+	writeMu      sync.Mutex
+
+	mu           sync.Mutex
+	inbox        [][]byte
+	closed       bool
+	closeReason  string
+	lastActivity time.Time
+}
+
+func newChannelSession(stream network.Stream, remotePeerID string) *channelSession {
+	return &channelSession{stream: stream, remotePeerID: remotePeerID, lastActivity: time.Now()}
+}
+
+func (s *channelSession) touch() {
+	s.mu.Lock()
+	s.lastActivity = time.Now()
+	s.mu.Unlock()
+}
+
+func (s *channelSession) idleFor(now time.Time) time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return now.Sub(s.lastActivity)
+}
+
+// pushChunk records one chunk pumpChannelReads just read off the wire.
+func (s *channelSession) pushChunk(chunk []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastActivity = time.Now()
+	if len(s.inbox) >= maxChannelInbox {
+		s.inbox = s.inbox[1:]
+	}
+	s.inbox = append(s.inbox, chunk)
+}
+
+// popChunk returns the oldest buffered chunk, if any -- EventChannelPoll's
+// read side.
+func (s *channelSession) popChunk() ([]byte, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.inbox) == 0 {
+		return nil, false
+	}
+	c := s.inbox[0]
+	s.inbox = s.inbox[1:]
+	return c, true
+}
+
+// markClosed records that stream has ended (pumpChannelReads hit EOF or
+// an error) -- reason is empty for a clean EOF. Idempotent: only the
+// first call's reason sticks, matching "the channel ended once, however
+// that happened."
+func (s *channelSession) markClosed(reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.closed {
+		s.closed = true
+		s.closeReason = reason
+	}
+}
+
+// status reports whether the channel has ended and why.
+func (s *channelSession) status() (closed bool, reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed, s.closeReason
+}
+
+// write sends chunk directly over stream, with no framing -- see
+// ChannelProtocolID's doc comment.
+func (s *channelSession) write(chunk []byte) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if _, err := s.stream.Write(chunk); err != nil {
+		return err
+	}
+	s.touch()
+	return nil
+}
+
+// closeWrite half-closes stream's outgoing direction only -- see
+// EventChannelCloseWrite's doc comment.
+func (s *channelSession) closeWrite() error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return s.stream.CloseWrite()
+}
+
+// pendingChannel is one entry in channelTable's pending queue -- a
+// channel handleChannelStream has already accepted and registered, but
+// that no local caller has claimed via EventChannelListen yet.
+type pendingChannel struct {
+	channelID string
+	addedAt   time.Time
+}
+
+// channelTable holds every live channelSession for this Node, keyed by
+// its local channelID, plus the FIFO of pending (accepted-but-unclaimed)
+// incoming ones -- the persistent-session counterpart to executeInbox,
+// guarded by one mutex for the same "simplest thing that could work"
+// reason executeInbox's own doc comment gives.
+type channelTable struct {
+	mu       sync.Mutex
+	sessions map[string]*channelSession
+	pending  []pendingChannel
+}
+
+func newChannelTable() *channelTable {
+	return &channelTable{sessions: make(map[string]*channelSession)}
+}
+
+func (t *channelTable) register(channelID string, s *channelSession) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.sessions[channelID] = s
+}
+
+func (t *channelTable) get(channelID string) (*channelSession, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	s, ok := t.sessions[channelID]
+	return s, ok
+}
+
+// remove deletes channelID's session (if any) from both the live table
+// and the pending queue -- CloseChannel's implementation, and the
+// reaper's. Does not itself close the underlying stream; callers that
+// need that do it before calling remove.
+func (t *channelTable) remove(channelID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.sessions, channelID)
+	for i, p := range t.pending {
+		if p.channelID == channelID {
+			t.pending = append(t.pending[:i], t.pending[i+1:]...)
+			break
+		}
+	}
+}
+
+// pushPending enqueues channelID for a future EventChannelListen to
+// claim, evicting (closing) the oldest still-pending entry first if
+// already at maxPendingChannels.
+func (t *channelTable) pushPending(channelID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.pending) >= maxPendingChannels {
+		stale := t.pending[0]
+		t.pending = t.pending[1:]
+		if s, ok := t.sessions[stale.channelID]; ok {
+			s.stream.Close()
+			delete(t.sessions, stale.channelID)
+		}
+	}
+	t.pending = append(t.pending, pendingChannel{channelID: channelID, addedAt: time.Now()})
+}
+
+// popPending claims the oldest pending entry, if any -- EventChannelListen's
+// implementation.
+func (t *channelTable) popPending() (string, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.pending) == 0 {
+		return "", false
+	}
+	id := t.pending[0].channelID
+	t.pending = t.pending[1:]
+	return id, true
+}
+
+// reap closes and evicts sessions idle past channelIdleTimeout, and
+// unclaimed pending entries older than channelPendingTimeout -- see
+// channelIdleTimeout's own doc comment for why this runs opportunistically
+// (called at the top of dispatchChannelPoll/dispatchChannelListen/
+// handleChannelStream) rather than from a dedicated background goroutine.
+func (t *channelTable) reap() {
+	now := time.Now()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	stillPending := make([]pendingChannel, 0, len(t.pending))
+	for _, p := range t.pending {
+		if now.Sub(p.addedAt) > channelPendingTimeout {
+			if s, ok := t.sessions[p.channelID]; ok {
+				s.stream.Close()
+				delete(t.sessions, p.channelID)
+			}
+			continue
+		}
+		stillPending = append(stillPending, p)
+	}
+	t.pending = stillPending
+
+	for id, s := range t.sessions {
+		if s.idleFor(now) > channelIdleTimeout {
+			s.stream.Close()
+			delete(t.sessions, id)
+		}
+	}
 }
 
 // setJoinRequestToken replaces this node's outstanding join-request ticket
@@ -620,6 +916,7 @@ func start(cfg Config) (*Node, error) {
 		ed25519Pub:   ed25519Pub,
 		registry:     shmevent.NewRegistry(),
 		executeInbox: newExecuteInbox(),
+		channels:     newChannelTable(),
 		logStore:     logStore,
 		snapStore:    snapStore,
 	}
@@ -627,6 +924,7 @@ func start(cfg Config) (*Node, error) {
 	h.SetStreamHandler(ForwardProtocolID, n.handleForwardSetStream)
 	h.SetStreamHandler(ForwardConfirmProtocolID, n.handleForwardConfirmStream)
 	h.SetStreamHandler(ExecuteProtocolID, n.handleExecuteStream)
+	h.SetStreamHandler(ChannelProtocolID, n.handleChannelStream)
 	h.SetStreamHandler(ForwardJoinProtocolID, n.handleForwardJoinStream)
 	h.SetStreamHandler(ForwardLeaveProtocolID, n.handleForwardLeaveStream)
 	h.SetStreamHandler(ClientProtocolID, n.handleClientStream)
@@ -1228,6 +1526,11 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 	if caller.remotePeer != "" && m.EventType == shmevent.EventRecruit {
 		return errorMsg(m.ID, fmt.Errorf("recruit: not available to a remote caller -- this node dials the ticket's device on its own operator's behalf, never on an arbitrary remote caller's"))
 	}
+	if caller.remotePeer != "" && (m.EventType == shmevent.EventChannelOpen || m.EventType == shmevent.EventChannelSend ||
+		m.EventType == shmevent.EventChannelPoll || m.EventType == shmevent.EventChannelListen || m.EventType == shmevent.EventChannelClose ||
+		m.EventType == shmevent.EventChannelCloseWrite) {
+		return errorMsg(m.ID, fmt.Errorf("%s: not available to a remote caller -- only this node's own operator drives its own channel sessions", shmevent.EventName(m.EventType)))
+	}
 	if shmevent.RequiresSignature(m.EventType) {
 		if err := shmevent.Verify(caller.verifyPub, m, crc, sig); err != nil {
 			return errorMsg(m.ID, err)
@@ -1731,6 +2034,49 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 			return errorMsg(m.ID, err)
 		}
 		return shmevent.Msg{EventType: shmevent.EventPollExecute, Value: value, ID: m.ID}
+
+	case shmevent.EventChannelOpen:
+		channelID, err := n.dispatchChannelOpen(ctx, string(m.Value))
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventChannelOpen, ID: m.ID, Value: []byte(channelID)}
+
+	case shmevent.EventChannelSend:
+		channelID, chunk, err := shmevent.DecodeChannelSendPayload(m.Value)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		if err := n.dispatchChannelSend(string(channelID), chunk); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventChannelSend, ID: m.ID}
+
+	case shmevent.EventChannelPoll:
+		resp, err := n.dispatchChannelPoll(string(m.Value))
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventChannelPoll, ID: m.ID, Value: resp}
+
+	case shmevent.EventChannelListen:
+		resp, err := n.dispatchChannelListen()
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventChannelListen, ID: m.ID, Value: resp}
+
+	case shmevent.EventChannelClose:
+		if err := n.dispatchChannelClose(string(m.Value)); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventChannelClose, ID: m.ID}
+
+	case shmevent.EventChannelCloseWrite:
+		if err := n.dispatchChannelCloseWrite(string(m.Value)); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventChannelCloseWrite, ID: m.ID}
 
 	case shmevent.EventGetField:
 		key := m.Value
@@ -3502,6 +3848,322 @@ func (n *Node) handleExecuteStream(s network.Stream) {
 		return
 	}
 	n.executeInbox.push(senderPeerID, payload)
+}
+
+// maxFramedMessage caps readFramed's length prefix before allocating, so
+// a peer can't claim an enormous length and force a large allocation.
+const maxFramedMessage = 4096
+
+// writeFramed writes a 4-byte big-endian length prefix followed by buf --
+// ChannelProtocolID's handshake framing (see that protocol's doc
+// comment): every other stream protocol in this file writes one message
+// and half-closes, relying on EOF to mark the end (see e.g.
+// handleExecuteStream's io.ReadAll), which doesn't work here since the
+// stream must stay open afterward carrying raw, unframed bytes.
+func writeFramed(s network.Stream, buf []byte) error {
+	var lenBuf [4]byte
+	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(buf)))
+	if _, err := s.Write(lenBuf[:]); err != nil {
+		return err
+	}
+	_, err := s.Write(buf)
+	return err
+}
+
+// readFramed is the inverse of writeFramed.
+func readFramed(s network.Stream) ([]byte, error) {
+	var lenBuf [4]byte
+	if _, err := io.ReadFull(s, lenBuf[:]); err != nil {
+		return nil, err
+	}
+	msgLen := binary.BigEndian.Uint32(lenBuf[:])
+	if msgLen > maxFramedMessage {
+		return nil, fmt.Errorf("channel: framed message too large: %d bytes", msgLen)
+	}
+	buf := make([]byte, msgLen)
+	if _, err := io.ReadFull(s, buf); err != nil {
+		return nil, err
+	}
+	return buf, nil
+}
+
+// channelAccepted/channelRejected are ChannelProtocolID's second
+// handshake frame's status byte -- see writeChannelAccept.
+const (
+	channelAccepted byte = 0x00
+	channelRejected byte = 0x01
+)
+
+// writeChannelAccept writes ChannelProtocolID's accept/reject frame: a
+// single status byte, then -- only when rejected -- a UTF-8 reason, with
+// no length prefix (safe, since the accepter always closes the stream
+// immediately after writing a rejection, and an acceptance is never
+// followed by anything readChannelAccept would need to distinguish from
+// a reason).
+func writeChannelAccept(s network.Stream, accepted bool, reason string) error {
+	if accepted {
+		_, err := s.Write([]byte{channelAccepted})
+		return err
+	}
+	buf := append([]byte{channelRejected}, []byte(reason)...)
+	_, err := s.Write(buf)
+	return err
+}
+
+// readChannelAccept is the inverse of writeChannelAccept.
+func readChannelAccept(s network.Stream) (status byte, reason string, err error) {
+	var statusBuf [1]byte
+	if _, err := io.ReadFull(s, statusBuf[:]); err != nil {
+		return 0, "", err
+	}
+	if statusBuf[0] != channelRejected {
+		return statusBuf[0], "", nil
+	}
+	reasonBuf, err := io.ReadAll(s)
+	if err != nil {
+		return 0, "", err
+	}
+	return statusBuf[0], string(reasonBuf), nil
+}
+
+// dispatchChannelOpen implements EventChannelOpen: dials destPeerIDStr
+// over ChannelProtocolID, performs the signed handshake (mirroring
+// sendExecute/handleExecuteStream's self-contained-signature design --
+// see ChannelProtocolID's doc comment), and on acceptance registers a
+// new live channelSession backed by the resulting stream and starts its
+// read-pump goroutine. Returns the freshly minted local channelID.
+func (n *Node) dispatchChannelOpen(ctx context.Context, destPeerIDStr string) (string, error) {
+	dest, err := peer.Decode(destPeerIDStr)
+	if err != nil {
+		return "", fmt.Errorf("channel: invalid destination peer id %q: %w", destPeerIDStr, err)
+	}
+	s, err := n.host.NewStream(ctx, dest, ChannelProtocolID)
+	if err != nil {
+		return "", fmt.Errorf("channel: open stream to %s: %w", dest, err)
+	}
+
+	notifValue, err := shmevent.EncodeExecuteNotification([]byte(n.peerID), nil)
+	if err != nil {
+		s.Close()
+		return "", fmt.Errorf("channel: encode handshake: %w", err)
+	}
+	buf, err := shmevent.Encode(shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: notifValue}, n.ed25519Priv)
+	if err != nil {
+		s.Close()
+		return "", fmt.Errorf("channel: encode handshake message: %w", err)
+	}
+	if err := writeFramed(s, buf); err != nil {
+		s.Close()
+		return "", fmt.Errorf("channel: write handshake to %s: %w", dest, err)
+	}
+
+	status, reason, err := readChannelAccept(s)
+	if err != nil {
+		s.Close()
+		return "", fmt.Errorf("channel: read accept from %s: %w", dest, err)
+	}
+	if status != channelAccepted {
+		s.Close()
+		return "", fmt.Errorf("channel: %s rejected: %s", dest, reason)
+	}
+
+	channelID, err := newChannelID()
+	if err != nil {
+		s.Close()
+		return "", err
+	}
+	sess := newChannelSession(s, dest.String())
+	n.channels.register(channelID, sess)
+	go n.pumpChannelReads(sess)
+	return channelID, nil
+}
+
+// handleChannelStream is the receiving side of ChannelProtocolID: reads
+// the framed handshake (readFramed), verifies its self-contained
+// signature against the claimed sender peer id exactly the way
+// handleExecuteStream does (never s.Conn().RemotePeer() -- see that
+// function's doc comment for why), applies Config.RequirePermitForChannel's
+// gate, writes back a one-byte accept/reject (writeChannelAccept), and on
+// acceptance registers a new channelSession, pushes it onto the pending
+// queue for EventChannelListen to claim, and starts its read-pump
+// goroutine. Unlike every other stream handler in this file, it does NOT
+// close the stream on the accept path -- the stream is handed off to the
+// channelSession and stays open for that channel's whole lifetime, closed
+// later by EventChannelClose or channelTable.reap.
+func (n *Node) handleChannelStream(s network.Stream) {
+	buf, err := readFramed(s)
+	if err != nil {
+		s.Close()
+		return
+	}
+	m, crc, sig, err := shmevent.Decode(buf)
+	if err != nil {
+		s.Close()
+		return
+	}
+	if m.EventType != shmevent.EventChannelOpen {
+		s.Close()
+		return
+	}
+	senderPeerID, _, err := shmevent.DecodeExecuteNotification(m.Value)
+	if err != nil {
+		s.Close()
+		return
+	}
+	senderPeer, err := peer.Decode(string(senderPeerID))
+	if err != nil {
+		s.Close()
+		return
+	}
+	senderPub, err := senderPeer.ExtractPublicKey()
+	if err != nil {
+		s.Close()
+		return
+	}
+	rawSenderPub, err := senderPub.Raw()
+	if err != nil {
+		s.Close()
+		return
+	}
+	if err := shmevent.Verify(shmevent.PublicKey(rawSenderPub), m, crc, sig); err != nil {
+		s.Close()
+		return
+	}
+	// Authorization, checked only now that senderPeer is proven authentic
+	// -- see handleExecuteStream's identically-shaped comment for why
+	// this must be the verified senderPeer, never s.Conn().RemotePeer(),
+	// and Config.RequirePermitForChannel's own doc comment.
+	if n.cfg.RequirePermitForChannel && !n.isClusterMember(senderPeer) && !n.isPermittedPeer(senderPeer) {
+		writeChannelAccept(s, false, fmt.Sprintf("%s is not a raft cluster member or a permitted peer", senderPeer))
+		s.Close()
+		return
+	}
+
+	n.channels.reap()
+	channelID, err := newChannelID()
+	if err != nil {
+		writeChannelAccept(s, false, "internal error minting channel id")
+		s.Close()
+		return
+	}
+	if err := writeChannelAccept(s, true, ""); err != nil {
+		s.Close()
+		return
+	}
+	sess := newChannelSession(s, senderPeer.String())
+	n.channels.register(channelID, sess)
+	n.channels.pushPending(channelID)
+	go n.pumpChannelReads(sess)
+}
+
+// pumpChannelReads is sess's background read pump: copies bytes off
+// sess.stream into sess's inbox for EventChannelPoll to drain, until the
+// stream errors/EOFs (the peer closed their write side, or the
+// connection dropped) or this node's own EventChannelClose/the reaper
+// closes it first -- either way, stream.Read then returns and this marks
+// the session closed rather than removing it outright, so any chunks
+// already buffered are still readable via a final poll.
+func (n *Node) pumpChannelReads(sess *channelSession) {
+	buf := make([]byte, channelReadBufferSize)
+	for {
+		nRead, err := sess.stream.Read(buf)
+		if nRead > 0 {
+			chunk := make([]byte, nRead)
+			copy(chunk, buf[:nRead])
+			sess.pushChunk(chunk)
+		}
+		if err != nil {
+			reason := ""
+			if err != io.EOF {
+				reason = err.Error()
+			}
+			sess.markClosed(reason)
+			return
+		}
+	}
+}
+
+// dispatchChannelSend implements EventChannelSend: writes chunk directly
+// to channelID's stream, with no framing. Deliberately does not
+// pre-check channelSession.status()'s closed flag: that flag tracks
+// whether *this node's own read side* has hit EOF (the peer half-closed
+// or fully closed their outgoing direction -- see EventChannelCloseWrite),
+// which says nothing about whether writing is still valid -- half-close
+// is directional. If this node's own outgoing direction has itself been
+// closed (EventChannelCloseWrite, or a full EventChannelClose), the
+// underlying stream.Write below fails on its own, which is what actually
+// gates this.
+func (n *Node) dispatchChannelSend(channelID string, chunk []byte) error {
+	sess, ok := n.channels.get(channelID)
+	if !ok {
+		return fmt.Errorf("channel: no such channel %q", channelID)
+	}
+	return sess.write(chunk)
+}
+
+// dispatchChannelPoll implements EventChannelPoll: pops the oldest
+// buffered chunk from channelID's inbox, if any -- see
+// shmevent.EncodeChannelPollResponse's status byte for the three-way
+// result.
+func (n *Node) dispatchChannelPoll(channelID string) ([]byte, error) {
+	n.channels.reap()
+	sess, ok := n.channels.get(channelID)
+	if !ok {
+		return nil, fmt.Errorf("channel: no such channel %q", channelID)
+	}
+	if chunk, ok := sess.popChunk(); ok {
+		return shmevent.EncodeChannelPollResponse(shmevent.ChannelPollChunk, chunk), nil
+	}
+	if closed, _ := sess.status(); closed {
+		return shmevent.EncodeChannelPollResponse(shmevent.ChannelPollClosed, nil), nil
+	}
+	return shmevent.EncodeChannelPollResponse(shmevent.ChannelPollNoData, nil), nil
+}
+
+// dispatchChannelListen implements EventChannelListen: claims the oldest
+// pending (accepted-but-unclaimed) incoming channel, if any. A nil,nil
+// return (empty response) means none pending yet -- a local caller polls
+// this in a loop, exactly EventPollExecute's documented convention.
+func (n *Node) dispatchChannelListen() ([]byte, error) {
+	n.channels.reap()
+	channelID, ok := n.channels.popPending()
+	if !ok {
+		return nil, nil
+	}
+	sess, ok := n.channels.get(channelID)
+	if !ok {
+		// Reaped between popPending and here -- vanishingly unlikely, but
+		// safe to treat the same as "nothing pending yet."
+		return nil, nil
+	}
+	return shmevent.EncodeChannelAccept(channelID, sess.remotePeerID)
+}
+
+// dispatchChannelClose implements EventChannelClose: closes channelID's
+// stream (unblocking pumpChannelReads' blocking Read, same idiom as
+// every other stream's defer s.Close() in this file) and forgets the
+// session. Idempotent -- closing an already-gone or never-existed
+// channelID is not an error.
+func (n *Node) dispatchChannelClose(channelID string) error {
+	sess, ok := n.channels.get(channelID)
+	if !ok {
+		return nil
+	}
+	sess.stream.Close()
+	n.channels.remove(channelID)
+	return nil
+}
+
+// dispatchChannelCloseWrite implements EventChannelCloseWrite: half-closes
+// channelID's outgoing direction only, leaving the session registered
+// (still pollable/receivable) -- see that event's doc comment. A no-op,
+// not an error, if channelID is already gone.
+func (n *Node) dispatchChannelCloseWrite(channelID string) error {
+	sess, ok := n.channels.get(channelID)
+	if !ok {
+		return nil
+	}
+	return sess.closeWrite()
 }
 
 // handleClientStream is the leader-or-follower-side handler for

@@ -597,6 +597,151 @@ func (s *Session) PollExecute(ctx context.Context) (senderPeerID string, payload
 	return string(sender), notifPayload, true, nil
 }
 
+// OpenChannel opens a raw, persistent, bidirectional byte pipe from the
+// session's own node to destPeerID -- see shmevent.EventChannelOpen's doc
+// comment. Unlike Execute, this needs no prior EventSetKey registration:
+// EventChannelOpen's Value is just destPeerID directly. Returns the
+// freshly minted channelID every subsequent SendChannel/PollChannel/
+// CloseChannel call on this channel needs.
+func (s *Session) OpenChannel(ctx context.Context, destPeerID string) (channelID string, err error) {
+	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
+		EventType: shmevent.EventChannelOpen,
+		Value:     []byte(destPeerID),
+		ID:        newID(),
+	}, s.priv)
+	if err != nil {
+		return "", fmt.Errorf("shmclient: open_channel: %w", err)
+	}
+	if resp.EventType == shmevent.EventError {
+		return "", fmt.Errorf("shmclient: open_channel: %s", resp.Value)
+	}
+	return string(resp.Value), nil
+}
+
+// SendChannel writes one chunk of raw bytes to channelID -- see
+// shmevent.EventChannelSend's doc comment.
+func (s *Session) SendChannel(ctx context.Context, channelID string, chunk []byte) error {
+	payload, err := shmevent.EncodeChannelSendPayload(channelID, chunk)
+	if err != nil {
+		return fmt.Errorf("shmclient: send_channel: %w", err)
+	}
+	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
+		EventType: shmevent.EventChannelSend,
+		Value:     payload,
+		ID:        newID(),
+	}, s.priv)
+	if err != nil {
+		return fmt.Errorf("shmclient: send_channel: %w", err)
+	}
+	if resp.EventType == shmevent.EventError {
+		return fmt.Errorf("shmclient: send_channel: %s", resp.Value)
+	}
+	return nil
+}
+
+// ChannelStatus is PollChannel's three-way result -- see
+// shmevent.EventChannelPoll's doc comment.
+type ChannelStatus byte
+
+const (
+	ChannelNoData ChannelStatus = iota
+	ChannelChunk
+	ChannelClosed
+)
+
+// PollChannel drains one buffered chunk received on channelID since the
+// last poll, if any -- see shmevent.EventChannelPoll's doc comment. A
+// caller loops this (with a short sleep between empty polls) to observe
+// a channel's incoming traffic, the same "no push transport" shape
+// PollExecute already uses.
+func (s *Session) PollChannel(ctx context.Context, channelID string) (chunk []byte, status ChannelStatus, err error) {
+	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
+		EventType: shmevent.EventChannelPoll,
+		Value:     []byte(channelID),
+		ID:        newID(),
+	}, s.priv)
+	if err != nil {
+		return nil, ChannelNoData, fmt.Errorf("shmclient: poll_channel: %w", err)
+	}
+	if resp.EventType == shmevent.EventError {
+		return nil, ChannelNoData, fmt.Errorf("shmclient: poll_channel: %s", resp.Value)
+	}
+	wireStatus, wireChunk, err := shmevent.DecodeChannelPollResponse(resp.Value)
+	if err != nil {
+		return nil, ChannelNoData, fmt.Errorf("shmclient: poll_channel: decode: %w", err)
+	}
+	switch wireStatus {
+	case shmevent.ChannelPollChunk:
+		return wireChunk, ChannelChunk, nil
+	case shmevent.ChannelPollClosed:
+		return nil, ChannelClosed, nil
+	default:
+		return nil, ChannelNoData, nil
+	}
+}
+
+// ListenChannel claims one pending incoming channel -- see
+// shmevent.EventChannelListen's doc comment. ok is false if none are
+// currently pending; a caller loops this the same way PollChannel loops
+// for incoming traffic.
+func (s *Session) ListenChannel(ctx context.Context) (channelID, remotePeerID string, ok bool, err error) {
+	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
+		EventType: shmevent.EventChannelListen,
+		ID:        newID(),
+	}, s.priv)
+	if err != nil {
+		return "", "", false, fmt.Errorf("shmclient: listen_channel: %w", err)
+	}
+	if resp.EventType == shmevent.EventError {
+		return "", "", false, fmt.Errorf("shmclient: listen_channel: %s", resp.Value)
+	}
+	if len(resp.Value) == 0 {
+		return "", "", false, nil
+	}
+	id, peer, err := shmevent.DecodeChannelAccept(resp.Value)
+	if err != nil {
+		return "", "", false, fmt.Errorf("shmclient: listen_channel: decode: %w", err)
+	}
+	return string(id), string(peer), true, nil
+}
+
+// CloseChannel ends channelID outright -- see shmevent.EventChannelClose's
+// doc comment.
+func (s *Session) CloseChannel(ctx context.Context, channelID string) error {
+	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
+		EventType: shmevent.EventChannelClose,
+		Value:     []byte(channelID),
+		ID:        newID(),
+	}, s.priv)
+	if err != nil {
+		return fmt.Errorf("shmclient: close_channel: %w", err)
+	}
+	if resp.EventType == shmevent.EventError {
+		return fmt.Errorf("shmclient: close_channel: %s", resp.Value)
+	}
+	return nil
+}
+
+// CloseChannelWrite half-closes channelID's outgoing direction only --
+// see shmevent.EventChannelCloseWrite's doc comment. A caller whose own
+// local input source (e.g. os.Stdin) reaches a clean EOF should call
+// this rather than CloseChannel, then keep polling for whatever the
+// remote peer still has left to send.
+func (s *Session) CloseChannelWrite(ctx context.Context, channelID string) error {
+	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
+		EventType: shmevent.EventChannelCloseWrite,
+		Value:     []byte(channelID),
+		ID:        newID(),
+	}, s.priv)
+	if err != nil {
+		return fmt.Errorf("shmclient: close_channel_write: %w", err)
+	}
+	if resp.EventType == shmevent.EventError {
+		return fmt.Errorf("shmclient: close_channel_write: %s", resp.Value)
+	}
+	return nil
+}
+
 // ListRange returns the first stored key/value pair with start <= key <=
 // end (both inclusive), or ok=false if none remain in that range -- see
 // shmevent.EventListRange's doc comment. A caller wanting every match
@@ -871,6 +1016,56 @@ func PollExecute(ctx context.Context, peerID string) (senderPeerID string, paylo
 		return "", nil, false, err
 	}
 	return s.PollExecute(ctx)
+}
+
+// OpenChannel is the one-shot convenience wrapper around
+// Open+Session.OpenChannel.
+func OpenChannel(ctx context.Context, peerID, destPeerID string) (channelID string, err error) {
+	s, err := Open(ctx, peerID)
+	if err != nil {
+		return "", err
+	}
+	return s.OpenChannel(ctx, destPeerID)
+}
+
+// SendChannel is the one-shot convenience wrapper around
+// Open+Session.SendChannel.
+func SendChannel(ctx context.Context, peerID, channelID string, chunk []byte) error {
+	s, err := Open(ctx, peerID)
+	if err != nil {
+		return err
+	}
+	return s.SendChannel(ctx, channelID, chunk)
+}
+
+// PollChannel is the one-shot convenience wrapper around
+// Open+Session.PollChannel.
+func PollChannel(ctx context.Context, peerID, channelID string) (chunk []byte, status ChannelStatus, err error) {
+	s, err := Open(ctx, peerID)
+	if err != nil {
+		return nil, ChannelNoData, err
+	}
+	return s.PollChannel(ctx, channelID)
+}
+
+// ListenChannel is the one-shot convenience wrapper around
+// Open+Session.ListenChannel.
+func ListenChannel(ctx context.Context, peerID string) (channelID, remotePeerID string, ok bool, err error) {
+	s, err := Open(ctx, peerID)
+	if err != nil {
+		return "", "", false, err
+	}
+	return s.ListenChannel(ctx)
+}
+
+// CloseChannel is the one-shot convenience wrapper around
+// Open+Session.CloseChannel.
+func CloseChannel(ctx context.Context, peerID, channelID string) error {
+	s, err := Open(ctx, peerID)
+	if err != nil {
+		return err
+	}
+	return s.CloseChannel(ctx, channelID)
 }
 
 // ListRange is the one-shot convenience wrapper around

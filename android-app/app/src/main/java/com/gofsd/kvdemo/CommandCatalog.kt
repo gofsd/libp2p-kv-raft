@@ -1,5 +1,6 @@
 package com.gofsd.kvdemo
 
+import kvmobile.ChannelCallback
 import kvmobile.CommandDispatchHandler
 import kvmobile.ExecuteCallback
 import kvmobile.Kvmobile
@@ -124,6 +125,42 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
         "Watching -- notifications appear below as they arrive"
     }
     add("Execute", "StopWatchExecute", emptyList()) { Kvmobile.stopWatchExecute(); ok() }
+
+    // Channel -- a raw, persistent, bidirectional byte pipe to another
+    // peer, the mobile port of desktop's `mage openchannel`/`listenchannel`
+    // (see README's "Raw Channel" section and
+    // mobile/kvmobile/channel.go's own doc comments for the wire design).
+    // Data here is base64 in both directions: a phone keyboard isn't
+    // literal stdin/stdout the way desktop's piping is, and gomobile's
+    // string-only boundary can't carry arbitrary binary safely otherwise
+    // (see ChannelCallback.OnData's doc comment). OpenChannel/ListenChannel
+    // both start a standing delivery loop, same "outlives this screen,
+    // logged to the shared Activity Log" treatment WatchExecute/
+    // WatchCommandLog already get.
+    val channelCallback = { label: String ->
+        object : ChannelCallback {
+            override fun onData(chunk: String) {
+                appendLog("$label data (base64): $chunk")
+            }
+            override fun onClosed(reason: String) {
+                appendLog(if (reason.isEmpty()) "$label closed" else "$label closed: $reason")
+            }
+        }
+    }
+    add("Channel", "OpenChannel", listOf("peerID")) { a ->
+        val channelID = Kvmobile.openChannel(a[0], channelCallback("Channel[to ${a[0]}]"))
+        "Opened $channelID -- incoming data appears below as it arrives"
+    }
+    add("Channel", "ListenChannel", emptyList()) {
+        val resultJson = Kvmobile.listenChannel(channelCallback("Channel[incoming]"))
+        "Claimed $resultJson -- incoming data appears below as it arrives"
+    }
+    add("Channel", "StopListenChannel", emptyList()) { Kvmobile.stopListenChannel(); ok() }
+    add("Channel", "SendChannelData", listOf("channelID", "chunk (base64)")) { a ->
+        Kvmobile.sendChannelData(a[0], a[1]); ok()
+    }
+    add("Channel", "CloseChannel", listOf("channelID")) { a -> Kvmobile.closeChannel(a[0]); ok() }
+    add("Channel", "StopChannel", listOf("channelID")) { a -> Kvmobile.stopChannel(a[0]); ok() }
 
     // pkg/logrecord read/write.
     add("Log records", "LogAppend", listOf("kind", "unitID", "fieldsJSON", "narrative")) { a ->

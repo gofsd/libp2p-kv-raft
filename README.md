@@ -434,6 +434,21 @@ one-shot manual drain; `WatchExecute` is the continuous-delivery alternative, e.
 live "command execution log" view fed by whichever peer is running the command (see that peer's
 own `LogAppend` calls, watched for and re-fetched via `LogQuery` on each poke).
 
+`OpenChannel(peerID, cb)`/`ListenChannel(cb)`/`StopListenChannel()`/`SendChannelData(channelID,
+base64Chunk)`/`CloseChannel(channelID)`/`StopChannel(channelID)` (`channel.go`) are the mobile
+port of desktop's `mage openchannel`/`listenchannel` raw byte pipe (see "Raw Channel" above).
+`OpenChannel`/`ListenChannel` each start a background pump loop delivering incoming data to
+`cb.OnData`/`cb.OnClosed` (the `ChannelCallback` reverse-binding interface, mirroring
+`ExecuteCallback`) until `StopChannel` is called or the channel ends on its own — same
+outlives-this-screen, "replace, don't stack" treatment `WatchExecute`/
+`RunCommandDispatcher` already get, including recovering a panicking callback so one misbehaving
+Kotlin implementation can't take the loop down. Chunks cross the gomobile boundary base64-encoded
+in both directions (`SendChannelData`'s argument, `OnData`'s callback argument) since gomobile's
+string-only boundary can't otherwise carry arbitrary binary safely, unlike `ExecuteCallback`'s raw
+UTF-8 string. `StopChannel`/`StopListenChannel` are local-only, like `StopWatchExecute` — they
+stop this device's own delivery loop without necessarily ending the channel/pending listen
+itself; `CloseChannel` ends the session server-side too.
+
 `kvmobile` also has a `Group`/`Command` catalog layer (`catalog.go`), built on the same
 daemon-enforced ACL records desktop's `mage`/`pkg/kvctl` catalog uses (`KindGroup`/`KindCommand`/
 `KindGroupCommand`/`KindPeerGroup` — see "Group/command ACL" above for the full model; this is not
@@ -729,6 +744,61 @@ invite, so a legitimate peer can still redeem it afterward; only a successful, p
 burns the ticket. On success, `redeemexecinvite` prints a new instance id — track it with
 `getcommandrequest`/`querycommandlog`/`latestcommandlog` against the target's own node, same as any
 other `submitcommand` dispatch.
+
+## Raw Channel
+
+`EventExecute` above is a one-shot, fire-and-forget notification. `EventChannelOpen` (and its
+`Send`/`Poll`/`Listen`/`Close`/`CloseWrite` counterparts, `pkg/daemon.ChannelProtocolID`) is its
+persistent-session sibling: a raw, unreplicated, bidirectional byte pipe directly to another
+peer's process, with no framing of its own — chunk boundaries carry no meaning on the wire, the
+same netcat-style contract a raw TCP pipe has. Traffic on it never touches raft or the store,
+exactly like Execute's.
+
+```bash
+mage listenchannel                    # (on the receiving peer) blocks until a channel arrives
+mage openchannel <peerID>             # (on the opening peer) dials in
+```
+
+Both commands pump the current process's own stdin/stdout through the channel once one is open:
+`openchannel`/`listenchannel` are effectively `nc`/`socat` for this cluster's own transport —
+everything piped into stdin on one side comes out stdout on the other, and vice versa, until
+stdin reaches EOF, the remote side closes the channel, or the process gets SIGINT/SIGTERM. For
+example, to send a file from one peer to another:
+
+```bash
+mage listenchannel > received.bin              # receiver
+mage openchannel <receiverPeerID> < send.bin    # sender
+```
+
+The two directions are independent: reaching stdin EOF only half-closes this side's *outgoing*
+direction (`EventChannelCloseWrite`, mirroring a TCP `shutdown(SHUT_WR)`) so that whatever the
+remote peer still has in flight the other way is never cut short — `pkg/kvctl.pumpChannel` waits
+for both directions to finish (or an explicit signal) before sending `EventChannelClose` to end
+the session outright. Under the hood, opening a channel dials `ChannelProtocolID` and performs a
+short signed handshake (the same self-contained-signature recipe `EventExecute` uses —
+`shmevent.EncodeExecuteNotification`, verified against the *claimed* sender peer id's own
+extracted pubkey, never the raw connection) before the stream is handed off to carry raw bytes
+directly; `EventChannelPoll`/`EventChannelListen` are local, no-push polls a caller loops (same
+shape as `EventPollExecute`), since shmring IPC has no server-push mechanism of its own.
+
+Like Execute, a channel is local-only to operate (`EventChannelOpen/Send/Poll/Listen/Close/
+CloseWrite` all reject a remote/`ClientProtocolID` caller — only this node's own operator drives
+its own sessions) but gated on the *receiving* side by `-require-permit-for-channel`
+(`Config.RequirePermitForChannel`, default off): with it set, `handleChannelStream` only accepts
+an incoming channel from a current raft voter/learner or a peer holding the same confirmed
+`KindPermitPeer` record `-require-permit-for-execute`/relay reuse — no new permit kind. An idle
+established channel and an accepted-but-unclaimed incoming one are both reaped opportunistically
+after a timeout (`channelIdleTimeout`/`channelPendingTimeout` in `pkg/daemon`) rather than by a
+dedicated background goroutine, the same "simplest thing that could work" reasoning
+`executeInbox` already uses.
+
+`kvmobile`'s `OpenChannel(peerID, cb)`/`ListenChannel(cb)`/`StopListenChannel()`/
+`SendChannelData(channelID, base64Chunk)`/`CloseChannel(channelID)`/`StopChannel(channelID)` are
+the Android port — see the "`kvmobile`" section below. Data crosses the gomobile boundary as
+base64 rather than raw bytes in both directions (a phone has no literal stdin/stdout the way
+desktop piping does, and gomobile's string-only boundary can't otherwise carry arbitrary binary
+safely); `ChannelCallback.OnData(chunk)`/`OnClosed(reason)` is the reverse-binding interface
+Kotlin implements to receive incoming data, mirroring `ExecuteCallback`'s shape.
 
 ## Vendored dependency patch
 

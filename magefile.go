@@ -1446,6 +1446,27 @@ func PollExecute() error {
 	return nil
 }
 
+// Openchannel opens a raw, bidirectional byte pipe from the current node
+// to peerID and pumps this process's own stdin/stdout through it --
+// everything read from stdin is sent to peerID, everything peerID sends
+// back is written to stdout -- until stdin reaches EOF, the remote side
+// closes the channel, or this process receives SIGINT/SIGTERM. See
+// shmevent.EventChannelOpen's doc comment for the wire design, and
+// Listenchannel for the callee-side counterpart.
+// Usage: mage openchannel <peerID>
+func Openchannel(peerID string) error {
+	return kvctl.OpenChannel(peerID)
+}
+
+// Listenchannel blocks until another peer opens an incoming channel to
+// the current node, then pumps stdin/stdout through it exactly like
+// Openchannel does. Prints the remote peer id to stderr once claimed;
+// stdout is reserved for the raw pipe itself.
+// Usage: mage listenchannel
+func Listenchannel() error {
+	return kvctl.ListenChannel()
+}
+
 // LogAppend appends a pkg/logrecord.Record of the given kind/unit,
 // timestamped now and attributed to the current node -- see
 // pkg/logrecord's doc comment for the generic key/record scheme this
