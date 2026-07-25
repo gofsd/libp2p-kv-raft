@@ -178,16 +178,39 @@ func AllPeerGroupsPrefix() []byte {
 	return SystemKey(KindPeerGroup, catalogStatusPlaceholder, nil)
 }
 
-// EncodeGroupPayload packs a Group record's name into its value -- id is
-// already the record's key (GroupKey), so only name needs to travel in
-// the payload.
-func EncodeGroupPayload(name string) []byte {
-	return []byte(name)
+// groupPublicByte/groupPrivateByte are EncodeGroupPayload's leading public
+// flag -- a fixed-size byte, same idiom this package already uses for
+// RoleVoter/RoleLearner and SuffrageVoter/SuffrageLearner, rather than a
+// raw literal 0/1 at each call site.
+const (
+	groupPrivateByte byte = 0x00
+	groupPublicByte  byte = 0x01
+)
+
+// EncodeGroupPayload packs a Group record's public flag and name into its
+// value: public first (fixed size, so it needs no length prefix), then
+// name verbatim (last field, no prefix needed) -- id is already the
+// record's key (GroupKey), so only these two need to travel in the
+// payload. public being true is what lets isPermittedForCommand admit any
+// peer to commands linked to this group with no PeerGroup membership
+// record at all -- see that function's doc comment.
+func EncodeGroupPayload(name string, public bool) []byte {
+	buf := make([]byte, 1+len(name))
+	if public {
+		buf[0] = groupPublicByte
+	} else {
+		buf[0] = groupPrivateByte
+	}
+	copy(buf[1:], name)
+	return buf
 }
 
 // DecodeGroupPayload is the inverse of EncodeGroupPayload.
-func DecodeGroupPayload(payload []byte) (name string) {
-	return string(payload)
+func DecodeGroupPayload(payload []byte) (name string, public bool, err error) {
+	if len(payload) < 1 {
+		return "", false, fmt.Errorf("shmevent: group payload must be at least 1 byte, got %d", len(payload))
+	}
+	return string(payload[1:]), payload[0] == groupPublicByte, nil
 }
 
 // EncodeCommandPayload packs a Command record's name and peerID (where it
@@ -222,38 +245,44 @@ func DecodeCommandPayload(payload []byte) (name string, peerID []byte, err error
 	return name, payload[off:], nil
 }
 
-// EncodeGroupPutPayload packs id and name into a single EventGroupPut
-// Msg.Value: a 2-byte big-endian length prefix for id, then id, then name
-// verbatim (last field, no prefix needed). Distinct from
-// EncodeGroupPayload (the record's stored *value*, keyed separately by
-// GroupKey(id)): this is the wire-level request, which needs both fields
-// in one message.
-func EncodeGroupPutPayload(id, name string) ([]byte, error) {
+// EncodeGroupPutPayload packs public, id, and name into a single
+// EventGroupPut Msg.Value: public first (fixed size), then a 2-byte
+// big-endian length prefix for id, then id, then name verbatim (last
+// field, no prefix needed). Distinct from EncodeGroupPayload (the record's
+// stored *value*, keyed separately by GroupKey(id)): this is the
+// wire-level request, which needs all three fields in one message.
+func EncodeGroupPutPayload(id, name string, public bool) ([]byte, error) {
 	if len(id) > 0xFFFF {
 		return nil, fmt.Errorf("shmevent: group put id too long: %d bytes", len(id))
 	}
-	buf := make([]byte, 2+len(id)+len(name))
-	buf[0] = byte(len(id) >> 8)
-	buf[1] = byte(len(id))
-	off := 2
+	buf := make([]byte, 1+2+len(id)+len(name))
+	if public {
+		buf[0] = groupPublicByte
+	} else {
+		buf[0] = groupPrivateByte
+	}
+	buf[1] = byte(len(id) >> 8)
+	buf[2] = byte(len(id))
+	off := 3
 	off += copy(buf[off:], id)
 	copy(buf[off:], name)
 	return buf, nil
 }
 
 // DecodeGroupPutPayload is the inverse of EncodeGroupPutPayload.
-func DecodeGroupPutPayload(payload []byte) (id, name string, err error) {
-	if len(payload) < 2 {
-		return "", "", fmt.Errorf("shmevent: group put payload too short: %d bytes", len(payload))
+func DecodeGroupPutPayload(payload []byte) (id, name string, public bool, err error) {
+	if len(payload) < 3 {
+		return "", "", false, fmt.Errorf("shmevent: group put payload too short: %d bytes", len(payload))
 	}
-	idLen := int(payload[0])<<8 | int(payload[1])
-	off := 2
+	public = payload[0] == groupPublicByte
+	idLen := int(payload[1])<<8 | int(payload[2])
+	off := 3
 	if off+idLen > len(payload) {
-		return "", "", fmt.Errorf("shmevent: group put id length %d exceeds payload size %d", idLen, len(payload))
+		return "", "", false, fmt.Errorf("shmevent: group put id length %d exceeds payload size %d", idLen, len(payload))
 	}
 	id = string(payload[off : off+idLen])
 	off += idLen
-	return id, string(payload[off:]), nil
+	return id, string(payload[off:]), public, nil
 }
 
 // EncodeCommandPutPayload packs id, name, and peerID into a single

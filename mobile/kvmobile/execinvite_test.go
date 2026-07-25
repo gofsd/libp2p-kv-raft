@@ -36,7 +36,7 @@ func setUpExecInviteOnLeader(t *testing.T, leaderPeerID, commandID, groupID, red
 	if err != nil {
 		t.Fatalf("shmclient.Open(leader): %v", err)
 	}
-	if err := sess.PutGroup(ctx, groupID, groupID); err != nil {
+	if err := sess.PutGroup(ctx, groupID, groupID, false); err != nil {
 		t.Fatalf("PutGroup: %v", err)
 	}
 	if err := sess.PutCommand(ctx, commandID, commandID, []byte(leaderPeerID)); err != nil {

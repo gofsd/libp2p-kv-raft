@@ -273,10 +273,12 @@ func (s *Session) catalogCall(ctx context.Context, eventType uint8, payload []by
 
 // PutGroup creates or updates (single-step, no separate create/update --
 // see shmevent.KindGroup's doc comment) the Group record id=name on the
-// session's node. Only a current raft voter may do this -- see
-// shmevent.EventGroupPut's doc comment.
-func (s *Session) PutGroup(ctx context.Context, id, name string) error {
-	payload, err := shmevent.EncodeGroupPutPayload(id, name)
+// session's node, granting unconditional access to its linked commands to
+// any peer if public is true (see pkg/kvfsm's isPermittedForCommand). Only
+// a current raft voter may do this -- see shmevent.EventGroupPut's doc
+// comment.
+func (s *Session) PutGroup(ctx context.Context, id, name string, public bool) error {
+	payload, err := shmevent.EncodeGroupPutPayload(id, name, public)
 	if err != nil {
 		return fmt.Errorf("shmclient: group_put: %w", err)
 	}
@@ -744,12 +746,12 @@ func RevokePermit(ctx context.Context, peerID string, kind byte, targetPeerID []
 }
 
 // PutGroup is the one-shot convenience wrapper around Open+Session.PutGroup.
-func PutGroup(ctx context.Context, peerID, id, name string) error {
+func PutGroup(ctx context.Context, peerID, id, name string, public bool) error {
 	s, err := Open(ctx, peerID)
 	if err != nil {
 		return err
 	}
-	return s.PutGroup(ctx, id, name)
+	return s.PutGroup(ctx, id, name, public)
 }
 
 // DeleteGroup is the one-shot convenience wrapper around

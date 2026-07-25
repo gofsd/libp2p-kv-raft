@@ -17,7 +17,7 @@ import (
 // replaced by real GroupCommand/PeerGroup records.
 func grantCommandAccess(t *testing.T, commandID, groupID, peerID string) {
 	t.Helper()
-	if err := CreateGroup(groupID, groupID); err != nil {
+	if err := CreateGroup(groupID, groupID, false); err != nil {
 		t.Fatalf("CreateGroup: %v", err)
 	}
 	if err := AddCommandToGroup(commandID, groupID); err != nil {

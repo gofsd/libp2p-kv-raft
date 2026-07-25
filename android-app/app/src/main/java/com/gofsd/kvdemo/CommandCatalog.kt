@@ -26,6 +26,9 @@ private fun ok() = "OK"
 private fun String.toLongOrThrow(field: String): Long =
     toLongOrNull() ?: throw IllegalArgumentException("$field must be a whole number")
 
+private fun String.toBooleanOrThrow(field: String): Boolean =
+    toBooleanStrictOrNull() ?: throw IllegalArgumentException("$field must be \"true\" or \"false\"")
+
 /**
  * The full kvmobile API surface, one CommandSpec per exported function --
  * mirrors README.md's "Follower on Android" section (and, through it,
@@ -133,8 +136,12 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
 
     // Group/Command ACL catalog -- daemon-enforced records, see README's
     // "Group/command ACL" section for the model this mirrors exactly.
-    add("Group", "CreateGroup", listOf("id", "name")) { a -> Kvmobile.createGroup(a[0], a[1]); ok() }
-    add("Group", "UpdateGroup", listOf("id", "name")) { a -> Kvmobile.updateGroup(a[0], a[1]); ok() }
+    add("Group", "CreateGroup", listOf("id", "name", "public (true|false)")) { a ->
+        Kvmobile.createGroup(a[0], a[1], a[2].toBooleanOrThrow("public")); ok()
+    }
+    add("Group", "UpdateGroup", listOf("id", "name", "public (true|false)")) { a ->
+        Kvmobile.updateGroup(a[0], a[1], a[2].toBooleanOrThrow("public")); ok()
+    }
     add("Group", "DeleteGroup", listOf("id")) { a -> Kvmobile.deleteGroup(a[0]); ok() }
     add("Group", "GetGroup", listOf("id")) { a -> Kvmobile.getGroup(a[0]) }
     add("Group", "ListGroups", emptyList()) { Kvmobile.listGroups() }

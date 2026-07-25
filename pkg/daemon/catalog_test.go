@@ -84,7 +84,7 @@ func TestGroupPutRequiresVoter(t *testing.T) {
 		return n.handleShmEvent(ctx, decoded, crc, sig, n.localCaller())
 	}
 
-	putPayload, err := shmevent.EncodeGroupPutPayload("grp-voter-only", "Voter Only Group")
+	putPayload, err := shmevent.EncodeGroupPutPayload("grp-voter-only", "Voter Only Group", false)
 	if err != nil {
 		t.Fatalf("EncodeGroupPutPayload: %v", err)
 	}
@@ -109,8 +109,10 @@ func TestGroupPutRequiresVoter(t *testing.T) {
 	groupKey := shmevent.GroupKey([]byte("grp-voter-only"))
 	for {
 		getResp := call(leader, shmevent.Msg{EventType: shmevent.EventGetField, Value: groupKey, ID: 3})
-		if getResp.EventType != shmevent.EventError && shmevent.DecodeGroupPayload(getResp.Value) == "Voter Only Group" {
-			break
+		if getResp.EventType != shmevent.EventError {
+			if name, _, err := shmevent.DecodeGroupPayload(getResp.Value); err == nil && name == "Voter Only Group" {
+				break
+			}
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("group put by voter never became readable: last resp=%+v", getResp)

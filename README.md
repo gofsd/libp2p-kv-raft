@@ -648,14 +648,18 @@ the per-kind permit check completely rather than just returning nothing.
 
 Desktop's `mage`/`pkg/kvctl` and `mobile/kvmobile` (see `kvmobile`'s own section above for its
 gomobile-bound equivalents) share one group-based command ACL, not two separate implementations:
-`Group` (`id`, `name`) and `Command` (`id`, `name`, `peer_id` — the command's `TargetPeerID`) are
-direct records, and `GroupCommand`/`PeerGroup` are many-to-many relations linking commands to
-groups and peers to groups
-respectively. All four are real `shmevent.SystemKeyPrefix` records (`KindGroup`/`KindCommand`/
-`KindGroupCommand`/`KindPeerGroup`), daemon-enforced rather than a client-side convention:
+`Group` (`id`, `name`, `public`) and `Command` (`id`, `name`, `peer_id` — the command's
+`TargetPeerID`) are direct records, and `GroupCommand`/`PeerGroup` are many-to-many relations
+linking commands to groups and peers to groups respectively. All four are real
+`shmevent.SystemKeyPrefix` records (`KindGroup`/`KindCommand`/`KindGroupCommand`/`KindPeerGroup`),
+daemon-enforced rather than a client-side convention. Only `id` is a storage key and therefore
+inherently unique on its own; `name` gets its own explicit enforcement (`kvfsm`'s
+`checkGroupNameUnique`, evaluated inside the same raft `Apply` call that performs the write, not by
+a separate pre-check — a client-side check ahead of time would leave a TOCTOU race between two
+concurrent `creategroup` calls picking the same name) so two different groups can never share one:
 
 ```bash
-mage creategroup g1 infantry            # or 'updategroup g1 <newname>' -- same call, Put semantics
+mage creategroup g1 infantry false      # or 'updategroup g1 <newname> <public>' -- same call, Put semantics
 mage createcommand c1 resupply <peerID> # Command's peer_id is who may execute it
 mage addcommandtogroup c1 g1            # link: c1 is now reachable through group g1
 mage addpeertogroup <peerID> g1         # membership: peerID may now submit/execute c1
@@ -667,11 +671,19 @@ CRUD (`creategroup`/`updategroup`/`deletegroup`, `createcommand`/`updatecommand`
 single-step and voter-gated — any one current raft voter may write any of these four kinds
 unilaterally, no second-voter confirmation, reusing the same voter-gated forwarding path
 `confirmpermit`/`confirmlogpermit` use (`handleForwardConfirmStream`, widened to also accept a
-plain `kvfsm.OpSet`) rather than a separate pending→confirmed dance. `submitcommand`'s
+plain `kvfsm.OpSet`) rather than a separate pending→confirmed dance — except `creategroup`/
+`updategroup`, which additionally fail outright if `name` is already used by a *different* `id`
+(re-Putting a group under its own `id`, unchanged or renamed to something not otherwise taken, is
+never a collision with itself). `submitcommand`'s
 authorization check (`isPermittedForCommand`) is a real join over the two relation kinds: it walks
-the command's linked groups (`GroupCommand`, capped small — see below) and point-checks the
-submitting peer's membership (`PeerGroup`) in each, refusing if the command isn't linked to any
-group the caller belongs to.
+the command's linked groups (`GroupCommand`, capped small — see below) and, for each one, either
+finds that group's own `public` flag set — in which case *any* peer is permitted, no `PeerGroup`
+record needed at all — or falls back to point-checking the submitting peer's membership
+(`PeerGroup`) in it, refusing if the command isn't linked to any group the caller belongs to or
+that is marked public. A group's `public` flag is meant for commands any peer should be able to
+trigger regardless of standing (e.g. a status/health check) — `addpeertogroup`/
+`removepeerfromgroup` become no-ops for authorization purposes on a public group, since membership
+was never what was granting access.
 
 Deleting a `Group` or `Command` cascades in the same raft `Apply` (`pkg/kvfsm.OpCascadeDelete`): every
 `GroupCommand`/`PeerGroup` record referencing the deleted id is removed alongside it, so a delete

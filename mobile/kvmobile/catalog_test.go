@@ -47,7 +47,7 @@ func TestGroupCRUD(t *testing.T) {
 	}
 
 	const groupID = "grp-1"
-	if err := CreateGroup(groupID, "Group One"); err != nil {
+	if err := CreateGroup(groupID, "Group One", false); err != nil {
 		t.Fatalf("CreateGroup: %v", err)
 	}
 
@@ -59,7 +59,7 @@ func TestGroupCRUD(t *testing.T) {
 		}
 		return true, json.Unmarshal([]byte(out), &g)
 	})
-	if g.ID != groupID || g.Name != "Group One" {
+	if g.ID != groupID || g.Name != "Group One" || g.Public {
 		t.Fatalf("GetGroup = %+v, unexpected", g)
 	}
 
@@ -80,7 +80,7 @@ func TestGroupCRUD(t *testing.T) {
 		return false, nil
 	})
 
-	if err := UpdateGroup(groupID, "Renamed"); err != nil {
+	if err := UpdateGroup(groupID, "Renamed", true); err != nil {
 		t.Fatalf("UpdateGroup: %v", err)
 	}
 	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
@@ -91,7 +91,7 @@ func TestGroupCRUD(t *testing.T) {
 		if err := json.Unmarshal([]byte(out), &g); err != nil {
 			return false, err
 		}
-		return g.Name == "Renamed", nil
+		return g.Name == "Renamed" && g.Public, nil
 	})
 
 	if err := DeleteGroup(groupID); err != nil {
@@ -228,7 +228,7 @@ func TestGroupCommandAndPeerGroupLinkingGatesSubmitCommand(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	if err := CreateGroup("grp-1", "Group One"); err != nil {
+	if err := CreateGroup("grp-1", "Group One", false); err != nil {
 		t.Fatalf("CreateGroup: %v", err)
 	}
 	if err := CreateCommand("cmd-1", "Reboot", followerID); err != nil {
@@ -297,6 +297,81 @@ func TestGroupCommandAndPeerGroupLinkingGatesSubmitCommand(t *testing.T) {
 	})
 }
 
+// TestPublicGroupExemptsPeerGroupMembership proves a Group created with
+// public=true grants SubmitCommand access to a command linked to it with
+// no AddPeerToGroup membership at all. Mirrors pkg/kvctl/catalog_test.go's
+// identical test.
+func TestPublicGroupExemptsPeerGroupMembership(t *testing.T) {
+	leaderAddr := spawnTestLeader(t, t.TempDir())
+
+	prevLeader := leaderMultiaddr
+	leaderMultiaddr = leaderAddr
+	t.Cleanup(func() {
+		leaderMultiaddr = prevLeader
+		if err := Stop(); err != nil {
+			t.Errorf("Stop: %v", err)
+		}
+	})
+	followerID, err := Start(t.TempDir())
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if err := CreateGroup("grp-public", "Public Group", true); err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	if err := CreateCommand("cmd-public", "Reboot", followerID); err != nil {
+		t.Fatalf("CreateCommand: %v", err)
+	}
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		_, err := GetCommand("cmd-public")
+		return err == nil, nil
+	})
+
+	if _, err := SubmitCommand("cmd-public", ""); err == nil {
+		t.Fatalf("SubmitCommand before any group link: want error, got none")
+	}
+
+	if err := AddCommandToGroup("cmd-public", "grp-public"); err != nil {
+		t.Fatalf("AddCommandToGroup: %v", err)
+	}
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		out, err := ListGroupsForCommand("cmd-public")
+		if err != nil {
+			return false, err
+		}
+		var groupIDs []string
+		if err := json.Unmarshal([]byte(out), &groupIDs); err != nil {
+			return false, err
+		}
+		return len(groupIDs) == 1 && groupIDs[0] == "grp-public", nil
+	})
+
+	// Linked to a public group -- permitted with no AddPeerToGroup call at
+	// all, unlike the private-group case above.
+	var instanceID string
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		var err error
+		instanceID, err = SubmitCommand("cmd-public", `{"delay":5}`)
+		return err == nil, err
+	})
+	if instanceID == "" {
+		t.Fatalf("SubmitCommand returned empty instance id")
+	}
+
+	out, err := ListGroupsForPeer(followerID)
+	if err != nil {
+		t.Fatalf("ListGroupsForPeer: %v", err)
+	}
+	var groupIDs []string
+	if err := json.Unmarshal([]byte(out), &groupIDs); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(groupIDs) != 0 {
+		t.Fatalf("followerID unexpectedly has PeerGroup membership: %v", groupIDs)
+	}
+}
+
 // TestDeleteGroupCascadesToRelations checks DeleteGroup removes every
 // GroupCommand/PeerGroup record referencing it (pkg/kvfsm.OpCascadeDelete),
 // so a peer that was only permitted via the deleted group loses access,
@@ -317,7 +392,7 @@ func TestDeleteGroupCascadesToRelations(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	if err := CreateGroup("grp-cascade", "Cascade Group"); err != nil {
+	if err := CreateGroup("grp-cascade", "Cascade Group", false); err != nil {
 		t.Fatalf("CreateGroup: %v", err)
 	}
 	if err := CreateCommand("cmd-cascade", "Reboot", followerID); err != nil {
@@ -387,7 +462,7 @@ func TestDeleteCommandCascadesToGroupCommand(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	if err := CreateGroup("grp-cmd-cascade", "Group"); err != nil {
+	if err := CreateGroup("grp-cmd-cascade", "Group", false); err != nil {
 		t.Fatalf("CreateGroup: %v", err)
 	}
 	if err := CreateCommand("cmd-to-delete", "Reboot", followerID); err != nil {
@@ -480,10 +555,10 @@ func TestCatalogIDValidation(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	if err := CreateGroup("", "x"); err == nil {
+	if err := CreateGroup("", "x", false); err == nil {
 		t.Fatalf("CreateGroup with empty id: want error, got none")
 	}
-	if err := CreateGroup(strings.Repeat("a", maxCatalogIDLen+1), "x"); err == nil {
+	if err := CreateGroup(strings.Repeat("a", maxCatalogIDLen+1), "x", false); err == nil {
 		t.Fatalf("CreateGroup with oversized id: want error, got none")
 	}
 }

@@ -37,7 +37,7 @@ func TestRunCommandDispatcherHandlesRequestExactlyOnce(t *testing.T) {
 	const groupID = "grp-dispatcher"
 	const commandID = "cmd-dispatcher"
 
-	if err := kvctl.PutGroup(groupID, "Dispatcher Group"); err != nil {
+	if err := kvctl.PutGroup(groupID, "Dispatcher Group", false); err != nil {
 		t.Fatalf("PutGroup: %v", err)
 	}
 	if err := kvctl.PutCommand(commandID, "Echo", leaderID); err != nil {
@@ -140,7 +140,7 @@ func TestRunCommandDispatcherRecoversHandlerPanic(t *testing.T) {
 	const groupID = "grp-dispatcher-panic"
 	const commandID = "cmd-dispatcher-panic"
 
-	if err := kvctl.PutGroup(groupID, "Dispatcher Panic Group"); err != nil {
+	if err := kvctl.PutGroup(groupID, "Dispatcher Panic Group", false); err != nil {
 		t.Fatalf("PutGroup: %v", err)
 	}
 	if err := kvctl.PutCommand(commandID, "Panics", leaderID); err != nil {

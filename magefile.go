@@ -1404,12 +1404,19 @@ func parseTimeWindow(since, until, limit string) (start, end time.Time, n int, e
 	return start, end, n, nil
 }
 
-// PutGroup implements `mage creategroup`/`mage updategroup <id> <name>`:
-// creates or updates the Group record id=name -- see
-// pkg/kvctl.PutGroup's doc comment. Only a current raft voter may do this.
-// Usage: mage creategroup <id> <name>
-func CreateGroup(id, name string) error {
-	if err := kvctl.PutGroup(id, name); err != nil {
+// PutGroup implements `mage creategroup`/`mage updategroup <id> <name>
+// <public>`: creates or updates the Group record id=name -- see
+// pkg/kvctl.PutGroup's doc comment. public ("true"/"false") grants
+// unconditional access to this group's linked commands to any peer, with
+// no addpeertogroup membership needed, if true. Only a current raft voter
+// may do this.
+// Usage: mage creategroup <id> <name> <public: true|false>
+func CreateGroup(id, name, public string) error {
+	pub, err := strconv.ParseBool(public)
+	if err != nil {
+		return fmt.Errorf("public: %w", err)
+	}
+	if err := kvctl.PutGroup(id, name, pub); err != nil {
 		return err
 	}
 	fmt.Println("✅ group put")
@@ -1419,9 +1426,9 @@ func CreateGroup(id, name string) error {
 // UpdateGroup is CreateGroup's alias for the "this id already exists"
 // case -- see pkg/kvctl.PutGroup's doc comment (single-step Put, no
 // separate create/update distinction).
-// Usage: mage updategroup <id> <name>
-func UpdateGroup(id, name string) error {
-	return CreateGroup(id, name)
+// Usage: mage updategroup <id> <name> <public: true|false>
+func UpdateGroup(id, name, public string) error {
+	return CreateGroup(id, name, public)
 }
 
 // DeleteGroup implements `mage deletegroup <id>`: deletes Group id,

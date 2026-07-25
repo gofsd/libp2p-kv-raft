@@ -59,7 +59,7 @@ func startExecInviteNode(t *testing.T, tmpDir, name string, cfg Config) *Node {
 func setUpExecInviteACL(t *testing.T, ctx context.Context, leader *Node, commandID, groupID, redeemerPeerID string) {
 	t.Helper()
 
-	groupPayload, err := shmevent.EncodeGroupPutPayload(groupID, groupID)
+	groupPayload, err := shmevent.EncodeGroupPutPayload(groupID, groupID, false)
 	if err != nil {
 		t.Fatalf("EncodeGroupPutPayload: %v", err)
 	}

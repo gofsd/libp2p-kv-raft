@@ -1444,12 +1444,12 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
 			}
 		}
-		id, name, err := shmevent.DecodeGroupPutPayload(m.Value)
+		id, name, public, err := shmevent.DecodeGroupPutPayload(m.Value)
 		if err != nil {
 			return errorMsg(m.ID, err)
 		}
 		key := shmevent.GroupKey([]byte(id))
-		if err := n.handleConfirmForward(ctx, kvfsm.OpSet, key, shmevent.EncodeGroupPayload(name), true); err != nil {
+		if err := n.handleConfirmForward(ctx, kvfsm.OpSet, key, shmevent.EncodeGroupPayload(name, public), true); err != nil {
 			return errorMsg(m.ID, err)
 		}
 		return shmevent.Msg{EventType: shmevent.EventGroupPut, ID: m.ID}

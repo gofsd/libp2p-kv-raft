@@ -77,6 +77,47 @@ func checkSystemListCap(s *store.Store, key []byte) error {
 	return nil
 }
 
+// checkGroupNameUnique enforces that no two Group records share the same
+// name, called from Apply's OpSet case whenever key is a GroupKey --
+// before the write actually lands, so the check-and-write is atomic
+// within this one raft log entry. Doing this check in pkg/daemon/
+// pkg/kvctl before ever reaching Apply would leave a TOCTOU race between
+// two concurrent PutGroup calls choosing the same name; evaluating it here
+// instead relies on the same guarantee OpConfirm/OpConsumeInvite's own
+// read-then-write comments already lean on -- Apply runs exactly once, in
+// raft log order, so there's nothing to race against. A group being
+// overwritten under its own id (a rename, or a plain re-Put) is not a
+// collision with itself -- only a genuinely different id already holding
+// that name is rejected. At most systemListLimits' own KindGroup cap (200)
+// records exist at once, so a full scan here is cheap and bounded.
+func checkGroupNameUnique(s *store.Store, key, value []byte) error {
+	if len(key) < systemKeyPrefixLen || key[0] != shmevent.SystemKeyPrefix || key[1] != shmevent.KindGroup {
+		return nil
+	}
+	name, _, err := shmevent.DecodeGroupPayload(value)
+	if err != nil {
+		return err
+	}
+	lo, hi := shmevent.GroupKeyBounds()
+	matches, err := s.ScanRange(lo, hi, 0)
+	if err != nil {
+		return err
+	}
+	for _, m := range matches {
+		if bytes.Equal(m.Key, key) {
+			continue
+		}
+		existingName, _, err := shmevent.DecodeGroupPayload(m.Value)
+		if err != nil {
+			return err
+		}
+		if existingName == name {
+			return fmt.Errorf("kvfsm: group name %q already used by another group", name)
+		}
+	}
+	return nil
+}
+
 // OpType identifies the kind of mutation carried by a raft log entry.
 type OpType uint8
 
@@ -215,6 +256,9 @@ func (f *FSM) Apply(l *raft.Log) any {
 		if err := checkSystemListCap(f.Store, key); err != nil {
 			return ApplyResult{Err: err}
 		}
+		if err := checkGroupNameUnique(f.Store, key, value); err != nil {
+			return ApplyResult{Err: err}
+		}
 		return ApplyResult{Err: f.Store.Set(key, value)}
 	case OpDel:
 		return ApplyResult{Err: f.Store.Delete(key)}
@@ -283,18 +327,22 @@ func (f *FSM) Apply(l *raft.Log) any {
 }
 
 // isPermittedForCommand reports whether peerID may redeem/execute
-// commandID: true if some group G satisfies both PeerGroupKey(peerID, G)
-// and GroupCommandKey(commandID, G). Mirrors pkg/kvctl/catalog.go's
-// client-side isPermittedForCommand check exactly (scan the commandID side
-// first -- a command is expected to be linked to few groups, unlike a peer,
-// which may belong to many -- then point-check PeerGroupKey for each hit),
-// but evaluated directly against s: called only from inside Apply (see
-// OpConsumeExecInvite), so this is the raft-authoritative counterpart that
-// client-side check doesn't have. GroupCommandKey's own first field
-// (commandID) is length-prefixed, so the fixed part of
-// GroupCommandKey(commandID, nil) is already a safe, unpadded ScanPrefix
-// prefix -- the same trick applyCascadeDelete's KindCommand case above
-// uses -- no need for GroupCommandBounds' 0xFF-padded range here.
+// commandID: true if some group G linked to commandID (GroupCommandKey(
+// commandID, G)) either has its own Public flag set, or satisfies
+// PeerGroupKey(peerID, G) -- a public group admits any peer with no
+// PeerGroup membership record needed at all, exactly the same way it
+// would if that peer held one. Mirrors pkg/kvctl/catalog.go's client-side
+// isPermittedForCommand check exactly (scan the commandID side first -- a
+// command is expected to be linked to few groups, unlike a peer, which may
+// belong to many -- then check each hit's Group record before falling
+// back to a PeerGroupKey point-check), but evaluated directly against s:
+// called only from inside Apply (see OpConsumeExecInvite), so this is the
+// raft-authoritative counterpart that client-side check doesn't have.
+// GroupCommandKey's own first field (commandID) is length-prefixed, so the
+// fixed part of GroupCommandKey(commandID, nil) is already a safe,
+// unpadded ScanPrefix prefix -- the same trick applyCascadeDelete's
+// KindCommand case above uses -- no need for GroupCommandBounds' 0xFF-padded
+// range here.
 func isPermittedForCommand(s *store.Store, commandID, peerID []byte) (bool, error) {
 	prefix, err := shmevent.GroupCommandKey(commandID, nil)
 	if err != nil {
@@ -308,6 +356,11 @@ func isPermittedForCommand(s *store.Store, commandID, peerID []byte) (bool, erro
 		_, groupID, err := shmevent.ParseGroupCommandKey(m.Key)
 		if err != nil {
 			return false, err
+		}
+		if groupValue, err := s.Get(shmevent.GroupKey(groupID)); err == nil {
+			if _, public, err := shmevent.DecodeGroupPayload(groupValue); err == nil && public {
+				return true, nil
+			}
 		}
 		peerGroupKey, err := shmevent.PeerGroupKey(peerID, groupID)
 		if err != nil {

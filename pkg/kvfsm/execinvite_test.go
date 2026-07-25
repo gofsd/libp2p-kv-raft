@@ -54,6 +54,25 @@ func grantCommandAccess(t *testing.T, f *kvfsm.FSM, commandID, groupID, peerID s
 	}
 }
 
+// grantPublicCommandAccess links commandID to a Group record created with
+// public=true -- unlike grantCommandAccess, no PeerGroup record is ever
+// written; isPermittedForCommand's public-group bypass is meant to admit
+// any peer with no such record needed at all.
+func grantPublicCommandAccess(t *testing.T, f *kvfsm.FSM, commandID, groupID string) {
+	t.Helper()
+	groupKey := shmevent.GroupKey([]byte(groupID))
+	if res := applyExecInvite(t, f, kvfsm.OpSet, groupKey, shmevent.EncodeGroupPayload(groupID, true)); res.Err != nil {
+		t.Fatalf("Apply OpSet Group: %v", res.Err)
+	}
+	gcKey, err := shmevent.GroupCommandKey([]byte(commandID), []byte(groupID))
+	if err != nil {
+		t.Fatalf("GroupCommandKey: %v", err)
+	}
+	if res := applyExecInvite(t, f, kvfsm.OpSet, gcKey, nil); res.Err != nil {
+		t.Fatalf("Apply OpSet GroupCommand: %v", res.Err)
+	}
+}
+
 func setExecInvite(t *testing.T, f *kvfsm.FSM, token []byte, commandID, inputsJSON string) []byte {
 	t.Helper()
 	key := shmevent.ExecInviteKey(token)
@@ -89,6 +108,50 @@ func TestApplyOpConsumeExecInvitePermittedRedeemDeletesAndReturnsRecord(t *testi
 	if _, err := s.Get(key); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("invite key: got %v, want ErrNotFound (should be deleted after a permitted consume)", err)
 	}
+}
+
+// TestApplyOpConsumeExecInvitePublicGroupPermitsWithNoPeerGroupRecord
+// proves isPermittedForCommand's public-group bypass: a redeeming peer
+// with no PeerGroup record at all is still permitted, and the invite is
+// consumed, as long as the invite's commandID is linked to a Group
+// created with public=true.
+func TestApplyOpConsumeExecInvitePublicGroupPermitsWithNoPeerGroupRecord(t *testing.T) {
+	f, s := newExecInviteTestFSM(t)
+
+	grantPublicCommandAccess(t, f, "cmd-1", "group-public")
+	token := []byte("0123456789abcdef")
+	key := setExecInvite(t, f, token, "cmd-1", `{"x":1}`)
+
+	res := applyExecInvite(t, f, kvfsm.OpConsumeExecInvite, key, []byte("peerA"))
+	if res.Err != nil {
+		t.Fatalf("Apply OpConsumeExecInvite: %v", res.Err)
+	}
+	gotCommandID, gotInputs, err := shmevent.DecodeExecInviteRecord(res.Value)
+	if err != nil {
+		t.Fatalf("DecodeExecInviteRecord: %v", err)
+	}
+	if gotCommandID != "cmd-1" || gotInputs != `{"x":1}` {
+		t.Fatalf("got commandID=%q inputs=%q, want commandID=%q inputs=%q", gotCommandID, gotInputs, "cmd-1", `{"x":1}`)
+	}
+
+	if _, err := s.Get(key); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("invite key: got %v, want ErrNotFound (should be deleted after a permitted consume)", err)
+	}
+
+	// peerA was never granted a PeerGroup record -- confirm the public
+	// group alone is what permitted it.
+	if _, err := s.Get(mustPeerGroupKey(t, "peerA", "group-public")); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("PeerGroup record: got %v, want ErrNotFound (never written)", err)
+	}
+}
+
+func mustPeerGroupKey(t *testing.T, peerID, groupID string) []byte {
+	t.Helper()
+	key, err := shmevent.PeerGroupKey([]byte(peerID), []byte(groupID))
+	if err != nil {
+		t.Fatalf("PeerGroupKey: %v", err)
+	}
+	return key
 }
 
 // TestApplyOpConsumeExecInviteUnpermittedRedeemFailsAndKeepsInvite checks

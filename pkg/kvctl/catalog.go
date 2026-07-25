@@ -190,10 +190,12 @@ func appendRecord(ctx context.Context, sess *shmclient.Session, kind, unitID, au
 
 // Group is a named container Commands can be linked to via
 // CreateGroupCommand -- peers become permitted to submit/execute a
-// command by being added to a group linked to it (AddPeerToGroup).
+// command by being added to a group linked to it (AddPeerToGroup), or
+// unconditionally if Public is true (see isPermittedForCommand).
 type Group struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Public bool   `json:"public"`
 }
 
 // systemKeyIDOffset is how many leading bytes of a shmevent.SystemKey
@@ -202,11 +204,13 @@ type Group struct {
 // own key[3:] slicing in cluster_list.go.
 const systemKeyIDOffset = 3
 
-// PutGroup implements `mage creategroup`/`mage updategroup <id> <name>`:
-// creates or updates (single step -- see shmevent.KindGroup's doc
-// comment) the Group record id=name on the current node. Only a current
-// raft voter may do this; pkg/daemon rejects it otherwise.
-func PutGroup(id, name string) error {
+// PutGroup implements `mage creategroup`/`mage updategroup <id> <name>
+// <public>`: creates or updates (single step -- see shmevent.KindGroup's
+// doc comment) the Group record id=name on the current node, granting
+// unconditional access to its linked commands to any peer if public is
+// true (see isPermittedForCommand). Only a current raft voter may do
+// this; pkg/daemon rejects it otherwise.
+func PutGroup(id, name string, public bool) error {
 	if err := validateCatalogID(id); err != nil {
 		return err
 	}
@@ -216,7 +220,7 @@ func PutGroup(id, name string) error {
 	if err != nil {
 		return err
 	}
-	if err := sess.PutGroup(ctx, id, name); err != nil {
+	if err := sess.PutGroup(ctx, id, name, public); err != nil {
 		return fmt.Errorf("kvctl: put group: %w", err)
 	}
 	return nil
@@ -250,7 +254,11 @@ func GetGroup(id string) (Group, error) {
 	if err != nil {
 		return Group{}, fmt.Errorf("kvctl: group %s not found", id)
 	}
-	return Group{ID: id, Name: shmevent.DecodeGroupPayload([]byte(value))}, nil
+	name, public, err := shmevent.DecodeGroupPayload([]byte(value))
+	if err != nil {
+		return Group{}, fmt.Errorf("kvctl: decode group %s: %w", id, err)
+	}
+	return Group{ID: id, Name: name, Public: public}, nil
 }
 
 // ListGroups implements `mage listgroups`: returns every Group (nil, not
@@ -275,7 +283,11 @@ func ListGroups() ([]Group, error) {
 		if len(key) < systemKeyIDOffset {
 			return nil, fmt.Errorf("kvctl: malformed group key %x", key)
 		}
-		groups = append(groups, Group{ID: string(key[systemKeyIDOffset:]), Name: shmevent.DecodeGroupPayload(value)})
+		name, public, err := shmevent.DecodeGroupPayload(value)
+		if err != nil {
+			return nil, fmt.Errorf("kvctl: decode group %x: %w", key, err)
+		}
+		groups = append(groups, Group{ID: string(key[systemKeyIDOffset:]), Name: name, Public: public})
 		lo = append(append([]byte{}, key...), 0x00)
 	}
 }
@@ -503,12 +515,15 @@ func ListGroupsForPeer(peerID string) ([]string, error) {
 }
 
 // isPermittedForCommand reports whether peerID may submit/execute
-// commandID: true if some group G satisfies both PeerGroup(peerID, G) and
-// GroupCommand(commandID, G). Scans GroupCommandBounds(commandID) first
-// (a command is expected to be linked to few groups, unlike a peer, which
-// may belong to many) and point-checks PeerGroupKey(peerID, group) for
-// each hit -- scan the smaller side, point-check the other -- the first
-// match short-circuits.
+// commandID: true if some group G linked to commandID (GroupCommand(
+// commandID, G)) either has its own Public flag set, or satisfies
+// PeerGroup(peerID, G) -- a public group admits any peer with no
+// PeerGroup membership record needed at all. Scans GroupCommandBounds(
+// commandID) first (a command is expected to be linked to few groups,
+// unlike a peer, which may belong to many), checking each hit's Group
+// record before falling back to a PeerGroupKey(peerID, group) point-check
+// -- scan the smaller side, point-check the other -- the first match
+// short-circuits.
 func isPermittedForCommand(ctx context.Context, sess *shmclient.Session, peerID, commandID string) (bool, error) {
 	lo, hi, err := shmevent.GroupCommandBounds([]byte(commandID))
 	if err != nil {
@@ -525,6 +540,11 @@ func isPermittedForCommand(ctx context.Context, sess *shmclient.Session, peerID,
 		_, groupID, err := shmevent.ParseGroupCommandKey(key)
 		if err != nil {
 			return false, err
+		}
+		if groupValue, err := sess.Get(ctx, string(shmevent.GroupKey(groupID))); err == nil {
+			if _, public, err := shmevent.DecodeGroupPayload([]byte(groupValue)); err == nil && public {
+				return true, nil
+			}
 		}
 		peerGroupKey, err := shmevent.PeerGroupKey([]byte(peerID), groupID)
 		if err != nil {

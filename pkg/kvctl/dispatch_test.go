@@ -33,7 +33,7 @@ func TestSubmitCommandIndexesExecutionsByPeer(t *testing.T) {
 	const groupID = "grp-exec"
 	const targetPeerID = "some-target-peer-id"
 
-	if err := kvctl.PutGroup(groupID, "Exec Group"); err != nil {
+	if err := kvctl.PutGroup(groupID, "Exec Group", false); err != nil {
 		t.Fatalf("PutGroup: %v", err)
 	}
 	if err := kvctl.PutCommand("cmd-1", "Reboot", targetPeerID); err != nil {
@@ -120,7 +120,7 @@ func TestSubmitCommandSelfTargetWritesOneIndexEntry(t *testing.T) {
 
 	const groupID = "grp-self-target"
 
-	if err := kvctl.PutGroup(groupID, "Self Target Group"); err != nil {
+	if err := kvctl.PutGroup(groupID, "Self Target Group", false); err != nil {
 		t.Fatalf("PutGroup: %v", err)
 	}
 	if err := kvctl.PutCommand("cmd-self", "Self", leaderID); err != nil {
