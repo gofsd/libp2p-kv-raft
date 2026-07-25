@@ -1,5 +1,6 @@
 package com.gofsd.kvdemo
 
+import kvmobile.CommandDispatchHandler
 import kvmobile.ExecuteCallback
 import kvmobile.Kvmobile
 import kvmobile.LogCallback
@@ -167,6 +168,38 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
         "Watching -- new records appear below as they arrive"
     }
     add("Dispatch", "StopWatchCommandLog", listOf("instanceID")) { a -> Kvmobile.stopWatchCommandLog(a[0]); ok() }
+
+    // RunCommandDispatcher is the "target device's own application logic"
+    // SubmitCommand/dispatch.go's doc comments describe: a standing
+    // handler that answers every CommandRequest against commandID as it
+    // arrives. This demo handler just echoes commandID/instanceID/inputs
+    // back as the recorded result's fields (see
+    // kvmobile.CommandDispatchHandler's doc comment for the
+    // {"fields":{...},"narrative":"..."} shape it must return) and logs
+    // the dispatch below -- a real app would replace Handle's body with
+    // whatever that command actually does.
+    add("Dispatch", "RunCommandDispatcher", listOf("commandID")) { a ->
+        val commandID = a[0]
+        Kvmobile.runCommandDispatcher(commandID, object : CommandDispatchHandler {
+            override fun handle(instanceID: String, commandID: String, requestedBy: String, inputs: String): String {
+                appendLog("Dispatching $commandID/$instanceID from $requestedBy (inputs: $inputs)")
+                return """{"fields":{"handled_by":"android-demo"},"narrative":"echoed by CommandCatalog demo handler"}"""
+            }
+        })
+        "Dispatching -- requests for $commandID are handled as they arrive, logged below"
+    }
+    add("Dispatch", "StopCommandDispatcher", listOf("commandID")) { a -> Kvmobile.stopCommandDispatcher(a[0]); ok() }
+
+    // One-time execution invites -- see execinvite.go's doc comment for
+    // the full design (mirrors desktop's pkg/kvctl/execinvite.go). No
+    // printexecinvitedatamatrix equivalent here: CreateExecInvite returns
+    // the raw tokenHex, and a real app combines it with its own
+    // advertised multiaddr and renders/scans the barcode itself.
+    add("ExecInvite", "CreateExecInvite", listOf("commandID", "inputsJSON")) { a ->
+        Kvmobile.createExecInvite(a[0], a[1])
+    }
+    add("ExecInvite", "RevokeExecInvite", listOf("tokenHex")) { a -> Kvmobile.revokeExecInvite(a[0]); ok() }
+    add("ExecInvite", "RedeemExecInvite", listOf("sourceAddr#tokenHex")) { a -> Kvmobile.redeemExecInvite(a[0]) }
 
     // Raw escape hatch -- the same one E2ETest uses, see its own doc
     // comment and README's "Follower on Android" section.
