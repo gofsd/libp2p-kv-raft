@@ -397,7 +397,7 @@ func (E2E) BootstrapAll() error {
 	}
 	fmt.Printf("✅ bootstrap %s ready at %s (webtransport: %s)\n", peerID, multiaddr, webTransportAddr)
 
-	return e2erun.EnsureAllDesktopNodes(root, f)
+	return e2erun.EnsureAllDesktopNodes(root, f, multiaddr)
 }
 
 // Current runs only the rows recorded since the last published version --

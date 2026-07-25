@@ -123,7 +123,7 @@ func runRow(kvnodeBin, kvctlBin string, nodeID int, node e2edata.Node, bootstrap
 	case e2edata.PlatformRemote:
 		return retryReadsIfNeeded(ev, func() (int, string) { return sendEventRemote(node.PeerID, ev) })
 	case e2edata.PlatformDesktop:
-		if err := EnsureLocalDesktopNode(kvnodeBin, nodeID, node); err != nil {
+		if err := EnsureLocalDesktopNode(kvnodeBin, nodeID, node, bootstrapMultiaddr); err != nil {
 			return e2edata.StatusFail, err.Error()
 		}
 		return retryReadsIfNeeded(ev, func() (int, string) { return sendEventLocal(kvctlBin, node.PeerID, ev) })

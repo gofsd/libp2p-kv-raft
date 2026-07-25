@@ -56,13 +56,41 @@ func desktopNodePort(nodeID int) int {
 	return 15600 + nodeID
 }
 
+// raftWANTimingFlags widens hashicorp/raft's own timing defaults (1s
+// heartbeat/election, 500ms leader-lease) for a locally-run desktop e2e
+// node whose only path to the shared bootstrap leader is a circuit-relay
+// hop across a real cross-continental WAN link (bootstrap/relay hosted in
+// the US, this desktop dialing in from Ukraine) -- RTT through a relay hop
+// on a link like that can comfortably exceed the 1s default, which
+// manifests as spurious "leadership lost while committing log"/repeated
+// elections rather than a clean failure. Opposite direction of
+// pkg/kvctl/catalog_test.go's fastRaftArgs, which shortens these same
+// flags for a same-machine unit test.
+var raftWANTimingFlags = []string{
+	"-raft-heartbeat-timeout", "3s",
+	"-raft-election-timeout", "3s",
+	"-raft-commit-timeout", "200ms",
+	"-raft-leader-lease-timeout", "1500ms",
+}
+
 // EnsureLocalDesktopNode makes sure a kvnode process for node (a
 // PlatformDesktop identity that is not the bootstrap node) is running
 // locally, spawning it if it isn't already (idempotent: a live pidfile
 // means it's reused as-is, matching "predictable deploy"). It does not
 // join the node to any cluster -- that happens through the row sequence's
 // own EventAdd, same as any other recorded event.
-func EnsureLocalDesktopNode(kvnodeBin string, nodeID int, node e2edata.Node) error {
+//
+// bootstrapMultiaddr is passed as -relay-peer: this desktop identity's own
+// e2e "add" row joins it to the shared bootstrap cluster as a real raft
+// *voter* (see test/e2e/testdata.json's "BOOTSTRAP"-valued add rows), and
+// without a relay reservation it only ever advertises whatever bare local/
+// LAN address this machine happens to have -- exactly the permanently-
+// stuck-voter failure mode Config.RelayPeer's doc comment describes. Caught
+// running a real e2e pass: the shared bootstrap's raft log filled with
+// continuous "leadership lost while committing log"/"not leader and no
+// leader known" because this voter's address was never actually dialable
+// from the VPS once this process wasn't the one currently mid-test-row.
+func EnsureLocalDesktopNode(kvnodeBin string, nodeID int, node e2edata.Node, bootstrapMultiaddr string) error {
 	e2eHome, err := localE2EHome()
 	if err != nil {
 		return err
@@ -90,11 +118,16 @@ func EnsureLocalDesktopNode(kvnodeBin string, nodeID int, node e2edata.Node) err
 	}
 	defer logFile.Close()
 
-	cmd := exec.Command(kvnodeBin,
+	args := []string{
 		"-data-dir", dataDir,
 		"-key-path", keyPath,
 		"-listen-port", strconv.Itoa(desktopNodePort(nodeID)),
-	)
+	}
+	args = append(args, raftWANTimingFlags...)
+	if bootstrapMultiaddr != "" {
+		args = append(args, "-relay-peer", bootstrapMultiaddr)
+	}
+	cmd := exec.Command(kvnodeBin, args...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	if err := cmd.Start(); err != nil {
@@ -117,7 +150,7 @@ func EnsureLocalDesktopNode(kvnodeBin string, nodeID int, node e2edata.Node) err
 // node-id order. A no-op (after the native build) if f has no desktop
 // nodes at all -- e.g. right after `mage e2e:destroyall`, before any
 // `mage e2e:addnode desktop` has run again.
-func EnsureAllDesktopNodes(repoRoot string, f *e2edata.File) error {
+func EnsureAllDesktopNodes(repoRoot string, f *e2edata.File, bootstrapMultiaddr string) error {
 	ids := make([]int, 0, len(f.Nodes))
 	for id, node := range f.Nodes {
 		if node.Platform == e2edata.PlatformDesktop {
@@ -134,7 +167,7 @@ func EnsureAllDesktopNodes(repoRoot string, f *e2edata.File) error {
 		return err
 	}
 	for _, id := range ids {
-		if err := EnsureLocalDesktopNode(kvnodeBin, id, f.Nodes[id]); err != nil {
+		if err := EnsureLocalDesktopNode(kvnodeBin, id, f.Nodes[id], bootstrapMultiaddr); err != nil {
 			return fmt.Errorf("e2erun: start desktop node %d: %w", id, err)
 		}
 		fmt.Printf("✅ node %d (desktop) running: %s\n", id, f.Nodes[id].PeerID)

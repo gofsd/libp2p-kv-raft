@@ -73,8 +73,17 @@ var relayMultiaddr string
 
 // callTimeout bounds a single Start/Submit/Get round trip. Comfortably
 // exceeds 5*raftElectionTimeout, the longest wait handleSetForward can do
-// internally while resolving the current leader (see pkg/daemon).
-const callTimeout = 25 * time.Second
+// internally while resolving the current leader (see pkg/daemon), with
+// extra room on top for a real cross-continental relay hop: the shared
+// leader/bootstrap this device joins against is deployed with
+// hashicorp/raft's own LAN-tuned defaults (1s heartbeat/election), not
+// this device's own widened raftHeartbeatTimeout/raftElectionTimeout, so a
+// join or Submit can need several of the *leader's* shorter election
+// cycles' worth of retries to land over a slow link, not just this
+// device's own. Observed directly: 25s wasn't always enough for Start's
+// own Add call against a real US-hosted leader from a genuinely distant
+// client.
+const callTimeout = 60 * time.Second
 
 // Raft timing knobs for this node's own participation in the cluster.
 // Library defaults (1s heartbeat/election, 500ms leader lease) are tuned

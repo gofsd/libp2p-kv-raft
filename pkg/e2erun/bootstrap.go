@@ -346,8 +346,25 @@ func startIfNotRunning() (justStarted bool, err error) {
 	// threshold alone still snapshots without compacting anything, since a
 	// log under the (still-default) TrailingLogs entries has nothing
 	// eligible for removal regardless of how often it snapshots.
+	//
+	// -raft-heartbeat-timeout/-raft-election-timeout/-raft-commit-timeout/
+	// -raft-leader-lease-timeout match mobile/kvmobile's own widened
+	// raftHeartbeatTimeout/raftElectionTimeout/raftCommitTimeout/
+	// raftLeaderLeaseTimeout constants exactly (4s/4s/200ms/2500ms) --
+	// without this, the leader ran on hashicorp/raft's LAN-tuned 1s/1s/
+	// 500ms defaults while every real voter/learner joining it (desktop's
+	// own widened -raft-*-timeout flags, mobile's identically-named
+	// constants, this file's own already-widened snapshot settings above)
+	// assumed a real cross-continental link -- confirmed directly: this
+	// asymmetry caused repeated spurious "leadership lost while committing
+	// log"/"not leader and no leader known" failures across desktop/
+	// Android/web e2e rows alike on a real 3+-node cluster spanning
+	// Ukraine and this US-hosted VPS, even though every individual link
+	// was otherwise healthy. The leader must tolerate at least as much
+	// latency as its most latency-exposed voter/learner, not the LAN
+	// default every other node here had already been widened past.
 	remoteCmd := fmt.Sprintf(
-		"setsid %[1]s/bin/kvnode -data-dir %[1]s/data -key-path %[1]s/data/identity.key -listen-port %[2]d -relay-service -raft-snapshot-threshold 256 -raft-snapshot-interval 30s -raft-trailing-logs 256 >%[1]s/daemon.log 2>&1 </dev/null & echo $! >%[3]s",
+		"setsid %[1]s/bin/kvnode -data-dir %[1]s/data -key-path %[1]s/data/identity.key -listen-port %[2]d -relay-service -raft-snapshot-threshold 256 -raft-snapshot-interval 30s -raft-trailing-logs 256 -raft-heartbeat-timeout 4s -raft-election-timeout 4s -raft-commit-timeout 200ms -raft-leader-lease-timeout 2500ms >%[1]s/daemon.log 2>&1 </dev/null & echo $! >%[3]s",
 		BootstrapRemoteDir, BootstrapRemotePort, bootstrapPidFile,
 	)
 	if err := sshRun(BootstrapHost, remoteCmd); err != nil {
