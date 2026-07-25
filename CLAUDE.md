@@ -164,6 +164,13 @@ or transport code here — see `api/shmevent.capnp`'s doc comment for the full d
 - `thirdparty/anet` — a local patched copy of `github.com/wlynxg/anet` (pinned via `replace` in
   `go.mod`), dropping a `//go:linkname` against a private stdlib symbol that no longer matches
   Go 1.25's `net` package layout. See README's "Vendored dependency patch" section before touching.
+- `thirdparty/libc` — a local, trimmed and patched copy of `modernc.org/libc` (also pinned via
+  `replace`), the runtime `modernc.org/sqlite`'s transpiled C code runs on. Forces its amd64/
+  arm64/arm/386 `_fstatat_kstat` to always use the safe `newfstatat`/`fstatat64` syscall instead of
+  musl's raw legacy `stat`/`lstat`/`fstat` fast path, which Android's seccomp filter blocks on
+  64-bit and which otherwise crashes the app with `SIGSYS` the instant SQLite opens its database
+  file (hit running the Android app in the emulator, an x86_64 image -- a real arm64 phone never
+  had those legacy syscalls to begin with). See README's "Vendored dependency patch" section.
 
 ## Node connectivity policy
 

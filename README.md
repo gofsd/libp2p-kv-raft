@@ -651,6 +651,27 @@ cache local-only — harmless here, since libp2p only calls `Interfaces()`/`Inte
 listing, never anything relying on the standard library's own zone cache being warmed as a side
 effect.
 
+`thirdparty/libc` is a local, trimmed and patched copy of `modernc.org/libc` v1.73.4 (pinned via a
+`replace` directive in `go.mod`; the pinned version must match what `modernc.org/sqlite`'s own
+`go.mod` expects, per that module's own compatibility note) -- the pure-Go runtime that
+`modernc.org/sqlite`'s ccgo-transpiled C code runs on. Its musl-derived `_fstatat_kstat` fast path
+(in `ccgo_linux_{amd64,arm64,arm,386}.go`) opportunistically issues the raw legacy
+`stat`/`lstat`/`fstat` syscalls for absolute paths/`AT_FDCWD`, exactly like real musl does on real
+x86_64/32-bit Linux -- but Android's seccomp-bpf filter blocks those legacy syscalls on 64-bit,
+which crashes the process with `SIGSYS` the instant SQLite opens its database file. Confirmed
+2026-07-23 running the Android app on this machine's only available AVD, an x86_64 image (a real
+arm64 phone doesn't hit this at all -- arm64 never had those legacy syscalls in the first place, so
+musl's own arm64 `_fstatat_kstat` never had the risky fast-path branches to begin with). The patch
+makes all four architectures' `_fstatat_kstat` unconditionally take the safe `newfstatat`/
+`fstatat64` path instead -- the same universally-available syscall Go's own standard library
+already uses for `Stat`/`Lstat` on every architecture, so this is a no-behavior-change fix on real
+Linux too, not an Android-only special case. The vendored copy is trimmed relative to upstream
+(dropped `testdata/`, its own `_test.go` files, and the generated per-arch files for
+architectures this repo never targets: `s390x`/`riscv64`/`ppc64le`/`loong64`/`mips*`, plus the
+hand-written `windows`/`darwin`/`freebsd`/`netbsd`/`openbsd`/`illumos` ports) to keep the checked-in
+size down; this is still one of the larger things in `thirdparty/` because the musl-to-Go
+transpilation it ships is inherently large, not because of anything specific to this patch.
+
 ## Testing
 
 ```bash
