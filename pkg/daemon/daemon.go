@@ -148,6 +148,22 @@ const ExecInviteRedeemProtocolID = protocol.ID("/libp2p-kv-raft/exec-invite-rede
 // handleForwardExecInviteRedeemStream).
 const ForwardExecInviteRedeemProtocolID = protocol.ID("/libp2p-kv-raft/forward-exec-invite-redeem/1.0.0")
 
+// RecruitProtocolID is the libp2p protocol an existing cluster voter's own
+// daemon dials directly at a device's own address to redeem an
+// EventJoinRequestCreate ticket -- the reverse of every other invite/redeem
+// pair in this file: everywhere else, the device that ends up admitted is
+// the one that dials out (handleAdd/join, dialAndRedeemExecInvite); here
+// the *already-clustered* voter dials the device instead, handing it a
+// freshly minted join-invite (mintJoinInvite) plus the ticket's own
+// correlation token, so the device (handleRecruitStream) can admit itself
+// with no further action of its own beyond having minted the ticket in the
+// first place. See dialAndPushRecruit for the sending side. The message is
+// a single plain-text line, not a capnp shmevent.Msg -- same non-capnp
+// framing JoinProtocolID's own reqLine already uses -- since the ticket
+// itself (physically scanned, exactly like every other invite token in
+// this file) is the entire credential; there's nothing left to sign.
+const RecruitProtocolID = protocol.ID("/libp2p-kv-raft/recruit/1.0.0")
+
 // ReadyFileName is written to Config.DataDir once the daemon's host and IPC
 // server are up, so the spawning `mage addnode` can learn the node's peer id
 // and listen addresses without parsing stdout.
@@ -377,6 +393,18 @@ type Node struct {
 	// bug (see executeInbox's own doc comment).
 	executeInbox *executeInbox
 
+	// joinRequestMu/joinRequestToken hold this node's own single
+	// outstanding join-request ticket (see EventJoinRequestCreate) --
+	// purely in-memory, mirroring executeInbox's own "never persisted"
+	// trade-off, since a ticket this node itself minted and never got
+	// redeemed is fine to lose on restart. Deliberately just one at a
+	// time: minting a new ticket supersedes whatever was pending before,
+	// and handleRecruitStream clears it the moment it's consumed --
+	// whether or not the resulting join actually succeeds -- so the same
+	// ticket can never be redeemed twice (see consumeJoinRequestToken).
+	joinRequestMu    sync.Mutex
+	joinRequestToken []byte
+
 	logStore  *raftboltdb.BoltStore
 	snapStore raft.SnapshotStore
 
@@ -442,6 +470,38 @@ func (q *executeInbox) pop() (executeNotification, bool) {
 	n := q.entries[0]
 	q.entries = q.entries[1:]
 	return n, true
+}
+
+// setJoinRequestToken replaces this node's outstanding join-request ticket
+// (see EventJoinRequestCreate) with token, discarding whatever was pending
+// before -- only ever one at a time.
+func (n *Node) setJoinRequestToken(token []byte) {
+	n.joinRequestMu.Lock()
+	defer n.joinRequestMu.Unlock()
+	n.joinRequestToken = token
+}
+
+// cancelJoinRequestToken clears this node's outstanding ticket (see
+// EventJoinRequestCancel) if it still matches token -- a no-op if it's
+// already been consumed or superseded by a later create.
+func (n *Node) cancelJoinRequestToken(token []byte) {
+	n.joinRequestMu.Lock()
+	defer n.joinRequestMu.Unlock()
+	if bytes.Equal(n.joinRequestToken, token) {
+		n.joinRequestToken = nil
+	}
+}
+
+// consumeJoinRequestToken is handleRecruitStream's single-use check: it
+// reports whether token matches the currently pending ticket, and clears
+// the ticket either way -- a wrong or replayed correlation token can never
+// match again afterward, even on a later, correct attempt.
+func (n *Node) consumeJoinRequestToken(token []byte) bool {
+	n.joinRequestMu.Lock()
+	defer n.joinRequestMu.Unlock()
+	match := len(n.joinRequestToken) > 0 && bytes.Equal(n.joinRequestToken, token)
+	n.joinRequestToken = nil
+	return match
 }
 
 // Run starts a node and blocks, serving IPC requests, until ctx is
@@ -572,6 +632,7 @@ func start(cfg Config) (*Node, error) {
 	h.SetStreamHandler(ClientProtocolID, n.handleClientStream)
 	h.SetStreamHandler(ExecInviteRedeemProtocolID, n.handleExecInviteRedeemStream)
 	h.SetStreamHandler(ForwardExecInviteRedeemProtocolID, n.handleForwardExecInviteRedeemStream)
+	h.SetStreamHandler(RecruitProtocolID, n.handleRecruitStream)
 	return n, nil
 }
 
@@ -1161,6 +1222,12 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 	if caller.remotePeer != "" && m.EventType == shmevent.EventExecInviteRedeem {
 		return errorMsg(m.ID, fmt.Errorf("exec_invite_redeem: not available to a remote caller -- this node dials sourceAddr on its own operator's behalf, never on an arbitrary remote caller's"))
 	}
+	if caller.remotePeer != "" && (m.EventType == shmevent.EventJoinRequestCreate || m.EventType == shmevent.EventJoinRequestCancel) {
+		return errorMsg(m.ID, fmt.Errorf("%s: not available to a remote caller -- only this node's own operator mints or cancels its own join-request ticket", shmevent.EventName(m.EventType)))
+	}
+	if caller.remotePeer != "" && m.EventType == shmevent.EventRecruit {
+		return errorMsg(m.ID, fmt.Errorf("recruit: not available to a remote caller -- this node dials the ticket's device on its own operator's behalf, never on an arbitrary remote caller's"))
+	}
 	if shmevent.RequiresSignature(m.EventType) {
 		if err := shmevent.Verify(caller.verifyPub, m, crc, sig); err != nil {
 			return errorMsg(m.ID, err)
@@ -1554,6 +1621,45 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		}
 		return shmevent.Msg{EventType: shmevent.EventJoinInviteRevoke, ID: m.ID}
 
+	// EventJoinRequestCreate/Cancel manage this node's own in-memory
+	// join-request ticket (see that event pair's doc comment) -- never
+	// raft/store writes, so unlike every case above there's no voter check
+	// here at all (this node itself may have no raft instance yet); the
+	// remote-caller rejection already happened at the top of this
+	// function.
+	case shmevent.EventJoinRequestCreate:
+		token := make([]byte, shmevent.JoinInviteTokenSize)
+		if _, err := cryptorand.Read(token); err != nil {
+			return errorMsg(m.ID, fmt.Errorf("generate join request token: %w", err))
+		}
+		n.setJoinRequestToken(token)
+		return shmevent.Msg{EventType: shmevent.EventJoinRequestCreate, ID: m.ID, Value: token}
+
+	case shmevent.EventJoinRequestCancel:
+		token, err := shmevent.DecodeJoinRequestCancelPayload(m.Value)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		n.cancelJoinRequestToken(token)
+		return shmevent.Msg{EventType: shmevent.EventJoinRequestCancel, ID: m.ID}
+
+	// EventRecruit is the reverse of EventJoinInviteCreate: this node
+	// (already a raft voter, enforced by mintJoinInvite's own
+	// handleConfirmForward the same way EventJoinInviteCreate's write is)
+	// mints a normal join invite on its own cluster and hand-delivers it
+	// directly to the device named in the ticket -- see
+	// dialAndPushRecruit/handleRecruitStream for the actual network leg.
+	case shmevent.EventRecruit:
+		ticket, suffrage, err := shmevent.DecodeRecruitPayload(m.Value)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		result, err := n.dialAndPushRecruit(ctx, ticket, suffrage)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventRecruit, ID: m.ID, Value: []byte(result)}
+
 	// EventExecInviteCreate/Revoke are direct writes gated the identical
 	// "only a raft voter may act" way EventJoinInviteCreate/Revoke are (see
 	// those cases' comments) -- creating one is the entire authorization
@@ -1712,6 +1818,9 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 
 	case shmevent.EventGetPrivateKey:
 		return shmevent.Msg{EventType: shmevent.EventGetPrivateKey, ID: m.ID, Value: n.ed25519Priv}
+
+	case shmevent.EventGetOwnAddr:
+		return shmevent.Msg{EventType: shmevent.EventGetOwnAddr, ID: m.ID, Value: []byte(n.advertisedAddrs()[0])}
 
 	case shmevent.EventAdd:
 		peerID, err := n.handleAddDispatch(ctx, m, caller.remotePeer)
@@ -2192,6 +2301,190 @@ func (n *Node) dialAndRedeemExecInvite(ctx context.Context, sourceAddr string, t
 		return rest, nil
 	}
 	return "", fmt.Errorf("exec invite redeem rejected: %s", strings.TrimPrefix(line, "ERR: "))
+}
+
+// recruitJoinTimeout bounds handleRecruitStream's in-process call to
+// handleAdd -- generous enough to cover join()'s own worst-case relay-
+// reservation wait (up to 45s, see join's doc comment) plus a real margin,
+// since the dialing peer (dialAndPushRecruit) is blocked reading this
+// stream's response for the entire duration.
+const recruitJoinTimeout = 90 * time.Second
+
+// mintJoinInvite generates a fresh, cryptographically random one-time
+// shmevent.KindJoinInvite token granting suffrage and lodges it the same
+// way EventJoinInviteCreate's own case does (handleConfirmForward) -- the
+// token is generated here, server-side, rather than supplied by the
+// caller, since EventRecruit's own caller only supplies a ticket +
+// suffrage, never a pre-chosen invite token.
+func (n *Node) mintJoinInvite(ctx context.Context, suffrage byte) ([]byte, error) {
+	token := make([]byte, shmevent.JoinInviteTokenSize)
+	if _, err := cryptorand.Read(token); err != nil {
+		return nil, fmt.Errorf("generate invite token: %w", err)
+	}
+	key := shmevent.JoinInviteKey(token)
+	if err := n.handleConfirmForward(ctx, kvfsm.OpSet, key, shmevent.EncodeJoinInviteRecord(suffrage), true); err != nil {
+		return nil, err
+	}
+	return token, nil
+}
+
+// dialAndPushRecruit is EventRecruit's local-only handler: ticket is
+// "<device's own multiaddr>#<tokenHex>" (see EventJoinRequestCreate),
+// exactly the same "<addr>#<tokenHex>" shape splitInviteToken already
+// parses everywhere else in this codebase. It mints a normal join invite on
+// this node's own cluster (mintJoinInvite), then dials the device directly
+// at its own address over RecruitProtocolID and hands it "<this node's own
+// advertised address> <inviteTokenHex> <correlationTokenHex>" -- a plain
+// text line, not a signed shmevent.Msg, mirroring JoinProtocolID's own
+// reqLine (see join): the ticket's correlation token is itself the
+// credential the device already trusts (it minted the token itself, and
+// only handed it to whoever physically scanned the resulting barcode), so
+// there's nothing left to sign. Returns the device's own join result
+// ("<peerID> ok"/"<peerID> pending", the same shape handleAdd itself
+// returns) on success.
+func (n *Node) dialAndPushRecruit(ctx context.Context, ticket string, suffrage byte) (string, error) {
+	deviceAddr, correlationToken, err := splitInviteToken(ticket)
+	if err != nil {
+		return "", err
+	}
+	if len(correlationToken) == 0 {
+		return "", fmt.Errorf("recruit: ticket %q missing a correlation token", ticket)
+	}
+
+	inviteToken, err := n.mintJoinInvite(ctx, suffrage)
+	if err != nil {
+		return "", fmt.Errorf("recruit: mint join invite: %w", err)
+	}
+
+	addr := deviceAddr
+	if !registry.IsMultiaddr(addr) {
+		reg, err := registry.Open()
+		if err != nil {
+			return "", err
+		}
+		addr, err = reg.ResolveAddress(addr)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	maddr, err := multiaddr.NewMultiaddr(addr)
+	if err != nil {
+		return "", fmt.Errorf("invalid device address %q: %w", addr, err)
+	}
+	info, err := peer.AddrInfoFromP2pAddr(maddr)
+	if err != nil {
+		return "", fmt.Errorf("device address %q missing peer id: %w", addr, err)
+	}
+	if err := n.host.Connect(ctx, *info); err != nil {
+		return "", fmt.Errorf("connect to %s: %w", info.ID, err)
+	}
+
+	s, err := n.host.NewStream(ctx, info.ID, RecruitProtocolID)
+	if err != nil {
+		return "", fmt.Errorf("open recruit stream to %s: %w", info.ID, err)
+	}
+	defer s.Close()
+
+	reqLine := fmt.Sprintf("%s %s %s", n.advertisedAddrs()[0], hex.EncodeToString(inviteToken), hex.EncodeToString(correlationToken))
+	if _, err := fmt.Fprintf(s, "%s\n", reqLine); err != nil {
+		return "", fmt.Errorf("recruit: write to %s: %w", info.ID, err)
+	}
+	if err := s.CloseWrite(); err != nil {
+		return "", fmt.Errorf("recruit: close write to %s: %w", info.ID, err)
+	}
+
+	scanner := bufio.NewScanner(s)
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return "", fmt.Errorf("recruit: read response from %s: %w", info.ID, err)
+		}
+		return "", fmt.Errorf("no response from %s", info.ID)
+	}
+	line := scanner.Text()
+	if rest, ok := strings.CutPrefix(line, "OK "); ok {
+		return rest, nil
+	}
+	return "", fmt.Errorf("recruit rejected: %s", strings.TrimPrefix(line, "ERR: "))
+}
+
+// handleRecruitStream is RecruitProtocolID's receiving side, run on the
+// device being recruited (see dialAndPushRecruit for the sending side): it
+// parses "<leader multiaddr> <inviteTokenHex> <correlationTokenHex>", checks
+// correlationToken against this node's own pending ticket
+// (consumeJoinRequestToken -- single-use, cleared either way, so a wrong or
+// replayed token can never match again afterward), and on a match calls
+// handleAdd directly, in-process, exactly as if this node's own operator
+// had just run `mage addfollower "<leaderAddr>#<inviteTokenHex>"`
+// themselves. This only works cleanly because this feature is fresh-node
+// only (see EventJoinRequestCreate's doc comment): handleAdd's
+// non-bootstrap path assumes no raft instance exists yet, which is only
+// true for a device that hasn't bootstrapped or joined anywhere before
+// minting its ticket.
+func (n *Node) handleRecruitStream(s network.Stream) {
+	defer s.Close()
+
+	scanner := bufio.NewScanner(s)
+	if !scanner.Scan() {
+		fmt.Fprintln(s, "ERR: no request line")
+		return
+	}
+	fields := strings.Fields(scanner.Text())
+	if len(fields) != 3 {
+		fmt.Fprintln(s, "ERR: malformed request")
+		return
+	}
+	leaderAddr, inviteTokenHex, correlationHex := fields[0], fields[1], fields[2]
+
+	correlationToken, err := hex.DecodeString(correlationHex)
+	if err != nil {
+		fmt.Fprintln(s, "ERR: invalid correlation token")
+		return
+	}
+	if !n.consumeJoinRequestToken(correlationToken) {
+		fmt.Fprintln(s, "ERR: unknown or already-used join request ticket")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), recruitJoinTimeout)
+	defer cancel()
+	result, err := n.handleAdd(ctx, leaderAddr+"#"+inviteTokenHex)
+	if err != nil {
+		fmt.Fprintf(s, "ERR: %s\n", err)
+		return
+	}
+
+	n.recordRecruitedMembership(leaderAddr)
+
+	fmt.Fprintf(s, "OK %s\n", result)
+}
+
+// recordRecruitedMembership updates this node's own pkg/registry entry
+// (ClusterPeerID/LeaderPeerID/Role) after handleRecruitStream's handleAdd
+// call succeeds -- normally bootUp does this right after an ordinary join,
+// but there is no kvctl process involved in this leg at all, so this node's
+// own daemon has to do it itself so a later `mage leave`/`rm`/`listclusters`
+// on this machine sees accurate membership. Best-effort: silently does
+// nothing if this peer id has no existing registry entry at all (e.g. an
+// Android identity, which never maintains a desktop-style multi-node
+// registry in the first place).
+func (n *Node) recordRecruitedMembership(leaderAddr string) {
+	reg, err := registry.Open()
+	if err != nil {
+		return
+	}
+	info, ok, err := reg.Get(n.peerID)
+	if err != nil || !ok {
+		return
+	}
+	remotePID, err := registry.ExtractPeerID(leaderAddr)
+	if err != nil {
+		return
+	}
+	info.ClusterPeerID = remotePID
+	info.LeaderPeerID = leaderAddr
+	info.Role = registry.RoleFollower
+	_ = reg.Put(info)
 }
 
 // errExecInviteNotLeader is processExecInviteRedeem's sentinel for "this

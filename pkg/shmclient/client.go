@@ -148,6 +148,26 @@ func (s *Session) Add(ctx context.Context, leaderPeerID string) (string, error) 
 	return string(resp.Value), nil
 }
 
+// GetOwnAddr returns the session's node's own current best-advertised
+// multiaddr (public first, then a relay reservation, then anything else,
+// loopback last -- see pkg/daemon's advertisedAddrs) -- queried live, never
+// cached, so a node whose Config.RelayPeer reservation completed after
+// startup returns the up-to-date circuit address on a later call even if
+// an earlier one didn't have it yet.
+func (s *Session) GetOwnAddr(ctx context.Context) (string, error) {
+	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
+		EventType: shmevent.EventGetOwnAddr,
+		ID:        newID(),
+	}, s.priv)
+	if err != nil {
+		return "", fmt.Errorf("shmclient: get_own_addr: %w", err)
+	}
+	if resp.EventType == shmevent.EventError {
+		return "", fmt.Errorf("shmclient: get_own_addr: %s", resp.Value)
+	}
+	return string(resp.Value), nil
+}
+
 // Leave asks the raft cluster the session's node currently belongs to to
 // remove it (raft.RemoveServer) -- see shmevent.EventLeave's doc comment.
 // Unlike Add, it takes no target: there's only ever one cluster this
@@ -344,6 +364,51 @@ func (s *Session) CreateJoinInvite(ctx context.Context, token []byte, suffrage b
 // before it's ever redeemed. Only a current raft voter may do this.
 func (s *Session) RevokeJoinInvite(ctx context.Context, token []byte) error {
 	return s.catalogCall(ctx, shmevent.EventJoinInviteRevoke, shmevent.EncodeJoinInviteRevokePayload(token))
+}
+
+// CreateJoinRequest mints a fresh join-request ticket on the session's own
+// node -- the reverse of CreateJoinInvite, for a node with no cluster of
+// its own yet to hand some other cluster's voter (see
+// shmevent.EventJoinRequestCreate's doc comment). Returns the new token.
+func (s *Session) CreateJoinRequest(ctx context.Context) ([]byte, error) {
+	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
+		EventType: shmevent.EventJoinRequestCreate,
+		ID:        newID(),
+	}, s.priv)
+	if err != nil {
+		return nil, fmt.Errorf("shmclient: join_request_create: %w", err)
+	}
+	if resp.EventType == shmevent.EventError {
+		return nil, fmt.Errorf("shmclient: join_request_create: %s", resp.Value)
+	}
+	return resp.Value, nil
+}
+
+// CancelJoinRequest clears the session's own pending join-request ticket
+// (a no-op if token no longer matches -- already consumed or superseded).
+func (s *Session) CancelJoinRequest(ctx context.Context, token []byte) error {
+	return s.catalogCall(ctx, shmevent.EventJoinRequestCancel, shmevent.EncodeJoinRequestCancelPayload(token))
+}
+
+// Recruit tells the session's own node (an existing raft voter) to mint a
+// normal join invite on its own cluster and hand-deliver it directly to
+// the device named in ticket ("<device's own multiaddr>#<tokenHex>", from
+// that device's own CreateJoinRequest) -- see shmevent.EventRecruit's doc
+// comment. Returns the recruited device's own join result ("<peerID>
+// ok"/"<peerID> pending") on success.
+func (s *Session) Recruit(ctx context.Context, ticket string, suffrage byte) (string, error) {
+	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
+		EventType: shmevent.EventRecruit,
+		Value:     shmevent.EncodeRecruitPayload(ticket, suffrage),
+		ID:        newID(),
+	}, s.priv)
+	if err != nil {
+		return "", fmt.Errorf("shmclient: recruit: %w", err)
+	}
+	if resp.EventType == shmevent.EventError {
+		return "", fmt.Errorf("shmclient: recruit: %s", resp.Value)
+	}
+	return string(resp.Value), nil
 }
 
 // CreateExecInvite lodges a one-time shmevent.KindExecInvite record for

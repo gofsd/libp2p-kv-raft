@@ -289,6 +289,54 @@ const (
 	// (pkg/kvfsm.OpConsumeExecInvite) happens on whichever node turns out
 	// to be the current raft leader, entirely outside this local event.
 	EventExecInviteRedeem uint8 = 32
+	// EventJoinRequestCreate/EventJoinRequestCancel are the reverse of
+	// EventJoinInviteCreate/Revoke: instead of an existing cluster voter
+	// minting a token that admits an outside device, these let a device
+	// with no cluster (and possibly no raft instance at all) mint a
+	// one-time token naming *itself*, for some other cluster's voter to
+	// redeem via EventRecruit -- see that event's doc comment for the full
+	// flow. Unlike EventJoinInviteCreate/Revoke, there's no legitimate
+	// remote use of either: pkg/daemon rejects both outright from a
+	// remote/ClientProtocolID caller, the same way EventExecInviteRedeem
+	// is local-only. Neither touches raft or the store -- the token lives
+	// only in the daemon process's own memory (see pkg/daemon's
+	// joinRequestToken field) until consumed exactly once by
+	// handleRecruitStream or explicitly cancelled. Create takes no Value
+	// and returns the new token (raw bytes) as Value; Cancel's Value is
+	// the token to clear, a no-op if it no longer matches (already
+	// consumed or superseded by a later Create).
+	EventJoinRequestCreate uint8 = 33
+	EventJoinRequestCancel uint8 = 34
+	// EventRecruit is local-only (same rejection as EventExecInviteRedeem):
+	// it tells this node's own daemon "mint a normal join invite on my own
+	// cluster, then dial the device named in ticket and hand it that
+	// invite," where ticket is "<device's own multiaddr>#<tokenHex>" -- the
+	// EventJoinRequestCreate token above, in the exact same
+	// "<addr>#<tokenHex>" shape splitInviteToken already expects
+	// everywhere else in this codebase. Value is
+	// EncodeRecruitPayload(ticket, suffrage); suffrage is the same
+	// raft.Voter/raft.Nonvoter byte EventJoinInviteCreate's suffrage
+	// argument already is. The daemon mints the invite itself
+	// (mintJoinInvite, the same handleConfirmForward write
+	// EventJoinInviteCreate's case makes) and dials
+	// pkg/daemon.RecruitProtocolID directly at the device's own address --
+	// see dialAndPushRecruit/handleRecruitStream. Returns the redeemed
+	// device's own join result ("<peerID> ok"/"<peerID> pending", same as
+	// EventAdd) as Value on success.
+	EventRecruit uint8 = 35
+	// EventGetOwnAddr returns this node's own current best-advertised
+	// multiaddr (Value: pkg/daemon's advertisedAddrs()[0] -- public first,
+	// then a /p2p-circuit relay reservation, then any other address,
+	// loopback last) as a plain UTF-8 string. Queried live on every call,
+	// never cached: a node with Config.RelayPeer set gets its circuit
+	// reservation asynchronously in the background after startup (see
+	// join's own doc comment on awaitRelayAddr), so the address available
+	// right after EventJoinRequestCreate may not yet be the relayed one --
+	// this exists so an operator building a "<ownAddr>#<tokenHex>" ticket
+	// (or any other caller of advertisedAddrs()[0], e.g. printjoininvitedatamatrix's
+	// leaderMultiaddr) can just query again a moment later instead of
+	// guessing or constructing the circuit address by hand.
+	EventGetOwnAddr uint8 = 36
 	// EventError is response-only: Value carries a UTF-8 error message,
 	// ID echoes the failed request's ID. Not part of the fields the
 	// protocol was specified with -- added because the struct has no
@@ -365,6 +413,14 @@ func EventName(e uint8) string {
 		return "exec_invite_revoke"
 	case EventExecInviteRedeem:
 		return "exec_invite_redeem"
+	case EventJoinRequestCreate:
+		return "join_request_create"
+	case EventJoinRequestCancel:
+		return "join_request_cancel"
+	case EventRecruit:
+		return "recruit"
+	case EventGetOwnAddr:
+		return "get_own_addr"
 	case EventError:
 		return "error"
 	default:
@@ -443,6 +499,14 @@ func EventFromName(name string) (uint8, bool) {
 		return EventExecInviteRevoke, true
 	case "exec_invite_redeem":
 		return EventExecInviteRedeem, true
+	case "join_request_create":
+		return EventJoinRequestCreate, true
+	case "join_request_cancel":
+		return EventJoinRequestCancel, true
+	case "recruit":
+		return EventRecruit, true
+	case "get_own_addr":
+		return EventGetOwnAddr, true
 	case "error":
 		return EventError, true
 	default:

@@ -1,0 +1,282 @@
+package daemon
+
+import (
+	"context"
+	"encoding/hex"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/hashicorp/raft"
+
+	p2praft "github.com/gofsd/libp2p-kv-raft/pkg/raft"
+	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
+)
+
+// TestRecruitAdmitsPendingNodeAndTicketIsSingleUse is join-request's central
+// claim, exercised against a real two-node cluster (no mocks): a device
+// with no raft instance at all yet (b -- exactly AddPending's state, never
+// sent EventAdd) mints its own ticket, and some other, already-clustered
+// node (a, its own solo 1-node cluster) redeems it via EventRecruit --
+// which must both mint a real join invite on a's cluster *and* dial b
+// directly to hand it over, ending with b admitted as a genuine raft voter
+// of a's cluster, with no action of b's own beyond minting the ticket. Also
+// proves the ticket is genuinely one-time: a second recruit attempt against
+// the same, already-consumed ticket must be rejected outright.
+func TestRecruitAdmitsPendingNodeAndTicketIsSingleUse(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	tmpDir := t.TempDir()
+
+	fastRaft := Config{
+		HeartbeatTimeout:   200 * time.Millisecond,
+		ElectionTimeout:    200 * time.Millisecond,
+		CommitTimeout:      20 * time.Millisecond,
+		LeaderLeaseTimeout: 100 * time.Millisecond,
+	}
+
+	startNode := func(name string) *Node {
+		t.Helper()
+		key := filepath.Join(tmpDir, name+".key")
+		if _, err := p2praft.LoadOrGenerateKey(key); err != nil {
+			t.Fatalf("generate %s key: %v", name, err)
+		}
+		cfg := fastRaft
+		cfg.DataDir = filepath.Join(tmpDir, name)
+		cfg.KeyPath = key
+		n, err := start(cfg)
+		if err != nil {
+			t.Fatalf("start %s: %v", name, err)
+		}
+		return n
+	}
+
+	call := func(n *Node, m shmevent.Msg) shmevent.Msg {
+		t.Helper()
+		buf, err := shmevent.Encode(m, n.ed25519Priv)
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		decoded, crc, sig, err := shmevent.Decode(buf)
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return n.handleShmEvent(ctx, decoded, crc, sig, n.localCaller())
+	}
+
+	// recruiter: an existing raft cluster (its own solo leader).
+	recruiter := startNode("recruiter")
+	defer recruiter.shutdown()
+	if _, err := recruiter.handleAdd(ctx, ""); err != nil {
+		t.Fatalf("bootstrap recruiter: %v", err)
+	}
+
+	// device: fresh, pending -- no raft instance at all yet, exactly
+	// AddPending's state (never sent EventAdd).
+	device := startNode("device")
+	defer device.shutdown()
+	if device.getRaft() != nil {
+		t.Fatal("device unexpectedly already has a raft instance before any join-request activity")
+	}
+
+	createResp := call(device, shmevent.Msg{EventType: shmevent.EventJoinRequestCreate, ID: 1})
+	if createResp.EventType == shmevent.EventError {
+		t.Fatalf("join_request_create rejected: %s", createResp.Value)
+	}
+	correlationToken := createResp.Value
+	if len(correlationToken) != shmevent.JoinInviteTokenSize {
+		t.Fatalf("got token of length %d, want %d", len(correlationToken), shmevent.JoinInviteTokenSize)
+	}
+	ticket := device.advertisedAddrs()[0] + "#" + hex.EncodeToString(correlationToken)
+
+	recruitPayload := shmevent.EncodeRecruitPayload(ticket, shmevent.SuffrageVoter)
+	recruitResp := call(recruiter, shmevent.Msg{EventType: shmevent.EventRecruit, Value: recruitPayload, ID: 2})
+	if recruitResp.EventType == shmevent.EventError {
+		t.Fatalf("recruit rejected: %s", recruitResp.Value)
+	}
+	result := string(recruitResp.Value)
+	if !strings.HasSuffix(result, " ok") {
+		t.Fatalf("got recruit result %q, want it to end in %q", result, " ok")
+	}
+
+	cfgFuture := recruiter.getRaft().GetConfiguration()
+	if err := cfgFuture.Error(); err != nil {
+		t.Fatalf("get recruiter configuration: %v", err)
+	}
+	var found bool
+	for _, srv := range cfgFuture.Configuration().Servers {
+		if srv.ID == raft.ServerID(device.peerID) {
+			found = true
+			if srv.Suffrage != raft.Voter {
+				t.Fatalf("device joined with suffrage %v, want Voter", srv.Suffrage)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("device not present in recruiter's raft configuration after recruit")
+	}
+
+	// The ticket must now be consumed: a second recruit attempt against the
+	// same (already-used) ticket must fail, even though the underlying
+	// join-invite minting machinery itself would otherwise happily mint
+	// another fresh invite.
+	recruitResp2 := call(recruiter, shmevent.Msg{EventType: shmevent.EventRecruit, Value: recruitPayload, ID: 3})
+	if recruitResp2.EventType != shmevent.EventError {
+		t.Fatal("second recruit against the already-consumed ticket unexpectedly succeeded")
+	}
+}
+
+// TestJoinRequestCreateAndCancelAreLocalOnly proves EventJoinRequestCreate/
+// EventJoinRequestCancel/EventRecruit are all rejected outright for a
+// remote caller -- there is no legitimate remote use of any of the three
+// (see handleShmEvent's rejection block).
+func TestJoinRequestCreateAndCancelAreLocalOnly(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmpDir := t.TempDir()
+	key := filepath.Join(tmpDir, "n.key")
+	if _, err := p2praft.LoadOrGenerateKey(key); err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	n, err := start(Config{DataDir: filepath.Join(tmpDir, "n"), KeyPath: key})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer n.shutdown()
+
+	remoteCaller := callerIdentity{remotePeer: n.host.ID(), verifyPub: n.ed25519Pub}
+
+	for _, evt := range []uint8{shmevent.EventJoinRequestCreate, shmevent.EventJoinRequestCancel, shmevent.EventRecruit} {
+		resp := n.handleShmEvent(ctx, shmevent.Msg{EventType: evt, ID: 1}, 0, nil, remoteCaller)
+		if resp.EventType != shmevent.EventError {
+			t.Fatalf("event %s unexpectedly accepted from a remote caller", shmevent.EventName(evt))
+		}
+	}
+}
+
+// TestGetOwnAddrWorksWithoutRaft proves EventGetOwnAddr answers even on a
+// node with no raft instance at all yet (exactly AddPending's state) --
+// unlike everything else that touches raft, this is pure libp2p host
+// state, so a device needs to be able to learn its own address (e.g. to
+// build a join-request ticket) before it has ever joined anything.
+func TestGetOwnAddrWorksWithoutRaft(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmpDir := t.TempDir()
+	key := filepath.Join(tmpDir, "n.key")
+	if _, err := p2praft.LoadOrGenerateKey(key); err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	n, err := start(Config{DataDir: filepath.Join(tmpDir, "n"), KeyPath: key})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer n.shutdown()
+
+	if n.getRaft() != nil {
+		t.Fatal("node unexpectedly already has a raft instance")
+	}
+
+	buf, err := shmevent.Encode(shmevent.Msg{EventType: shmevent.EventGetOwnAddr, ID: 1}, n.ed25519Priv)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, crc, sig, err := shmevent.Decode(buf)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	resp := n.handleShmEvent(ctx, decoded, crc, sig, n.localCaller())
+	if resp.EventType == shmevent.EventError {
+		t.Fatalf("get_own_addr rejected: %s", resp.Value)
+	}
+	want := n.advertisedAddrs()[0]
+	if got := string(resp.Value); got != want {
+		t.Fatalf("got addr %q, want %q", got, want)
+	}
+}
+
+// TestJoinRequestCancelInvalidatesBeforeRedemption proves
+// EventJoinRequestCancel actually takes effect: a cancelled ticket must be
+// rejected by a subsequent recruit exactly like one that was never
+// created.
+func TestJoinRequestCancelInvalidatesBeforeRedemption(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	tmpDir := t.TempDir()
+
+	fastRaft := Config{
+		HeartbeatTimeout:   200 * time.Millisecond,
+		ElectionTimeout:    200 * time.Millisecond,
+		CommitTimeout:      20 * time.Millisecond,
+		LeaderLeaseTimeout: 100 * time.Millisecond,
+	}
+
+	startNode := func(name string) *Node {
+		t.Helper()
+		key := filepath.Join(tmpDir, name+".key")
+		if _, err := p2praft.LoadOrGenerateKey(key); err != nil {
+			t.Fatalf("generate %s key: %v", name, err)
+		}
+		cfg := fastRaft
+		cfg.DataDir = filepath.Join(tmpDir, name)
+		cfg.KeyPath = key
+		n, err := start(cfg)
+		if err != nil {
+			t.Fatalf("start %s: %v", name, err)
+		}
+		return n
+	}
+
+	call := func(n *Node, m shmevent.Msg) shmevent.Msg {
+		t.Helper()
+		buf, err := shmevent.Encode(m, n.ed25519Priv)
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		decoded, crc, sig, err := shmevent.Decode(buf)
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return n.handleShmEvent(ctx, decoded, crc, sig, n.localCaller())
+	}
+
+	recruiter := startNode("recruiter")
+	defer recruiter.shutdown()
+	if _, err := recruiter.handleAdd(ctx, ""); err != nil {
+		t.Fatalf("bootstrap recruiter: %v", err)
+	}
+
+	device := startNode("device")
+	defer device.shutdown()
+
+	createResp := call(device, shmevent.Msg{EventType: shmevent.EventJoinRequestCreate, ID: 1})
+	if createResp.EventType == shmevent.EventError {
+		t.Fatalf("join_request_create rejected: %s", createResp.Value)
+	}
+	correlationToken := createResp.Value
+	ticket := device.advertisedAddrs()[0] + "#" + hex.EncodeToString(correlationToken)
+
+	cancelResp := call(device, shmevent.Msg{EventType: shmevent.EventJoinRequestCancel, Value: shmevent.EncodeJoinRequestCancelPayload(correlationToken), ID: 2})
+	if cancelResp.EventType == shmevent.EventError {
+		t.Fatalf("join_request_cancel rejected: %s", cancelResp.Value)
+	}
+
+	recruitPayload := shmevent.EncodeRecruitPayload(ticket, shmevent.SuffrageVoter)
+	recruitResp := call(recruiter, shmevent.Msg{EventType: shmevent.EventRecruit, Value: recruitPayload, ID: 3})
+	if recruitResp.EventType != shmevent.EventError {
+		t.Fatal("recruit against a cancelled ticket unexpectedly succeeded")
+	}
+}

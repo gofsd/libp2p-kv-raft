@@ -110,7 +110,7 @@ func addNew(reg *registry.Registry, binPath string, extraDaemonArgs []string, ro
 	if err != nil {
 		return "", err
 	}
-	return bootUp(reg, binPath, extraDaemonArgs, peerID, dataDir, keyPath, role, leaderPeerID)
+	return bootUp(reg, binPath, extraDaemonArgs, peerID, dataDir, keyPath, role, leaderPeerID, false)
 }
 
 // clusterDataDirFor returns the dataDirFor callback generateIdentity/
@@ -182,7 +182,7 @@ func addNewWithKey(reg *registry.Registry, binPath, srcKeyPath string, extraDaem
 	if err != nil {
 		return "", err
 	}
-	return bootUp(reg, binPath, extraDaemonArgs, peerID, dataDir, keyPath, role, leaderPeerID)
+	return bootUp(reg, binPath, extraDaemonArgs, peerID, dataDir, keyPath, role, leaderPeerID, false)
 }
 
 func rejoin(reg *registry.Registry, binPath string, extraDaemonArgs []string, leaderPeerID, ownPeerID string) (string, error) {
@@ -226,7 +226,7 @@ func rejoin(reg *registry.Registry, binPath string, extraDaemonArgs []string, le
 		}
 	}
 
-	return bootUp(reg, binPath, extraDaemonArgs, ownPeerID, dataDir, info.KeyPath, info.Role, leaderPeerID)
+	return bootUp(reg, binPath, extraDaemonArgs, ownPeerID, dataDir, info.KeyPath, info.Role, leaderPeerID, false)
 }
 
 // ResumeNode restarts the existing node ownPeerID in place -- reusing its
@@ -332,7 +332,15 @@ func checkLeaderReachable(reg *registry.Registry, leaderPeerID string) error {
 	return nil
 }
 
-func bootUp(reg *registry.Registry, binPath string, extraDaemonArgs []string, peerID, dataDir, keyPath string, role registry.Role, leaderPeerID string) (string, error) {
+// bootUp spawns the daemon and registers it. skipAdd (only ever true from
+// addPending -- see that function's doc comment) leaves the freshly
+// spawned node exactly as spawnDaemon brought it up: running, but never
+// sent the bootstrap-or-join EventAdd every other caller sends immediately
+// after this same spawn -- so it stays a fresh, unclustered node,
+// available for the rest of the join-request flow (EventJoinRequestCreate,
+// then some other cluster's EventRecruit) to eventually turn into a real
+// join with no restart in between.
+func bootUp(reg *registry.Registry, binPath string, extraDaemonArgs []string, peerID, dataDir, keyPath string, role registry.Role, leaderPeerID string, skipAdd bool) (string, error) {
 	var clusterPeerID string
 	if leaderPeerID != "" {
 		remotePID, err := registry.ExtractPeerID(leaderPeerID)
@@ -363,6 +371,13 @@ func bootUp(reg *registry.Registry, binPath string, extraDaemonArgs []string, pe
 		ClusterPeerID: clusterPeerID,
 	}); err != nil {
 		return "", err
+	}
+
+	if skipAdd {
+		if err := reg.SetCurrent(peerID); err != nil {
+			return "", err
+		}
+		return peerID, nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)

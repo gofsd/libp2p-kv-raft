@@ -33,6 +33,12 @@ type Role string
 const (
 	RoleLeader   Role = "leader"
 	RoleFollower Role = "follower"
+	// RolePending marks a node spawned via AddPending: running (host + IPC
+	// alive), but not yet bootstrapped or joined to any raft cluster --
+	// see AddPending's doc comment. Transitions to RoleFollower once
+	// handleRecruitStream's handleAdd call succeeds (recordRecruitedMembership),
+	// same as an ordinary join would.
+	RolePending Role = "pending"
 )
 
 // NodeInfo is everything the CLI/daemon need to know about a node without

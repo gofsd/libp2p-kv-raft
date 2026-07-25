@@ -253,6 +253,74 @@ slower pending-confirm path. `kvctl-cli printjoininvitedatamatrix <leaderMultiad
 the token itself is the credential, there's nothing to sign) for a device to scan and pass
 straight to its own `addfollower`/`addnode` call.
 
+#### Reverse invite: a device requests to join ("join-request")
+
+Join-invite above is generator-is-already-a-voter, scanner-is-the-joiner by construction — the
+token only makes sense as something *a cluster* mints for *an outsider*. `shmevent.KindJoinInvite`'s
+mirror image, `EventJoinRequestCreate`/`EventRecruit` (no new `Kind` — this ticket is never
+raft-backed, see below), swaps those roles: the device that will end up admitted generates the
+ticket, and an existing cluster voter scans it and pushes the join through, with no further action
+on the device's side at all beyond having minted the ticket.
+
+```bash
+mage addpending                                          # spawn a fresh node -- no cluster yet
+mage getownaddr                                          # this node's own current best-advertised addr
+mage createjoinrequest                                   # (on that pending node) prints a fresh tokenHex
+kvctl-cli printjoinrequestdatamatrix <ownAddr> <tokenHex> <outFile.png>   # barcode it
+mage recruitpeer "<ownAddr>#<tokenHex>" <voter|learner>   # some other cluster's voter, scans & admits it
+mage canceljoinrequest <tokenHex>                         # invalidate one before it's ever redeemed
+```
+
+This only works for a device that hasn't bootstrapped or joined anywhere yet: `addpending` spawns
+the daemon (host + IPC alive) exactly like `addnode`'s bootstrap case, except it never sends the
+usual bootstrap-or-join `EventAdd` afterward, so the node comes up with no raft instance at all
+(`registry.RolePending`). That's a deliberate scope limit, not an oversight — every other "switch
+which cluster this identity belongs to" path in this project (`join`/`leave`/`rm`) works by
+stopping the daemon process and respawning it against a different data directory, because
+`raft.NewRaft` is bound to one data dir/log for a process's lifetime; there is no live, in-process
+way to move an *already-clustered* node to a different cluster. Only a node's first join (no raft
+instance yet) can be admitted live, in-process — the same `handleAdd`/`join` path an ordinary
+`addfollower` already uses. If a device is already solo-bootstrapped or clustered elsewhere, reset
+it with `leave`/`rm` first before generating a join-request ticket.
+
+`getownaddr` (`shmevent.EventGetOwnAddr`) returns this node's own current best-advertised address —
+public first, then a `/p2p-circuit` relay reservation, then anything else, loopback last (the same
+priority `pkg/daemon`'s `advertisedAddrs` already applies everywhere else it picks "the" address to
+use). Queried live, never cached: a node started with `-relay-peer` only gets its actual circuit
+reservation asynchronously in the background sometime after startup, so a device behind NAT/cellular
+should re-run `getownaddr` a moment later if an earlier call returned a private/loopback address
+instead of the relayed one — there is no other way to learn that address; unlike a leader's, it
+isn't known ahead of time and isn't derivable from anything else this device can print.
+
+`createjoinrequest` mints a fresh, cryptographically random 16-byte token and holds it purely in
+that daemon's own process memory (never persisted, never a raft record — unlike `KindJoinInvite`,
+this device may have no raft instance to write one through in the first place).
+`printjoinrequestdatamatrix` barcodes the plain string `"<ownAddr>#<tokenHex>"` — the device's *own*
+address (`getownaddr`) this time, not a leader's. `recruitpeer`, run on the recruiting voter's own node,
+splits that string, mints a normal `KindJoinInvite` on its own cluster exactly like
+`createjoininvite` does, and dials the device directly over a new libp2p protocol
+(`pkg/daemon.RecruitProtocolID`) to hand it that invite plus the ticket's own correlation token, all
+in one plain-text line (mirroring `JoinProtocolID`'s own `reqLine` — there's nothing to sign, the
+correlation token is itself the credential the device already trusts, having minted it and handed it
+only to whoever physically scanned the resulting barcode).
+
+The device's own daemon (`handleRecruitStream`) checks the correlation token against its pending
+ticket — consumed either way, so a replayed or wrong token can never match again afterward — and on
+a match calls `handleAdd` directly, in-process, exactly as if its own operator had just run `mage
+addfollower "<leaderAddr>#<tokenHex>"` themselves: the same relay-address wait, one-hop
+leader-forwarding, and `-require-confirm-for-join` handling as any other invite-based join, entirely
+unchanged. `recruitpeer` blocks until that join actually completes (or fails), printing the same
+`"<peerID> ok"`/`"<peerID> pending"` result `addfollower` itself would. On success the device's own
+`pkg/registry` entry is updated to reflect the new membership (`ClusterPeerID`/`LeaderPeerID`/
+`Role`) — normally `bootUp` does this right after an ordinary join, but no `kvctl` process is
+involved in this leg at all, so the daemon does it itself.
+
+`mobile/kvmobile` mirrors this one-for-one (`StartPending`/`GetOwnAddr`/`CreateJoinRequest`/
+`CancelJoinRequest`/`RecruitPeer`, wired into `CommandCatalog.kt`'s Cluster category) — the same
+"brand new device with no cluster yet, admitted by whoever scans its ticket" flow, just triggered
+from the Android UI instead of `mage`. `GetOwnAddr` matters even more here than on desktop: a phone
+is exactly the "no other way to learn my own address" case this exists for.
+
 ### Follower on Android
 
 The Android app (`android-app/`) runs the same follower daemon in-process via

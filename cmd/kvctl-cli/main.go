@@ -42,6 +42,8 @@ func main() {
 		cmdAddNode(os.Args[2:])
 	case "resumenode":
 		cmdResumeNode(os.Args[2:])
+	case "addpending":
+		cmdAddPending(os.Args[2:])
 	case "use":
 		cmdUse(os.Args[2:])
 	case "set":
@@ -66,6 +68,16 @@ func main() {
 		cmdRevokeJoinInvite(os.Args[2:])
 	case "printjoininvitedatamatrix":
 		cmdPrintJoinInviteDataMatrix(os.Args[2:])
+	case "createjoinrequest":
+		cmdCreateJoinRequest(os.Args[2:])
+	case "canceljoinrequest":
+		cmdCancelJoinRequest(os.Args[2:])
+	case "printjoinrequestdatamatrix":
+		cmdPrintJoinRequestDataMatrix(os.Args[2:])
+	case "recruitpeer":
+		cmdRecruitPeer(os.Args[2:])
+	case "getownaddr":
+		cmdGetOwnAddr(os.Args[2:])
 	case "createexecinvite":
 		cmdCreateExecInvite(os.Args[2:])
 	case "revokeexecinvite":
@@ -104,6 +116,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   kvctl-cli addnode -bin <kvnode-binary-path> [-listen-port N] [-relay-service] [raft flags] [leaderPeerIDOrMultiaddr] [ownPeerID]
   kvctl-cli resumenode -bin <kvnode-binary-path> [raft flags] <ownPeerID>
+  kvctl-cli addpending -bin <kvnode-binary-path> [-listen-port N] [-relay-service] [raft flags]
   kvctl-cli use <peerID>
   kvctl-cli set <key> <value>
   kvctl-cli get <key>
@@ -116,6 +129,11 @@ func usage() {
   kvctl-cli createjoininvite <voter|learner>
   kvctl-cli revokejoininvite <tokenHex>
   kvctl-cli printjoininvitedatamatrix <leaderMultiaddr> <tokenHex> <outFile.png>
+  kvctl-cli createjoinrequest
+  kvctl-cli canceljoinrequest <tokenHex>
+  kvctl-cli printjoinrequestdatamatrix <ownMultiaddr> <tokenHex> <outFile.png>
+  kvctl-cli recruitpeer <ticket> <voter|learner>
+  kvctl-cli getownaddr
   kvctl-cli createexecinvite <commandID> <inputsJSON>
   kvctl-cli revokeexecinvite <tokenHex>
   kvctl-cli redeemexecinvite <sourceAddr#tokenHex>
@@ -182,6 +200,36 @@ event -- there's nothing to sign here, the token itself is the
 credential); scanning it and passing the decoded string straight to mage
 addfollower/addnode (or kvctl-cli addnode) is the entire redemption step.
 revokejoininvite deletes a token outright before it's ever redeemed.
+
+createjoinrequest/canceljoinrequest/printjoinrequestdatamatrix/recruitpeer
+are join-invite's reverse: instead of an existing cluster voter minting a
+token that some outside device dials in to redeem, a device with no
+cluster of its own yet (addpending -- never bootstrapped or joined
+anything, unlike addnode) mints a ticket naming *itself*, for some other
+cluster's voter to redeem -- ending with that device, not the voter,
+admitted into the voter's cluster, with no further action on the device's
+side at all. createjoinrequest generates a fresh random token on the
+current (addpending) node. printjoinrequestdatamatrix barcodes the plain
+string "<thisDevice'sOwnMultiaddr>#<tokenHex>" (not a signed event, same
+reasoning as printjoininvitedatamatrix). recruitpeer, run on some other
+cluster's own voter, splits that scanned string, mints a normal join
+invite on its own cluster, and dials the device directly to hand it that
+invite -- the device admits itself on receipt (pkg/daemon's
+handleRecruitStream), the same way a normal addfollower would, just
+triggered by this network push instead of a local operator command.
+Prints the recruited device's own join result ("<peerID> ok"/"<peerID>
+pending") on success. canceljoinrequest clears a device's own pending
+ticket before it's ever redeemed.
+
+getownaddr prints this node's own current best-advertised multiaddr
+(public first, then a relay reservation, then anything else, loopback
+last) -- the address to embed in a "<ownAddr>#<tokenHex>" ticket/invite
+(printjoinrequestdatamatrix/printjoininvitedatamatrix/
+printexecinvitedatamatrix). Queried live, never cached: a node started
+with -relay-peer only gets its actual circuit-relay reservation
+asynchronously in the background after startup, so re-run this a moment
+later if an earlier call returned a private/loopback address instead of
+the relayed one.
 
 createexecinvite/revokeexecinvite/redeemexecinvite/printexecinvitedatamatrix
 are join-invite's counterpart for triggering a specific command execution
@@ -280,6 +328,42 @@ func cmdResumeNode(args []string) {
 	peerID, err := kvctl.ResumeNodeWithBinary(*binPath, fs.Arg(0), raftArgs())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "resumenode: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(peerID)
+}
+
+// cmdAddPending implements `kvctl-cli addpending -bin <path>`: spawns a
+// brand new node like addnode's bootstrap case, except it never bootstraps
+// or joins anything -- see kvctl.AddPending's doc comment.
+func cmdAddPending(args []string) {
+	fs := flag.NewFlagSet("addpending", flag.ExitOnError)
+	binPath := fs.String("bin", "", "path to a pre-built kvnode binary (required)")
+	listenPort := fs.Int("listen-port", 0, "TCP/QUIC port for the new node to listen on (0 = ephemeral)")
+	relayService := fs.Bool("relay-service", false, "make the new node act as a relay for others (only for nodes with a real public address)")
+	raftArgs := raftTimeoutFlags(fs)
+	fs.Parse(args)
+
+	if *binPath == "" {
+		fmt.Fprintln(os.Stderr, "addpending: -bin is required")
+		os.Exit(2)
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli addpending -bin <path> [-listen-port N] [-relay-service] [raft flags]")
+		os.Exit(2)
+	}
+
+	extra := raftArgs()
+	if *listenPort != 0 {
+		extra = append(extra, "-listen-port", strconv.Itoa(*listenPort))
+	}
+	if *relayService {
+		extra = append(extra, "-relay-service")
+	}
+
+	peerID, err := kvctl.AddPendingWithBinary(*binPath, extra)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "addpending: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Println(peerID)
@@ -520,6 +604,112 @@ func cmdPrintJoinInviteDataMatrix(args []string) {
 
 	fmt.Printf("wrote %s\n", outFile)
 	fmt.Println(joinString)
+}
+
+func cmdCreateJoinRequest(args []string) {
+	if len(args) != 0 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli createjoinrequest")
+		os.Exit(2)
+	}
+	tokenHex, err := kvctl.CreateJoinRequest()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "createjoinrequest: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(tokenHex)
+}
+
+func cmdCancelJoinRequest(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli canceljoinrequest <tokenHex>")
+		os.Exit(2)
+	}
+	if err := kvctl.CancelJoinRequest(args[0]); err != nil {
+		fmt.Fprintf(os.Stderr, "canceljoinrequest: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// cmdPrintJoinRequestDataMatrix implements `kvctl-cli
+// printjoinrequestdatamatrix <ownMultiaddr> <tokenHex> <outFile.png>` --
+// the reverse-invite counterpart of cmdPrintJoinInviteDataMatrix: barcodes
+// "<ownMultiaddr>#<tokenHex>", this device's own address rather than a
+// leader's, for some other cluster's operator to scan and pass to `mage
+// recruitpeer`/`kvctl-cli recruitpeer`.
+func cmdPrintJoinRequestDataMatrix(args []string) {
+	if len(args) != 3 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli printjoinrequestdatamatrix <ownMultiaddr> <tokenHex> <outFile.png>")
+		os.Exit(2)
+	}
+	ownAddr, tokenHex, outFile := args[0], args[1], args[2]
+
+	ticket := ownAddr + "#" + tokenHex
+
+	code, err := datamatrix.Encode(ticket)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "printjoinrequestdatamatrix: encode data matrix: %v\n", err)
+		os.Exit(1)
+	}
+	bounds := code.Bounds()
+	scaled, err := barcode.Scale(code, bounds.Dx()*dataMatrixModuleSize, bounds.Dy()*dataMatrixModuleSize)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "printjoinrequestdatamatrix: scale data matrix: %v\n", err)
+		os.Exit(1)
+	}
+
+	f, err := os.Create(outFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "printjoinrequestdatamatrix: create %s: %v\n", outFile, err)
+		os.Exit(1)
+	}
+	defer f.Close()
+	if err := png.Encode(f, scaled); err != nil {
+		fmt.Fprintf(os.Stderr, "printjoinrequestdatamatrix: write %s: %v\n", outFile, err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("wrote %s\n", outFile)
+	fmt.Println(ticket)
+}
+
+// cmdRecruitPeer implements `kvctl-cli recruitpeer <ticket> <voter|learner>`
+// -- see kvctl.RecruitPeer's doc comment.
+func cmdRecruitPeer(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli recruitpeer <ticket> <voter|learner>")
+		os.Exit(2)
+	}
+	var suffrage byte
+	switch args[1] {
+	case "voter":
+		suffrage = shmevent.SuffrageVoter
+	case "learner":
+		suffrage = shmevent.SuffrageLearner
+	default:
+		fmt.Fprintf(os.Stderr, "recruitpeer: unknown suffrage %q (want \"voter\" or \"learner\")\n", args[1])
+		os.Exit(2)
+	}
+	result, err := kvctl.RecruitPeer(args[0], suffrage)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "recruitpeer: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(result)
+}
+
+// cmdGetOwnAddr implements `kvctl-cli getownaddr` -- see kvctl.GetOwnAddr's
+// doc comment.
+func cmdGetOwnAddr(args []string) {
+	if len(args) != 0 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli getownaddr")
+		os.Exit(2)
+	}
+	addr, err := kvctl.GetOwnAddr()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "getownaddr: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(addr)
 }
 
 func cmdCreateExecInvite(args []string) {

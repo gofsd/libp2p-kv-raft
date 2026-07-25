@@ -53,6 +53,27 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     add("Cluster", "StartWithKey", listOf("keyHex")) { a -> Kvmobile.startWithKey(dataDir, a[0]) }
     add("Cluster", "Join", listOf("leaderAddr")) { a -> Kvmobile.join(dataDir, a[0]) }
     add("Cluster", "JoinWithKey", listOf("keyHex", "leaderAddr")) { a -> Kvmobile.joinWithKey(dataDir, a[0], a[1]) }
+
+    // Reverse invite ("join-request"): StartPending brings this device up
+    // with no cluster yet (instead of Start/Join's immediate leader join);
+    // GetOwnAddr returns this device's own current best-advertised address
+    // (queried live -- a relay reservation completes asynchronously after
+    // StartPending returns, so call it again if an earlier call returned a
+    // private/loopback address); CreateJoinRequest mints a ticket to hand
+    // some other cluster's voter (combine with GetOwnAddr's address as
+    // "<addr>#<tokenHex>" into a barcode); RecruitPeer is the other
+    // direction -- this device, already a voter somewhere, admits whatever
+    // device scanned/typed a ticket into its own cluster. See README's
+    // join-request section and mobile/kvmobile/joinrequest.go.
+    add("Cluster", "StartPending", emptyList()) { Kvmobile.startPending(dataDir) }
+    add("Cluster", "StartPendingWithKey", listOf("keyHex")) { a -> Kvmobile.startPendingWithKey(dataDir, a[0]) }
+    add("Cluster", "GetOwnAddr", emptyList()) { Kvmobile.getOwnAddr() }
+    add("Cluster", "CreateJoinRequest", emptyList()) { Kvmobile.createJoinRequest() }
+    add("Cluster", "CancelJoinRequest", listOf("tokenHex")) { a -> Kvmobile.cancelJoinRequest(a[0]); ok() }
+    add("Cluster", "RecruitPeer", listOf("ticket (addr#tokenHex)", "voter|learner")) { a ->
+        Kvmobile.recruitPeer(a[0], a[1])
+    }
+
     add("Cluster", "Stop", emptyList()) { Kvmobile.stop(); ok() }
     add("Cluster", "Delete", emptyList()) { Kvmobile.delete(dataDir); ok() }
     add("Cluster", "Leave", emptyList()) { Kvmobile.leave(); ok() }
