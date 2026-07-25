@@ -1799,14 +1799,47 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		if len(key) == 0 || key[0] != logrecord.LogKeyPrefix {
 			return errorMsg(m.ID, fmt.Errorf("log_append: key must start with the reserved logrecord prefix"))
 		}
+		kind, _, _, err := logrecord.ParseKey(key)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
 		if caller.remotePeer != "" && n.cfg.RequirePermitForLog {
-			kind, _, _, err := logrecord.ParseKey(key)
-			if err != nil {
-				return errorMsg(m.ID, err)
-			}
 			if !n.isPermittedForLogKind(kind, caller.remotePeer) {
 				return errorMsg(m.ID, fmt.Errorf("%s not permitted for log kind %q", caller.remotePeer, kind))
 			}
+		}
+		// A CommandRequest append (SubmitCommand's actual write) gets its
+		// own op, OpAppendCommandRequest, instead of the plain OpSet every
+		// other log kind uses below -- it's what makes the submitting
+		// peer's real Group/GroupCommand/PeerGroup/Public ACL standing a
+		// raft-authoritative check (evaluated inside Apply, against every
+		// replica's identically-ordered state) rather than a convention
+		// only pkg/kvctl/mobile/kvmobile's own SubmitCommand client
+		// enforces client-side -- see OpAppendCommandRequest's doc
+		// comment. authorPeerID is this call's own connection-authenticated
+		// identity (never anything m.Value itself claims): caller.remotePeer
+		// for a remote caller, this node's own peer id for a local one --
+		// SubmitCommand's ACL applies uniformly regardless of which. Goes
+		// through handleOpForward/ForwardProtocolID, same as the plain
+		// OpSet path just below -- NOT handleConfirmForward's voter-gated
+		// ForwardConfirmProtocolID -- because a submitting peer need not
+		// itself be a raft voter (a web-app browser tab never is, a phone
+		// may join as suffrage "learner"): Apply's own ACL check is what
+		// authorizes this write, not the identity of whichever node
+		// happens to relay it to the leader.
+		if _, ok := shmevent.ParseCommandRequestLogKind(kind); ok {
+			authorPeerID := n.peerID
+			if caller.remotePeer != "" {
+				authorPeerID = caller.remotePeer.String()
+			}
+			payload, err := shmevent.EncodeCommandRequestApplyPayload(authorPeerID, value)
+			if err != nil {
+				return errorMsg(m.ID, err)
+			}
+			if err := n.handleOpForward(ctx, kvfsm.OpAppendCommandRequest, key, payload, true); err != nil {
+				return errorMsg(m.ID, err)
+			}
+			return shmevent.Msg{EventType: shmevent.EventLogAppend, ID: m.ID}
 		}
 		if err := n.handleSetForward(ctx, key, value, true); err != nil {
 			return errorMsg(m.ID, err)
@@ -2918,8 +2951,28 @@ func (n *Node) forwardJoin(ctx context.Context, leaderID raft.ServerID, joinPeer
 // the node it lands on then *also* turns out not to be leader (a
 // leadership change mid-flight), it fails outward with a clear error
 // instead of forwarding again, which rules out any forwarding cycle
-// regardless of how leadership bounces around.
+// regardless of how leadership bounces around. A thin kvfsm.OpSet
+// wrapper around handleOpForward -- see that doc comment for why
+// OpAppendCommandRequest also goes through here rather than through
+// handleConfirmForward.
 func (n *Node) handleSetForward(ctx context.Context, key, value []byte, allowForward bool) error {
+	return n.handleOpForward(ctx, kvfsm.OpSet, key, value, allowForward)
+}
+
+// handleOpForward is handleSetForward generalized to any op that -- like
+// OpSet, and unlike OpConfirm/OpDel/OpCascadeDelete/the catalog's OpSet
+// puts -- needs no sender-is-a-raft-voter check at the forwarding hop:
+// OpAppendCommandRequest's actual authorization (the submitting peer's
+// Group/GroupCommand/PeerGroup/Public ACL standing, checked against
+// authorPeerID inside kvfsm.Apply itself) doesn't depend at all on
+// whether the *node relaying the write* happens to be a voter -- a
+// non-voting learner (every web-app browser tab, or a phone joined with
+// suffrage "learner") must still be able to submit a command it's
+// permitted for and have it forwarded on to the leader. Routing it
+// through the voter-gated ForwardConfirmProtocolID instead would reject
+// exactly that legitimate case with "not a current raft voter", even
+// though Apply's own ACL check is what's actually supposed to gate it.
+func (n *Node) handleOpForward(ctx context.Context, op kvfsm.OpType, key, value []byte, allowForward bool) error {
 	// Both wait windows below scale off the actual configured election
 	// timeout (not a fixed constant) so a WAN-tuned longer timeout still
 	// gets a comfortable margin: Apply itself can legitimately take a full
@@ -2930,16 +2983,20 @@ func (n *Node) handleSetForward(ctx context.Context, key, value []byte, allowFor
 		return err
 	}
 	if isLeader {
-		return n.applySet(rf, key, value)
+		return n.applyOp(rf, op, key, value)
 	}
 	if !allowForward {
 		return fmt.Errorf("not leader; current leader is %s (already forwarded once)", leaderID)
 	}
-	return n.forwardSet(ctx, leaderID, key, value)
+	return n.forwardOp(ctx, op, leaderID, key, value)
 }
 
 func (n *Node) applySet(rf *raft.Raft, key, value []byte) error {
-	cmd := kvfsm.EncodeCommand(kvfsm.OpSet, key, value)
+	return n.applyOp(rf, kvfsm.OpSet, key, value)
+}
+
+func (n *Node) applyOp(rf *raft.Raft, op kvfsm.OpType, key, value []byte) error {
+	cmd := kvfsm.EncodeCommand(op, key, value)
 	future := rf.Apply(cmd, 10*n.electionTimeout)
 	if err := future.Error(); err != nil {
 		return err
@@ -2950,18 +3007,19 @@ func (n *Node) applySet(rf *raft.Raft, key, value []byte) error {
 	return nil
 }
 
-// forwardSet relays a Set(key, value) to leaderID over ForwardProtocolID
-// and returns its outcome. This is purely internal node-to-node machinery
-// (not something a "user" ever speaks -- see pkg/shmevent's doc comment),
-// so it reuses kvfsm's own log-command framing directly rather than
-// pkg/shmevent's user-facing relational protocol: write the encoded
-// command, close the write side, then read until EOF -- an empty response
-// means success, a non-empty one is the leader's error message. The
-// libp2p host already has an open connection/known address for leaderID
-// -- it's the peer this node's own raft transport talks to for
-// AppendEntries -- so no address resolution is needed beyond the peer id
-// itself.
-func (n *Node) forwardSet(ctx context.Context, leaderID raft.ServerID, key, value []byte) error {
+// forwardOp relays op(key, value) to leaderID over ForwardProtocolID and
+// returns its outcome -- generalizes what used to be a Set-only forwardSet
+// to also carry OpAppendCommandRequest (see handleOpForward's doc
+// comment). This is purely internal node-to-node machinery (not something
+// a "user" ever speaks -- see pkg/shmevent's doc comment), so it reuses
+// kvfsm's own log-command framing directly rather than pkg/shmevent's
+// user-facing relational protocol: write the encoded command, close the
+// write side, then read until EOF -- an empty response means success, a
+// non-empty one is the leader's error message. The libp2p host already
+// has an open connection/known address for leaderID -- it's the peer this
+// node's own raft transport talks to for AppendEntries -- so no address
+// resolution is needed beyond the peer id itself.
+func (n *Node) forwardOp(ctx context.Context, op kvfsm.OpType, leaderID raft.ServerID, key, value []byte) error {
 	pid, err := peer.Decode(string(leaderID))
 	if err != nil {
 		return fmt.Errorf("forward set: invalid leader id %s: %w", leaderID, err)
@@ -2972,7 +3030,7 @@ func (n *Node) forwardSet(ctx context.Context, leaderID raft.ServerID, key, valu
 	}
 	defer s.Close()
 
-	cmd := kvfsm.EncodeCommand(kvfsm.OpSet, key, value)
+	cmd := kvfsm.EncodeCommand(op, key, value)
 	if _, err := s.Write(cmd); err != nil {
 		return fmt.Errorf("forward set: write to leader %s: %w", leaderID, err)
 	}
@@ -2991,17 +3049,21 @@ func (n *Node) forwardSet(ctx context.Context, leaderID raft.ServerID, key, valu
 }
 
 // handleForwardSetStream is the leader-side handler for ForwardProtocolID:
-// it decodes a kvfsm-framed Set command and answers it exactly like a
-// local Set would, with forwarding disabled (see
-// handleSetForward's allowForward doc). See forwardSet's doc comment for
+// it decodes a kvfsm-framed command and answers it exactly like a local
+// Set/OpAppendCommandRequest would, with forwarding disabled (see
+// handleSetForward's allowForward doc). See forwardOp's doc comment for
 // the wire format (kvfsm's own command framing, not pkg/shmevent) --
-// forwardSet treats *any* empty response as success, so every early return
+// forwardOp treats *any* empty response as success, so every early return
 // here must write a non-empty error instead of silently closing the
 // stream: an empty response from a read/decode failure would otherwise be
 // indistinguishable from genuine success, silently dropping the write
 // while the forwarding follower reports it as applied. Found exactly this
 // way -- a follower over a relay-adjacent connection (a phone) reporting
 // every Set as successful while nothing was ever persisted, anywhere.
+// OpAppendCommandRequest is accepted here (not just OpSet) for the same
+// reason handleOpForward's doc comment gives: its own ACL check runs
+// raft-authoritatively inside kvfsm.Apply, so this hop needs no separate
+// sender-is-a-voter gate the way OpConfirm/OpDel/OpCascadeDelete do.
 func (n *Node) handleForwardSetStream(s network.Stream) {
 	defer s.Close()
 
@@ -3015,12 +3077,12 @@ func (n *Node) handleForwardSetStream(s network.Stream) {
 		fmt.Fprintf(s, "forward set: decode command: %v", err)
 		return
 	}
-	if op != kvfsm.OpSet {
-		fmt.Fprintf(s, "forward set: expected OpSet, got op %d", op)
+	if op != kvfsm.OpSet && op != kvfsm.OpAppendCommandRequest {
+		fmt.Fprintf(s, "forward set: expected OpSet or OpAppendCommandRequest, got op %d", op)
 		return
 	}
 
-	if err := n.handleSetForward(context.Background(), key, value, false); err != nil {
+	if err := n.handleOpForward(context.Background(), op, key, value, false); err != nil {
 		s.Write([]byte(err.Error()))
 	}
 }

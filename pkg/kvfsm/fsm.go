@@ -11,6 +11,7 @@ import (
 
 	"github.com/hashicorp/raft"
 
+	"github.com/gofsd/libp2p-kv-raft/pkg/logrecord"
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 	"github.com/gofsd/libp2p-kv-raft/pkg/store"
 )
@@ -177,6 +178,25 @@ const (
 	// legitimate redemption attempts for the same token still resolve to
 	// exactly one winner.
 	OpConsumeExecInvite OpType = 6
+	// OpAppendCommandRequest is a SubmitCommand dispatch's actual write --
+	// the raft-authoritative counterpart to OpConsumeExecInvite, for the
+	// ordinary (non-invite) submission path: key is the CommandRequest's
+	// own pkg/logrecord key (whose Kind, shmevent.CommandRequestLogKind,
+	// names the commandID being targeted), value is
+	// shmevent.EncodeCommandRequestApplyPayload(authorPeerID, recordValue)
+	// -- authorPeerID the connection-authenticated submitting peer (never
+	// a value the payload itself could self-declare), recordValue the
+	// actual pkg/logrecord.Record bytes to store. Checks the submitting
+	// peer's real Group/GroupCommand/PeerGroup/Public ACL standing against
+	// the named commandID before writing anything, same isPermittedForCommand
+	// OpConsumeExecInvite already uses -- this is what closes the gap that
+	// existed when only pkg/kvctl/mobile/kvmobile's own SubmitCommand
+	// client evaluated that check, client-side, before an ordinary
+	// unauthenticated EventLogAppend: nothing stopped a remote caller from
+	// skipping that client and forging the write directly. Unlike
+	// OpConsumeExecInvite there's no prior record to consume -- an ACL
+	// failure here just means nothing is ever written, no cleanup needed.
+	OpAppendCommandRequest OpType = 7
 )
 
 // EncodeCommand builds the raft log payload for a Set/Delete operation.
@@ -321,6 +341,30 @@ func (f *FSM) Apply(l *raft.Log) any {
 			return ApplyResult{Err: err}
 		}
 		return ApplyResult{Value: v}
+	case OpAppendCommandRequest:
+		authorPeerID, recordValue, err := shmevent.DecodeCommandRequestApplyPayload(value)
+		if err != nil {
+			return ApplyResult{Err: fmt.Errorf("kvfsm: append command request: decode payload: %w", err)}
+		}
+		kind, _, _, err := logrecord.ParseKey(key)
+		if err != nil {
+			return ApplyResult{Err: fmt.Errorf("kvfsm: append command request: parse key: %w", err)}
+		}
+		commandID, ok := shmevent.ParseCommandRequestLogKind(kind)
+		if !ok {
+			return ApplyResult{Err: fmt.Errorf("kvfsm: append command request: kind %q is not a command-request kind", kind)}
+		}
+		permitted, err := isPermittedForCommand(f.Store, []byte(commandID), []byte(authorPeerID))
+		if err != nil {
+			return ApplyResult{Err: fmt.Errorf("kvfsm: append command request: acl check: %w", err)}
+		}
+		if !permitted {
+			return ApplyResult{Err: fmt.Errorf("kvfsm: %s is not permitted to submit command %s", authorPeerID, commandID)}
+		}
+		if err := checkSystemListCap(f.Store, key); err != nil {
+			return ApplyResult{Err: err}
+		}
+		return ApplyResult{Err: f.Store.Set(key, recordValue)}
 	default:
 		return ApplyResult{Err: fmt.Errorf("kvfsm: unknown op %d", op)}
 	}

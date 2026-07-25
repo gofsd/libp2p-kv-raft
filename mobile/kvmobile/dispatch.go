@@ -11,6 +11,7 @@ import (
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/logrecord"
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmclient"
+	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
 
 // This file ties the catalog -> dispatch -> execution-log flow together:
@@ -41,9 +42,12 @@ const logCommandExecKind = "cmdlog"
 // commandRequestLogKind returns the pkg/logrecord Kind every SubmitCommand
 // dispatch (CommandRequest) of commandID is stored under, so
 // ListCommandRequests can enumerate a command's pending requests with one
-// prefix scan.
+// prefix scan. Delegates to shmevent.CommandRequestLogKind, shared with
+// pkg/daemon/pkg/kvfsm, which need to recognize this same kind to enforce
+// isPermittedForCommand raft-authoritatively on the actual write (see
+// kvfsm.OpAppendCommandRequest).
 func commandRequestLogKind(commandID string) string {
-	return "cmdreq:" + commandID
+	return shmevent.CommandRequestLogKind(commandID)
 }
 
 // commandExecIndexKind returns the pkg/logrecord Kind SubmitCommand
