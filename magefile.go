@@ -593,6 +593,126 @@ func BuildAndroid() error {
 	return nil
 }
 
+// buildAndroidReleaseAAR runs `gomobile bind` baking leaderAddr/relayAddr
+// into android-app/app/libs/kvmobile.aar -- the same fixed path
+// BuildAndroid/pkg/e2erun.buildAndroidAAR both use, since
+// android-app/app/build.gradle.kts's `implementation(files("libs/kvmobile.aar"))`
+// only ever reads from there regardless of build type. Unlike
+// pkg/e2erun.buildAndroidAAR (which bakes in identitySeedHex so a
+// recorded e2e node always comes up as the same deterministic peer id),
+// this never sets identitySeedHex: a real Google Play install must
+// generate its own fresh identity on first run (see
+// mobile/kvmobile.identitySeedHex's doc comment) -- baking in a fixed
+// private key would mean every install of the same release shares one
+// raft identity. relayAddr defaults to leaderAddr when empty, matching
+// mobile/kvmobile.relayMultiaddr's own doc comment ("normally just the
+// leader's own multiaddr") and the Node connectivity policy section in
+// CLAUDE.md -- a phone can essentially never guarantee it's directly
+// dialable, so it needs a relay peer set by default, not just on request.
+func buildAndroidReleaseAAR(root, leaderAddr, relayAddr string) error {
+	if leaderAddr == "" {
+		return fmt.Errorf("leaderAddr is required, e.g. /ip4/<ip>/tcp/4001/p2p/<peerID> -- see configs/bootstrap-nodes.json (mage bootstrapnodes)")
+	}
+	if relayAddr == "" {
+		relayAddr = leaderAddr
+	}
+	aarPath := filepath.Join(root, "android-app", "app", "libs", "kvmobile.aar")
+	if err := os.MkdirAll(filepath.Dir(aarPath), 0o755); err != nil {
+		return err
+	}
+	ldflags := fmt.Sprintf(
+		"-X github.com/gofsd/libp2p-kv-raft/mobile/kvmobile.leaderMultiaddr=%s -X github.com/gofsd/libp2p-kv-raft/mobile/kvmobile.relayMultiaddr=%s",
+		leaderAddr, relayAddr,
+	)
+	cmd := exec.Command("gomobile", "bind", "-target=android", "-androidapi", "26",
+		"-ldflags", ldflags, "-o", aarPath, "./mobile/kvmobile")
+	cmd.Dir = root
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("gomobile bind: %w", err)
+	}
+	fmt.Printf("✅ android-app/app/libs/kvmobile.aar built (leader=%s relay=%s, fresh identity per install)\n", leaderAddr, relayAddr)
+	return nil
+}
+
+// requireAndroidKeystore fails fast with a clear error if
+// android-app/keystore.properties (gitignored -- see .gitignore's
+// "Release signing material" entry and that file's sibling
+// android-app/keystore/ dir for the .jks itself, see commit 684f946 for
+// how it was provisioned) is missing, rather than letting Gradle's own
+// release signingConfig guard (android-app/app/build.gradle.kts) trip
+// deep inside a multi-minute gomobile+gradle build.
+func requireAndroidKeystore(root string) error {
+	if _, err := os.Stat(filepath.Join(root, "android-app", "keystore.properties")); err != nil {
+		return fmt.Errorf("android-app/keystore.properties not found -- release signing needs storeFile/storePassword/keyAlias/keyPassword (see android-app/app/build.gradle.kts's doc comment)")
+	}
+	return nil
+}
+
+// BuildAndroidReleaseBundle bakes leaderAddr (and relayAddr, defaulting to
+// leaderAddr when passed as "" -- see buildAndroidReleaseAAR's doc
+// comment) into a fresh release AAR, then runs `gradlew bundleRelease` to
+// produce the signed .aab Google Play Console's upload flow expects --
+// Play has required the Android App Bundle format for every new app
+// since 2021 (see BuildAndroidReleaseApk for a signed APK instead, e.g.
+// for direct/manual distribution outside Play). Requires
+// android-app/keystore.properties; fails fast if it's absent.
+//
+// Usage: mage buildandroidreleasebundle <leaderAddr> [relayAddr|""]
+func BuildAndroidReleaseBundle(leaderAddr, relayAddr string) error {
+	root, err := repoRoot()
+	if err != nil {
+		return err
+	}
+	if err := requireAndroidKeystore(root); err != nil {
+		return err
+	}
+	if err := buildAndroidReleaseAAR(root, leaderAddr, relayAddr); err != nil {
+		return err
+	}
+	androidDir := filepath.Join(root, "android-app")
+	cmd := exec.Command(filepath.Join(androidDir, "gradlew"), "bundleRelease")
+	cmd.Dir = androidDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("gradlew bundleRelease: %w", err)
+	}
+	fmt.Println("✅ android-app/app/build/outputs/bundle/release/app-release.aab signed and ready to upload to Google Play Console")
+	return nil
+}
+
+// BuildAndroidReleaseApk is BuildAndroidReleaseBundle's APK counterpart
+// (`gradlew assembleRelease` instead of `bundleRelease`) -- a signed APK
+// for direct install/manual distribution outside Play (e.g.
+// `adb install -r`), signed with the exact same release keystore/config.
+// Google Play itself wants BuildAndroidReleaseBundle's .aab, not this.
+//
+// Usage: mage buildandroidreleaseapk <leaderAddr> [relayAddr|""]
+func BuildAndroidReleaseApk(leaderAddr, relayAddr string) error {
+	root, err := repoRoot()
+	if err != nil {
+		return err
+	}
+	if err := requireAndroidKeystore(root); err != nil {
+		return err
+	}
+	if err := buildAndroidReleaseAAR(root, leaderAddr, relayAddr); err != nil {
+		return err
+	}
+	androidDir := filepath.Join(root, "android-app")
+	cmd := exec.Command(filepath.Join(androidDir, "gradlew"), "assembleRelease")
+	cmd.Dir = androidDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("gradlew assembleRelease: %w", err)
+	}
+	fmt.Println("✅ android-app/app/build/outputs/apk/release/app-release.apk signed")
+	return nil
+}
+
 // BuildAndRunDocker builds the relay image and recreates the container if it already exists.
 // Usage: mage buildandrundocker
 func BuildAndRunDocker() error {
