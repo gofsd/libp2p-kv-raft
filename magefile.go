@@ -1005,6 +1005,35 @@ func RangeScan(start, end, limit string) error {
 	return nil
 }
 
+// Kvhttp runs cmd/kvhttp -- a local HTTP wrapper around kvctl-cli
+// sendevent for a caller that can only do a plain fetch() (e.g. a browser
+// sandbox with no SharedArrayBuffer/WebTransport; see that command's own
+// doc comment) -- in the foreground, blocking until interrupted (Ctrl+C),
+// the same as running `go run ./cmd/kvhttp` directly.
+//
+// addr/peerID may be "" to take cmd/kvhttp's own defaults: addr
+// 127.0.0.1:8787, peerID whatever `mage use` last selected.
+// Usage: mage kvhttp [addr] [peerID]
+func Kvhttp(addr, peerID string) error {
+	root, err := repoRoot()
+	if err != nil {
+		return err
+	}
+	args := []string{"run", "./cmd/kvhttp"}
+	if addr != "" {
+		args = append(args, "-addr", addr)
+	}
+	if peerID != "" {
+		args = append(args, "-peer", peerID)
+	}
+	cmd := exec.Command("go", args...)
+	cmd.Dir = root
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
 // RequestPermit lodges a pending permit record for peerID on the current
 // node, forwarded to the leader like any other Set. metadata may be "" (a
 // dialable multiaddr for kind "bootstrap", unused for kind "peer" -- see
