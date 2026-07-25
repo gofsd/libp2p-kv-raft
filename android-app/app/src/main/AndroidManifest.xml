@@ -15,5 +15,8 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity android:name=".CommandListActivity" android:exported="false" />
+        <activity android:name=".CommandDetailActivity" android:exported="false" />
+        <activity android:name=".ActivityLogActivity" android:exported="false" />
     </application>
 </manifest>

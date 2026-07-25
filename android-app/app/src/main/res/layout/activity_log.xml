@@ -7,24 +7,25 @@
     android:fitsSystemWindows="true">
 
     <TextView
-        android:id="@+id/statusText"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Connecting to cluster..."
-        android:textSize="14sp"
+        android:text="Activity Log"
+        android:textSize="18sp"
+        android:textStyle="bold"
         android:paddingBottom="12dp" />
 
-    <ListView
-        android:id="@+id/itemList"
+    <ScrollView
+        android:id="@+id/logScroll"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1" />
+        android:layout_height="match_parent">
 
-    <Button
-        android:id="@+id/logButton"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:text="Activity Log" />
+        <TextView
+            android:id="@+id/logText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:textIsSelectable="true"
+            android:textSize="12sp" />
+    </ScrollView>
 
 </LinearLayout>

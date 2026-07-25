@@ -276,11 +276,20 @@ which the NDK headers only declare from API 26 onward; building against a lower 
 hides the declaration and fails with a confusing `could not determine what
 C.ASharedMemory_create refers to` linker error rather than a clear availability error.
 
-The app's UI (`MainActivity`) is a thin wrapper over `Kvmobile.start/submit/get`: `start` brings
-up the daemon and joins the cluster, `submit`/`get` go through the daemon's IPC exactly like the
-desktop CLI, just over the Android shared-memory transport instead of named shared memory. Every
-`submit` is forwarded from this (never-leader) follower to whichever peer is currently leader,
-over `pkg/daemon.ForwardProtocolID`.
+The app's UI browses the full `Kvmobile` command surface rather than exposing just a few calls:
+`MainActivity` brings the daemon up once via `Start` (joining the build-time-baked-in leader) and
+lists every category from `CommandCatalog.kt`'s ~60-entry `CommandSpec` table (Cluster, KV,
+Permits, Execute, Log records, Group, Command, Links, Dispatch, ExecInvite, Raw); tapping one opens
+`CommandListActivity` for that category's commands, and tapping a command opens
+`CommandDetailActivity`, which renders one labeled input field per parameter, a Run button, and
+that screen's own scrollable output log. Every call goes through the daemon's IPC exactly like the
+desktop CLI, just over the Android shared-memory transport instead of named shared memory, off the
+UI thread; `submit`/dispatch calls are forwarded from this (never-leader) follower to whichever
+peer is currently leader, over `pkg/daemon.ForwardProtocolID`. The three standing-subscription
+calls (`WatchExecute`, `WatchCommandLog`, `RunCommandDispatcher`) post their callback notifications
+to a process-wide `OutputLog` instead of that one screen's output, since the subscription keeps
+running after you navigate away — `ActivityLogActivity` (the main screen's "Activity Log" button)
+shows that full history plus live updates while it's the foregrounded screen.
 
 `Kvmobile` runs exactly one daemon per process. `Start(dataDir)`/`StartWithKey(dataDir, keyHex)`
 bring it up joined to the build-time-baked-in leader — the Android equivalent of desktop's
