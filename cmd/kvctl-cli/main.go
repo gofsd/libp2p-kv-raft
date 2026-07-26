@@ -54,6 +54,8 @@ func main() {
 		cmdListClusters(os.Args[2:])
 	case "listnodes":
 		cmdListNodes(os.Args[2:])
+	case "accesstoken":
+		cmdAccessToken(os.Args[2:])
 	case "rangescan":
 		cmdRangeScan(os.Args[2:])
 	case "requestpermit":
@@ -122,6 +124,7 @@ func usage() {
   kvctl-cli get <key>
   kvctl-cli listclusters
   kvctl-cli listnodes <peerID>
+  kvctl-cli accesstoken <peerID>
   kvctl-cli rangescan <start> <end> [-limit N]
   kvctl-cli requestpermit <kind: peer|bootstrap> <peerID> <metadata>
   kvctl-cli confirmpermit <kind: peer|bootstrap> <peerID>
@@ -477,6 +480,21 @@ func cmdListNodes(args []string) {
 		}
 		fmt.Println(string(out))
 	}
+}
+
+// cmdAccessToken prints peerID's deterministic cmd/kvhttp bearer token --
+// see kvctl.AccessToken's doc comment.
+func cmdAccessToken(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli accesstoken <peerID>")
+		os.Exit(2)
+	}
+	token, err := kvctl.AccessToken(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "accesstoken: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(token)
 }
 
 func cmdRequestPermit(args []string) {

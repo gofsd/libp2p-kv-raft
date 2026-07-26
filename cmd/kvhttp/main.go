@@ -15,14 +15,27 @@
 // it just shells out to kvctl-cli sendevent (same as pkg/e2erun's own
 // sendEventLocal) so all the real signing/IPC logic stays in one place.
 //
-// Not meant to be exposed beyond localhost: it has no auth of its own
-// (anyone who can reach it can drive the target node exactly as if they
-// were running kvctl-cli sendevent themselves), only permissive CORS so a
-// browser-based caller on a different origin can reach it at all.
+// One kvhttp process serves *every* node currently in the local registry
+// (pkg/registry, whatever `mage addnode`/`addnodewithkey` has created on
+// this machine) rather than being pinned to one at startup: each request
+// must carry `Authorization: Bearer <token>` naming which node it targets,
+// where <token> is that node's own deterministic access token
+// (registry.AccessTokenForKeyFile -- printed automatically by AddNode/
+// AddNodeWithKey, or recovered any time via `mage accesstoken <peerID>`).
+// A request whose token doesn't match any registered node's is rejected
+// outright, before kvctl-cli ever runs -- so holding one node's token lets
+// a caller drive *that* node exactly as if running kvctl-cli sendevent
+// themselves, same as before, but says nothing about any other node this
+// machine happens to also have registered. Still meant for a trusted
+// localhost network path, not a substitute for TLS/real network-level
+// access control if exposed beyond that -- token comparison is
+// constant-time (crypto/hmac.Equal) but request bodies/tokens themselves
+// travel in the clear otherwise.
 package main
 
 import (
 	"context"
+	"crypto/hmac"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -53,44 +66,65 @@ const maxBodyBytes = 1 << 20 // 1 MiB
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8787", "listen address -- deliberately loopback-only by default, see this file's doc comment")
-	peerID := flag.String("peer", "", "target peer id; defaults to whatever `mage use`/`kvctl-cli use` last selected")
 	kvctlBin := flag.String("kvctl-cli", "", "path to the kvctl-cli binary; defaults to $PATH, falling back to `go build` into a temp dir")
 	flag.Parse()
 
-	resolvedPeer, err := resolvePeerID(*peerID)
+	reg, err := registry.Open()
 	if err != nil {
-		log.Fatalf("kvhttp: %v", err)
+		log.Fatalf("kvhttp: open registry: %v", err)
 	}
 	resolvedBin, err := resolveKvctlBin(*kvctlBin)
 	if err != nil {
 		log.Fatalf("kvhttp: %v", err)
 	}
 
-	h := &handler{peerID: resolvedPeer, kvctlBin: resolvedBin}
+	h := &handler{reg: reg, kvctlBin: resolvedBin}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/command", h.handleCommand)
 
-	log.Printf("kvhttp: targeting peer %s via %s, listening on http://%s/command", resolvedPeer, resolvedBin, *addr)
+	log.Printf("kvhttp: multi-tenant (every node in %s), routed by Authorization: Bearer <token> -- see `mage accesstoken <peerID>` -- via %s, listening on http://%s/command", reg.Dir, resolvedBin, *addr)
 	log.Fatal(http.ListenAndServe(*addr, mux))
 }
 
-// resolvePeerID returns explicit if non-empty, else whatever `mage use`
-// last recorded via pkg/registry -- same lookup kvctl.Set/Get already do,
-// so this wrapper needs no config of its own beyond having already run
-// `mage addnode`/`mage use <peerID>` once.
-func resolvePeerID(explicit string) (string, error) {
-	if explicit != "" {
-		return explicit, nil
+// resolvePeerFromToken finds the registered node whose own access token
+// (registry.AccessTokenForKeyFile) matches token, re-reading the registry
+// fresh on every call -- so a node created after kvhttp started (e.g. a
+// fresh `mage addnodewithkey`) is reachable immediately, no restart needed.
+// Comparison is constant-time (hmac.Equal) per candidate; the number of
+// registered nodes on one machine is small enough that this being O(n)
+// rather than an indexed lookup doesn't matter.
+func (h *handler) resolvePeerFromToken(token string) (string, error) {
+	if token == "" {
+		return "", fmt.Errorf("missing bearer token")
 	}
-	reg, err := registry.Open()
+	nodes, err := h.reg.List()
 	if err != nil {
-		return "", fmt.Errorf("open registry: %w", err)
+		return "", fmt.Errorf("list registered nodes: %w", err)
 	}
-	peerID, err := reg.Current()
-	if err != nil {
-		return "", fmt.Errorf("resolve target peer: %w (pass -peer explicitly to skip this)", err)
+	for _, n := range nodes {
+		want, err := registry.AccessTokenForKeyFile(n.KeyPath)
+		if err != nil {
+			// This node's own key file is unreadable/corrupt -- not this
+			// request's problem, and not necessarily every other node's
+			// either, so skip it rather than failing the whole lookup.
+			continue
+		}
+		if hmac.Equal([]byte(want), []byte(token)) {
+			return n.PeerID, nil
+		}
 	}
-	return peerID, nil
+	return "", fmt.Errorf("no registered node matches this access token")
+}
+
+// bearerToken extracts the token from an `Authorization: Bearer <token>`
+// header, or "" if the header is missing or a different scheme.
+func bearerToken(r *http.Request) string {
+	const prefix = "Bearer "
+	h := r.Header.Get("Authorization")
+	if !strings.HasPrefix(h, prefix) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(h, prefix))
 }
 
 // resolveKvctlBin returns explicit if non-empty, else the first of: a
@@ -120,16 +154,19 @@ func resolveKvctlBin(explicit string) (string, error) {
 }
 
 type handler struct {
-	peerID   string
+	reg      *registry.Registry
 	kvctlBin string
 }
 
 func (h *handler) handleCommand(w http.ResponseWriter, r *http.Request) {
-	// Permissive by design -- see this file's doc comment on why this is
-	// meant for localhost-only use, not a substitute for real auth.
+	// CORS is permissive by design -- see this file's doc comment for why
+	// that's fine here (auth is the Authorization header below, checked
+	// per request, not anything origin-based). "Authorization" must be
+	// listed for a browser's CORS preflight to allow the real request
+	// through with that header set.
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
@@ -137,6 +174,15 @@ func (h *handler) handleCommand(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method != http.MethodPost {
 		httpError(w, http.StatusMethodNotAllowed, "only POST is supported")
+		return
+	}
+
+	peerID, err := h.resolvePeerFromToken(bearerToken(r))
+	if err != nil {
+		// Deliberately the same message/status for "no token" and "token
+		// doesn't match any node" -- distinguishing them would let a
+		// caller probe for whether *some* node's token looks like theirs.
+		httpError(w, http.StatusUnauthorized, "missing or invalid access token (Authorization: Bearer <token>; see `mage accesstoken <peerID>`)")
 		return
 	}
 
@@ -157,7 +203,7 @@ func (h *handler) handleCommand(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), commandTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, h.kvctlBin, "sendevent", h.peerID, string(body))
+	cmd := exec.CommandContext(ctx, h.kvctlBin, "sendevent", peerID, string(body))
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

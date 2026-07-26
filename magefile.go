@@ -895,8 +895,26 @@ func runAddNode(peerIDs ...string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("✅ node %s is up and selected as current\n", peerID)
+	printNodeUp(peerID)
 	return nil
+}
+
+// printNodeUp prints AddNode/AddNodeWithKey's shared success line, plus
+// peerID's kvhttp access token (kvctl.AccessToken -- see that function's
+// doc comment) so an operator has everything needed to drive the node
+// through cmd/kvhttp immediately, without a separate `mage accesstoken`
+// round trip. A token-derivation failure is reported but does not fail
+// node creation itself -- the node is already up either way, and `mage
+// accesstoken <peerID>` can be retried separately once whatever's wrong
+// with reading its identity.key is fixed.
+func printNodeUp(peerID string) {
+	fmt.Printf("✅ node %s is up and selected as current\n", peerID)
+	token, err := kvctl.AccessToken(peerID)
+	if err != nil {
+		fmt.Printf("   (could not derive kvhttp access token: %v)\n", err)
+		return
+	}
+	fmt.Printf("   kvhttp access token: %s\n", token)
 }
 
 // AddNodeWithKey is the AddNode equivalent for provisioning a node under an
@@ -927,7 +945,23 @@ func runAddNodeWithKey(keyFile string, peerIDs ...string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("✅ node %s is up and selected as current\n", peerID)
+	printNodeUp(peerID)
+	return nil
+}
+
+// AccessToken prints peerID's deterministic kvhttp bearer token -- see
+// kvctl.AccessToken's doc comment. AddNode/AddNodeWithKey already print
+// this once at creation time; use this to recover it again later (it's
+// re-derived from identity.key, not stored separately, so there's nothing
+// to have lost).
+//
+// Usage: mage accesstoken <peerID>
+func AccessToken(peerID string) error {
+	token, err := kvctl.AccessToken(peerID)
+	if err != nil {
+		return err
+	}
+	fmt.Println(token)
 	return nil
 }
 
@@ -1125,16 +1159,19 @@ func RangeScan(start, end, limit string) error {
 	return nil
 }
 
-// Kvhttp runs cmd/kvhttp -- a local HTTP wrapper around kvctl-cli
-// sendevent for a caller that can only do a plain fetch() (e.g. a browser
-// sandbox with no SharedArrayBuffer/WebTransport; see that command's own
-// doc comment) -- in the foreground, blocking until interrupted (Ctrl+C),
-// the same as running `go run ./cmd/kvhttp` directly.
+// Kvhttp runs cmd/kvhttp -- a local, multi-tenant HTTP wrapper around
+// kvctl-cli sendevent for a caller that can only do a plain fetch() (e.g. a
+// browser sandbox with no SharedArrayBuffer/WebTransport; see that
+// command's own doc comment) -- in the foreground, blocking until
+// interrupted (Ctrl+C), the same as running `go run ./cmd/kvhttp` directly.
+// One running kvhttp serves every node currently in the local registry;
+// each request's `Authorization: Bearer <token>` (see `mage accesstoken
+// <peerID>`) picks which one it targets, so there is no per-node flag here
+// to set.
 //
-// addr/peerID may be "" to take cmd/kvhttp's own defaults: addr
-// 127.0.0.1:8787, peerID whatever `mage use` last selected.
-// Usage: mage kvhttp [addr] [peerID]
-func Kvhttp(addr, peerID string) error {
+// addr may be "" to take cmd/kvhttp's own default, 127.0.0.1:8787.
+// Usage: mage kvhttp [addr]
+func Kvhttp(addr string) error {
 	root, err := repoRoot()
 	if err != nil {
 		return err
@@ -1142,9 +1179,6 @@ func Kvhttp(addr, peerID string) error {
 	args := []string{"run", "./cmd/kvhttp"}
 	if addr != "" {
 		args = append(args, "-addr", addr)
-	}
-	if peerID != "" {
-		args = append(args, "-peer", peerID)
 	}
 	cmd := exec.Command("go", args...)
 	cmd.Dir = root

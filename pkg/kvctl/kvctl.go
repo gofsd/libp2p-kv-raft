@@ -420,6 +420,25 @@ func Use(peerID string) error {
 	return reg.SetCurrent(peerID)
 }
 
+// AccessToken implements `mage accesstoken <peerID>`: returns peerID's
+// deterministic cmd/kvhttp bearer token, derived from its own identity.key
+// -- see registry.AccessTokenForKeyFile's doc comment. AddNode/AddNodeWithKey
+// print this same value automatically once a node is up; this is how to
+// recover it again later (or hand it to a different operator) without
+// needing to have written it down at creation time, since it's re-derived
+// from the key on disk rather than stored separately.
+func AccessToken(peerID string) (string, error) {
+	reg, err := registry.Open()
+	if err != nil {
+		return "", err
+	}
+	token, err := reg.AccessToken(peerID)
+	if err != nil {
+		return "", fmt.Errorf("access token: %w", err)
+	}
+	return token, nil
+}
+
 // DeleteNode implements `mage deletenode <peerID>`: permanently removes a
 // node's on-disk state (identity key, sqlite store, raft log/snapshots --
 // its whole data directory) and its registry entry. It refuses to do so

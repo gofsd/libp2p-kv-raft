@@ -591,6 +591,47 @@ UI takes it at runtime, closer to desktop's `mage addfollower <addr>`. See `web-
 the full architecture and its currently-unverified-in-CI gaps (needs a wasm32 C toolchain for
 SQLite, and a real browser + live cluster to exercise end to end).
 
+### HTTP command bridge (`kvhttp`)
+
+`web-app/` above needs a cross-origin-isolated origin (SharedArrayBuffer/WebTransport) that not
+every embedding allows — e.g. a third-party sandbox that only permits plain `fetch()`. `cmd/kvhttp`
+is a thin local HTTP front door for exactly that case: one endpoint, `POST /command`, accepting and
+returning the same human-readable event JSON `kvctl-cli sendevent` already speaks (the `set_key`/
+`set_field`/`get_field` shape used throughout this README). It never touches shmring/libp2p/raft
+itself — it just shells out to `kvctl-cli sendevent` so the real signing/IPC logic stays in one
+place.
+
+```bash
+mage kvhttp                 # foreground, listens on 127.0.0.1:8787 by default
+mage kvhttp 127.0.0.1:9000  # or a specific -addr
+```
+
+One running `kvhttp` serves *every* node currently in the local registry rather than being pinned
+to one at startup: each request must carry `Authorization: Bearer <token>` naming which node it
+targets. `<token>` is that node's own deterministic access token — `mage addnode`/`addnodewithkey`
+print it automatically once the node is up, and it can be recovered again any time (it's re-derived
+from `identity.key`, `registry.AccessTokenForKeyFile`, nothing separate is stored) via:
+
+```bash
+mage accesstoken <peerID>
+```
+
+A request whose token doesn't match any registered node's `401`s before `kvctl-cli` ever runs, so
+holding one node's token drives *that* node exactly as if running `kvctl-cli sendevent` yourself,
+and says nothing about any other node this machine happens to also have registered — e.g. a
+single-node cluster bootstrapped from an operator-supplied identity via `mage addnodewithkey
+<keyFile>` gets its own token the same way, usable immediately against the same running `kvhttp`:
+
+```bash
+curl -X POST http://127.0.0.1:8787/command \
+  -H "Authorization: Bearer $(mage accesstoken <peerID>)" \
+  -d '{"event":"set_key","value":"greeting","id":100}'
+```
+
+Still meant for a trusted localhost network path, not a substitute for TLS/real network-level
+access control if exposed beyond that — token comparison is constant-time, but request bodies and
+tokens themselves travel in the clear otherwise.
+
 ## Log records
 
 `pkg/logrecord` is a generic, replicated structured-record store built on top of the
