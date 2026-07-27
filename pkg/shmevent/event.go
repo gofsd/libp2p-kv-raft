@@ -408,6 +408,25 @@ const (
 	// (ChannelPollClosed) or it's giving up early (e.g. SIGINT). Value is
 	// ignored on the response.
 	EventChannelCloseWrite uint8 = 42
+	// EventKick force-removes an arbitrary peer from the raft cluster
+	// this node currently belongs to (raft.RemoveServer), without that
+	// peer's own cooperation -- the administrative counterpart to
+	// EventLeave, for when a member has genuinely gone down for good
+	// (crashed, wiped, never coming back) and an operator wants to
+	// restore the cluster's ability to make progress rather than wait
+	// for it to rejoin on its own (e.g. a lost voter majority). Value is
+	// the target peer id (a plain string, not a multiaddr -- there's
+	// nothing to dial, just a raft configuration entry to drop). Unlike
+	// EventLeave (self-only, no authorization needed), removing
+	// *another* peer is privileged: only a currently confirmed raft
+	// voter may do it -- enforced the same way EventPermitConfirm's doc
+	// comment describes (a local pkg/ipc operator on a voter's own
+	// machine is trusted implicitly; a remote ClientProtocolID caller
+	// must be an authenticated voter itself). Applied directly if this
+	// node is the leader, or forwarded one hop to whoever is
+	// (pkg/daemon.ForwardKickProtocolID), mirroring EventLeave's own
+	// forwarding shape.
+	EventKick uint8 = 43
 	// EventError is response-only: Value carries a UTF-8 error message,
 	// ID echoes the failed request's ID. Not part of the fields the
 	// protocol was specified with -- added because the struct has no
@@ -504,6 +523,8 @@ func EventName(e uint8) string {
 		return "channel_close"
 	case EventChannelCloseWrite:
 		return "channel_close_write"
+	case EventKick:
+		return "kick"
 	case EventError:
 		return "error"
 	default:
@@ -602,6 +623,8 @@ func EventFromName(name string) (uint8, bool) {
 		return EventChannelClose, true
 	case "channel_close_write":
 		return EventChannelCloseWrite, true
+	case "kick":
+		return EventKick, true
 	case "error":
 		return EventError, true
 	default:

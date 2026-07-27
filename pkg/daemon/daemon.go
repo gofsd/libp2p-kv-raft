@@ -98,6 +98,21 @@ const ForwardJoinProtocolID = protocol.ID("/libp2p-kv-raft/forward-join/1.0.0")
 // can only ever ask to remove itself.
 const ForwardLeaveProtocolID = protocol.ID("/libp2p-kv-raft/forward-leave/1.0.0")
 
+// ForwardKickProtocolID is the libp2p protocol a raft member that isn't
+// currently the leader uses to relay an EventKick (see that event's doc
+// comment) to whoever is -- forceKick's one-hop forwarding counterpart to
+// ForwardLeaveProtocolID, for removing an *arbitrary* peer rather than
+// only the requester itself. Unlike ForwardLeaveProtocolID, the peer to
+// remove genuinely is a payload field here (there's no other way to name
+// someone other than the stream's own authenticated identity) -- so
+// handleForwardKickStream re-checks the *forwarding* peer's own identity
+// against the leader's voter list before acting on it, the same way
+// handleForwardConfirmStream re-authorizes EventPermitConfirm/Revoke at
+// this same hop (see that handler's doc comment for why the original
+// caller's own check, done once in handleShmEvent, isn't sufficient on
+// its own).
+const ForwardKickProtocolID = protocol.ID("/libp2p-kv-raft/forward-kick/1.0.0")
+
 // ClientProtocolID is the libp2p protocol a remote client with no local
 // pkg/ipc channel of its own speaks directly to any cluster node to issue
 // Add/Set/Get requests -- namely the browser build in web-app/ (rust-libp2p
@@ -927,6 +942,7 @@ func start(cfg Config) (*Node, error) {
 	h.SetStreamHandler(ChannelProtocolID, n.handleChannelStream)
 	h.SetStreamHandler(ForwardJoinProtocolID, n.handleForwardJoinStream)
 	h.SetStreamHandler(ForwardLeaveProtocolID, n.handleForwardLeaveStream)
+	h.SetStreamHandler(ForwardKickProtocolID, n.handleForwardKickStream)
 	h.SetStreamHandler(ClientProtocolID, n.handleClientStream)
 	h.SetStreamHandler(ExecInviteRedeemProtocolID, n.handleExecInviteRedeemStream)
 	h.SetStreamHandler(ForwardExecInviteRedeemProtocolID, n.handleForwardExecInviteRedeemStream)
@@ -1722,6 +1738,24 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 			return errorMsg(m.ID, err)
 		}
 		return shmevent.Msg{EventType: shmevent.EventLeave, ID: m.ID}
+
+	case shmevent.EventKick:
+		// Same "only a raft voter may act" check EventPermitConfirm's own
+		// doc comment explains -- skipped for a local caller (trusted
+		// implicitly, see that comment), enforced here for a remote one
+		// since this is the only place that authenticates who *actually*
+		// asked, not just whichever node last relayed the request one hop
+		// closer to the leader (handleForwardKickStream's own check).
+		if caller.remotePeer != "" {
+			rf := n.getRaft()
+			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
+				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
+			}
+		}
+		if err := n.kickPeer(ctx, string(m.Value)); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventKick, ID: m.ID}
 
 	// EventGroupPut/Delete, EventCommandPut/Delete,
 	// EventGroupCommandPut/Delete, and EventPeerGroupPut/Delete implement
@@ -3839,6 +3873,105 @@ func (n *Node) handleForwardLeaveStream(s network.Stream) {
 		return
 	}
 	if line := n.removeServerLine(context.Background(), rf, remote.String()); strings.HasPrefix(line, "ERR:") {
+		s.Write([]byte(strings.TrimPrefix(line, "ERR: ")))
+	}
+}
+
+// kickPeer implements EventKick (see that event's doc comment): removes
+// targetPeerID from the raft cluster this node currently belongs to via
+// raft.RemoveServer, applying directly if this node is already the
+// leader, or forwarding one hop over ForwardKickProtocolID otherwise --
+// leaveCluster's shape exactly, generalized from "remove myself" to
+// "remove whoever the caller names." Authorization (only a raft voter may
+// call this) is checked by handleShmEvent before this is ever reached for
+// a remote caller, and re-checked at the forwarding hop by
+// handleForwardKickStream -- kickPeer itself does no identity check, the
+// same division of responsibility handleConfirmForward/leaveCluster
+// already have.
+func (n *Node) kickPeer(ctx context.Context, targetPeerID string) error {
+	if targetPeerID == "" {
+		return fmt.Errorf("kick: missing target peer id")
+	}
+	rf, isLeader, leaderID, err := n.resolveWriteTarget(5 * n.electionTimeout)
+	if err != nil {
+		return err
+	}
+	if isLeader {
+		if line := n.removeServerLine(ctx, rf, targetPeerID); strings.HasPrefix(line, "ERR:") {
+			return fmt.Errorf("%s", strings.TrimPrefix(line, "ERR: "))
+		}
+		return nil
+	}
+	return n.forwardKick(ctx, leaderID, targetPeerID)
+}
+
+// forwardKick relays a kick request for targetPeerID to leaderID over
+// ForwardKickProtocolID, mirroring forwardLeave/forwardConfirm's wire
+// convention (empty response = success, non-empty = the leader's error
+// message) -- unlike forwardLeave, targetPeerID genuinely is the payload
+// here (see ForwardKickProtocolID's doc comment for why).
+func (n *Node) forwardKick(ctx context.Context, leaderID raft.ServerID, targetPeerID string) error {
+	pid, err := peer.Decode(string(leaderID))
+	if err != nil {
+		return fmt.Errorf("forward kick: invalid leader id %s: %w", leaderID, err)
+	}
+	s, err := n.host.NewStream(ctx, pid, ForwardKickProtocolID)
+	if err != nil {
+		return fmt.Errorf("forward kick to leader %s: %w", leaderID, err)
+	}
+	defer s.Close()
+
+	if _, err := s.Write([]byte(targetPeerID)); err != nil {
+		return fmt.Errorf("forward kick: write to leader %s: %w", leaderID, err)
+	}
+	if err := s.CloseWrite(); err != nil {
+		return fmt.Errorf("forward kick: close write to leader %s: %w", leaderID, err)
+	}
+
+	respBuf, err := io.ReadAll(s)
+	if err != nil {
+		return fmt.Errorf("forward kick: read response from leader %s: %w", leaderID, err)
+	}
+	if len(respBuf) > 0 {
+		return fmt.Errorf("forward kick: %s", respBuf)
+	}
+	return nil
+}
+
+// handleForwardKickStream is the leader-side handler for
+// ForwardKickProtocolID: it reads the target peer id to remove from the
+// stream body (unlike handleForwardLeaveStream, which has no payload at
+// all -- see ForwardKickProtocolID's doc comment), checks the *forwarding*
+// peer's own libp2p-authenticated identity against the leader's voter
+// list (handleForwardConfirmStream's same reasoning: the per-message
+// signature check alone doesn't establish cluster membership), and
+// removes targetPeerID via removeServerLine if authorized.
+func (n *Node) handleForwardKickStream(s network.Stream) {
+	defer s.Close()
+
+	remote := s.Conn().RemotePeer()
+	rf := n.getRaft()
+	if rf == nil || !isVoter(rf, raft.ServerID(remote.String())) {
+		fmt.Fprintf(s, "forward kick: %s is not a current raft voter", remote)
+		return
+	}
+	if rf.State() != raft.Leader {
+		_, leaderID := rf.LeaderWithID()
+		fmt.Fprintf(s, "not leader; current leader is %s (already forwarded once)", leaderID)
+		return
+	}
+
+	buf, err := io.ReadAll(s)
+	if err != nil {
+		fmt.Fprintf(s, "forward kick: read target: %v", err)
+		return
+	}
+	targetPeerID := string(buf)
+	if targetPeerID == "" {
+		fmt.Fprintf(s, "forward kick: missing target peer id")
+		return
+	}
+	if line := n.removeServerLine(context.Background(), rf, targetPeerID); strings.HasPrefix(line, "ERR:") {
 		s.Write([]byte(strings.TrimPrefix(line, "ERR: ")))
 	}
 }

@@ -214,6 +214,36 @@ func rm(reg *registry.Registry, binPath string, extraDaemonArgs []string, ownPee
 	return resumeSolo(reg, binPath, extraDaemonArgs, info)
 }
 
+// Kick implements `mage kick <peerID> <targetPeerID>`: asks the raft
+// cluster peerID is currently joined to, over its already-running
+// daemon's local IPC, to force-remove targetPeerID (raft.RemoveServer --
+// see shmevent.EventKick's doc comment) without needing targetPeerID's
+// own cooperation. Leave/Rm's self-service counterpart for the case they
+// can't cover: a voter that's gone down for good (crashed, wiped, never
+// coming back) and isn't going to gracefully `mage leave` itself,
+// potentially leaving the remaining voters unable to elect a leader at
+// all until it's dropped from the configuration. Unlike Leave/Rm, this
+// never touches peerID's own membership or restarts anything -- peerID
+// stays exactly where it was; targetPeerID is who leaves. Only takes
+// effect if peerID is itself a raft voter (or can forward to one) -- see
+// shmevent.EventKick's doc comment.
+func Kick(peerID, targetPeerID string) error {
+	reg, err := registry.Open()
+	if err != nil {
+		return err
+	}
+	if _, err := requireJoined(reg, "kick", peerID); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
+	defer cancel()
+	if err := shmclient.Kick(ctx, peerID, targetPeerID); err != nil {
+		return fmt.Errorf("kick: %w", err)
+	}
+	return nil
+}
+
 // requireJoined validates that ownPeerID is a known, currently-joined
 // (registry.NodeInfo.ClusterPeerID != "") node that is actually running --
 // Leave/Rm both need to reach its live daemon over local IPC before they

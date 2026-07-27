@@ -186,6 +186,26 @@ func (s *Session) Leave(ctx context.Context) error {
 	return nil
 }
 
+// Kick asks the raft cluster the session's node currently belongs to to
+// force-remove targetPeerID (raft.RemoveServer), without that peer's own
+// cooperation -- see shmevent.EventKick's doc comment. Only takes effect
+// if the session's node is itself a raft voter (or forwards to one),
+// same restriction ConfirmPermit/RevokePermit have.
+func (s *Session) Kick(ctx context.Context, targetPeerID string) error {
+	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
+		EventType: shmevent.EventKick,
+		Value:     []byte(targetPeerID),
+		ID:        newID(),
+	}, s.priv)
+	if err != nil {
+		return fmt.Errorf("shmclient: kick: %w", err)
+	}
+	if resp.EventType == shmevent.EventError {
+		return fmt.Errorf("shmclient: kick: %s", resp.Value)
+	}
+	return nil
+}
+
 // RequestPermit lodges a pending permit request for peerID (of the given
 // kind -- shmevent.KindPermitPeer or shmevent.KindBootstrapNode) on the
 // session's node. metadata is opaque, kind-specific data (e.g. a dialable
@@ -858,6 +878,15 @@ func Leave(ctx context.Context, peerID string) error {
 		return err
 	}
 	return s.Leave(ctx)
+}
+
+// Kick is the one-shot convenience wrapper around Open+Session.Kick.
+func Kick(ctx context.Context, peerID, targetPeerID string) error {
+	s, err := Open(ctx, peerID)
+	if err != nil {
+		return err
+	}
+	return s.Kick(ctx, targetPeerID)
 }
 
 // RequestPermit is the one-shot convenience wrapper around

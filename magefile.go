@@ -1025,6 +1025,24 @@ func Rm(peerID string) error {
 	return nil
 }
 
+// Kick asks the raft cluster peerID is currently joined to to force-
+// remove targetPeerID (raft.RemoveServer) without targetPeerID's own
+// cooperation -- Leave/Rm's self-service counterpart for a voter that's
+// gone down for good (crashed, wiped, never coming back) and isn't going
+// to gracefully `mage leave` itself, potentially leaving the remaining
+// voters unable to elect a leader at all until it's dropped from the
+// configuration. peerID itself is untouched -- it must already be a raft
+// voter (or able to forward to one) for this to take effect.
+//
+// Usage: mage kick <peerID> <targetPeerID>
+func Kick(peerID, targetPeerID string) error {
+	if err := kvctl.Kick(peerID, targetPeerID); err != nil {
+		return err
+	}
+	fmt.Printf("✅ %s removed from %s's cluster\n", targetPeerID, peerID)
+	return nil
+}
+
 // Use selects which node Set/Get target, by peer id.
 // Usage: mage use <peerID>
 func Use(peerID string) error {
