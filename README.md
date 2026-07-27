@@ -396,6 +396,14 @@ if the leader requires one) and deletes the joined cluster's local data subdirec
 — never the identity key at `dataDir` itself, same distinction desktop's `mage rm` draws against
 `mage deletenode`.
 
+`CreateJoinInvite(suffrage)` is the Android counterpart of desktop's `mage createjoininvite
+<voter|learner>`: mints a fresh, random `KindJoinInvite` token (returned hex-encoded) granting the
+given suffrage on this device's own cluster, without hand-delivering it the way `RecruitPeer` does
+— append it to this device's own address (`GetOwnAddr`) as `"<addr>#<tokenHex>"` for some other
+device's `Join`/`Start` to redeem directly, admitted immediately even if this cluster's leader
+normally requires confirmation. `RevokeJoinInvite(tokenHex)` deletes one before it's ever redeemed.
+Both only take effect if this device is itself a raft voter, same as desktop.
+
 `Kick(targetPeerID)` is the Android counterpart of desktop's `mage kick`: force-removes some
 *other* peer from the currently-joined cluster (`raft.RemoveServer`) without that peer's own
 cooperation, for a voter that's gone down for good and isn't coming back to gracefully `Leave` on
@@ -407,6 +415,13 @@ build, since `Start`/`StartWithKey`'s automatic join always requests full voter 
 help once the cluster has already lost quorum outright — that needs desktop's offline `cmd/kvrecover`
 instead, which has no Android equivalent (it operates on a *stopped* node's raw on-disk raft files, a
 concept that doesn't fit `Kvmobile`'s always-running in-process daemon).
+
+`AccessToken()` is the Android counterpart of desktop's `mage accesstoken <peerID>`: this device's
+own deterministic `cmd/kvhttp` bearer token (an HMAC over `identity.key`'s raw private key bytes —
+see `registry.AccessTokenForKeyFile`'s doc comment), e.g. to hand a desktop operator this device's
+token for a `kvhttp` routing rule. Desktop resolves `peerID` through its multi-node registry first;
+`Kvmobile` runs exactly one daemon and needs no such lookup, so this just derives straight from
+whatever `identity.key` already sits at the running device's own data directory.
 
 `ListClusters()` and `ListClusterMembers()` are the Android counterparts of desktop's
 `listclusters`/`listnodes`, adapted to `Kvmobile` running exactly one daemon at a time:

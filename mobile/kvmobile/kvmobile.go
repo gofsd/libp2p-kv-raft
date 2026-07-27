@@ -473,6 +473,31 @@ func Kick(targetPeerID string) error {
 	return nil
 }
 
+// AccessToken returns this device's own deterministic cmd/kvhttp bearer
+// token (see registry.AccessTokenForKeyFile's doc comment: an HMAC over
+// the identity.key file's raw private key bytes, one-way and unique per
+// key) -- desktop's pkg/kvctl.AccessToken/`mage accesstoken <peerID>`
+// counterpart, e.g. to hand a desktop operator this device's token for a
+// kvhttp routing rule. Desktop resolves peerID through its multi-node
+// registry first; kvmobile runs exactly one daemon and needs no such
+// lookup -- identity.key always lives at curDataDirRoot itself (see
+// ensureIdentity/importIdentity), so the derivation reads straight from
+// there.
+func AccessToken() (string, error) {
+	mu.Lock()
+	dataDirRoot := curDataDirRoot
+	ok := started
+	mu.Unlock()
+	if !ok {
+		return "", fmt.Errorf("kvmobile: Start has not completed successfully yet")
+	}
+	token, err := registry.AccessTokenForKeyFile(filepath.Join(dataDirRoot, "identity.key"))
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: access token: %w", err)
+	}
+	return token, nil
+}
+
 // currentSession returns the *shmclient.Session for the currently running
 // daemon, or an error if Start/StartWithKey hasn't completed successfully
 // yet -- the shared guard every call that needs a live daemon (Submit,

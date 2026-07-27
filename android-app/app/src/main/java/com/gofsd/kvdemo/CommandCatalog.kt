@@ -77,6 +77,15 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     add("Cluster", "RecruitPeer", listOf("ticket (addr#tokenHex)", "voter|learner")) { a ->
         Kvmobile.recruitPeer(a[0], a[1])
     }
+    // CreateJoinInvite mints a one-time token granting suffrage on THIS
+    // device's own cluster, without hand-delivering it the way RecruitPeer
+    // does -- combine with GetOwnAddr's address as "<addr>#<tokenHex>" for
+    // some other device's own Join/Start to redeem directly (admitted
+    // immediately even if this cluster's leader normally requires
+    // confirmation). RevokeJoinInvite deletes one before it's ever
+    // redeemed. Only take effect if this device is itself a raft voter.
+    add("Cluster", "CreateJoinInvite", listOf("voter|learner")) { a -> Kvmobile.createJoinInvite(a[0]) }
+    add("Cluster", "RevokeJoinInvite", listOf("tokenHex")) { a -> Kvmobile.revokeJoinInvite(a[0]); ok() }
 
     add("Cluster", "Stop", emptyList()) { Kvmobile.stop(); ok() }
     add("Cluster", "Delete", emptyList()) { Kvmobile.delete(dataDir); ok() }
@@ -91,6 +100,10 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     add("Cluster", "ListClusters", emptyList()) { Kvmobile.listClusters() }
     add("Cluster", "ListClusterMembers", emptyList()) { Kvmobile.listClusterMembers() }
     add("Cluster", "PeerID", emptyList()) { Kvmobile.peerID() }
+    // This device's own deterministic cmd/kvhttp bearer token -- desktop's
+    // `mage accesstoken <peerID>` counterpart, e.g. to hand a desktop
+    // operator this device's token for a kvhttp routing rule.
+    add("Cluster", "AccessToken", emptyList()) { Kvmobile.accessToken() }
 
     // KV
     add("KV", "Submit", listOf("key", "value")) { a -> Kvmobile.submit(a[0], a[1]); ok() }
