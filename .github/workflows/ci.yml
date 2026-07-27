@@ -1,0 +1,110 @@
+name: CI
+
+# See CONTRIBUTING.md's "Why full e2e isn't in CI" -- this workflow covers
+# what's portable to a generic hosted runner (build/vet/lint, unit +
+# integration tests, and compile-only smoke checks for the Android/wasm
+# targets). The real cross-platform e2e pipeline (mage e2e:all/e2e:current)
+# needs a real SSH-reachable bootstrap host and a real Android emulator,
+# and stays a local pre-push gate (mage githooks:install) instead.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go build/vet/test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: go build
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: gofmt (must be clean)
+        run: |
+          out="$(gofmt -l .)"
+          if [ -n "$out" ]; then
+            echo "gofmt found unformatted files:"
+            echo "$out"
+            exit 1
+          fi
+
+      - name: install mage
+        run: go install github.com/magefile/mage@latest
+
+      - name: mage test
+        run: mage test
+
+      - name: mage integration
+        run: mage integration
+
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: govulncheck ./...
+        run: govulncheck ./...
+
+  android-smoke:
+    name: Android compile smoke (mobile/kvmobile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: install NDK (API 26+ required -- see README's "Follower on
+          Android" section for why gomobile bind needs it)
+        run: |
+          NDK_VERSION="28.2.13676358"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+
+      - name: gomobile bind (compile-only smoke, no identity/leader baked
+          in -- mirrors mage buildandroid's own scope, not a real e2e run)
+        run: |
+          mkdir -p /tmp/kvmobile-smoke
+          go tool gomobile bind -target=android -androidapi 26 \
+            -o /tmp/kvmobile-smoke/kvmobile.aar ./mobile/kvmobile
+
+  web-smoke:
+    name: wasm compile smoke (web-app)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: wasm-pack build
+        working-directory: web-app
+        run: wasm-pack build --target web --out-dir pkg
