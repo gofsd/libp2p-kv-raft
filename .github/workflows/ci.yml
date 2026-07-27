@@ -85,6 +85,14 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" > /dev/null
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
 
+      - name: install gobind (go tool gomobile bind shells out to a
+          `gobind` binary on PATH by literal name -- the go.mod tool
+          directive makes `go tool gobind` runnable but doesn't put it on
+          PATH, so gomobile bind can't find it without this)
+        run: |
+          go install golang.org/x/mobile/cmd/gobind
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
       - name: gomobile bind (compile-only smoke, no identity/leader baked
           in -- mirrors mage buildandroid's own scope, not a real e2e run)
         run: |
@@ -104,6 +112,14 @@ jobs:
 
       - name: install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: install llvm-ar (web-app/.cargo/wasm-ar.sh needs it on PATH
+          for sqlite-wasm-rs's build script -- this runner's clang is
+          preinstalled and unversioned, but llvm-ar only exists under a
+          version-suffixed name until this runs)
+        run: |
+          sudo apt-get update && sudo apt-get install -y llvm
+          sudo ln -sf "$(command -v llvm-ar || ls /usr/bin/llvm-ar-* | sort -V | tail -1)" /usr/local/bin/llvm-ar
 
       - name: wasm-pack build
         working-directory: web-app
