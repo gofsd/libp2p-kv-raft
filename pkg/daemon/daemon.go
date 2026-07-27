@@ -36,6 +36,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
+	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
 	v2relay "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	"github.com/multiformats/go-multiaddr"
 	manet "github.com/multiformats/go-multiaddr/net"
@@ -935,19 +936,64 @@ func start(cfg Config) (*Node, error) {
 		logStore:     logStore,
 		snapStore:    snapStore,
 	}
-	h.SetStreamHandler(JoinProtocolID, n.handleJoinStream)
-	h.SetStreamHandler(ForwardProtocolID, n.handleForwardSetStream)
-	h.SetStreamHandler(ForwardConfirmProtocolID, n.handleForwardConfirmStream)
-	h.SetStreamHandler(ExecuteProtocolID, n.handleExecuteStream)
-	h.SetStreamHandler(ChannelProtocolID, n.handleChannelStream)
-	h.SetStreamHandler(ForwardJoinProtocolID, n.handleForwardJoinStream)
-	h.SetStreamHandler(ForwardLeaveProtocolID, n.handleForwardLeaveStream)
-	h.SetStreamHandler(ForwardKickProtocolID, n.handleForwardKickStream)
-	h.SetStreamHandler(ClientProtocolID, n.handleClientStream)
-	h.SetStreamHandler(ExecInviteRedeemProtocolID, n.handleExecInviteRedeemStream)
-	h.SetStreamHandler(ForwardExecInviteRedeemProtocolID, n.handleForwardExecInviteRedeemStream)
-	h.SetStreamHandler(RecruitProtocolID, n.handleRecruitStream)
+	h.SetStreamHandler(JoinProtocolID, withStreamRequestDeadline(n.handleJoinStream))
+	h.SetStreamHandler(ForwardProtocolID, withStreamRequestDeadline(n.handleForwardSetStream))
+	h.SetStreamHandler(ForwardConfirmProtocolID, withStreamRequestDeadline(n.handleForwardConfirmStream))
+	h.SetStreamHandler(ExecuteProtocolID, withStreamRequestDeadline(n.handleExecuteStream))
+	h.SetStreamHandler(ChannelProtocolID, withStreamRequestDeadline(n.handleChannelStream))
+	h.SetStreamHandler(ForwardJoinProtocolID, withStreamRequestDeadline(n.handleForwardJoinStream))
+	h.SetStreamHandler(ForwardLeaveProtocolID, withStreamRequestDeadline(n.handleForwardLeaveStream))
+	h.SetStreamHandler(ForwardKickProtocolID, withStreamRequestDeadline(n.handleForwardKickStream))
+	h.SetStreamHandler(ClientProtocolID, withStreamRequestDeadline(n.handleClientStream))
+	h.SetStreamHandler(ExecInviteRedeemProtocolID, withStreamRequestDeadline(n.handleExecInviteRedeemStream))
+	h.SetStreamHandler(ForwardExecInviteRedeemProtocolID, withStreamRequestDeadline(n.handleForwardExecInviteRedeemStream))
+	h.SetStreamHandler(RecruitProtocolID, withStreamRequestDeadline(n.handleRecruitStream))
+
+	// forgetTransientPeer's disconnect hook -- see that method's doc
+	// comment for why this (plus newHost's ConnectionManager) exists.
+	h.Network().Notify(&network.NotifyBundle{
+		DisconnectedF: func(_ network.Network, c network.Conn) {
+			n.forgetTransientPeer(c.RemotePeer())
+		},
+	})
 	return n, nil
+}
+
+// streamRequestTimeout bounds how long any stream protocol handler
+// registered below waits for its peer to finish sending its request
+// before giving up. Every handler reads its request via some blocking
+// call (bufio.Scanner.Scan, readFramed, io.ReadAll) with no timeout of
+// its own -- a peer that opens the stream and then stalls or dies before
+// finishing its request previously left that read blocked, and its
+// goroutine leaked, forever. Confirmed as the most likely single cause of
+// a real production leak: a node with 14 days of uptime found running at
+// 4.95GB RSS against only ~265MB of real on-disk data (raft log/
+// snapshots/sqlite) -- collapsing to ~30MB immediately after a clean
+// restart with the identical data, and hit by a shared, heavily-reused
+// e2e test pipeline whose peers routinely get killed or time out
+// mid-request. Generous relative to a same-machine/LAN round trip, short
+// relative to "forever": long enough for a legitimate slow/relayed peer,
+// short enough that a truly abandoned stream's goroutine exits within
+// seconds, not indefinitely.
+//
+// handleChannelStream/dispatchChannelOpen are the one exception: each
+// clears this deadline itself (SetDeadline(time.Time{})) right after its
+// initial handshake succeeds, before handing the stream off to
+// pumpChannelReads' intentionally long-lived read loop -- a channel is
+// meant to sit idle between chunks for arbitrary periods (bounded instead
+// by channelIdleTimeout via channelTable.reap), not by this one-shot
+// per-request budget.
+const streamRequestTimeout = 30 * time.Second
+
+// withStreamRequestDeadline wraps handler so its stream has
+// streamRequestTimeout to complete before whatever blocking read it does
+// can hang forever on a peer that opened the stream and never finished
+// sending anything -- see streamRequestTimeout's doc comment.
+func withStreamRequestDeadline(handler network.StreamHandler) network.StreamHandler {
+	return func(s network.Stream) {
+		_ = s.SetDeadline(time.Now().Add(streamRequestTimeout))
+		handler(s)
+	}
 }
 
 // newHost builds this node's libp2p host. Every node gets relay-client and
@@ -989,9 +1035,33 @@ func relayLimits(cfg Config) shmevent.RelayLimits {
 	return limits
 }
 
+// connManagerLowWater/connManagerHighWater bound this host's simultaneous
+// open connections: once above high, go-libp2p's connection manager trims
+// the least-useful connections back down toward low (respecting
+// connManagerGracePeriod for anything newer than that). Previously
+// unbounded -- no libp2p.ConnectionManager option at all -- alongside
+// forgetTransientPeer, this is the other confirmed root cause of a real
+// production node found running at 4.95GB RSS against ~265MB of real
+// on-disk data after 14 days of uptime, hit by a shared, heavily-reused
+// e2e test pipeline whose peers connect and disconnect constantly.
+// Generous for this project's actual cluster sizes (single digits to low
+// tens of members plus occasional relayed clients), not a hard cap on
+// legitimate cluster size.
+const (
+	connManagerLowWater    = 100
+	connManagerHighWater   = 400
+	connManagerGracePeriod = 30 * time.Second
+)
+
 func newHost(priv crypto.PrivKey, cfg Config, st *store.Store) (lp2phost.Host, error) {
+	cm, err := connmgr.NewConnManager(connManagerLowWater, connManagerHighWater, connmgr.WithGracePeriod(connManagerGracePeriod))
+	if err != nil {
+		return nil, fmt.Errorf("daemon: create connection manager: %w", err)
+	}
+
 	opts := []libp2p.Option{
 		libp2p.Identity(priv),
+		libp2p.ConnectionManager(cm),
 		libp2p.ListenAddrStrings(
 			fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", cfg.ListenPort),
 			fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", cfg.ListenPort),
@@ -1395,6 +1465,44 @@ func (n *Node) isPermittedPeer(id peer.ID) bool {
 func isPermittedPeer(st *store.Store, id peer.ID) bool {
 	_, err := st.Get(shmevent.SystemKey(shmevent.KindPermitPeer, shmevent.StatusConfirmed, []byte(id.String())))
 	return err == nil
+}
+
+// forgetTransientPeer removes id's peerstore entry (addresses, public key,
+// supported-protocol bookkeeping) once every connection to it has closed,
+// unless id is a *current* raft voter/learner (checked live against
+// n.getRaft's configuration, not isClusterMember's persistent-forever
+// KindClusterMember record just below -- that would keep every peer this
+// node has ever admitted, exactly the growth this exists to stop). The
+// default libp2p peerstore this project constructs (see newHost) never
+// evicts protobook/keybook/metadata entries on its own; only the addrbook
+// has any TTL, and only for addresses added with one. A long-lived node
+// dialed by hundreds of distinct, never-returning peers over weeks (e.g.
+// this project's own e2e pipeline, which mints a fresh identity per test
+// run) would otherwise keep every single one's peerstore entry forever --
+// one of two confirmed root causes (the other: streamRequestTimeout) of a
+// real production node found running at 4.95GB RSS against ~265MB of
+// real on-disk data after 14 days of uptime.
+//
+// A current cluster member's entry must survive a disconnect -- raft
+// needs to redial it, and dialForward already re-adds its address on
+// every forwarded call regardless, so removing it here costs nothing
+// except a redial's address lookup that would otherwise be a cache hit.
+func (n *Node) forgetTransientPeer(id peer.ID) {
+	if n.host.Network().Connectedness(id) == network.Connected {
+		// Another connection to this same peer is still open (or one
+		// raced back in right as this one closed) -- not actually gone.
+		return
+	}
+	if rf := n.getRaft(); rf != nil {
+		if cfgFuture := rf.GetConfiguration(); cfgFuture.Error() == nil {
+			for _, srv := range cfgFuture.Configuration().Servers {
+				if srv.ID == raft.ServerID(id.String()) {
+					return
+				}
+			}
+		}
+	}
+	n.host.Peerstore().RemovePeer(id)
 }
 
 // isClusterMember reports whether id has a KindClusterMember record --
@@ -4218,6 +4326,14 @@ func readChannelAccept(s network.Stream) (status byte, reason string, err error)
 // new live channelSession backed by the resulting stream and starts its
 // read-pump goroutine. Returns the freshly minted local channelID.
 func (n *Node) dispatchChannelOpen(ctx context.Context, destPeerIDStr string) (string, error) {
+	// See handleChannelStream's identical call for why this belongs here
+	// too -- this is the only one of channelTable.reap's four call sites
+	// that was missing it, leaving a node that mostly *originates*
+	// channels (and so never itself calls handleChannelStream/
+	// dispatchChannelPoll/dispatchChannelListen) with no path of its own
+	// that ever reaps its idle/stale sessions.
+	n.channels.reap()
+
 	dest, err := peer.Decode(destPeerIDStr)
 	if err != nil {
 		return "", fmt.Errorf("channel: invalid destination peer id %q: %w", destPeerIDStr, err)
@@ -4226,6 +4342,14 @@ func (n *Node) dispatchChannelOpen(ctx context.Context, destPeerIDStr string) (s
 	if err != nil {
 		return "", fmt.Errorf("channel: open stream to %s: %w", dest, err)
 	}
+	// Bounds the handshake below (write + read accept) the same way
+	// withStreamRequestDeadline bounds every SetStreamHandler-registered
+	// handler -- this dial-out path isn't wrapped by that helper, so it
+	// needs the same protection set explicitly. Cleared once the
+	// handshake succeeds, before handing the stream to pumpChannelReads'
+	// intentionally long-lived read loop -- see streamRequestTimeout's
+	// doc comment.
+	_ = s.SetDeadline(time.Now().Add(streamRequestTimeout))
 
 	notifValue, err := shmevent.EncodeExecuteNotification([]byte(n.peerID), nil)
 	if err != nil {
@@ -4257,6 +4381,7 @@ func (n *Node) dispatchChannelOpen(ctx context.Context, destPeerIDStr string) (s
 		s.Close()
 		return "", err
 	}
+	_ = s.SetDeadline(time.Time{}) // handshake done -- see the SetDeadline call above
 	sess := newChannelSession(s, dest.String())
 	n.channels.register(channelID, sess)
 	go n.pumpChannelReads(sess)
@@ -4335,6 +4460,11 @@ func (n *Node) handleChannelStream(s network.Stream) {
 		s.Close()
 		return
 	}
+	// Handshake done -- withStreamRequestDeadline's deadline (set when
+	// this handler was entered) must not keep applying to
+	// pumpChannelReads' intentionally long-lived read loop below. See
+	// streamRequestTimeout's doc comment.
+	_ = s.SetDeadline(time.Time{})
 	sess := newChannelSession(s, senderPeer.String())
 	n.channels.register(channelID, sess)
 	n.channels.pushPending(channelID)
