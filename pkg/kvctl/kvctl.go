@@ -19,6 +19,7 @@ import (
 	"github.com/gofsd/libp2p-kv-raft/pkg/logrecord"
 	"github.com/gofsd/libp2p-kv-raft/pkg/registry"
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmclient"
+	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
 
 // readyTimeout bounds how long AddNode waits for a freshly spawned daemon to
@@ -397,6 +398,14 @@ func bootUp(reg *registry.Registry, binPath string, extraDaemonArgs []string, pe
 	// immediately-admitted join.
 	if strings.HasSuffix(status, " pending") {
 		fmt.Printf("addnode: %s: join request lodged, awaiting confirmation from a raft voter (mage confirmpermit cluster-join %s)\n", peerID, peerID)
+	} else if leaderPeerID != "" {
+		// A join that landed immediately (not lodged pending) may have just
+		// grown the cluster to exactly 2 voters -- warn now, while the
+		// operator's looking at this output, rather than only discovering
+		// it later when the cluster's already deadlocked. Bootstrap
+		// (leaderPeerID == "") never needs this check: a fresh solo cluster
+		// always starts at 1 voter.
+		fmt.Print(voterCountWarning(peerID))
 	}
 
 	if err := reg.SetCurrent(peerID); err != nil {
@@ -557,6 +566,16 @@ func ConfirmPermit(kind byte, targetPeerID []byte) error {
 	defer cancel()
 	if err := shmclient.ConfirmPermit(ctx, peerID, kind, targetPeerID); err != nil {
 		return fmt.Errorf("confirm permit: %w", err)
+	}
+	if kind == shmevent.KindClusterJoin {
+		// Confirming a cluster-join is the other place (besides bootUp's
+		// immediate-join path) a cluster can newly land on exactly 2
+		// voters -- same warning, same reasoning as bootUp's. peerID here
+		// is the confirming operator's own current node, which -- being a
+		// raft voter in that same cluster, per this function's own
+		// authorization requirement -- is a valid localPeerID for
+		// ListClusterMembers.
+		fmt.Print(voterCountWarning(peerID))
 	}
 	return nil
 }

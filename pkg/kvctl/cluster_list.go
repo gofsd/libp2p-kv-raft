@@ -150,3 +150,32 @@ func ListClusterMembers(localPeerID string) ([]ClusterMember, error) {
 	sort.Slice(members, func(i, j int) bool { return members[i].PeerID < members[j].PeerID })
 	return members, nil
 }
+
+// voterCountWarning returns an operator-facing warning string if the raft
+// cluster localPeerID belongs to has exactly 2 voters (leader + 1, or 2
+// followers if localPeerID itself isn't one) -- the one cluster size with
+// strictly worse availability than running solo: majority of 2 is 2, so
+// losing *either* voter loses quorum outright, with no mage kick to fall
+// back on (that itself needs quorum to commit) -- only offline
+// cmd/kvrecover. Called right after a join/confirm succeeds (bootUp,
+// ConfirmPermit) since that's exactly the moment a cluster can newly land
+// on this size. Best-effort and silent on any error (unknown/not-running
+// peer, IPC hiccup): this is advisory only and must never fail an
+// otherwise-successful join/confirm just because the follow-up query
+// didn't work.
+func voterCountWarning(localPeerID string) string {
+	members, err := ListClusterMembers(localPeerID)
+	if err != nil {
+		return ""
+	}
+	voters := 0
+	for _, m := range members {
+		if m.Role == "leader" || m.Role == "voter" {
+			voters++
+		}
+	}
+	if voters != 2 {
+		return ""
+	}
+	return "warning: this cluster now has exactly 2 voters -- zero fault tolerance, losing either one loses quorum immediately (mage kick can't help, it needs quorum too; see cmd/kvrecover for offline recovery if that happens). Prefer 3+ voters.\n"
+}

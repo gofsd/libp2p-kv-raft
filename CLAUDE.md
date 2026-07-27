@@ -76,7 +76,10 @@ immediately or first requires a separate confirmation from a raft voter depends 
 target daemon's own `-require-confirm-for-join` setting (`Config.RequireConfirmForJoin`) -- when
 set, a join request only lodges a pending `shmevent.KindClusterJoin` record, and `mage
 confirmpermit cluster-join <peerID>`, run on any current raft voter (including the leader), is what
-actually admits it (`raft.AddVoter`/`AddNonvoter`). `leave`/`rm` shrink the remote cluster
+actually admits it (`raft.AddVoter`/`AddNonvoter`). Either path warns to stdout if the join lands the
+cluster on exactly 2 voters (`kvctl.voterCountWarning`) -- majority of 2 is 2, so that's the one
+cluster size with strictly *worse* availability than running solo: losing either voter loses quorum
+outright, with no recourse but offline recovery. `leave`/`rm` shrink the remote cluster
 gracefully (`raft.RemoveServer`) -- the remaining voters keep operating normally -- and are the
 first commands in this project with any teardown-side raft membership change at all. `leave`
 preserves the composite cluster data dir on disk (so a later `join`/`rejoinnode` back to the same
