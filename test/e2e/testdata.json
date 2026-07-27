@@ -5,31 +5,31 @@
     "3": "0.0.0",
     "4": "0.0.0"
   },
-  "published_version": 4,
+  "published_version": 0,
   "nodes": {
     "1": {
       "platform": "desktop",
-      "peer_id": "12D3KooWPzzXQsH6aurbUV8nr9TV6vSj7KvZoY6adxUcDV6PC42C",
-      "public_key": "d2bc8886d1ffeff518b789d2e2af2002835291e229f1ee4e59cf9b2b7a26ace9",
-      "private_key": "94b073c43b6df4e601403b3a6d19327ac8f6a1f08e54ed5e5f611ed4f758af17d2bc8886d1ffeff518b789d2e2af2002835291e229f1ee4e59cf9b2b7a26ace9"
+      "peer_id": "12D3KooWDG6hCaAfvpxL82c77r65imYyxSB557LQjgUNuEGs5DK1",
+      "public_key": "332aaa0f000d8455826e96480ba0955112f5e080c65fb1d99f4b6e0999b07e24",
+      "private_key": "eb76609c816a890691b2b491ee73a8ea10e9b67ad47024c1e313a7533a65b564332aaa0f000d8455826e96480ba0955112f5e080c65fb1d99f4b6e0999b07e24"
+    },
+    "2": {
+      "platform": "android",
+      "peer_id": "12D3KooWF2gBnUW2S4GUQfJ2RoChJ4F9Vy5yhmxyhhASwY7cAhWz",
+      "public_key": "4d71c6fc5a83ad73a64898c450584301c37c88236cf19e35ee98f81eb0b82683",
+      "private_key": "0e77a083c576b1f03d981f94b6bc82db38d6096e82d9f032ccddc9f344eafcb34d71c6fc5a83ad73a64898c450584301c37c88236cf19e35ee98f81eb0b82683"
     },
     "3": {
-      "platform": "android",
-      "peer_id": "12D3KooWGydCDkBRBJU2AuNLfjA9wDKpwg6twRBxU41XcFtLu8P5",
-      "public_key": "6a61066cbb379ac2005379811364df9bd7a2447b803c2388379c8b2bce1ed12c",
-      "private_key": "c495186f95f9c82bc27dfd9fcbfafd2dfd8d1146907479d8d9f79afe2a3b68c06a61066cbb379ac2005379811364df9bd7a2447b803c2388379c8b2bce1ed12c"
+      "platform": "web",
+      "peer_id": "12D3KooWCEKaXpGAmLkmkajtWpNd2h3YPN2Mwxb8XwtDky6SSGXj",
+      "public_key": "23da6288a3badc4b68cfe320655ef9ce0920582c471c2e6651aeaec57209c02a",
+      "private_key": "6b3f09c4c0ca3416fe1ef168d062159fb1c276f1d9fcb3c6c2d12dc7e27a508123da6288a3badc4b68cfe320655ef9ce0920582c471c2e6651aeaec57209c02a"
     },
     "4": {
-      "platform": "web",
-      "peer_id": "12D3KooWAcpogdcjoCQMcc9zc8jJ3JFwciM95KKeLnFdoGQKvVs6",
-      "public_key": "0be6d5ece37777d48f301e8954309fbab721713c638feacb53ce1b9bafce4ed1",
-      "private_key": "41790c674ef6c2c07b25fb9fe540c5f3fdc89fba09e02f6317a666b137842ed90be6d5ece37777d48f301e8954309fbab721713c638feacb53ce1b9bafce4ed1"
-    },
-    "5": {
       "platform": "remote",
-      "peer_id": "12D3KooWN4ytwWy2x1zwqs61HpQPi45RoUW55caAiGUQ2ZxwDBoH",
-      "public_key": "b60ac58cf0fd078f1b283e9380776b9814049e65e98d1627e603d39020b00a04",
-      "private_key": "e6c6f877e54ebef581c1ba34e7ea30d6e28b83f0130d2699fe847bb7280baa0db60ac58cf0fd078f1b283e9380776b9814049e65e98d1627e603d39020b00a04"
+      "peer_id": "12D3KooWSG6e82m7mrJ3bYi85f5yaQnUtDNfRXjn8TvytzzqS3WF",
+      "public_key": "f45288c96156443e052dac35ebc2b3954ef86e650ac471d8895ec44491293830",
+      "private_key": "561329b255e7e5844998488bf52a526b9fe9cf890a7421625841ccc2bfa896c1f45288c96156443e052dac35ebc2b3954ef86e650ac471d8895ec44491293830"
     }
   },
   "rows": [
@@ -81,7 +81,7 @@
     },
     {
       "version": 2,
-      "node": 3,
+      "node": 2,
       "event": {
         "event": "add",
         "value": "BOOTSTRAP"
@@ -90,7 +90,7 @@
     },
     {
       "version": 2,
-      "node": 3,
+      "node": 2,
       "event": {
         "event": "get_public_key"
       },
@@ -98,7 +98,7 @@
     },
     {
       "version": 2,
-      "node": 3,
+      "node": 2,
       "event": {
         "event": "set_key",
         "value": "hello-android",
@@ -108,7 +108,7 @@
     },
     {
       "version": 2,
-      "node": 3,
+      "node": 2,
       "event": {
         "event": "set_field",
         "source_id": 200,
@@ -118,7 +118,7 @@
     },
     {
       "version": 2,
-      "node": 3,
+      "node": 2,
       "event": {
         "event": "get_field",
         "value": "hello-android"
@@ -127,7 +127,7 @@
     },
     {
       "version": 3,
-      "node": 4,
+      "node": 3,
       "event": {
         "event": "add",
         "value": "BOOTSTRAP"
@@ -136,7 +136,7 @@
     },
     {
       "version": 3,
-      "node": 4,
+      "node": 3,
       "event": {
         "event": "get_public_key"
       },
@@ -144,7 +144,7 @@
     },
     {
       "version": 3,
-      "node": 4,
+      "node": 3,
       "event": {
         "event": "set_key",
         "value": "hello-web",
@@ -154,7 +154,7 @@
     },
     {
       "version": 3,
-      "node": 4,
+      "node": 3,
       "event": {
         "event": "set_field",
         "source_id": 300,
@@ -164,7 +164,7 @@
     },
     {
       "version": 3,
-      "node": 4,
+      "node": 3,
       "event": {
         "event": "get_field",
         "value": "hello-web"
@@ -219,7 +219,7 @@
     },
     {
       "version": 4,
-      "node": 3,
+      "node": 2,
       "event": {
         "event": "add",
         "value": "BOOTSTRAP"
@@ -228,7 +228,7 @@
     },
     {
       "version": 4,
-      "node": 3,
+      "node": 2,
       "event": {
         "event": "get_public_key"
       },
@@ -236,7 +236,7 @@
     },
     {
       "version": 4,
-      "node": 3,
+      "node": 2,
       "event": {
         "event": "set_key",
         "value": "hello-android",
@@ -246,7 +246,7 @@
     },
     {
       "version": 4,
-      "node": 3,
+      "node": 2,
       "event": {
         "event": "set_field",
         "source_id": 200,
@@ -256,7 +256,7 @@
     },
     {
       "version": 4,
-      "node": 3,
+      "node": 2,
       "event": {
         "event": "get_field",
         "value": "hello-android"
@@ -265,7 +265,7 @@
     },
     {
       "version": 4,
-      "node": 4,
+      "node": 3,
       "event": {
         "event": "add",
         "value": "BOOTSTRAP"
@@ -274,7 +274,7 @@
     },
     {
       "version": 4,
-      "node": 4,
+      "node": 3,
       "event": {
         "event": "get_public_key"
       },
@@ -282,7 +282,7 @@
     },
     {
       "version": 4,
-      "node": 4,
+      "node": 3,
       "event": {
         "event": "set_key",
         "value": "hello-web",
@@ -292,7 +292,7 @@
     },
     {
       "version": 4,
-      "node": 4,
+      "node": 3,
       "event": {
         "event": "set_field",
         "source_id": 300,
@@ -302,7 +302,7 @@
     },
     {
       "version": 4,
-      "node": 4,
+      "node": 3,
       "event": {
         "event": "get_field",
         "value": "hello-web"
