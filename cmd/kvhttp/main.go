@@ -31,6 +31,10 @@
 // access control if exposed beyond that -- token comparison is
 // constant-time (crypto/hmac.Equal) but request bodies/tokens themselves
 // travel in the clear otherwise.
+//
+// Alongside /command, this process also always starts a second, unrelated
+// plain-HTTP server on :80 serving whatever's on disk under staticDir --
+// see serveStatic below.
 package main
 
 import (
@@ -50,6 +54,19 @@ import (
 	"github.com/gofsd/libp2p-kv-raft/pkg/registry"
 )
 
+// defaultStaticDir is served verbatim at web root by serveStatic --
+// whatever's on disk under it, at whatever relative path, is what gets
+// served. Deliberately opaque to this server: its contents are
+// deployment-specific, so they're never committed to the repo (see
+// .gitignore) and never built into the binary either -- copied onto the
+// deployed host by hand (e.g. scp), entirely outside both git and
+// `go build`. The directory doesn't need to exist at all; a missing
+// directory/file just 404s. Overridable via -static-dir.
+const defaultStaticDir = "static"
+
+// staticAddr is the plain-HTTP listen address serveStatic binds.
+const staticAddr = ":80"
+
 // commandTimeout bounds one kvctl-cli sendevent subprocess call. Must
 // comfortably exceed sendEventTimeout (cmd/kvctl-cli/main.go), which is
 // itself the ctx deadline that process applies internally to the IPC call
@@ -67,6 +84,7 @@ const maxBodyBytes = 1 << 20 // 1 MiB
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8787", "listen address -- deliberately loopback-only by default, see this file's doc comment")
 	kvctlBin := flag.String("kvctl-cli", "", "path to the kvctl-cli binary; defaults to $PATH, falling back to `go build` into a temp dir")
+	staticDir := flag.String("static-dir", defaultStaticDir, "directory served verbatim at web root by the secondary listener on "+staticAddr)
 	flag.Parse()
 
 	reg, err := registry.Open()
@@ -82,8 +100,22 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/command", h.handleCommand)
 
+	go serveStatic(*staticDir)
+
 	log.Printf("kvhttp: multi-tenant (every node in %s), routed by Authorization: Bearer <token> -- see `mage accesstoken <peerID>` -- via %s, listening on http://%s/command", reg.Dir, resolvedBin, *addr)
 	log.Fatal(http.ListenAndServe(*addr, mux))
+}
+
+// serveStatic serves dir at web root, verbatim, over plain HTTP on
+// staticAddr. Deliberately a separate, minimal *http.Server from the
+// loopback -addr listener above -- this has nothing to do with the
+// token-gated /command bridge, and failing/blocking here must never take
+// that down. Blocks; run in its own goroutine.
+func serveStatic(dir string) {
+	log.Printf("kvhttp: secondary listener on %s, serving %s", staticAddr, dir)
+	if err := http.ListenAndServe(staticAddr, http.FileServer(http.Dir(dir))); err != nil && err != http.ErrServerClosed {
+		log.Fatalf("secondary listener on %s: %v", staticAddr, err)
+	}
 }
 
 // resolvePeerFromToken finds the registered node whose own access token
