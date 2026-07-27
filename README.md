@@ -396,6 +396,18 @@ if the leader requires one) and deletes the joined cluster's local data subdirec
 — never the identity key at `dataDir` itself, same distinction desktop's `mage rm` draws against
 `mage deletenode`.
 
+`Kick(targetPeerID)` is the Android counterpart of desktop's `mage kick`: force-removes some
+*other* peer from the currently-joined cluster (`raft.RemoveServer`) without that peer's own
+cooperation, for a voter that's gone down for good and isn't coming back to gracefully `Leave` on
+its own. Unlike `Leave`/`Rm`, it never touches this device's own membership or restarts anything —
+this device stays exactly where it is; `targetPeerID` is who leaves. It only takes effect if this
+device is itself a raft voter (or forwards to one, exactly like desktop) — true for any real device
+build, since `Start`/`StartWithKey`'s automatic join always requests full voter suffrage (only
+`pkg/e2erun`'s own test harness ever builds a learner-suffrage variant). Like `mage kick`, it can't
+help once the cluster has already lost quorum outright — that needs desktop's offline `cmd/kvrecover`
+instead, which has no Android equivalent (it operates on a *stopped* node's raw on-disk raft files, a
+concept that doesn't fit `Kvmobile`'s always-running in-process daemon).
+
 `ListClusters()` and `ListClusterMembers()` are the Android counterparts of desktop's
 `listclusters`/`listnodes`, adapted to `Kvmobile` running exactly one daemon at a time:
 `ListClusters()` returns a JSON array with 0 or 1 entries — whichever cluster, if any, this device

@@ -82,6 +82,12 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     add("Cluster", "Delete", emptyList()) { Kvmobile.delete(dataDir); ok() }
     add("Cluster", "Leave", emptyList()) { Kvmobile.leave(); ok() }
     add("Cluster", "Rm", emptyList()) { Kvmobile.rm(); ok() }
+    // Force-removes some OTHER peer from this device's cluster, without
+    // that peer's cooperation -- desktop's `mage kick`. Unlike Leave/Rm,
+    // this device's own membership is untouched; only takes effect if
+    // this device is itself a raft voter (or forwards to one), true for
+    // any real device build -- see Kvmobile.kick's doc comment.
+    add("Cluster", "Kick", listOf("targetPeerID")) { a -> Kvmobile.kick(a[0]); ok() }
     add("Cluster", "ListClusters", emptyList()) { Kvmobile.listClusters() }
     add("Cluster", "ListClusterMembers", emptyList()) { Kvmobile.listClusterMembers() }
     add("Cluster", "PeerID", emptyList()) { Kvmobile.peerID() }

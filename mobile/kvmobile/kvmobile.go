@@ -449,6 +449,30 @@ func Rm() error {
 	return nil
 }
 
+// Kick asks the raft cluster this device is currently joined to to
+// force-remove targetPeerID (raft.RemoveServer), without that peer's own
+// cooperation -- see shmevent.EventKick's doc comment; desktop's
+// pkg/kvctl.Kick/`mage kick` counterpart. Only takes effect if this
+// device is itself a raft voter (or forwards to one over
+// ForwardKickProtocolID) -- true for any real device build: kvmobile's
+// default join suffrage is Voter (see joinSuffrage's doc comment above),
+// with Nonvoter only ever set for pkg/e2erun's own test harness. Unlike
+// Leave/Rm, this never touches this device's own membership or restarts
+// anything -- this device stays exactly where it is; targetPeerID is who
+// leaves.
+func Kick(targetPeerID string) error {
+	sess, err := currentSession()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	if err := sess.Kick(ctx, targetPeerID); err != nil {
+		return fmt.Errorf("kvmobile: kick: %w", err)
+	}
+	return nil
+}
+
 // currentSession returns the *shmclient.Session for the currently running
 // daemon, or an error if Start/StartWithKey hasn't completed successfully
 // yet -- the shared guard every call that needs a live daemon (Submit,
