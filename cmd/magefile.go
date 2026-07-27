@@ -16,15 +16,6 @@ import (
 	"github.com/gofsd/libp2p-kv-raft/pkg/raft"
 )
 
-// Relay starts the libp2p Relay and Signaling server
-func Relay(keyPath string) error {
-	if keyPath == "" {
-		keyPath = "relay.key"
-	}
-	fmt.Printf("Starting Relay server with key: %s...\n", keyPath)
-	return raft.StartRelay(keyPath)
-}
-
 // Client starts a libp2p client connected to the specified relay
 func Client(relayAddr string, targetPeerID string, keyPath string) error {
 	if relayAddr == "" {

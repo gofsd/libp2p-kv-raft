@@ -1,6 +1,7 @@
 package com.gofsd.kvdemo
 
 import android.app.Activity
+import android.util.Base64
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -36,23 +37,27 @@ import java.io.File
  * [defaultCase], just not a tailored execution).
  *
  * Called via `adb shell am instrument -e class
- * com.gofsd.kvdemo.UiCommandE2ETest -e cases <json>` by
+ * com.gofsd.kvdemo.UiCommandE2ETest -e cases <base64>` by
  * pkg/e2erun/android.go, same as E2ETest -- see that file's own doc
  * comment. Two different concerns, two different test classes: E2ETest
  * proves the raw shmevent wire protocol works from a mobile client; this
  * proves every command is actually reachable and operable through the
  * screens a real user taps.
  *
- * The "cases" instrumentation argument (see buildCasesFromArg) is the JSON
- * form of pkg/e2edata.File.UICases, keyed by CommandSpec.label -- this
- * file no longer hardcodes per-command test plans itself, so
- * test/e2e/testdata.json is the single source of truth for both the
- * cross-platform wire-protocol rows and this Android UI command walk. A
- * label with no entry in the parsed map (or no "cases" argument at all,
- * e.g. this test invoked directly via `./gradlew connectedAndroidTest`
- * rather than through pkg/e2erun) still gets full navigation-only coverage
- * via [defaultCase] -- see [runAllCommandsThroughUi]'s loop -- just not a
- * tailored execution.
+ * The "cases" instrumentation argument (see buildCasesFromArg) is
+ * base64-encoded JSON -- pkg/e2erun/android.go's runUICommandTest doc
+ * comment has the full story, but in short: raw JSON's quotes/braces
+ * reliably get mangled somewhere between `adb shell` and `am`'s own
+ * argument parser, so it's base64 here specifically to avoid that, not a
+ * style preference. Decoded, it's the JSON form of pkg/e2edata.File.UICases,
+ * keyed by CommandSpec.label -- this file no longer hardcodes per-command
+ * test plans itself, so test/e2e/testdata.json is the single source of
+ * truth for both the cross-platform wire-protocol rows and this Android UI
+ * command walk. A label with no entry in the parsed map (or no "cases"
+ * argument at all, e.g. this test invoked directly via `./gradlew
+ * connectedAndroidTest` rather than through pkg/e2erun) still gets full
+ * navigation-only coverage via [defaultCase] -- see
+ * [runAllCommandsThroughUi]'s loop -- just not a tailored execution.
  *
  * This device's build-time identity joins the shared, long-lived e2e
  * leader as a raft *learner*, not a voter, on its very first join (see
@@ -323,24 +328,27 @@ class UiCommandE2ETest {
     }
 
     /**
-     * Parses the "cases" instrumentation argument (JSON object form of
-     * pkg/e2edata.File.UICases, keyed by CommandSpec.label) into this
-     * test's per-command plans, substituting the runtime-only tokens
+     * Parses the "cases" instrumentation argument -- base64-encoded JSON
+     * object form of pkg/e2edata.File.UICases, keyed by CommandSpec.label
+     * (see class doc comment for why base64: raw JSON here reliably breaks
+     * `am instrument`'s own argument parsing) -- into this test's
+     * per-command plans, substituting the runtime-only tokens
      * "{{selfPeerID}}"/"{{leaderPeerID}}"/"{{testKey}}"/"{{testValue}}" in
      * each input string -- those four values can't be frozen into a
      * committed file the way every other field can (this device's own
      * peer id, the cluster's currently-observed leader, and a
      * randomized-per-run KV test key/value that must stay unique across
-     * runs against this long-lived shared cluster). casesJson missing or
-     * unparsable is treated the same as `"{}"` -- every command then falls
-     * back to [defaultCase] (navigation-only), never a crash.
+     * runs against this long-lived shared cluster). casesArgBase64 missing,
+     * not valid base64, or decoding to unparsable JSON is treated the same
+     * as `"{}"` -- every command then falls back to [defaultCase]
+     * (navigation-only), never a crash.
      *
      * Anything in the live catalog with no entry in the parsed map still
      * gets [defaultCase] (navigation-only) -- see class doc comment for
      * the reasoning behind each execute=true/false choice recorded in
      * test/e2e/testdata.json's "android_ui_cases" section.
      */
-    private fun buildCasesFromArg(casesJson: String?, selfPeerID: String, leaderPeerID: String): Map<String, Case> {
+    private fun buildCasesFromArg(casesArgBase64: String?, selfPeerID: String, leaderPeerID: String): Map<String, Case> {
         val testKey = "e2e-ui-test-key"
         val testValue = "e2e-ui-test-value-${System.currentTimeMillis()}"
         val tokens = mapOf(
@@ -360,6 +368,9 @@ class UiCommandE2ETest {
             else -> ::assertSucceeded
         }
 
+        val casesJson = casesArgBase64?.let {
+            runCatching { String(Base64.decode(it, Base64.DEFAULT)) }.getOrNull()
+        }
         val root = runCatching { JSONObject(casesJson ?: "{}") }.getOrDefault(JSONObject())
         val cases = mutableMapOf<String, Case>()
         for (label in root.keys()) {

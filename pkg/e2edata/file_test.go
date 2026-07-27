@@ -284,6 +284,120 @@ func TestDeleteNode(t *testing.T) {
 	}
 }
 
+func TestAddTestRecordsPlatformOnRow(t *testing.T) {
+	f := &File{Versions: map[int]string{}, Nodes: map[int]Node{}}
+	id, _, err := f.AddNode(PlatformWeb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := f.AddTest(id, NewEvent(shmevent.EventGetPublicKey, 0, 0, nil, 0))
+	if err != nil {
+		t.Fatalf("AddTest: %v", err)
+	}
+	if row.Platform != PlatformWeb {
+		t.Fatalf("AddTest row.Platform = %q, want %q", row.Platform, PlatformWeb)
+	}
+}
+
+func TestEnsureNodeRecoversDeletedNodeUnderSameID(t *testing.T) {
+	f := &File{Versions: map[int]string{}, Nodes: map[int]Node{}}
+	id, original, err := f.AddNode(PlatformAndroid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := f.AddTest(id, NewEvent(shmevent.EventGetPublicKey, 0, 0, nil, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Same scenario mage e2e:destroyall produces: the node is gone, the
+	// row (with its own recorded Platform) remains.
+	if _, _, err := f.DeleteNode(id); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.Nodes[id]; ok {
+		t.Fatal("node should be gone after DeleteNode")
+	}
+
+	recovered, err := f.EnsureNode(row.Node, row.Platform)
+	if err != nil {
+		t.Fatalf("EnsureNode: %v", err)
+	}
+	if recovered.Platform != PlatformAndroid {
+		t.Fatalf("EnsureNode platform = %q, want %q", recovered.Platform, PlatformAndroid)
+	}
+	if recovered.PeerID == original.PeerID {
+		t.Fatal("EnsureNode should mint a fresh identity, not resurrect the deleted one")
+	}
+	if got, ok := f.Nodes[id]; !ok || got.PeerID != recovered.PeerID {
+		t.Fatalf("EnsureNode did not record the new node back under id %d", id)
+	}
+
+	// A second call against the same, now-populated id is a no-op read,
+	// not a second fresh identity.
+	again, err := f.EnsureNode(row.Node, row.Platform)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.PeerID != recovered.PeerID {
+		t.Fatal("EnsureNode on an already-present id should return the existing node, not mint another")
+	}
+}
+
+func TestNextNodeIDAvoidsOrphanedRowIDs(t *testing.T) {
+	f := &File{Versions: map[int]string{}, Nodes: map[int]Node{}}
+	desktopID, _, err := f.AddNode(PlatformDesktop) // id 1
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.AddTest(desktopID, NewEvent(shmevent.EventGetPublicKey, 0, 0, nil, 0)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Deleting the node leaves its row referencing id 1 with no node
+	// there -- same as mage e2e:destroyall. A subsequently AddNode'd node
+	// (e.g. EnsureBootstrap's remote node) must not be handed id 1 back:
+	// that would steal the slot the orphaned row still needs.
+	if _, _, err := f.DeleteNode(desktopID); err != nil {
+		t.Fatal(err)
+	}
+
+	remoteID, _, err := f.AddNode(PlatformRemote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remoteID == desktopID {
+		t.Fatalf("AddNode reused orphaned row's id %d instead of skipping past it", desktopID)
+	}
+}
+
+func TestLoadBackfillsRowPlatformFromCurrentNode(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/testdata.json"
+
+	f := &File{Versions: map[int]string{}, Nodes: map[int]Node{}}
+	id, _, err := f.AddNode(PlatformWeb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.AddTest(id, NewEvent(shmevent.EventGetPublicKey, 0, 0, nil, 0)); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a file written before Row.Platform existed.
+	f.Rows[0].Platform = ""
+	if err := f.Save(path); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Rows[0].Platform != PlatformWeb {
+		t.Fatalf("Load did not backfill Row.Platform: got %q, want %q", loaded.Rows[0].Platform, PlatformWeb)
+	}
+}
+
 func TestWriteDesktopKeyFileProducesSamePeerID(t *testing.T) {
 	pub, priv, err := GenerateIdentity()
 	if err != nil {

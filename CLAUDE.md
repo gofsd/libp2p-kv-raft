@@ -173,7 +173,12 @@ or transport code here — see `api/shmevent.capnp`'s doc comment for the full d
   protocol byte-for-byte to receive genuine `AppendEntries` replication. See `web-app/README.md`
   for its architecture — it's kept current and detailed, same standard as the top-level README.
 - `magefile.go` — desktop convenience targets; `cmd/magefile.go` — an older relay/echo demo
-  (`Relay`/`Client`/`TestP2PRelay`) unrelated to the raft cluster path.
+  (`Client`/`TestP2PRelay`/`StartRelay`/`StartEchoServer`/`SendPing`) unrelated to the raft cluster
+  path. Its `Relay` target (and `pkg/raft.StartRelay`, the only thing in this repo that pulled in
+  `go-libp2p-kad-dht`) was removed -- that dependency has an unfixed vulnerability (GO-2024-3218,
+  no patched version available) and this was its only call site anywhere in the module. The rest
+  of `pkg/raft` (`StartRelayNode`/`NewP2PNode`/`LoadOrGenerateKey`) stays: `pkg/daemon`'s own test
+  suite reuses those as convenience libp2p node constructors, unrelated to the removed DHT path.
 - `thirdparty/anet` — a local patched copy of `github.com/wlynxg/anet` (pinned via `replace` in
   `go.mod`), dropping a `//go:linkname` against a private stdlib symbol that no longer matches
   Go 1.25's `net` package layout. See README's "Vendored dependency patch" section before touching.

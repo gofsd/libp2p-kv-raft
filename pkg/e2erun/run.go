@@ -121,6 +121,34 @@ func Run(repoRoot, path string, f *e2edata.File, rowIndices []int, types Types) 
 		return err
 	}
 
+	// Reprovision any row whose node was deleted (mage
+	// e2e:deletenode/destroyall) out from under it while the row itself
+	// remained -- must happen before the grouping loop below, which reads
+	// f.Nodes[row.Node].Platform to decide android/web/other and would
+	// otherwise misroute (or the later per-row loop would report "unknown
+	// node id") every such row. A row recorded before Row.Platform existed
+	// and whose node was already gone by the time that backfill ran (see
+	// Load) has nothing to recover from and is left alone -- it still hits
+	// the existing "unknown node id" handling futher down, same as before
+	// this existed.
+	reprovisioned := false
+	for _, idx := range rowIndices {
+		row := &f.Rows[idx]
+		if _, ok := f.Nodes[row.Node]; ok || row.Platform == "" {
+			continue
+		}
+		if _, err := f.EnsureNode(row.Node, row.Platform); err != nil {
+			return fmt.Errorf("e2erun: reprovision node %d (%s): %w", row.Node, row.Platform, err)
+		}
+		fmt.Fprintf(os.Stderr, "e2erun: reprovisioned node %d (%s) -- its previous identity was deleted but rows still reference it\n", row.Node, row.Platform)
+		reprovisioned = true
+	}
+	if reprovisioned {
+		if err := f.Save(path); err != nil {
+			return err
+		}
+	}
+
 	var androidRowIdxs, webRowIdxs, otherRowIdxs, skippedByType []int
 	for _, idx := range rowIndices {
 		node := f.Nodes[f.Rows[idx].Node]
@@ -157,7 +185,7 @@ func Run(repoRoot, path string, f *e2edata.File, rowIndices []int, types Types) 
 	// since rebuilding/reinstalling/relaunching a browser per row would be
 	// prohibitively slow. Both are resolved up front here instead of
 	// through runRow's per-row dispatch.
-	androidResults, androidUIErr := runAndroidRows(repoRoot, f, androidRowIdxs, bootstrapMultiaddr, types.AndroidUI, f.UICases)
+	androidResults, androidUICases, androidUIErr := runAndroidRows(repoRoot, f, androidRowIdxs, bootstrapMultiaddr, types.AndroidUI, f.UICases)
 	webResults := runWebRows(repoRoot, f, webRowIdxs, bootstrapWebTransportAddr)
 
 	failures := 0
@@ -200,11 +228,19 @@ func Run(repoRoot, path string, f *e2edata.File, rowIndices []int, types Types) 
 	}
 
 	if types.AndroidUI {
+		result := &e2edata.AndroidUIResult{RanAt: time.Now(), Cases: androidUICases}
 		if androidUIErr != nil {
 			fmt.Fprintf(os.Stderr, "e2erun: android UI command test: FAIL: %v\n", androidUIErr)
+			result.Status = e2edata.StatusFail
+			result.Error = androidUIErr.Error()
 			failures++
 		} else {
 			fmt.Fprintln(os.Stderr, "e2erun: android UI command test: PASS")
+			result.Status = e2edata.StatusPass
+		}
+		f.AndroidUIResult = result
+		if err := f.Save(path); err != nil {
+			return err
 		}
 	}
 

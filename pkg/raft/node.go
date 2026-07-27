@@ -7,19 +7,14 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/libp2p/go-libp2p"
-	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	peerstore "github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
-	"github.com/libp2p/go-libp2p/core/routing"
-	libp2pconnmgr "github.com/libp2p/go-libp2p/p2p/net/connmgr"
 	relayclient "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/client"
 	v2relay "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	_ "github.com/libp2p/go-libp2p/p2p/transport/webrtc"
@@ -345,76 +340,6 @@ func (n *P2PNode) SendAndReceive(ctx context.Context, relayID string, targetPeer
 		return "", fmt.Errorf("read error: %w", err)
 	}
 	return "", fmt.Errorf("no response received from %s", pid.ShortString())
-}
-
-// StartRelay initializes a relay and signaling server with Kademlia DHT
-func StartRelay(keyPath string) error {
-	priv, err := LoadOrGenerateKey(keyPath)
-	if err != nil {
-		return fmt.Errorf("failed to load identity: %w", err)
-	}
-
-	var kdht *dht.IpfsDHT
-	// Create connection manager
-	cm, err := libp2pconnmgr.NewConnManager(
-		100, // low water mark
-		400, // high water mark
-		libp2pconnmgr.WithGracePeriod(time.Minute),
-	)
-	if err != nil {
-		return err
-	}
-
-	rc := v2relay.DefaultResources()
-	rc.Limit = &v2relay.RelayLimit{
-		Duration: 1 * time.Hour,
-		Data:     1 << 30, // 1 GB
-	}
-	rc.ReservationTTL = time.Hour
-	rc.MaxReservations = 1000
-	rc.MaxCircuits = 1000
-	rc.BufferSize = 2048
-
-	h, err := libp2p.New(
-		libp2p.Identity(priv),
-		libp2p.ListenAddrStrings(
-			"/ip4/0.0.0.0/tcp/4001",
-			"/ip4/0.0.0.0/udp/4001/quic-v1",
-			"/ip4/0.0.0.0/tcp/4002/ws",
-			"/ip4/0.0.0.0/udp/4003/webrtc-direct",
-		),
-		libp2p.DefaultTransports,
-		libp2p.EnableRelayService(v2relay.WithResources(rc)),
-		libp2p.EnableHolePunching(),
-		libp2p.ConnectionManager(cm),
-		libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
-			var err error
-			kdht, err = dht.New(context.Background(), h, dht.Mode(dht.ModeServer))
-			return kdht, err
-		}),
-	)
-	if err != nil {
-		return err
-	}
-	defer h.Close()
-
-	if err = kdht.Bootstrap(context.Background()); err != nil {
-		return err
-	}
-
-	fmt.Printf("Relay Server with DHT started! ID: %s\n", h.ID())
-	fmt.Println("Supported Protocols:")
-	for _, proto := range h.Mux().Protocols() {
-		fmt.Printf("  - %s\n", proto)
-	}
-	for _, addr := range h.Addrs() {
-		fmt.Printf("  %s/p2p/%s\n", addr, h.ID())
-	}
-
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
-	<-ch
-	return nil
 }
 
 // GetAddress returns the circuit address for this node

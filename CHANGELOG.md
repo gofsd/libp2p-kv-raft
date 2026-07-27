@@ -8,6 +8,35 @@ tracks *changes*, not a full feature description).
 
 ## [Unreleased]
 
+### Fixed
+- `pkg/e2erun/android.go`'s `runUICommandTest` (the harness behind `mage
+  e2e:all`'s "android UI command test" check, walking all 73 live
+  `CommandCatalog.kt` entries) was producing false "PASS" results: its
+  `-e cases <json>` argument to `adb shell am instrument` reliably broke
+  `am`'s own argument parsing the instant the JSON contained quotes/braces
+  (confirmed by hand -- reproducible with even a single-entry cases
+  object; `am instrument` fails outright with "Error: Invalid userId -2"
+  before `UiCommandE2ETest` ever runs), and the harness ignored that
+  failure (`_ = cmd.Run()`) and never cleared the device's previous
+  results file first -- so a broken run silently read stale data left
+  over from an earlier run and reported it as a fresh pass. Fixed both
+  sides: `casesJSON` is now base64-encoded before being passed as the
+  instrumentation argument (`UiCommandE2ETest.kt`'s `buildCasesFromArg`
+  decodes it), sidestepping the argument-parsing problem entirely instead
+  of trying to out-escape it; and the on-device results file is deleted
+  before each run, so a future regression in this path fails loudly (a
+  missing results file) instead of silently reading stale data.
+
+### Removed
+- `cmd/magefile.go`'s `Relay` demo target and `pkg/raft.StartRelay`, the only
+  code anywhere in this module that used `github.com/libp2p/go-libp2p-kad-dht`
+  -- which carries an unfixed vulnerability (GO-2024-3218, no patched version
+  exists). `go mod tidy` drops the dependency entirely now that nothing
+  references it. The rest of `pkg/raft`'s demo/test-helper surface
+  (`StartRelayNode`/`NewP2PNode`/`LoadOrGenerateKey`, still used by
+  `pkg/daemon`'s own test suite, and `cmd/magefile.go`'s other demo targets)
+  is unaffected -- this was surgical, not a removal of the whole package.
+
 ### Added
 - `LICENSE` (Apache-2.0), `NOTICE`, `CONTRIBUTING.md`, `SECURITY.md` --
   first steps toward a publishable, production-ready release.

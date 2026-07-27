@@ -2,6 +2,7 @@ package e2erun
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -80,9 +81,10 @@ func hasConnectedDevice(adbDevicesOutput string) bool {
 // visited (even one with zero rows in rowIndices, e.g. an
 // E2E_TYPES=androidui-only run) purely to run it. Its outcome has no
 // f.Rows entry of its own to attach to, so it comes back as a separate
-// error rather than folded into the row-outcome map -- nil if runUI is
-// false or every android node's UI walk passed.
-func runAndroidRows(repoRoot string, f *e2edata.File, rowIndices []int, bootstrapMultiaddr string, runUI bool, uiCases map[string]e2edata.UICase) (map[int]rowOutcome, error) {
+// error (nil if runUI is false or every android node's UI walk passed)
+// alongside its per-case results, for the caller to persist into
+// e2edata.File.AndroidUIResult regardless of overall pass/fail.
+func runAndroidRows(repoRoot string, f *e2edata.File, rowIndices []int, bootstrapMultiaddr string, runUI bool, uiCases map[string]e2edata.UICase) (map[int]rowOutcome, []e2edata.UICaseResult, error) {
 	results := map[int]rowOutcome{}
 
 	byNode := map[int][]int{}
@@ -105,7 +107,7 @@ func runAndroidRows(repoRoot string, f *e2edata.File, rowIndices []int, bootstra
 		}
 	}
 	if len(byNode) == 0 {
-		return results, nil
+		return results, nil, nil
 	}
 
 	if reason := androidUnavailable(); reason != "" {
@@ -119,24 +121,26 @@ func runAndroidRows(repoRoot string, f *e2edata.File, rowIndices []int, bootstra
 				results[idx] = rowOutcome{status: e2edata.StatusSkipped, errMsg: "android e2e skipped: " + reason}
 			}
 		}
-		return results, errors.Join(uiErrs...)
+		return results, nil, errors.Join(uiErrs...)
 	}
 
 	uiCasesJSON, err := json.Marshal(uiCases)
 	if err != nil {
-		return results, fmt.Errorf("e2erun: encode android UI cases: %w", err)
+		return results, nil, fmt.Errorf("e2erun: encode android UI cases: %w", err)
 	}
 
 	var uiErrs []error
+	var uiCaseResults []e2edata.UICaseResult
 	for nodeID, idxs := range byNode {
 		node := f.Nodes[nodeID]
-		out, uiErr := runAndroidNode(repoRoot, node, bootstrapMultiaddr, f, idxs, runUI, string(uiCasesJSON))
+		out, cases, uiErr := runAndroidNode(repoRoot, node, bootstrapMultiaddr, f, idxs, runUI, string(uiCasesJSON))
 		maps.Copy(results, out)
+		uiCaseResults = append(uiCaseResults, cases...)
 		if uiErr != nil {
 			uiErrs = append(uiErrs, fmt.Errorf("node %s: %w", node.PeerID, uiErr))
 		}
 	}
-	return results, errors.Join(uiErrs...)
+	return results, uiCaseResults, errors.Join(uiErrs...)
 }
 
 // runAndroidNode builds an AAR baked with node's identity and
@@ -160,17 +164,19 @@ func runAndroidRows(repoRoot string, f *e2edata.File, rowIndices []int, bootstra
 // separate from rowIdxs' results, not folded in the way a build/install
 // failure is: it's independent evidence (the catalog UI surface, not the
 // raw wire rows this batch already verified on its own), returned as this
-// call's own error.
-func runAndroidNode(repoRoot string, node e2edata.Node, bootstrapMultiaddr string, f *e2edata.File, rowIdxs []int, runUI bool, uiCasesJSON string) (map[int]rowOutcome, error) {
-	fail := func(err error) (map[int]rowOutcome, error) {
+// call's own error, with its per-case results (nil if runUI is false, or
+// if the build/install/instrumentation invocation itself never got far
+// enough to produce any) alongside it for the caller to persist.
+func runAndroidNode(repoRoot string, node e2edata.Node, bootstrapMultiaddr string, f *e2edata.File, rowIdxs []int, runUI bool, uiCasesJSON string) (map[int]rowOutcome, []e2edata.UICaseResult, error) {
+	fail := func(err error) (map[int]rowOutcome, []e2edata.UICaseResult, error) {
 		if len(rowIdxs) == 0 {
-			return map[int]rowOutcome{}, err
+			return map[int]rowOutcome{}, nil, err
 		}
 		out := make(map[int]rowOutcome, len(rowIdxs))
 		for _, idx := range rowIdxs {
 			out[idx] = rowOutcome{status: e2edata.StatusFail, errMsg: err.Error()}
 		}
-		return out, nil
+		return out, nil, nil
 	}
 
 	if err := buildAndroidAAR(repoRoot, node, bootstrapMultiaddr); err != nil {
@@ -223,11 +229,13 @@ func runAndroidNode(repoRoot string, node e2edata.Node, bootstrapMultiaddr strin
 	}
 
 	if runUI {
-		if err := runUICommandTest(uiCasesJSON); err != nil {
-			return out, err
+		cases, err := runUICommandTest(uiCasesJSON)
+		if err != nil {
+			return out, cases, err
 		}
+		return out, cases, nil
 	}
-	return out, nil
+	return out, nil, nil
 }
 
 // buildAndroidAAR runs `gomobile bind` for mobile/kvmobile, baking node's
@@ -359,40 +367,55 @@ func runInstrumentedTest(rowsArgJSON string) ([]byte, error) {
 	return data, nil
 }
 
-// uiCommandResult is one entry of UiCommandE2ETest's own results file
-// (ui_e2e_results.json) -- keyed by command label rather than by row
-// index, since this test isn't driven by testdata.json rows at all: it
-// walks the live CommandCatalog.kt list itself (see that test's own doc
-// comment).
-type uiCommandResult struct {
-	Command string `json:"command"`
-	Pass    bool   `json:"pass"`
-	Error   string `json:"error"`
-}
-
 // runUICommandTest triggers UiCommandE2ETest via `adb shell am
-// instrument`, passing casesJSON as its "cases" instrumentation argument
-// (the JSON form of e2edata.File.UICases -- see UiCommandE2ETest.kt's own
-// doc comment for how it parses this and substitutes runtime-only tokens
-// like "{{selfPeerID}}"). Unlike runInstrumentedTest, this doesn't replay
-// testdata.json Rows; it clicks through every CommandCatalog.kt entry's
-// own screen instead, using UICases only to decide inputs/execute/expect
-// per command. Pulls and parses its separate ui_e2e_results.json results
-// file, returning a summarizing error if any command's UI case failed or
-// if the instrumentation run never produced a results file at all (e.g. a
-// crash before it could write one).
-func runUICommandTest(casesJSON string) error {
+// instrument`, passing casesJSON -- base64-encoded, see below -- as its
+// "cases" instrumentation argument (the JSON form of e2edata.File.UICases
+// -- see UiCommandE2ETest.kt's own doc comment for how it decodes/parses
+// this and substitutes runtime-only tokens like "{{selfPeerID}}"). Unlike
+// runInstrumentedTest, this doesn't replay testdata.json Rows; it clicks
+// through every CommandCatalog.kt entry's own screen instead, using
+// UICases only to decide inputs/execute/expect per command. Pulls and
+// parses its separate ui_e2e_results.json results file, returning it (so
+// the caller can persist it into e2edata.File.AndroidUIResult -- see that
+// type's doc comment on why nothing did before) alongside a summarizing
+// error if any command's UI case failed or if the instrumentation run
+// never produced a results file at all (e.g. a crash before it could write
+// one). Results is non-nil whenever a results file was successfully
+// pulled and parsed, even when err is also non-nil (some case(s) failed) --
+// only nil when err reflects a failure to even obtain results at all.
+//
+// casesJSON is base64-encoded before being passed as the "-e cases" value:
+// raw JSON's quotes/braces get mangled somewhere between `adb shell` and
+// the device's own `am` argument parser (confirmed by hand -- even a
+// single-entry cases object reliably makes `am instrument` fail outright
+// with "Error: Invalid userId -2" before UiCommandE2ETest ever runs, while
+// an empty "{}" object, with no quote/brace-heavy content past the outer
+// pair, goes through fine). Base64's alphabet has no characters `am`'s or
+// the shell's own argument parsing could misinterpret, so this sidesteps
+// the problem instead of trying to out-escape it.
+//
+// The device's previous results file (if any) is deleted before invoking
+// instrumentation, specifically so a failure like the one above can't
+// silently read stale data left over from an earlier run and report a
+// false pass -- adb pull below now fails loudly instead, exactly as it
+// should when instrumentation didn't actually produce fresh output. This
+// bug was real, not hypothetical: it produced a false "PASS" for this
+// exact test before both fixes here.
+func runUICommandTest(casesJSON string) ([]e2edata.UICaseResult, error) {
+	deviceResultsPath := fmt.Sprintf("/sdcard/Android/data/%s/files/ui_e2e_results.json", androidAppID)
+	_ = exec.Command("adb", "shell", "rm", "-f", deviceResultsPath).Run()
+
+	encodedCases := base64.StdEncoding.EncodeToString([]byte(casesJSON))
 	cmd := exec.Command("adb", "shell", "am", "instrument", "-w",
 		"-e", "class", androidUITestClass,
-		"-e", "cases", casesJSON,
+		"-e", "cases", encodedCases,
 		androidTestRunner,
 	)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
-	_ = cmd.Run()
+	instrumentErr := cmd.Run()
 
-	deviceResultsPath := fmt.Sprintf("/sdcard/Android/data/%s/files/ui_e2e_results.json", androidAppID)
 	localResultsPath := filepath.Join(os.TempDir(), "kvraft-e2e-android-ui-results.json")
 	defer os.Remove(localResultsPath)
 	pull := exec.Command("adb", "pull", deviceResultsPath, localResultsPath)
@@ -400,16 +423,16 @@ func runUICommandTest(casesJSON string) error {
 	pull.Stdout = &pullOut
 	pull.Stderr = &pullOut
 	if err := pull.Run(); err != nil {
-		return fmt.Errorf("e2erun: pull android UI command results (instrument output: %s): %w: %s", out.String(), err, pullOut.String())
+		return nil, fmt.Errorf("e2erun: pull android UI command results (instrument err: %v, instrument output: %s): %w: %s", instrumentErr, out.String(), err, pullOut.String())
 	}
 	data, err := os.ReadFile(localResultsPath)
 	if err != nil {
-		return fmt.Errorf("e2erun: read pulled android UI command results: %w", err)
+		return nil, fmt.Errorf("e2erun: read pulled android UI command results: %w", err)
 	}
 
-	var results []uiCommandResult
+	var results []e2edata.UICaseResult
 	if err := json.Unmarshal(data, &results); err != nil {
-		return fmt.Errorf("e2erun: parse android UI command results: %w (raw: %s)", err, data)
+		return nil, fmt.Errorf("e2erun: parse android UI command results: %w (raw: %s)", err, data)
 	}
 	var failed []string
 	for _, r := range results {
@@ -418,7 +441,7 @@ func runUICommandTest(casesJSON string) error {
 		}
 	}
 	if len(failed) > 0 {
-		return fmt.Errorf("e2erun: %d of %d android UI command(s) failed:\n%s", len(failed), len(results), strings.Join(failed, "\n"))
+		return results, fmt.Errorf("e2erun: %d of %d android UI command(s) failed:\n%s", len(failed), len(results), strings.Join(failed, "\n"))
 	}
-	return nil
+	return results, nil
 }

@@ -9,27 +9,27 @@
   "nodes": {
     "1": {
       "platform": "desktop",
-      "peer_id": "12D3KooWDG6hCaAfvpxL82c77r65imYyxSB557LQjgUNuEGs5DK1",
-      "public_key": "332aaa0f000d8455826e96480ba0955112f5e080c65fb1d99f4b6e0999b07e24",
-      "private_key": "eb76609c816a890691b2b491ee73a8ea10e9b67ad47024c1e313a7533a65b564332aaa0f000d8455826e96480ba0955112f5e080c65fb1d99f4b6e0999b07e24"
+      "peer_id": "12D3KooWN8Te7pzDWWvV9DL2TBoMRC9k7rDRPhfoXPLoYWYJBeuh",
+      "public_key": "b6eee285adbf32b47b75c59f1e5f7dccf0732bf0c05484498678f3985b0612e4",
+      "private_key": "e9d4b81b6aa067254f31bce0d87cfb7efa8fddf41d2ea115cadcc8fdf8a2792eb6eee285adbf32b47b75c59f1e5f7dccf0732bf0c05484498678f3985b0612e4"
     },
     "2": {
       "platform": "android",
-      "peer_id": "12D3KooWF2gBnUW2S4GUQfJ2RoChJ4F9Vy5yhmxyhhASwY7cAhWz",
-      "public_key": "4d71c6fc5a83ad73a64898c450584301c37c88236cf19e35ee98f81eb0b82683",
-      "private_key": "0e77a083c576b1f03d981f94b6bc82db38d6096e82d9f032ccddc9f344eafcb34d71c6fc5a83ad73a64898c450584301c37c88236cf19e35ee98f81eb0b82683"
+      "peer_id": "12D3KooWQUiZtb4YdF5bS5NciDx6VcZJMhXQmC3jNHfU17hTbgKu",
+      "public_key": "d9d6c0c54ffcae7510bb95de566222f1f3d56f91cf31b7a6f11a20ada7215734",
+      "private_key": "0a2b0586d523b7abafa300cdc954843eaac1b04b46b6c6e4e20363d24c1b5f13d9d6c0c54ffcae7510bb95de566222f1f3d56f91cf31b7a6f11a20ada7215734"
     },
     "3": {
       "platform": "web",
-      "peer_id": "12D3KooWCEKaXpGAmLkmkajtWpNd2h3YPN2Mwxb8XwtDky6SSGXj",
-      "public_key": "23da6288a3badc4b68cfe320655ef9ce0920582c471c2e6651aeaec57209c02a",
-      "private_key": "6b3f09c4c0ca3416fe1ef168d062159fb1c276f1d9fcb3c6c2d12dc7e27a508123da6288a3badc4b68cfe320655ef9ce0920582c471c2e6651aeaec57209c02a"
+      "peer_id": "12D3KooWAPC5fbfgagHEvUMQSvS81KjDbYPbHqZbmfsN27Wp5MjZ",
+      "public_key": "0868c2baf6eaeed34a1e664f8593d8f2ee045df5a06bad67e49bbb947835c324",
+      "private_key": "6019fd40e662b104e272fbee293198b30564723c3ad326f592f1c4738503e1410868c2baf6eaeed34a1e664f8593d8f2ee045df5a06bad67e49bbb947835c324"
     },
     "4": {
       "platform": "remote",
-      "peer_id": "12D3KooWSG6e82m7mrJ3bYi85f5yaQnUtDNfRXjn8TvytzzqS3WF",
-      "public_key": "f45288c96156443e052dac35ebc2b3954ef86e650ac471d8895ec44491293830",
-      "private_key": "561329b255e7e5844998488bf52a526b9fe9cf890a7421625841ccc2bfa896c1f45288c96156443e052dac35ebc2b3954ef86e650ac471d8895ec44491293830"
+      "peer_id": "12D3KooWMyFTsKcHixpQzzW7Sv8Znffni7tdaqUwN5S8bjaJU98r",
+      "public_key": "b492e3a954ab914ab74133c9e663e0a50dd4ff7b765a33557299382f4324094f",
+      "private_key": "86eb7922058f8fa8996b35ba6ba7f0eacd3e68dd2f3636590b81dc9534ab46b6b492e3a954ab914ab74133c9e663e0a50dd4ff7b765a33557299382f4324094f"
     }
   },
   "rows": [
@@ -40,7 +40,8 @@
         "event": "add",
         "value": "BOOTSTRAP"
       },
-      "status": 0
+      "status": 0,
+      "platform": "desktop"
     },
     {
       "version": 1,
@@ -48,7 +49,8 @@
       "event": {
         "event": "get_public_key"
       },
-      "status": 0
+      "status": 0,
+      "platform": "desktop"
     },
     {
       "version": 1,
@@ -58,7 +60,8 @@
         "value": "hello",
         "id": 100
       },
-      "status": 0
+      "status": 0,
+      "platform": "desktop"
     },
     {
       "version": 1,
@@ -68,7 +71,8 @@
         "source_id": 100,
         "value": "world"
       },
-      "status": 0
+      "status": 0,
+      "platform": "desktop"
     },
     {
       "version": 1,
@@ -77,7 +81,8 @@
         "event": "get_field",
         "value": "hello"
       },
-      "status": 0
+      "status": 0,
+      "platform": "desktop"
     },
     {
       "version": 2,
@@ -86,7 +91,8 @@
         "event": "add",
         "value": "BOOTSTRAP"
       },
-      "status": 0
+      "status": 0,
+      "platform": "android"
     },
     {
       "version": 2,
@@ -94,7 +100,8 @@
       "event": {
         "event": "get_public_key"
       },
-      "status": 0
+      "status": 0,
+      "platform": "android"
     },
     {
       "version": 2,
@@ -104,7 +111,8 @@
         "value": "hello-android",
         "id": 200
       },
-      "status": 0
+      "status": 0,
+      "platform": "android"
     },
     {
       "version": 2,
@@ -114,7 +122,8 @@
         "source_id": 200,
         "value": "world-android"
       },
-      "status": 0
+      "status": 0,
+      "platform": "android"
     },
     {
       "version": 2,
@@ -123,7 +132,8 @@
         "event": "get_field",
         "value": "hello-android"
       },
-      "status": 0
+      "status": 0,
+      "platform": "android"
     },
     {
       "version": 3,
@@ -132,7 +142,8 @@
         "event": "add",
         "value": "BOOTSTRAP"
       },
-      "status": 0
+      "status": 0,
+      "platform": "web"
     },
     {
       "version": 3,
@@ -140,7 +151,8 @@
       "event": {
         "event": "get_public_key"
       },
-      "status": 0
+      "status": 0,
+      "platform": "web"
     },
     {
       "version": 3,
@@ -150,7 +162,8 @@
         "value": "hello-web",
         "id": 300
       },
-      "status": 0
+      "status": 0,
+      "platform": "web"
     },
     {
       "version": 3,
@@ -160,7 +173,8 @@
         "source_id": 300,
         "value": "world-web"
       },
-      "status": 0
+      "status": 0,
+      "platform": "web"
     },
     {
       "version": 3,
@@ -169,7 +183,8 @@
         "event": "get_field",
         "value": "hello-web"
       },
-      "status": 0
+      "status": 0,
+      "platform": "web"
     },
     {
       "version": 4,
@@ -178,7 +193,8 @@
         "event": "add",
         "value": "BOOTSTRAP"
       },
-      "status": 0
+      "status": 0,
+      "platform": "desktop"
     },
     {
       "version": 4,
@@ -186,7 +202,8 @@
       "event": {
         "event": "get_public_key"
       },
-      "status": 0
+      "status": 0,
+      "platform": "desktop"
     },
     {
       "version": 4,
@@ -196,7 +213,8 @@
         "value": "hello",
         "id": 100
       },
-      "status": 0
+      "status": 0,
+      "platform": "desktop"
     },
     {
       "version": 4,
@@ -206,7 +224,8 @@
         "source_id": 100,
         "value": "world"
       },
-      "status": 0
+      "status": 0,
+      "platform": "desktop"
     },
     {
       "version": 4,
@@ -215,7 +234,8 @@
         "event": "get_field",
         "value": "hello"
       },
-      "status": 0
+      "status": 0,
+      "platform": "desktop"
     },
     {
       "version": 4,
@@ -224,7 +244,8 @@
         "event": "add",
         "value": "BOOTSTRAP"
       },
-      "status": 0
+      "status": 0,
+      "platform": "android"
     },
     {
       "version": 4,
@@ -232,7 +253,8 @@
       "event": {
         "event": "get_public_key"
       },
-      "status": 0
+      "status": 0,
+      "platform": "android"
     },
     {
       "version": 4,
@@ -242,7 +264,8 @@
         "value": "hello-android",
         "id": 200
       },
-      "status": 0
+      "status": 0,
+      "platform": "android"
     },
     {
       "version": 4,
@@ -252,7 +275,8 @@
         "source_id": 200,
         "value": "world-android"
       },
-      "status": 0
+      "status": 0,
+      "platform": "android"
     },
     {
       "version": 4,
@@ -261,7 +285,8 @@
         "event": "get_field",
         "value": "hello-android"
       },
-      "status": 0
+      "status": 0,
+      "platform": "android"
     },
     {
       "version": 4,
@@ -270,7 +295,8 @@
         "event": "add",
         "value": "BOOTSTRAP"
       },
-      "status": 0
+      "status": 0,
+      "platform": "web"
     },
     {
       "version": 4,
@@ -278,7 +304,8 @@
       "event": {
         "event": "get_public_key"
       },
-      "status": 0
+      "status": 0,
+      "platform": "web"
     },
     {
       "version": 4,
@@ -288,7 +315,8 @@
         "value": "hello-web",
         "id": 300
       },
-      "status": 0
+      "status": 0,
+      "platform": "web"
     },
     {
       "version": 4,
@@ -298,7 +326,8 @@
         "source_id": 300,
         "value": "world-web"
       },
-      "status": 0
+      "status": 0,
+      "platform": "web"
     },
     {
       "version": 4,
@@ -307,7 +336,8 @@
         "event": "get_field",
         "value": "hello-web"
       },
-      "status": 0
+      "status": 0,
+      "platform": "web"
     }
   ],
   "android_ui_cases": {
@@ -759,5 +789,303 @@
       "execute": true,
       "expect": "succeeded"
     }
+  },
+  "android_ui_result": {
+    "ran_at": "2026-07-28T00:44:09.407149672+03:00",
+    "status": 0,
+    "cases": [
+      {
+        "command": "Cluster: Start",
+        "pass": true
+      },
+      {
+        "command": "Cluster: StartWithKey",
+        "pass": true
+      },
+      {
+        "command": "Cluster: Join",
+        "pass": true
+      },
+      {
+        "command": "Cluster: JoinWithKey",
+        "pass": true
+      },
+      {
+        "command": "Cluster: StartPending",
+        "pass": true
+      },
+      {
+        "command": "Cluster: StartPendingWithKey",
+        "pass": true
+      },
+      {
+        "command": "Cluster: GetOwnAddr",
+        "pass": true
+      },
+      {
+        "command": "Cluster: CreateJoinRequest",
+        "pass": true
+      },
+      {
+        "command": "Cluster: CancelJoinRequest",
+        "pass": true
+      },
+      {
+        "command": "Cluster: RecruitPeer",
+        "pass": true
+      },
+      {
+        "command": "Cluster: CreateJoinInvite",
+        "pass": true
+      },
+      {
+        "command": "Cluster: RevokeJoinInvite",
+        "pass": true
+      },
+      {
+        "command": "Cluster: Stop",
+        "pass": true
+      },
+      {
+        "command": "Cluster: Delete",
+        "pass": true
+      },
+      {
+        "command": "Cluster: Leave",
+        "pass": true
+      },
+      {
+        "command": "Cluster: Rm",
+        "pass": true
+      },
+      {
+        "command": "Cluster: Kick",
+        "pass": true
+      },
+      {
+        "command": "Cluster: ListClusters",
+        "pass": true
+      },
+      {
+        "command": "Cluster: ListClusterMembers",
+        "pass": true
+      },
+      {
+        "command": "Cluster: PeerID",
+        "pass": true
+      },
+      {
+        "command": "Cluster: AccessToken",
+        "pass": true
+      },
+      {
+        "command": "KV: Submit",
+        "pass": true
+      },
+      {
+        "command": "KV: Get",
+        "pass": true
+      },
+      {
+        "command": "KV: RangeScan",
+        "pass": true
+      },
+      {
+        "command": "Permits: RequestPermit",
+        "pass": true
+      },
+      {
+        "command": "Permits: ConfirmPermit",
+        "pass": true
+      },
+      {
+        "command": "Permits: RevokePermit",
+        "pass": true
+      },
+      {
+        "command": "Permits: RequestLogPermit",
+        "pass": true
+      },
+      {
+        "command": "Permits: ConfirmLogPermit",
+        "pass": true
+      },
+      {
+        "command": "Permits: RevokeLogPermit",
+        "pass": true
+      },
+      {
+        "command": "Execute: Execute",
+        "pass": true
+      },
+      {
+        "command": "Execute: PollExecute",
+        "pass": true
+      },
+      {
+        "command": "Execute: WatchExecute",
+        "pass": true
+      },
+      {
+        "command": "Execute: StopWatchExecute",
+        "pass": true
+      },
+      {
+        "command": "Channel: OpenChannel",
+        "pass": true
+      },
+      {
+        "command": "Channel: ListenChannel",
+        "pass": true
+      },
+      {
+        "command": "Channel: StopListenChannel",
+        "pass": true
+      },
+      {
+        "command": "Channel: SendChannelData",
+        "pass": true
+      },
+      {
+        "command": "Channel: CloseChannel",
+        "pass": true
+      },
+      {
+        "command": "Channel: StopChannel",
+        "pass": true
+      },
+      {
+        "command": "Log records: LogAppend",
+        "pass": true
+      },
+      {
+        "command": "Log records: LogQuery",
+        "pass": true
+      },
+      {
+        "command": "Group: CreateGroup",
+        "pass": true
+      },
+      {
+        "command": "Group: UpdateGroup",
+        "pass": true
+      },
+      {
+        "command": "Group: DeleteGroup",
+        "pass": true
+      },
+      {
+        "command": "Group: GetGroup",
+        "pass": true
+      },
+      {
+        "command": "Group: ListGroups",
+        "pass": true
+      },
+      {
+        "command": "Command: CreateCommand",
+        "pass": true
+      },
+      {
+        "command": "Command: UpdateCommand",
+        "pass": true
+      },
+      {
+        "command": "Command: DeleteCommand",
+        "pass": true
+      },
+      {
+        "command": "Command: GetCommand",
+        "pass": true
+      },
+      {
+        "command": "Command: ListCommands",
+        "pass": true
+      },
+      {
+        "command": "Links: AddCommandToGroup",
+        "pass": true
+      },
+      {
+        "command": "Links: RemoveCommandFromGroup",
+        "pass": true
+      },
+      {
+        "command": "Links: ListGroupsForCommand",
+        "pass": true
+      },
+      {
+        "command": "Links: AddPeerToGroup",
+        "pass": true
+      },
+      {
+        "command": "Links: RemovePeerFromGroup",
+        "pass": true
+      },
+      {
+        "command": "Links: ListGroupsForPeer",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: SubmitCommand",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: GetCommandRequest",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: ListCommandRequests",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: ListExecutionsByPeer",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: AppendCommandLog",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: QueryCommandLog",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: LatestCommandLog",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: WatchCommandLog",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: StopWatchCommandLog",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: RunCommandDispatcher",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: StopCommandDispatcher",
+        "pass": true
+      },
+      {
+        "command": "ExecInvite: CreateExecInvite",
+        "pass": true
+      },
+      {
+        "command": "ExecInvite: RevokeExecInvite",
+        "pass": true
+      },
+      {
+        "command": "ExecInvite: RedeemExecInvite",
+        "pass": true
+      },
+      {
+        "command": "Raw: SendEvent",
+        "pass": true
+      }
+    ]
   }
 }

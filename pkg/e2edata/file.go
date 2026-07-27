@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 	"unicode/utf8"
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
@@ -258,6 +259,49 @@ type Row struct {
 	Event   Event  `json:"event"`
 	Status  int    `json:"status"`
 	Error   string `json:"error,omitempty"`
+
+	// Platform is Node's platform at the time this row was recorded (see
+	// AddTest), kept independently of whatever File.Nodes[Node] currently
+	// holds -- unlike Node, this survives that node later being deleted
+	// (mage e2e:deletenode/destroyall). It's what lets Load's backfill (for
+	// rows predating this field) and Run's EnsureNode recover from exactly
+	// that: a row whose node id no longer resolves still knows what
+	// platform to re-provision under that same id, instead of being
+	// permanently orphaned the way "unknown node id" used to mean.
+	Platform Platform `json:"platform,omitempty"`
+}
+
+// UICaseResult is one command's outcome from the most recent
+// UiCommandE2ETest walk -- the same shape UiCommandE2ETest.kt itself
+// writes to the device's ui_e2e_results.json, pulled back into this file
+// so it survives past the next run overwriting/deleting that on-device
+// file (see pkg/e2erun/android.go's runUICommandTest).
+type UICaseResult struct {
+	Command string `json:"command"`
+	Pass    bool   `json:"pass"`
+	Error   string `json:"error,omitempty"`
+}
+
+// AndroidUIResult is the most recent outcome of the catalog-driven
+// UiCommandE2ETest walk (see UICases). Unlike Rows, this isn't
+// versioned/replayed history -- there's one of these, overwritten by every
+// run that includes the androidui type (E2E_TYPES=androidui or the
+// unfiltered default), not appended to. nil (the field entirely absent)
+// means it has never run since this field was introduced, same meaning as
+// a Row.Platform backfill finding nothing to recover: no data, not "it
+// failed."
+//
+// Before this existed, this walk's result was never persisted anywhere --
+// only ever printed to that one run's console output, with nothing on
+// disk to check afterward (not even the transient on-device
+// ui_e2e_results.json survives to the next run, since runUICommandTest
+// deletes it first). A caller wanting to know "did the UI walk pass last
+// time" had no way to answer that except having watched the run happen.
+type AndroidUIResult struct {
+	RanAt  time.Time      `json:"ran_at"`
+	Status int            `json:"status"`
+	Error  string         `json:"error,omitempty"`
+	Cases  []UICaseResult `json:"cases,omitempty"`
 }
 
 // File is the on-disk shape of test/e2e/testdata.json.
@@ -282,6 +326,9 @@ type File struct {
 	// commands the *current* CommandCatalog.kt has, not a historical
 	// regression log of past runs.
 	UICases map[string]UICase `json:"android_ui_cases,omitempty"`
+	// AndroidUIResult is the most recent UiCommandE2ETest walk's outcome --
+	// see that type's own doc comment.
+	AndroidUIResult *AndroidUIResult `json:"android_ui_result,omitempty"`
 }
 
 // DefaultPath is where the testdata file lives relative to the repo root.
@@ -310,6 +357,19 @@ func Load(path string) (*File, error) {
 	}
 	if f.UICases == nil {
 		f.UICases = map[string]UICase{}
+	}
+	// Backfill Row.Platform for files predating that field: only possible
+	// while the referenced node still exists, which is exactly the state
+	// every pre-existing testdata.json is in the first time it's loaded
+	// after this field was introduced. A row whose node was already gone
+	// by then has no platform to recover -- see EnsureNode's doc comment
+	// for what that means for it going forward.
+	for i, r := range f.Rows {
+		if r.Platform == "" {
+			if n, ok := f.Nodes[r.Node]; ok {
+				f.Rows[i].Platform = n.Platform
+			}
+		}
 	}
 	return &f, nil
 }
@@ -358,12 +418,24 @@ func (f *File) NewVersion(semver string) int {
 	return id
 }
 
-// nextNodeID returns the smallest unused key in Nodes greater than 0.
+// nextNodeID returns the smallest node id greater than every id currently
+// in Nodes *and* every id any Row still references -- the latter matters
+// once a node has been deleted (mage e2e:deletenode/destroyall) while its
+// rows remain: without also considering Rows here, a freshly (re-)added
+// node (e.g. EnsureBootstrap's remote node, provisioned before
+// pkg/e2erun.Run gets a chance to call EnsureNode for orphaned rows) could
+// claim an id an orphaned row is about to need back, silently stealing it
+// instead of leaving it free to be recovered under its original platform.
 func (f *File) nextNodeID() int {
 	max := 0
 	for id := range f.Nodes {
 		if id > max {
 			max = id
+		}
+	}
+	for _, r := range f.Rows {
+		if r.Node > max {
+			max = r.Node
 		}
 	}
 	return max + 1
@@ -431,16 +503,52 @@ func (f *File) DeleteNode(nodeID int) (Node, int, error) {
 // AddTest appends a row against CurrentVersion (creating version 1 first if
 // none exists yet), targeting nodeID with event ev.
 func (f *File) AddTest(nodeID int, ev Event) (Row, error) {
-	if _, ok := f.Nodes[nodeID]; !ok {
+	node, ok := f.Nodes[nodeID]
+	if !ok {
 		return Row{}, fmt.Errorf("e2edata: unknown node id %d", nodeID)
 	}
 	v := f.CurrentVersion()
 	if v == 0 {
 		v = f.NewVersion("0.0.0")
 	}
-	row := Row{Version: v, Node: nodeID, Event: ev}
+	row := Row{Version: v, Node: nodeID, Event: ev, Platform: node.Platform}
 	f.Rows = append(f.Rows, row)
 	return row, nil
+}
+
+// EnsureNode returns the existing node at id if present, or provisions a
+// fresh identity for platform and records it under exactly id -- not the
+// next available id the way AddNode picks -- if missing. This is how
+// pkg/e2erun.Run recovers a row whose node was deleted (mage
+// e2e:deletenode/destroyall) while the row itself remained: the row
+// carries its own Platform (see Row's doc comment) precisely so this
+// recovery doesn't need to remember what id N "used to be" from anywhere
+// else. The freshly generated identity is unrelated to whatever the
+// original one was -- there's no way to recover that once deleted, and
+// none of this package's callers need it to be the same, only valid.
+func (f *File) EnsureNode(id int, platform Platform) (Node, error) {
+	if n, ok := f.Nodes[id]; ok {
+		return n, nil
+	}
+	pub, priv, err := GenerateIdentity()
+	if err != nil {
+		return Node{}, err
+	}
+	peerID, err := PeerIDFromPrivateKey(priv)
+	if err != nil {
+		return Node{}, err
+	}
+	if f.Nodes == nil {
+		f.Nodes = map[int]Node{}
+	}
+	n := Node{
+		Platform:   platform,
+		PeerID:     peerID,
+		PublicKey:  encodeHex(pub),
+		PrivateKey: encodeHex(priv),
+	}
+	f.Nodes[id] = n
+	return n, nil
 }
 
 // PendingRows returns every row whose Version is newer than
