@@ -113,12 +113,14 @@ jobs:
       - name: install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
-      - name: install llvm-ar (web-app/.cargo/wasm-ar.sh needs it on PATH
-          for sqlite-wasm-rs's build script -- this runner's clang is
-          preinstalled and unversioned, but llvm-ar only exists under a
-          version-suffixed name until this runs)
+      - name: install llvm-ar and capnp (web-app/.cargo/wasm-ar.sh needs
+          llvm-ar on PATH for sqlite-wasm-rs's build script -- this
+          runner's clang is preinstalled and unversioned, but llvm-ar only
+          exists under a version-suffixed name until this runs; build.rs
+          separately needs the capnp compiler itself for `api/shmevent.capnp`,
+          which isn't preinstalled at all)
         run: |
-          sudo apt-get update && sudo apt-get install -y llvm
+          sudo apt-get update && sudo apt-get install -y llvm capnproto
           sudo ln -sf "$(command -v llvm-ar || ls /usr/bin/llvm-ar-* | sort -V | tail -1)" /usr/local/bin/llvm-ar
 
       - name: wasm-pack build
