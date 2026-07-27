@@ -8,7 +8,7 @@ require (
 	capnproto.org/go/capnp/v3 v3.1.0-alpha.2
 	github.com/Masterminds/semver/v3 v3.5.0
 	github.com/boombuler/barcode v1.1.0
-	github.com/gofsd/shmring v0.1.0
+	github.com/gofsd/shmring v0.3.0
 	github.com/hashicorp/raft v1.7.3
 	github.com/hashicorp/raft-boltdb/v2 v2.3.1
 	github.com/libp2p/go-libp2p v0.48.0
