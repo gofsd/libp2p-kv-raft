@@ -2182,7 +2182,7 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 			if err != nil {
 				return errorMsg(m.ID, err)
 			}
-			if err := n.handleOpForward(ctx, kvfsm.OpAppendCommandRequest, key, payload, true); err != nil {
+			if _, err := n.handleOpForward(ctx, kvfsm.OpAppendCommandRequest, key, payload, true); err != nil {
 				return errorMsg(m.ID, err)
 			}
 			return shmevent.Msg{EventType: shmevent.EventLogAppend, ID: m.ID}
@@ -2277,6 +2277,23 @@ func (n *Node) handleAdd(ctx context.Context, leaderPeerID string) (string, erro
 		return "", fmt.Errorf("init raft: %w", err)
 	}
 
+	// A trailing " learner" (peer ids/multiaddrs never contain a space)
+	// requests Nonvoter suffrage for this join instead of the default
+	// Voter -- rides along inside the same string every existing caller
+	// already passes through unchanged (mage addfollower/kvctl.AddNode/
+	// kvmobile.Join, EventAdd's own wire payload), same convention
+	// splitInviteToken's own "#<token>" suffix already established, so
+	// this needs no new parameter threaded through handleAdd's many
+	// existing callers. Checked first (before splitInviteToken) since an
+	// invite-token join's suffrage is instead decided by the invite
+	// itself (consumeJoinInvite) once it reaches the leader -- this
+	// marker is only ever meaningful for a plain, non-invite join.
+	suffrage := raft.Voter
+	if rest, ok := strings.CutSuffix(leaderPeerID, " learner"); ok {
+		leaderPeerID = rest
+		suffrage = raft.Nonvoter
+	}
+
 	if leaderPeerID == "" {
 		cfg := raft.Configuration{
 			Servers: []raft.Server{{
@@ -2330,7 +2347,7 @@ func (n *Node) handleAdd(ctx context.Context, leaderPeerID string) (string, erro
 		}
 	}
 
-	status, err := n.join(ctx, leaderAddr, inviteToken)
+	status, err := n.join(ctx, leaderAddr, suffrage, inviteToken)
 	if err != nil {
 		return "", fmt.Errorf("join: %w", err)
 	}
@@ -2346,14 +2363,18 @@ func (n *Node) handleAdd(ctx context.Context, leaderPeerID string) (string, erro
 	return n.peerID + " " + status, nil
 }
 
-// join asks the leader reachable at leaderAddr to add this node as a
-// voter, and returns "ok" (admitted immediately) or "pending" (lodged as a
-// pending join request awaiting a confirmed voter's approval -- see
-// Config.RequireConfirmForJoin) on success. inviteToken, if non-empty, is
-// a shmevent.KindJoinInvite token (see EncodeJoinInviteCreatePayload) that
-// -- if it's still valid -- gets this request admitted immediately
-// regardless of Config.RequireConfirmForJoin; see admitOrLodgeJoin.
-func (n *Node) join(ctx context.Context, leaderAddr string, inviteToken []byte) (string, error) {
+// join asks the leader reachable at leaderAddr to add this node with the
+// given suffrage (Voter or Nonvoter -- see handleAdd's " learner" marker
+// doc comment for how a caller requests Nonvoter), and returns "ok"
+// (admitted immediately) or "pending" (lodged as a pending join request
+// awaiting a confirmed voter's approval -- see Config.RequireConfirmForJoin)
+// on success. inviteToken, if non-empty, is a shmevent.KindJoinInvite
+// token (see EncodeJoinInviteCreatePayload) that -- if it's still valid --
+// gets this request admitted immediately regardless of
+// Config.RequireConfirmForJoin, with whatever suffrage the invite itself
+// grants (consumeJoinInvite), not necessarily the suffrage argument here;
+// see admitOrLodgeJoin.
+func (n *Node) join(ctx context.Context, leaderAddr string, suffrage raft.ServerSuffrage, inviteToken []byte) (string, error) {
 	// If this node needs a relay reservation to be reachable at all (see
 	// Config.RelayPeer), give it a moment to complete before doing anything
 	// else: AutoRelay's reservation happens asynchronously in the background
@@ -2409,8 +2430,12 @@ func (n *Node) join(ctx context.Context, leaderAddr string, inviteToken []byte) 
 	}
 	defer s.Close()
 
+	suffrageWord := "voter"
+	if suffrage == raft.Nonvoter {
+		suffrageWord = "learner"
+	}
 	selfAddr := n.advertisedAddrs()[0]
-	reqLine := fmt.Sprintf("%s %s voter", n.peerID, selfAddr)
+	reqLine := fmt.Sprintf("%s %s %s", n.peerID, selfAddr, suffrageWord)
 	if len(inviteToken) > 0 {
 		reqLine += " " + hex.EncodeToString(inviteToken)
 	}
@@ -3302,7 +3327,8 @@ func (n *Node) forwardJoin(ctx context.Context, leaderID raft.ServerID, joinPeer
 // OpAppendCommandRequest also goes through here rather than through
 // handleConfirmForward.
 func (n *Node) handleSetForward(ctx context.Context, key, value []byte, allowForward bool) error {
-	return n.handleOpForward(ctx, kvfsm.OpSet, key, value, allowForward)
+	_, err := n.handleOpForward(ctx, kvfsm.OpSet, key, value, allowForward)
+	return err
 }
 
 // handleOpForward is handleSetForward generalized to any op that -- like
@@ -3318,7 +3344,12 @@ func (n *Node) handleSetForward(ctx context.Context, key, value []byte, allowFor
 // through the voter-gated ForwardConfirmProtocolID instead would reject
 // exactly that legitimate case with "not a current raft voter", even
 // though Apply's own ACL check is what's actually supposed to gate it.
-func (n *Node) handleOpForward(ctx context.Context, op kvfsm.OpType, key, value []byte, allowForward bool) error {
+// handleOpForward returns the raft log index the write ended up applied
+// at (this node's own index if it's the leader, the leader's index if
+// forwarded) alongside the usual error -- see forwardOp/waitForLocalApply
+// for why a forwarding follower needs that index before it can safely
+// report success to its own caller.
+func (n *Node) handleOpForward(ctx context.Context, op kvfsm.OpType, key, value []byte, allowForward bool) (uint64, error) {
 	// Both wait windows below scale off the actual configured election
 	// timeout (not a fixed constant) so a WAN-tuned longer timeout still
 	// gets a comfortable margin: Apply itself can legitimately take a full
@@ -3326,86 +3357,160 @@ func (n *Node) handleOpForward(ctx context.Context, op kvfsm.OpType, key, value 
 	// mid-call.
 	rf, isLeader, leaderID, err := n.resolveWriteTarget(5 * n.electionTimeout)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if isLeader {
 		return n.applyOp(rf, op, key, value)
 	}
 	if !allowForward {
-		return fmt.Errorf("not leader; current leader is %s (already forwarded once)", leaderID)
+		return 0, fmt.Errorf("not leader; current leader is %s (already forwarded once)", leaderID)
 	}
-	return n.forwardOp(ctx, op, leaderID, key, value)
+	index, err := n.forwardOp(ctx, op, leaderID, key, value)
+	if err != nil {
+		return 0, err
+	}
+	// The leader's ack only proves the write is durable+applied on the
+	// leader -- this node's own copy (which is what any immediately
+	// following local Get on this node will read) catches up
+	// asynchronously via ordinary AppendEntries replication, on no fixed
+	// schedule relative to the ack. Waiting here for our own applied index
+	// to reach the leader's closes that read-your-own-writes race for the
+	// common case (healthy replication, which is at least as fast as the
+	// round trip that already happened to get this ack) without turning a
+	// write that already genuinely succeeded into a reported failure: a
+	// timeout falls through to returning success anyway, same as before
+	// this wait existed, just without the improved freshness guarantee.
+	n.waitForLocalApply(rf, index, 10*n.electionTimeout)
+	return index, nil
 }
 
 func (n *Node) applySet(rf *raft.Raft, key, value []byte) error {
-	return n.applyOp(rf, kvfsm.OpSet, key, value)
+	_, err := n.applyOp(rf, kvfsm.OpSet, key, value)
+	return err
 }
 
-func (n *Node) applyOp(rf *raft.Raft, op kvfsm.OpType, key, value []byte) error {
+func (n *Node) applyOp(rf *raft.Raft, op kvfsm.OpType, key, value []byte) (uint64, error) {
 	cmd := kvfsm.EncodeCommand(op, key, value)
 	future := rf.Apply(cmd, 10*n.electionTimeout)
 	if err := future.Error(); err != nil {
-		return err
+		return 0, err
 	}
 	if res, ok := future.Response().(kvfsm.ApplyResult); ok && res.Err != nil {
-		return res.Err
+		return 0, res.Err
 	}
-	return nil
+	return future.Index(), nil
 }
 
+// waitForLocalApply blocks (up to timeout) until this node's own raft FSM
+// has applied index -- see handleOpForward's doc comment for why a
+// forwarding follower needs this before its own immediately-following
+// local reads can be trusted to see the write it just forwarded.
+// Best-effort: exceeding timeout is not reported as an error, since the
+// write already succeeded on the leader by this point regardless of
+// whether this node's own copy has caught up yet.
+func (n *Node) waitForLocalApply(rf *raft.Raft, index uint64, timeout time.Duration) {
+	if rf.AppliedIndex() >= index {
+		return
+	}
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline:
+			return
+		case <-ticker.C:
+			if rf.AppliedIndex() >= index {
+				return
+			}
+		}
+	}
+}
+
+// forwardStatusOK/forwardStatusErr are forwardOp/handleForwardSetStream's
+// response framing: a single leading status byte, followed by either an
+// 8-byte big-endian raft log index (OK -- the index the write was applied
+// at on the leader, which the forwarding follower needs, see
+// waitForLocalApply) or a UTF-8 error message (Err). Deliberately
+// unambiguous about success -- see handleForwardSetStream's doc comment
+// for the failure mode (a relay-adjacent stream reporting every Set as
+// successful while nothing was ever persisted) this framing exists to
+// rule out: decodeForwardResponse treats anything that isn't exactly this
+// shape as an error, never as silent success.
+const (
+	forwardStatusOK  byte = 0x00
+	forwardStatusErr byte = 0x01
+)
+
 // forwardOp relays op(key, value) to leaderID over ForwardProtocolID and
-// returns its outcome -- generalizes what used to be a Set-only forwardSet
-// to also carry OpAppendCommandRequest (see handleOpForward's doc
-// comment). This is purely internal node-to-node machinery (not something
-// a "user" ever speaks -- see pkg/shmevent's doc comment), so it reuses
-// kvfsm's own log-command framing directly rather than pkg/shmevent's
-// user-facing relational protocol: write the encoded command, close the
-// write side, then read until EOF -- an empty response means success, a
-// non-empty one is the leader's error message. The libp2p host already
-// has an open connection/known address for leaderID -- it's the peer this
-// node's own raft transport talks to for AppendEntries -- so no address
-// resolution is needed beyond the peer id itself.
-func (n *Node) forwardOp(ctx context.Context, op kvfsm.OpType, leaderID raft.ServerID, key, value []byte) error {
+// returns the raft log index it was applied at -- generalizes what used
+// to be a Set-only forwardSet to also carry OpAppendCommandRequest (see
+// handleOpForward's doc comment). This is purely internal node-to-node
+// machinery (not something a "user" ever speaks -- see pkg/shmevent's doc
+// comment), so it reuses kvfsm's own log-command framing directly rather
+// than pkg/shmevent's user-facing relational protocol for the request;
+// see forwardStatusOK's doc comment for the response framing. The libp2p
+// host already has an open connection/known address for leaderID -- it's
+// the peer this node's own raft transport talks to for AppendEntries --
+// so no address resolution is needed beyond the peer id itself.
+func (n *Node) forwardOp(ctx context.Context, op kvfsm.OpType, leaderID raft.ServerID, key, value []byte) (uint64, error) {
 	pid, err := peer.Decode(string(leaderID))
 	if err != nil {
-		return fmt.Errorf("forward set: invalid leader id %s: %w", leaderID, err)
+		return 0, fmt.Errorf("forward set: invalid leader id %s: %w", leaderID, err)
 	}
 	s, err := n.host.NewStream(ctx, pid, ForwardProtocolID)
 	if err != nil {
-		return fmt.Errorf("forward set to leader %s: %w", leaderID, err)
+		return 0, fmt.Errorf("forward set to leader %s: %w", leaderID, err)
 	}
 	defer s.Close()
 
 	cmd := kvfsm.EncodeCommand(op, key, value)
 	if _, err := s.Write(cmd); err != nil {
-		return fmt.Errorf("forward set: write to leader %s: %w", leaderID, err)
+		return 0, fmt.Errorf("forward set: write to leader %s: %w", leaderID, err)
 	}
 	if err := s.CloseWrite(); err != nil {
-		return fmt.Errorf("forward set: close write to leader %s: %w", leaderID, err)
+		return 0, fmt.Errorf("forward set: close write to leader %s: %w", leaderID, err)
 	}
 
 	respBuf, err := io.ReadAll(s)
 	if err != nil {
-		return fmt.Errorf("forward set: read response from leader %s: %w", leaderID, err)
+		return 0, fmt.Errorf("forward set: read response from leader %s: %w", leaderID, err)
 	}
-	if len(respBuf) > 0 {
-		return fmt.Errorf("forward set: %s", respBuf)
+	return decodeForwardResponse(respBuf)
+}
+
+// decodeForwardResponse parses forwardOp's response framing -- see
+// forwardStatusOK's doc comment for the wire shape and why an
+// unrecognized/truncated/empty buf is treated as an error rather than
+// success.
+func decodeForwardResponse(buf []byte) (uint64, error) {
+	if len(buf) == 0 {
+		return 0, fmt.Errorf("forward set: empty response from leader")
 	}
-	return nil
+	switch buf[0] {
+	case forwardStatusOK:
+		if len(buf) != 9 {
+			return 0, fmt.Errorf("forward set: malformed success response (%d bytes)", len(buf))
+		}
+		return binary.BigEndian.Uint64(buf[1:9]), nil
+	case forwardStatusErr:
+		return 0, fmt.Errorf("forward set: %s", buf[1:])
+	default:
+		return 0, fmt.Errorf("forward set: unrecognized response status byte 0x%02x", buf[0])
+	}
 }
 
 // handleForwardSetStream is the leader-side handler for ForwardProtocolID:
 // it decodes a kvfsm-framed command and answers it exactly like a local
 // Set/OpAppendCommandRequest would, with forwarding disabled (see
-// handleSetForward's allowForward doc). See forwardOp's doc comment for
-// the wire format (kvfsm's own command framing, not pkg/shmevent) --
-// forwardOp treats *any* empty response as success, so every early return
-// here must write a non-empty error instead of silently closing the
-// stream: an empty response from a read/decode failure would otherwise be
-// indistinguishable from genuine success, silently dropping the write
-// while the forwarding follower reports it as applied. Found exactly this
-// way -- a follower over a relay-adjacent connection (a phone) reporting
-// every Set as successful while nothing was ever persisted, anywhere.
+// handleSetForward's allowForward doc). See forwardStatusOK's doc comment
+// for the response wire format -- every early return here must write a
+// well-formed error frame, never just close the stream: an empty response
+// from a read/decode failure would otherwise be indistinguishable from
+// genuine success, silently dropping the write while the forwarding
+// follower reports it as applied. Found exactly this way -- a follower
+// over a relay-adjacent connection (a phone) reporting every Set as
+// successful while nothing was ever persisted, anywhere.
 // OpAppendCommandRequest is accepted here (not just OpSet) for the same
 // reason handleOpForward's doc comment gives: its own ACL check runs
 // raft-authoritatively inside kvfsm.Apply, so this hop needs no separate
@@ -3415,22 +3520,41 @@ func (n *Node) handleForwardSetStream(s network.Stream) {
 
 	buf, err := io.ReadAll(s)
 	if err != nil {
-		fmt.Fprintf(s, "forward set: read command: %v", err)
+		writeForwardError(s, fmt.Errorf("forward set: read command: %w", err))
 		return
 	}
 	op, key, value, err := kvfsm.DecodeCommand(buf)
 	if err != nil {
-		fmt.Fprintf(s, "forward set: decode command: %v", err)
+		writeForwardError(s, fmt.Errorf("forward set: decode command: %w", err))
 		return
 	}
 	if op != kvfsm.OpSet && op != kvfsm.OpAppendCommandRequest {
-		fmt.Fprintf(s, "forward set: expected OpSet or OpAppendCommandRequest, got op %d", op)
+		writeForwardError(s, fmt.Errorf("forward set: expected OpSet or OpAppendCommandRequest, got op %d", op))
 		return
 	}
 
-	if err := n.handleOpForward(context.Background(), op, key, value, false); err != nil {
-		s.Write([]byte(err.Error()))
+	index, err := n.handleOpForward(context.Background(), op, key, value, false)
+	if err != nil {
+		writeForwardError(s, err)
+		return
 	}
+	writeForwardSuccess(s, index)
+}
+
+// writeForwardError/writeForwardSuccess write forwardStatusOK/
+// forwardStatusErr-framed responses -- see forwardStatusOK's doc comment.
+// Errors from s.Write itself are deliberately ignored: the stream is
+// already being torn down (deferred s.Close() in the caller) and there's
+// no further response channel to report a write failure through.
+func writeForwardError(s network.Stream, err error) {
+	s.Write(append([]byte{forwardStatusErr}, []byte(err.Error())...))
+}
+
+func writeForwardSuccess(s network.Stream, index uint64) {
+	buf := make([]byte, 9)
+	buf[0] = forwardStatusOK
+	binary.BigEndian.PutUint64(buf[1:], index)
+	s.Write(buf)
 }
 
 // handleConfirmForward is EventPermitConfirm/EventPermitRevoke's shared

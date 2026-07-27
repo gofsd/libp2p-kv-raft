@@ -59,6 +59,23 @@ var leaderMultiaddr string
 // unchanged.
 var identitySeedHex string
 
+// joinSuffrage, when set to "learner", is baked in at build time the same
+// way as leaderMultiaddr (via `gomobile bind -ldflags
+// "-X .../mobile/kvmobile.joinSuffrage=learner"`) to make Start/StartWithKey's
+// automatic join a raft Nonvoter instead of the default Voter -- see
+// pkg/daemon.handleAdd's " learner" marker doc comment for the wire
+// convention this appends onto leaderMultiaddr before sending. Built for
+// pkg/e2erun's android row runner: the shared, long-lived e2e leader's
+// quorum shouldn't depend on this device's own ephemeral test-run
+// connection the way a genuine Voter's would (see that package's own doc
+// comment for the leadership churn this caused when android joined as a
+// voter). Left empty (the default) for every real device build, which
+// still always joins as a full voting member exactly as before this
+// existed. Only Start/StartWithKey's automatic join reads this --
+// Join/JoinWithKey (an operator explicitly picking a cluster to join at
+// runtime) always requests Voter regardless, unaffected.
+var joinSuffrage string
+
 // relayMultiaddr is baked in at build time the same way as leaderMultiaddr
 // (via `gomobile bind -ldflags "-X .../mobile/kvmobile.relayMultiaddr=..."`),
 // and is normally just the leader's own multiaddr, since the leader is
@@ -172,16 +189,20 @@ func start(dataDirRoot string, resolveIdentity func(dataDir string) (keyPath, pe
 	if leaderMultiaddr == "" {
 		return "", fmt.Errorf("kvmobile: no leader multiaddr baked in at build time")
 	}
-	return startAgainst(dataDirRoot, leaderMultiaddr, resolveIdentity)
+	return startAgainst(dataDirRoot, leaderMultiaddr, joinSuffrage, resolveIdentity)
 }
 
 // startAgainst is the shared "bring up the in-process daemon under
 // dataDirRoot and join it to leaderAddr" implementation behind both
-// start (Start/StartWithKey, always against the build-time leaderMultiaddr)
-// and join (Join/JoinWithKey, against a leaderAddr chosen at runtime) --
-// see Join's doc comment for why the runtime-switching case can't just
-// reuse start's own already-started short-circuit. Callers must hold mu.
-func startAgainst(dataDirRoot, leaderAddr string, resolveIdentity func(dataDir string) (keyPath, peerID string, err error)) (string, error) {
+// start (Start/StartWithKey, always against the build-time leaderMultiaddr,
+// with joinSuffrage) and join (Join/JoinWithKey, against a leaderAddr
+// chosen at runtime, always Voter -- suffrage "") -- see Join's doc
+// comment for why the runtime-switching case can't just reuse start's own
+// already-started short-circuit. suffrage is "" (Voter, the default) or
+// "learner" (Nonvoter) -- see joinSuffrage's doc comment; appended onto
+// leaderAddr only for the sess.Add call below, never for peer id
+// extraction/dialing, which need the bare address. Callers must hold mu.
+func startAgainst(dataDirRoot, leaderAddr, suffrage string, resolveIdentity func(dataDir string) (keyPath, peerID string, err error)) (string, error) {
 	keyPath, id, err := resolveIdentity(dataDirRoot)
 	if err != nil {
 		return "", err
@@ -237,7 +258,11 @@ func startAgainst(dataDirRoot, leaderAddr string, resolveIdentity func(dataDir s
 		cancel()
 		return "", fmt.Errorf("kvmobile: fetch signing key: %w", err)
 	}
-	if _, err := sess.Add(addCtx, leaderAddr); err != nil {
+	addValue := leaderAddr
+	if suffrage == "learner" {
+		addValue += " learner"
+	}
+	if _, err := sess.Add(addCtx, addValue); err != nil {
 		cancel()
 		return "", fmt.Errorf("kvmobile: join cluster: %w", err)
 	}
@@ -302,7 +327,7 @@ func join(dataDir, leaderAddr string, resolveIdentity func(dataDir string) (keyP
 
 	mu.Lock()
 	defer mu.Unlock()
-	return startAgainst(dataDir, leaderAddr, resolveIdentity)
+	return startAgainst(dataDir, leaderAddr, "", resolveIdentity)
 }
 
 // Stop shuts down the currently running in-process daemon, if any, and

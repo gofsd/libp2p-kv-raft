@@ -121,8 +121,20 @@ func runAndroidNode(repoRoot string, node e2edata.Node, bootstrapMultiaddr strin
 	eventJSONs := make([]string, len(rowIdxs))
 	for i, idx := range rowIdxs {
 		ev := f.Rows[idx].Event
-		if ev.EventType == shmevent.EventAdd {
-			resolved := ResolveBootstrapPlaceholder(string(ev.Value()), bootstrapMultiaddr)
+		if ev.EventType == shmevent.EventAdd && string(ev.Value()) == BootstrapToken {
+			// This row's own join is actually a no-op by the time it
+			// runs: Kvmobile.start (E2ETest.kt, called once before any
+			// row) already joined this device via buildAndroidAAR's
+			// joinSuffrage=learner ldflag, which is what really matters
+			// -- see that function's doc comment for why the device must
+			// join as a non-voting learner rather than a voter against
+			// this long-lived, shared, never-torn-down leader (quorum
+			// loss when an ephemeral voter disconnects, confirmed
+			// directly). Marked the same way here too regardless, purely
+			// so this recorded row keeps meaning what it says (a learner
+			// join, matching how the device actually joined) rather than
+			// silently mismatching it.
+			resolved := ResolveBootstrapPlaceholder(string(ev.Value()), bootstrapMultiaddr) + " learner"
 			ev = e2edata.NewEvent(ev.EventType, ev.SourceID, ev.DestinationID, []byte(resolved), ev.ID)
 		}
 		data, err := json.Marshal(ev)
@@ -165,8 +177,13 @@ func buildAndroidAAR(repoRoot string, node e2edata.Node, bootstrapMultiaddr stri
 	if err := os.MkdirAll(filepath.Dir(aarPath), 0o755); err != nil {
 		return err
 	}
+	// joinSuffrage=learner (see mobile/kvmobile's own doc comment on that
+	// var) makes Kvmobile.start's automatic join -- which is what actually
+	// admits this device, before any row ever runs (see runAndroidNode's
+	// doc comment on why the row-level "add" event's own suffrage marker
+	// below is otherwise redundant) -- a Nonvoter instead of a Voter.
 	ldflags := fmt.Sprintf(
-		"-X %[1]s.leaderMultiaddr=%[2]s -X %[1]s.relayMultiaddr=%[2]s -X %[1]s.identitySeedHex=%[3]s",
+		"-X %[1]s.leaderMultiaddr=%[2]s -X %[1]s.relayMultiaddr=%[2]s -X %[1]s.identitySeedHex=%[3]s -X %[1]s.joinSuffrage=learner",
 		androidGoPackage, bootstrapMultiaddr, node.PrivateKey,
 	)
 	cmd := exec.Command("gomobile", "bind", "-target=android", "-androidapi", "26",
