@@ -193,6 +193,51 @@ func hexPrefix(s string) (rest string, ok bool) {
 	return "", false
 }
 
+// UIExpectSucceeded/UIExpectRejected/UIExpectNoCrash are UICase.Expect's
+// valid values -- the on-disk names for UiCommandE2ETest.kt's own
+// assertSucceeded/assertRejected/assertNoCrash assertion functions (see
+// that file's doc comment for what each means: a rejection is expected
+// when this device isn't currently a raft voter, no_crash tolerates either
+// outcome for a case whose result depends on state this pipeline doesn't
+// control). Empty/unrecognized defaults to UIExpectSucceeded on the Kotlin
+// side, matching Case's own Kotlin-side default before this file existed.
+const (
+	UIExpectSucceeded = "succeeded"
+	UIExpectRejected  = "rejected"
+	UIExpectNoCrash   = "no_crash"
+)
+
+// UICase is one android UiCommandE2ETest test plan entry, keyed by command
+// label ("$category: $name", matching CommandSpec.label in
+// android-app/app/src/main/java/com/gofsd/kvdemo/CommandCatalog.kt) in
+// File.UICases. This is the single source of truth for what
+// UiCommandE2ETest actually does with each catalog command -- moved here
+// (see git history) from a hardcoded Kotlin map so the whole e2e test
+// surface (cross-platform wire rows and the Android UI command walk alike)
+// lives in one reviewable file instead of being split across a JSON file
+// and a Kotlin source file.
+//
+// Inputs may contain the literal tokens "{{selfPeerID}}", "{{leaderPeerID}}",
+// "{{testKey}}", and "{{testValue}}" -- substituted on-device at test run
+// time (see UiCommandE2ETest.kt's substituteTokens) for values that can
+// only be known live (this device's own peer id, the cluster's
+// currently-observed leader, and a randomized-per-run KV test key/value) --
+// there is no way to freeze those into a committed file the way every other
+// field here is frozen.
+//
+// A catalog command with no entry in File.UICases still gets full
+// navigation-only coverage (screen reachable, param field count verified)
+// via UiCommandE2ETest's own default case, just never has Run tapped --
+// see that file's own doc comment for exactly which commands are
+// deliberately left out this way (destructive to this shared cluster, or
+// needing a second cooperating device) and why.
+type UICase struct {
+	Inputs        []string `json:"inputs,omitempty"`
+	Execute       bool     `json:"execute,omitempty"`
+	Expect        string   `json:"expect,omitempty"`
+	RetryBudgetMs int64    `json:"retry_budget_ms,omitempty"`
+}
+
 // StatusPass/StatusFail/StatusSkipped are the Row.Status conventions this
 // package's runner uses. Any other non-zero value is still "failed" as far
 // as File methods are concerned; StatusSkipped exists only so a platform
@@ -231,6 +276,12 @@ type File struct {
 	PublishedVersion int          `json:"published_version"`
 	Nodes            map[int]Node `json:"nodes"`
 	Rows             []Row        `json:"rows"`
+	// UICases is the Android UiCommandE2ETest test plan, keyed by command
+	// label -- see UICase's doc comment. Deliberately not versioned/rowed
+	// the way Rows is: it always describes how to exercise whatever
+	// commands the *current* CommandCatalog.kt has, not a historical
+	// regression log of past runs.
+	UICases map[string]UICase `json:"android_ui_cases,omitempty"`
 }
 
 // DefaultPath is where the testdata file lives relative to the repo root.
@@ -256,6 +307,9 @@ func Load(path string) (*File, error) {
 	}
 	if f.Nodes == nil {
 		f.Nodes = map[int]Node{}
+	}
+	if f.UICases == nil {
+		f.UICases = map[string]UICase{}
 	}
 	return &f, nil
 }

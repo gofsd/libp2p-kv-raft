@@ -18,18 +18,98 @@ import (
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
 
+// EnvTypes is the environment variable Run reads (via SelectedTypes) to
+// filter which test types actually execute, e.g.
+// `E2E_TYPES=web,androidui mage e2e:all`. Unset or empty runs everything --
+// mage e2e:all/e2e:current keep their documented zero-argument, "run
+// everything" signature (see magefile.go's own doc comment on why mage
+// targets take no optional/variadic args); this is additive filtering
+// layered on top via the environment, the same pattern EnvE2EHome already
+// uses for local desktop node isolation.
+const EnvTypes = "E2E_TYPES"
+
+// Types selects which of this pipeline's test types a Run actually
+// executes. Desktop covers both PlatformDesktop and PlatformRemote rows --
+// there's no separate "remote"/"relay" toggle, since the SSH-deployed
+// bootstrap/relay leader is required infrastructure every other type joins
+// through (EnsureBootstrap always runs regardless of what's selected here),
+// not an independently runnable test of its own. Android and AndroidUI are
+// separate because they're genuinely separate test mechanisms sharing one
+// android identity (see runAndroidRows's doc comment): Android is the raw
+// E2ETest wire-protocol rows recorded in testdata.json's Rows, AndroidUI is
+// the catalog-driven UiCommandE2ETest walk (testdata.json's UICases) --
+// either can be selected without the other.
+type Types struct {
+	Desktop   bool
+	Web       bool
+	Android   bool
+	AndroidUI bool
+}
+
+// AllTypes is every type enabled -- Run's behavior when EnvTypes is unset,
+// preserving mage e2e:all/e2e:current's original "run everything" behavior
+// exactly.
+func AllTypes() Types { return Types{Desktop: true, Web: true, Android: true, AndroidUI: true} }
+
+// ParseTypes parses a comma-separated EnvTypes value ("desktop,web",
+// "androidui", "android,androidui", ...) into a Types selection --
+// case-insensitive, whitespace around each entry ignored. An empty string
+// means "run everything" (AllTypes()), so unsetting/clearing the
+// environment variable is the same as never having filtered anything.
+func ParseTypes(s string) (Types, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return AllTypes(), nil
+	}
+	var t Types
+	for part := range strings.SplitSeq(s, ",") {
+		switch strings.ToLower(strings.TrimSpace(part)) {
+		case "desktop":
+			t.Desktop = true
+		case "web":
+			t.Web = true
+		case "android":
+			t.Android = true
+		case "androidui", "android-ui", "android_ui":
+			t.AndroidUI = true
+		case "remote", "relay":
+			// Not an independent toggle -- see Types' doc comment. Accepted
+			// here (rather than rejected) only so spelling it out
+			// explicitly for clarity ("desktop,relay") doesn't error.
+		default:
+			return Types{}, fmt.Errorf("e2erun: unknown %s entry %q (want desktop, web, android, androidui, or remote)", EnvTypes, part)
+		}
+	}
+	return t, nil
+}
+
+// SelectedTypes reads and parses EnvTypes from the environment -- the
+// entry point magefile.go's E2E targets use.
+func SelectedTypes() (Types, error) {
+	return ParseTypes(os.Getenv(EnvTypes))
+}
+
 // Run executes every row in rowIndices (indices into f.Rows -- see
-// e2edata.File.PendingRows/AllRowIndices) in order, updating each row's
-// Status/Error in place and saving f to path after every single row, so a
-// crash or Ctrl-C mid-run still leaves already-recorded outcomes on disk
-// instead of losing the whole batch.
+// e2edata.File.PendingRows/AllRowIndices) whose node's platform is enabled
+// in types, updating each such row's Status/Error in place and saving f to
+// path after every single row, so a crash or Ctrl-C mid-run still leaves
+// already-recorded outcomes on disk instead of losing the whole batch. A
+// row whose type isn't selected is left completely untouched -- its
+// previously recorded Status/Error stands, it's neither re-run nor
+// overwritten with a synthetic Skipped result, since "don't run this type"
+// is a deliberate choice, not the same thing as this row having just
+// failed to run.
 //
 // It always provisions/confirms the SSH bootstrap leader first (see
-// EnsureBootstrap) since EventAdd rows join against it via
-// BootstrapToken. It returns an error if any non-skipped row ends up
-// failing; the caller should still treat f/path as having the real,
-// saved results even when this returns an error.
-func Run(repoRoot, path string, f *e2edata.File, rowIndices []int) error {
+// EnsureBootstrap) since EventAdd rows join against it via BootstrapToken,
+// and every type's rows dial through it -- this happens regardless of
+// types, since there's no way to run *any* row without it. It returns an
+// error if any non-skipped selected row ends up failing, or if
+// types.AndroidUI is set and UiCommandE2ETest itself failed (that check
+// has no f.Rows entry of its own to record a per-row outcome into -- see
+// runAndroidRows' doc comment); the caller should still treat f/path as
+// having the real, saved results even when this returns an error.
+func Run(repoRoot, path string, f *e2edata.File, rowIndices []int, types Types) error {
 	bootstrapMultiaddr, bootstrapWebTransportAddr, bootstrapPeerID, err := EnsureBootstrap(repoRoot, path, f)
 	if err != nil {
 		return fmt.Errorf("e2erun: ensure bootstrap: %w", err)
@@ -41,6 +121,34 @@ func Run(repoRoot, path string, f *e2edata.File, rowIndices []int) error {
 		return err
 	}
 
+	var androidRowIdxs, webRowIdxs, otherRowIdxs, skippedByType []int
+	for _, idx := range rowIndices {
+		node := f.Nodes[f.Rows[idx].Node]
+		switch node.Platform {
+		case e2edata.PlatformAndroid:
+			if types.Android {
+				androidRowIdxs = append(androidRowIdxs, idx)
+			} else {
+				skippedByType = append(skippedByType, idx)
+			}
+		case e2edata.PlatformWeb:
+			if types.Web {
+				webRowIdxs = append(webRowIdxs, idx)
+			} else {
+				skippedByType = append(skippedByType, idx)
+			}
+		default: // PlatformDesktop, PlatformRemote, or an unknown node id (still surfaced below)
+			if types.Desktop {
+				otherRowIdxs = append(otherRowIdxs, idx)
+			} else {
+				skippedByType = append(skippedByType, idx)
+			}
+		}
+	}
+	if len(skippedByType) > 0 {
+		fmt.Fprintf(os.Stderr, "e2erun: %d row(s) excluded by %s filter (left as previously recorded, not re-run)\n", len(skippedByType), EnvTypes)
+	}
+
 	// Android and web rows each run as one batch per node -- a real
 	// gomobile bind + gradle install + instrumented test run per android
 	// node (see runAndroidRows's doc comment), and a real Playwright run
@@ -49,11 +157,12 @@ func Run(repoRoot, path string, f *e2edata.File, rowIndices []int) error {
 	// since rebuilding/reinstalling/relaunching a browser per row would be
 	// prohibitively slow. Both are resolved up front here instead of
 	// through runRow's per-row dispatch.
-	androidResults := runAndroidRows(repoRoot, f, rowIndices, bootstrapMultiaddr)
-	webResults := runWebRows(repoRoot, f, rowIndices, bootstrapWebTransportAddr)
+	androidResults, androidUIErr := runAndroidRows(repoRoot, f, androidRowIdxs, bootstrapMultiaddr, types.AndroidUI, f.UICases)
+	webResults := runWebRows(repoRoot, f, webRowIdxs, bootstrapWebTransportAddr)
 
 	failures := 0
-	for _, idx := range rowIndices {
+	runRows := append(append(append([]int{}, androidRowIdxs...), webRowIdxs...), otherRowIdxs...)
+	for _, idx := range runRows {
 		row := &f.Rows[idx]
 		node, ok := f.Nodes[row.Node]
 		switch {
@@ -90,8 +199,17 @@ func Run(repoRoot, path string, f *e2edata.File, rowIndices []int) error {
 		}
 	}
 
+	if types.AndroidUI {
+		if androidUIErr != nil {
+			fmt.Fprintf(os.Stderr, "e2erun: android UI command test: FAIL: %v\n", androidUIErr)
+			failures++
+		} else {
+			fmt.Fprintln(os.Stderr, "e2erun: android UI command test: PASS")
+		}
+	}
+
 	if failures > 0 {
-		return fmt.Errorf("e2erun: %d row(s) failed", failures)
+		return fmt.Errorf("e2erun: %d failure(s) (rows + checks)", failures)
 	}
 	return nil
 }
@@ -188,32 +306,84 @@ func parseRowResults(resultsJSON []byte, rowIdxs []int, driverName string) (map[
 const (
 	readRetryAttempts = 10
 	readRetryDelay    = 300 * time.Millisecond
+
+	// writeLeaderRetryAttempts (~60s at readRetryDelay's 300ms cadence,
+	// matching E2ETest.kt's WRITE_LEADER_RETRY_BUDGET_MS and
+	// mobile/kvmobile's own callTimeout/relay-reservation timeouts for the
+	// same device/link combination) covers the specific window confirmed
+	// directly across several real runs: it's always the *first* forwarded
+	// write in a session that hits this, right after a fresh join, before
+	// this identity's own local raft.Raft() has received its first leader
+	// announcement -- a later write in the same session never does. 10-
+	// and 25-attempt budgets both proved not quite long enough for that
+	// window. Not a workaround for a leader that's down for good.
+	writeLeaderRetryAttempts = 200
 )
 
+// transientLeaderErrors are hashicorp/raft error strings that mean a write
+// briefly hit the leader mid-election -- a real but transient condition,
+// distinct from an application-level rejection (a bad signature, a
+// rejected join, a genuinely missing key) that should still fail on the
+// first try. Caught directly: a real android forwarded set_field row
+// failed with "not leader and no leader known" at the exact moment the
+// shared e2e bootstrap leader's own daemon.log logged "leadership lost
+// while committing log" entries, traced to system-wide memory pressure
+// from an unrelated process sharing that host (not a bug in this project's
+// raft/forwarding code) -- see pkg/daemon.go's handleAdd/handleSet, which
+// return these exact strings, and mobile/kvmobile/kvmobile.go's own doc
+// comment on raftHeartbeatTimeout/raftElectionTimeout, which already
+// documents "not leader and no leader known" as something "observed
+// directly" against a real leader. Retrying is safe: add/set_key/set_field
+// are naturally idempotent from this test's own perspective.
+var transientLeaderErrors = []string{
+	"leadership lost while committing log",
+	"not leader and no leader known",
+}
+
+func isTransientLeaderError(errMsg string) bool {
+	for _, s := range transientLeaderErrors {
+		if strings.Contains(errMsg, s) {
+			return true
+		}
+	}
+	return false
+}
+
 // retryReadsIfNeeded retries dispatch a few times, with a short delay
-// between attempts, only for EventGetField/EventGetKey -- a raft
-// follower's local read can briefly lag just behind a Set that only just
-// committed on the leader (see e.g. web-app/README.md's "Running it"
+// between attempts: unconditionally for EventGetField/EventGetKey -- a
+// raft follower's local read can briefly lag just behind a Set that only
+// just committed on the leader (see e.g. web-app/README.md's "Running it"
 // section, which documents this same caveat for the browser client's own
 // Get), so a GetField row placed right after the SetField row that wrote
 // what it reads needs a little slack, not a hard requirement that
-// replication has already caught up in zero time. Every other event type
-// dispatches exactly once, unretried -- a real failure there (a bad
-// signature, a rejected join, a genuinely missing key) shouldn't be masked
-// by blindly retrying. Caught by a real GetField row immediately following
-// its SetField failing intermittently against a live deployed cluster.
+// replication has already caught up in zero time -- and, for every other
+// event type, only if the failure is a transientLeaderError (see that
+// var's doc comment): a real failure there (a bad signature, a rejected
+// join, a genuinely missing key) still fails on the first try, unmasked.
 func retryReadsIfNeeded(ev e2edata.Event, dispatch func() (int, string)) (int, string) {
-	if ev.EventType != shmevent.EventGetField && ev.EventType != shmevent.EventGetKey {
-		return dispatch()
+	isRead := ev.EventType == shmevent.EventGetField || ev.EventType == shmevent.EventGetKey
+
+	status, errMsg := dispatch()
+	if status == e2edata.StatusPass {
+		return status, errMsg
 	}
-	var status int
-	var errMsg string
-	for range readRetryAttempts {
+	if !isRead && !isTransientLeaderError(errMsg) {
+		return status, errMsg
+	}
+
+	attempts := readRetryAttempts
+	if !isRead {
+		attempts = writeLeaderRetryAttempts
+	}
+	for range attempts {
+		time.Sleep(readRetryDelay)
 		status, errMsg = dispatch()
 		if status == e2edata.StatusPass {
 			return status, errMsg
 		}
-		time.Sleep(readRetryDelay)
+		if !isRead && !isTransientLeaderError(errMsg) {
+			return status, errMsg
+		}
 	}
 	return status, errMsg
 }

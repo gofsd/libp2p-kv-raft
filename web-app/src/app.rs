@@ -608,13 +608,16 @@ async fn do_execute(
 /// leader's log keeps accumulating, until raft's own snapshotting kicks in
 /// and collapses a fresh join back down to one `InstallSnapshot` again.
 async fn do_get(state: &Rc<RefCell<WorkerState>>, key: &str) -> Result<String, p2p::Error> {
-    // Was 30_000 -- too short against the shared e2e leader's log as of
-    // 2026-07-24 (see this fn's doc comment): every `get_field` row failed
-    // outright after burning the full 30s retrying, not just running
-    // close to the edge. Still comfortably under tests/e2e.spec.js's
-    // per-row 200s backstop and the outer 300s test timeout even with two
-    // such calls in one session (a node's history replaying two versions).
-    const GET_RETRY_BUDGET_MS: u32 = 90_000;
+    // Was 30_000, then 90_000 -- both too short against the shared e2e
+    // leader's ever-growing log (see this fn's doc comment): a real
+    // instrumented run on 2026-07-27 measured a single fresh-tab catch-up
+    // taking upwards of 90s on its own, after several more days' worth of
+    // `mage e2e:all` runs (including a cluster of extra runs against this
+    // exact leader while chasing this same issue) pushed the log further
+    // still. Still comfortably under tests/e2e.spec.js's per-row 200s
+    // backstop and the outer 300s test timeout even with two such calls in
+    // one session (a node's history replaying two versions).
+    const GET_RETRY_BUDGET_MS: u32 = 150_000;
     const GET_RETRY_INTERVAL_MS: u32 = 100;
 
     let learner = state

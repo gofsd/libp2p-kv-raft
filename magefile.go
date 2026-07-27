@@ -405,21 +405,32 @@ func (E2E) BootstrapAll() error {
 // scripts/git-hooks/pre-push). On full success it advances
 // PublishedVersion, so the next e2e:current only covers whatever's new
 // again -- this is the "version increment based on new tests" behavior.
+// Set E2E_TYPES (comma-separated: desktop, web, android, androidui) to run
+// only some test types instead of everything -- see
+// pkg/e2erun.ParseTypes's doc comment; unset/empty runs everything, same
+// as before this existed.
 //
 // Usage: mage e2e:current
+// Usage: E2E_TYPES=web,androidui mage e2e:current
 func (E2E) Current() error {
 	return runE2ERows(func(f *e2edata.File) []int { return f.PendingRows() }, true)
 }
 
 // All runs every recorded test row across every version, regardless of
-// what's already published -- a full regression pass.
+// what's already published -- a full regression pass. Set E2E_TYPES the
+// same way Current does to narrow which test types actually run.
 //
 // Usage: mage e2e:all
+// Usage: E2E_TYPES=androidui mage e2e:all
 func (E2E) All() error {
 	return runE2ERows(func(f *e2edata.File) []int { return f.AllRowIndices() }, false)
 }
 
 func runE2ERows(selectRows func(*e2edata.File) []int, markPublishedOnSuccess bool) error {
+	types, err := e2erun.SelectedTypes()
+	if err != nil {
+		return err
+	}
 	root, err := repoRoot()
 	if err != nil {
 		return err
@@ -433,11 +444,11 @@ func runE2ERows(selectRows func(*e2edata.File) []int, markPublishedOnSuccess boo
 		return err
 	}
 	rows := selectRows(f)
-	if len(rows) == 0 {
+	if len(rows) == 0 && !types.AndroidUI {
 		fmt.Println("✅ no rows to run")
 		return nil
 	}
-	runErr := e2erun.Run(root, path, f, rows)
+	runErr := e2erun.Run(root, path, f, rows, types)
 	if runErr == nil && markPublishedOnSuccess {
 		f.MarkPublished()
 		if err := f.Save(path); err != nil {

@@ -68,16 +68,28 @@ class E2ETest {
      * pkg/e2erun.retryReadsIfNeeded works around for desktop/remote rows,
      * mirrored here since this retry has to happen on-device against the
      * real Kvmobile.sendEvent call, not something the host side can inject
-     * after the fact). Every other event type is sent exactly once,
-     * unretried -- a real failure there shouldn't be masked by blindly
-     * retrying. Caught by a real get_field row immediately following its
-     * set_field failing intermittently against a live deployed cluster,
-     * the same issue already fixed for the desktop/remote path.
+     * after the fact).
+     *
+     * Every other event type (writes: add/set_key/set_field) is sent once
+     * and, on failure, retried for up to WRITE_LEADER_RETRY_BUDGET_MS only
+     * if isTransientLeaderError recognizes the error -- not blindly, the
+     * same restraint pkg/e2erun.retryReadsIfNeeded already documents (a
+     * real rejection, e.g. a bad signature, still fails on the first try).
+     * Caught directly: a forwarded set_field failed with "not leader and no
+     * leader known" while the shared bootstrap leader's own daemon.log
+     * showed real "leadership lost while committing log" entries at that
+     * exact moment (system-wide memory pressure from an unrelated process
+     * sharing that host caused genuine, if brief, raft leadership churn --
+     * not a bug in this project's forwarding path). Retrying is safe:
+     * add/set_key/set_field are naturally idempotent from this test's own
+     * perspective, and mobile/kvmobile/kvmobile.go's own doc comment on
+     * raftHeartbeatTimeout/raftElectionTimeout already documents this exact
+     * error string as something "observed directly" against a real leader.
      */
     private fun sendWithRetry(eventJson: String): Pair<Boolean, String?> {
         val eventName = runCatching { JSONObject(eventJson).optString("event") }.getOrDefault("")
-        val retryable = eventName == "get_field" || eventName == "get_key"
-        val deadline = System.currentTimeMillis() + if (retryable) READ_RETRY_BUDGET_MS else 0
+        val isRead = eventName == "get_field" || eventName == "get_key"
+        val startedAt = System.currentTimeMillis()
 
         while (true) {
             val outcome = runCatching { JSONObject(Kvmobile.sendEvent(eventJson)) }
@@ -86,11 +98,30 @@ class E2ETest {
                 outcome.getOrNull()?.optString("event") == "error" -> false to outcome.getOrNull()?.optString("value")
                 else -> true to null
             }
-            if (pass || !retryable || System.currentTimeMillis() >= deadline) {
-                return pass to error
+            if (pass) return pass to error
+
+            val budgetMs = when {
+                isRead -> READ_RETRY_BUDGET_MS
+                isTransientLeaderError(error) -> WRITE_LEADER_RETRY_BUDGET_MS
+                else -> 0L
             }
+            if (budgetMs <= 0 || System.currentTimeMillis() - startedAt >= budgetMs) return pass to error
             Thread.sleep(READ_RETRY_DELAY_MS)
         }
+    }
+
+    /**
+     * True for raft-level errors that mean a write briefly hit the leader
+     * mid-election -- a real but transient condition, distinct from an
+     * application-level rejection (bad signature, duplicate join, etc.)
+     * that should still fail on the first try. See sendWithRetry's doc
+     * comment for how this was caught and confirmed against a real
+     * deployed cluster.
+     */
+    private fun isTransientLeaderError(error: String?): Boolean {
+        if (error == null) return false
+        return error.contains("leadership lost while committing log") ||
+            error.contains("not leader and no leader known")
     }
 
     companion object {
@@ -112,5 +143,19 @@ class E2ETest {
         // connectivity/relay, not this constant.
         private const val READ_RETRY_BUDGET_MS = 5000L
         private const val READ_RETRY_DELAY_MS = 500L
+
+        // Confirmed directly across several real runs: it's always the
+        // *first* forwarded write in a session that hits this (right after
+        // Kvmobile.start's join, before this identity's own local
+        // raft.Raft() has received its first leader announcement) -- a
+        // second, later write in the exact same session never does, once
+        // more heartbeat cycles have had a chance to land. 10s and 25s both
+        // proved not quite long enough for that specific window; matching
+        // mobile/kvmobile's own callTimeout/relay-reservation timeouts (45s
+        // each) for this same device/link combination gives real headroom
+        // without masking a follower that's genuinely never going to catch
+        // up (see READ_RETRY_BUDGET_MS's own doc comment above for that
+        // failure mode -- unaffected by this constant).
+        private const val WRITE_LEADER_RETRY_BUDGET_MS = 60000L
     }
 }

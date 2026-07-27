@@ -47,8 +47,14 @@ test("run pkg/e2edata rows against a real browser tab with a deterministic ident
   // CLIENT_PROTOCOL_TIMEOUT_MS (45s each) -- so this and ROW_TIMEOUT_MS
   // below need real headroom past playwright.config.js's default 60s, not
   // just "a bit longer": a real deploy target with a slow link can
-  // legitimately spend tens of seconds on *each* of those steps.
-  test.setTimeout(300_000);
+  // legitimately spend tens of seconds on *each* of those steps. On top of
+  // that, a get_field row can independently need up to app.rs's own
+  // GET_RETRY_BUDGET_MS (150s, see do_get's doc comment on why a fresh
+  // tab's catch-up against this project's ever-growing shared e2e leader
+  // takes this long) -- and a node with more than one recorded version can
+  // have more than one such row in the same batch, so this needs headroom
+  // for two of those plus everything else, not just one.
+  test.setTimeout(450_000);
 
   const rows = JSON.parse(rowsJson);
 
@@ -88,6 +94,19 @@ test("run pkg/e2edata rows against a real browser tab with a deterministic ident
       // legitimately take up to ~4x CLIENT_PROTOCOL_TIMEOUT_MS worst case
       // (see test.setTimeout's doc comment above), so this needs to be
       // comfortably past that, not just past one single call's own bound.
+      //
+      // No retry loop here for get_field/get_key, unlike
+      // pkg/e2erun.retryReadsIfNeeded (desktop/remote) and E2ETest.kt's
+      // sendWithRetry (android): app.rs's own do_get already retries
+      // internally, for up to GET_RETRY_BUDGET_MS, before this call ever
+      // returns -- see that function's doc comment for why a fresh tab's
+      // catch-up against this project's ever-growing shared e2e leader can
+      // legitimately take that long on its own. A second, outer retry loop
+      // here would be pure dead weight: by the time a single call returns
+      // failed, do_get's own budget is already spent, so retrying again
+      // could only ever repeat the exact same wait for no benefit -- caught
+      // directly instrumenting this call, which showed a single get_field
+      // taking upwards of 90s before returning.
       const respJson = await Promise.race([
         page.evaluate((json) => window.__kvE2E.sendEvent(json), eventJson),
         new Promise((_, reject) => setTimeout(() => reject(new Error(`row timed out after ${ROW_TIMEOUT_MS / 1000}s (JS-level backstop)`)), ROW_TIMEOUT_MS)),

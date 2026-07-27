@@ -309,5 +309,455 @@
       },
       "status": 0
     }
-  ]
+  ],
+  "android_ui_cases": {
+    "Channel: CloseChannel": {
+      "inputs": [
+        "no-such-channel"
+      ],
+      "execute": true,
+      "expect": "succeeded"
+    },
+    "Channel: OpenChannel": {
+      "inputs": [
+        "{{leaderPeerID}}"
+      ],
+      "execute": true,
+      "expect": "no_crash"
+    },
+    "Channel: SendChannelData": {
+      "inputs": [
+        "no-such-channel",
+        "AA=="
+      ],
+      "execute": true,
+      "expect": "rejected"
+    },
+    "Channel: StopChannel": {
+      "inputs": [
+        "no-such-channel"
+      ],
+      "execute": true,
+      "expect": "no_crash"
+    },
+    "Channel: StopListenChannel": {
+      "execute": true,
+      "expect": "succeeded"
+    },
+    "Cluster: AccessToken": {
+      "execute": true,
+      "expect": "succeeded"
+    },
+    "Cluster: CancelJoinRequest": {
+      "inputs": [
+        "0000000000000000"
+      ],
+      "execute": true,
+      "expect": "no_crash"
+    },
+    "Cluster: CreateJoinInvite": {
+      "inputs": [
+        "learner"
+      ],
+      "execute": true,
+      "expect": "no_crash"
+    },
+    "Cluster: CreateJoinRequest": {
+      "execute": true,
+      "expect": "succeeded"
+    },
+    "Cluster: Delete": {
+      "execute": true,
+      "expect": "rejected"
+    },
+    "Cluster: GetOwnAddr": {
+      "execute": true,
+      "expect": "succeeded"
+    },
+    "Cluster: Kick": {
+      "inputs": [
+        "12D3KooWNoSuchPeerNoSuchPeerNoSuchPeer111111"
+      ],
+      "execute": true,
+      "expect": "no_crash"
+    },
+    "Cluster: ListClusterMembers": {
+      "execute": true,
+      "expect": "succeeded"
+    },
+    "Cluster: ListClusters": {
+      "execute": true,
+      "expect": "succeeded"
+    },
+    "Cluster: PeerID": {
+      "execute": true,
+      "expect": "succeeded"
+    },
+    "Cluster: RevokeJoinInvite": {
+      "inputs": [
+        "00000000000000000000000000000000"
+      ],
+      "execute": true,
+      "expect": "no_crash"
+    },
+    "Cluster: Start": {
+      "execute": true,
+      "expect": "succeeded"
+    },
+    "Cluster: StartWithKey": {
+      "inputs": [
+        "not-a-real-key-hex"
+      ],
+      "execute": true,
+      "expect": "succeeded"
+    },
+    "Command: CreateCommand": {
+      "inputs": [
+        "e2e-ui-test-command",
+        "e2e ui test",
+        "{{selfPeerID}}"
+      ],
+      "execute": true,
+      "expect": "rejected"
+    },
+    "Command: DeleteCommand": {
+      "inputs": [
+        "e2e-ui-test-command"
+      ],
+      "execute": true,
+      "expect": "rejected"
+    },
+    "Command: GetCommand": {
+      "inputs": [
+        "no-such-command"
+      ],
+      "execute": true,
+      "expect": "no_crash"
+    },
+    "Command: ListCommands": {
+      "execute": true,
+      "expect": "succeeded"
+    },
+    "Command: UpdateCommand": {
+      "inputs": [
+        "e2e-ui-test-command",
+        "e2e ui test",
+        "{{selfPeerID}}"
+      ],
+      "execute": true,
+      "expect": "rejected"
+    },
+    "Dispatch: AppendCommandLog": {
+      "inputs": [
+        "",
+        "e2e-ui-test-instance",
+        "{}",
+        "ui e2e test"
+      ],
+      "execute": true,
+      "expect": "no_crash"
+    },
+    "Dispatch: GetCommandRequest": {
+      "inputs": [
+        "no-such-command",
+        "no-such-instance"
+      ],
+      "execute": true,
+      "expect": "no_crash"
+    },
+    "Dispatch: LatestCommandLog": {
+      "inputs": [
+        "e2e-ui-test-instance"
+      ],
+      "execute": true,
+      "expect": "no_crash"
+    },
+    "Dispatch: ListCommandRequests": {
+      "inputs": [
+        "no-such-command"
+      ],
+      "execute": true,
+      "expect": "succeeded"
+    },
+    "Dispatch: ListExecutionsByPeer": {
+      "inputs": [
+        "{{selfPeerID}}"
+      ],
+      "execute": true,
+      "expect": "succeeded"
+    },
+    "Dispatch: QueryCommandLog": {
+      "inputs": [
+        "e2e-ui-test-instance",
+        "",
+        "",
+        ""
+      ],
+      "execute": true,
+      "expect": "no_crash"
+    },
+    "Dispatch: RunCommandDispatcher": {
+      "inputs": [
+        "no-such-command"
+      ],
+      "execute": true,
+      "expect": "succeeded"
+    },
+    "Dispatch: StopCommandDispatcher": {
+      "inputs": [
+        "no-such-command"
+      ],
+      "execute": true,
+      "expect": "succeeded"
+    },
+    "Dispatch: StopWatchCommandLog": {
+      "inputs": [
+        "e2e-ui-test-instance"
+      ],
+      "execute": true,
+      "expect": "succeeded"
+    },
+    "Dispatch: SubmitCommand": {
+      "inputs": [
+        "no-such-command",
+        "{}"
+      ],
+      "execute": true,
+      "expect": "rejected"
+    },
+    "Dispatch: WatchCommandLog": {
+      "inputs": [
+        "e2e-ui-test-instance"
+      ],
+      "execute": true,
+      "expect": "succeeded"
+    },
+    "ExecInvite: CreateExecInvite": {
+      "inputs": [
+        "no-such-command",
+        "{}"
+      ],
+      "execute": true,
+      "expect": "rejected"
+    },
+    "ExecInvite: RedeemExecInvite": {
+      "inputs": [
+        "/ip4/127.0.0.1/tcp/1#00000000000000000000000000000000"
+      ],
+      "execute": true,
+      "expect": "rejected"
+    },
+    "ExecInvite: RevokeExecInvite": {
+      "inputs": [
+        "00000000000000000000000000000000"
+      ],
+      "execute": true,
+      "expect": "rejected"
+    },
+    "Execute: Execute": {
+      "inputs": [
+        "{{leaderPeerID}}",
+        "{{testValue}}"
+      ],
+      "execute": true,
+      "expect": "no_crash"
+    },
+    "Execute: PollExecute": {
+      "execute": true,
+      "expect": "succeeded"
+    },
+    "Execute: StopWatchExecute": {
+      "execute": true,
+      "expect": "succeeded"
+    },
+    "Execute: WatchExecute": {
+      "execute": true,
+      "expect": "succeeded"
+    },
+    "Group: CreateGroup": {
+      "inputs": [
+        "e2e-ui-test-group",
+        "e2e ui test",
+        "false"
+      ],
+      "execute": true,
+      "expect": "rejected"
+    },
+    "Group: DeleteGroup": {
+      "inputs": [
+        "e2e-ui-test-group"
+      ],
+      "execute": true,
+      "expect": "rejected"
+    },
+    "Group: GetGroup": {
+      "inputs": [
+        "no-such-group"
+      ],
+      "execute": true,
+      "expect": "no_crash"
+    },
+    "Group: ListGroups": {
+      "execute": true,
+      "expect": "succeeded"
+    },
+    "Group: UpdateGroup": {
+      "inputs": [
+        "e2e-ui-test-group",
+        "e2e ui test",
+        "false"
+      ],
+      "execute": true,
+      "expect": "rejected"
+    },
+    "KV: Get": {
+      "inputs": [
+        "{{testKey}}"
+      ],
+      "execute": true,
+      "expect": "succeeded",
+      "retry_budget_ms": 5000
+    },
+    "KV: RangeScan": {
+      "inputs": [
+        "{{testKey}}",
+        "{{testKey}}￿",
+        "10"
+      ],
+      "execute": true,
+      "expect": "succeeded"
+    },
+    "KV: Submit": {
+      "inputs": [
+        "{{testKey}}",
+        "{{testValue}}"
+      ],
+      "execute": true,
+      "expect": "succeeded"
+    },
+    "Links: AddCommandToGroup": {
+      "inputs": [
+        "no-such-command",
+        "no-such-group"
+      ],
+      "execute": true,
+      "expect": "rejected"
+    },
+    "Links: AddPeerToGroup": {
+      "inputs": [
+        "{{selfPeerID}}",
+        "no-such-group"
+      ],
+      "execute": true,
+      "expect": "rejected"
+    },
+    "Links: ListGroupsForCommand": {
+      "inputs": [
+        "no-such-command"
+      ],
+      "execute": true,
+      "expect": "succeeded"
+    },
+    "Links: ListGroupsForPeer": {
+      "inputs": [
+        "{{selfPeerID}}"
+      ],
+      "execute": true,
+      "expect": "succeeded"
+    },
+    "Links: RemoveCommandFromGroup": {
+      "inputs": [
+        "no-such-command",
+        "no-such-group"
+      ],
+      "execute": true,
+      "expect": "rejected"
+    },
+    "Links: RemovePeerFromGroup": {
+      "inputs": [
+        "{{selfPeerID}}",
+        "no-such-group"
+      ],
+      "execute": true,
+      "expect": "rejected"
+    },
+    "Log records: LogAppend": {
+      "inputs": [
+        "e2e-ui-test",
+        "ui-test-unit",
+        "{}",
+        "ui e2e test"
+      ],
+      "execute": true,
+      "expect": "no_crash"
+    },
+    "Log records: LogQuery": {
+      "inputs": [
+        "e2e-ui-test",
+        "ui-test-unit",
+        "",
+        "",
+        ""
+      ],
+      "execute": true,
+      "expect": "no_crash"
+    },
+    "Permits: ConfirmLogPermit": {
+      "inputs": [
+        "e2e-ui-test",
+        "{{selfPeerID}}"
+      ],
+      "execute": true,
+      "expect": "rejected"
+    },
+    "Permits: ConfirmPermit": {
+      "inputs": [
+        "peer",
+        "{{selfPeerID}}"
+      ],
+      "execute": true,
+      "expect": "rejected"
+    },
+    "Permits: RequestLogPermit": {
+      "inputs": [
+        "e2e-ui-test",
+        "{{selfPeerID}}",
+        ""
+      ],
+      "execute": true,
+      "expect": "succeeded"
+    },
+    "Permits: RequestPermit": {
+      "inputs": [
+        "peer",
+        "{{selfPeerID}}",
+        ""
+      ],
+      "execute": true,
+      "expect": "succeeded"
+    },
+    "Permits: RevokeLogPermit": {
+      "inputs": [
+        "e2e-ui-test",
+        "{{selfPeerID}}"
+      ],
+      "execute": true,
+      "expect": "rejected"
+    },
+    "Permits: RevokePermit": {
+      "inputs": [
+        "peer",
+        "{{selfPeerID}}"
+      ],
+      "execute": true,
+      "expect": "rejected"
+    },
+    "Raw: SendEvent": {
+      "inputs": [
+        "{\"event\":\"get_public_key\"}"
+      ],
+      "execute": true,
+      "expect": "succeeded"
+    }
+  }
 }

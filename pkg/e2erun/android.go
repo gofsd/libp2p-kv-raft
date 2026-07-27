@@ -3,6 +3,7 @@ package e2erun
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -71,7 +72,17 @@ func hasConnectedDevice(adbDevicesOutput string) bool {
 // unlike desktop/remote rows, which each get their own real dispatch, or
 // web rows, which share one Playwright-driven verdict per whole run (see
 // web.go). Returns a result for every android row index in rowIndices.
-func runAndroidRows(repoRoot string, f *e2edata.File, rowIndices []int, bootstrapMultiaddr string) map[int]rowOutcome {
+//
+// runUI additionally requests UiCommandE2ETest's own catalog-driven UI walk
+// (see runAndroidNode's doc comment) using uiCases as its test plan (see
+// e2edata.File.UICases) -- independent of rowIndices, since it isn't
+// row-driven at all: when runUI is set, every PlatformAndroid node in f is
+// visited (even one with zero rows in rowIndices, e.g. an
+// E2E_TYPES=androidui-only run) purely to run it. Its outcome has no
+// f.Rows entry of its own to attach to, so it comes back as a separate
+// error rather than folded into the row-outcome map -- nil if runUI is
+// false or every android node's UI walk passed.
+func runAndroidRows(repoRoot string, f *e2edata.File, rowIndices []int, bootstrapMultiaddr string, runUI bool, uiCases map[string]e2edata.UICase) (map[int]rowOutcome, error) {
 	results := map[int]rowOutcome{}
 
 	byNode := map[int][]int{}
@@ -83,77 +94,83 @@ func runAndroidRows(repoRoot string, f *e2edata.File, rowIndices []int, bootstra
 		}
 		byNode[row.Node] = append(byNode[row.Node], idx)
 	}
+	if runUI {
+		for nodeID, node := range f.Nodes {
+			if node.Platform != e2edata.PlatformAndroid {
+				continue
+			}
+			if _, ok := byNode[nodeID]; !ok {
+				byNode[nodeID] = nil
+			}
+		}
+	}
 	if len(byNode) == 0 {
-		return results
+		return results, nil
 	}
 
 	if reason := androidUnavailable(); reason != "" {
-		for _, idxs := range byNode {
+		var uiErrs []error
+		for nodeID, idxs := range byNode {
+			if len(idxs) == 0 {
+				uiErrs = append(uiErrs, fmt.Errorf("node %d: android e2e skipped: %s", nodeID, reason))
+				continue
+			}
 			for _, idx := range idxs {
 				results[idx] = rowOutcome{status: e2edata.StatusSkipped, errMsg: "android e2e skipped: " + reason}
 			}
 		}
-		return results
+		return results, errors.Join(uiErrs...)
 	}
 
+	uiCasesJSON, err := json.Marshal(uiCases)
+	if err != nil {
+		return results, fmt.Errorf("e2erun: encode android UI cases: %w", err)
+	}
+
+	var uiErrs []error
 	for nodeID, idxs := range byNode {
 		node := f.Nodes[nodeID]
-		maps.Copy(results, runAndroidNode(repoRoot, node, bootstrapMultiaddr, f, idxs))
+		out, uiErr := runAndroidNode(repoRoot, node, bootstrapMultiaddr, f, idxs, runUI, string(uiCasesJSON))
+		maps.Copy(results, out)
+		if uiErr != nil {
+			uiErrs = append(uiErrs, fmt.Errorf("node %s: %w", node.PeerID, uiErr))
+		}
 	}
-	return results
+	return results, errors.Join(uiErrs...)
 }
 
 // runAndroidNode builds an AAR baked with node's identity and
 // bootstrapMultiaddr as the leader to join, installs the app + its
-// instrumented test APK, runs every row in rowIdxs (in order) in one
-// instrumentation invocation, then runs UiCommandE2ETest -- a second,
-// separate instrumentation invocation that clicks through every real
-// screen (MainActivity/CommandListActivity/CommandDetailActivity) for
-// every CommandCatalog.kt entry, proving the whole command surface is
-// actually reachable/operable through the UI a real user taps, not just
-// reachable via the raw sendEvent path E2ETest itself drives -- and maps
-// the per-row results back to rowIdxs. A failure at the build/install/
-// instrument-invocation level, or any UiCommandE2ETest command failure
-// (not an individual row's own event failing), marks every row in this
-// batch failed with that same error, since none of them can be trusted
-// to have run against a working app.
-func runAndroidNode(repoRoot string, node e2edata.Node, bootstrapMultiaddr string, f *e2edata.File, rowIdxs []int) map[int]rowOutcome {
-	fail := func(err error) map[int]rowOutcome {
+// instrumented test APK, runs every row in rowIdxs (in order, if any -- may
+// be empty for a node visited purely to run UiCommandE2ETest, see
+// runAndroidRows' doc comment) in one instrumentation invocation, then --
+// if runUI is set -- runs UiCommandE2ETest -- a second, separate
+// instrumentation invocation that clicks through every real screen
+// (MainActivity/CommandListActivity/CommandDetailActivity) for every
+// CommandCatalog.kt entry using uiCasesJSON as its test plan (see
+// e2edata.File.UICases), proving the whole command surface is actually
+// reachable/operable through the UI a real user taps, not just reachable
+// via the raw sendEvent path E2ETest itself drives.
+//
+// A build/install/instrument-invocation-level failure marks every row in
+// this batch failed with that same error (or, if rowIdxs is empty, is
+// returned as this call's own error instead, since there's nothing to
+// attach it to), since none of them can be trusted to have run against a
+// working app. UiCommandE2ETest's own outcome is deliberately kept
+// separate from rowIdxs' results, not folded in the way a build/install
+// failure is: it's independent evidence (the catalog UI surface, not the
+// raw wire rows this batch already verified on its own), returned as this
+// call's own error.
+func runAndroidNode(repoRoot string, node e2edata.Node, bootstrapMultiaddr string, f *e2edata.File, rowIdxs []int, runUI bool, uiCasesJSON string) (map[int]rowOutcome, error) {
+	fail := func(err error) (map[int]rowOutcome, error) {
+		if len(rowIdxs) == 0 {
+			return map[int]rowOutcome{}, err
+		}
 		out := make(map[int]rowOutcome, len(rowIdxs))
 		for _, idx := range rowIdxs {
 			out[idx] = rowOutcome{status: e2edata.StatusFail, errMsg: err.Error()}
 		}
-		return out
-	}
-
-	eventJSONs := make([]string, len(rowIdxs))
-	for i, idx := range rowIdxs {
-		ev := f.Rows[idx].Event
-		if ev.EventType == shmevent.EventAdd && string(ev.Value()) == BootstrapToken {
-			// This row's own join is actually a no-op by the time it
-			// runs: Kvmobile.start (E2ETest.kt, called once before any
-			// row) already joined this device via buildAndroidAAR's
-			// joinSuffrage=learner ldflag, which is what really matters
-			// -- see that function's doc comment for why the device must
-			// join as a non-voting learner rather than a voter against
-			// this long-lived, shared, never-torn-down leader (quorum
-			// loss when an ephemeral voter disconnects, confirmed
-			// directly). Marked the same way here too regardless, purely
-			// so this recorded row keeps meaning what it says (a learner
-			// join, matching how the device actually joined) rather than
-			// silently mismatching it.
-			resolved := ResolveBootstrapPlaceholder(string(ev.Value()), bootstrapMultiaddr) + " learner"
-			ev = e2edata.NewEvent(ev.EventType, ev.SourceID, ev.DestinationID, []byte(resolved), ev.ID)
-		}
-		data, err := json.Marshal(ev)
-		if err != nil {
-			return fail(fmt.Errorf("e2erun: encode android row event: %w", err))
-		}
-		eventJSONs[i] = string(data)
-	}
-	rowsArg, err := json.Marshal(eventJSONs)
-	if err != nil {
-		return fail(fmt.Errorf("e2erun: encode android rows argument: %w", err))
+		return out, nil
 	}
 
 	if err := buildAndroidAAR(repoRoot, node, bootstrapMultiaddr); err != nil {
@@ -162,19 +179,55 @@ func runAndroidNode(repoRoot string, node e2edata.Node, bootstrapMultiaddr strin
 	if err := gradleInstall(repoRoot); err != nil {
 		return fail(err)
 	}
-	resultsJSON, err := runInstrumentedTest(string(rowsArg))
-	if err != nil {
-		return fail(err)
-	}
-	if err := runUICommandTest(); err != nil {
-		return fail(err)
+
+	out := map[int]rowOutcome{}
+	if len(rowIdxs) > 0 {
+		eventJSONs := make([]string, len(rowIdxs))
+		for i, idx := range rowIdxs {
+			ev := f.Rows[idx].Event
+			if ev.EventType == shmevent.EventAdd && string(ev.Value()) == BootstrapToken {
+				// This row's own join is actually a no-op by the time it
+				// runs: Kvmobile.start (E2ETest.kt, called once before any
+				// row) already joined this device via buildAndroidAAR's
+				// joinSuffrage=learner ldflag, which is what really matters
+				// -- see that function's doc comment for why the device must
+				// join as a non-voting learner rather than a voter against
+				// this long-lived, shared, never-torn-down leader (quorum
+				// loss when an ephemeral voter disconnects, confirmed
+				// directly). Marked the same way here too regardless, purely
+				// so this recorded row keeps meaning what it says (a learner
+				// join, matching how the device actually joined) rather than
+				// silently mismatching it.
+				resolved := ResolveBootstrapPlaceholder(string(ev.Value()), bootstrapMultiaddr) + " learner"
+				ev = e2edata.NewEvent(ev.EventType, ev.SourceID, ev.DestinationID, []byte(resolved), ev.ID)
+			}
+			data, err := json.Marshal(ev)
+			if err != nil {
+				return fail(fmt.Errorf("e2erun: encode android row event: %w", err))
+			}
+			eventJSONs[i] = string(data)
+		}
+		rowsArg, err := json.Marshal(eventJSONs)
+		if err != nil {
+			return fail(fmt.Errorf("e2erun: encode android rows argument: %w", err))
+		}
+
+		resultsJSON, err := runInstrumentedTest(string(rowsArg))
+		if err != nil {
+			return fail(err)
+		}
+		out, err = parseRowResults(resultsJSON, rowIdxs, "android instrumented test")
+		if err != nil {
+			return fail(err)
+		}
 	}
 
-	out, err := parseRowResults(resultsJSON, rowIdxs, "android instrumented test")
-	if err != nil {
-		return fail(err)
+	if runUI {
+		if err := runUICommandTest(uiCasesJSON); err != nil {
+			return out, err
+		}
 	}
-	return out
+	return out, nil
 }
 
 // buildAndroidAAR runs `gomobile bind` for mobile/kvmobile, baking node's
@@ -318,16 +371,20 @@ type uiCommandResult struct {
 }
 
 // runUICommandTest triggers UiCommandE2ETest via `adb shell am
-// instrument` (no "rows" argument -- unlike runInstrumentedTest, it
-// doesn't replay testdata.json rows; it clicks through every
-// CommandCatalog.kt entry's own screen instead), then pulls and parses
-// its separate ui_e2e_results.json results file, returning a summarizing
-// error if any command's UI case failed or if the instrumentation run
-// never produced a results file at all (e.g. a crash before it could
-// write one).
-func runUICommandTest() error {
+// instrument`, passing casesJSON as its "cases" instrumentation argument
+// (the JSON form of e2edata.File.UICases -- see UiCommandE2ETest.kt's own
+// doc comment for how it parses this and substitutes runtime-only tokens
+// like "{{selfPeerID}}"). Unlike runInstrumentedTest, this doesn't replay
+// testdata.json Rows; it clicks through every CommandCatalog.kt entry's
+// own screen instead, using UICases only to decide inputs/execute/expect
+// per command. Pulls and parses its separate ui_e2e_results.json results
+// file, returning a summarizing error if any command's UI case failed or
+// if the instrumentation run never produced a results file at all (e.g. a
+// crash before it could write one).
+func runUICommandTest(casesJSON string) error {
 	cmd := exec.Command("adb", "shell", "am", "instrument", "-w",
 		"-e", "class", androidUITestClass,
+		"-e", "cases", casesJSON,
 		androidTestRunner,
 	)
 	var out bytes.Buffer

@@ -36,11 +36,23 @@ import java.io.File
  * [defaultCase], just not a tailored execution).
  *
  * Called via `adb shell am instrument -e class
- * com.gofsd.kvdemo.UiCommandE2ETest` by pkg/e2erun/android.go, same as
- * E2ETest -- see that file's own doc comment. Two different concerns, two
- * different test classes: E2ETest proves the raw shmevent wire protocol
- * works from a mobile client; this proves every command is actually
- * reachable and operable through the screens a real user taps.
+ * com.gofsd.kvdemo.UiCommandE2ETest -e cases <json>` by
+ * pkg/e2erun/android.go, same as E2ETest -- see that file's own doc
+ * comment. Two different concerns, two different test classes: E2ETest
+ * proves the raw shmevent wire protocol works from a mobile client; this
+ * proves every command is actually reachable and operable through the
+ * screens a real user taps.
+ *
+ * The "cases" instrumentation argument (see buildCasesFromArg) is the JSON
+ * form of pkg/e2edata.File.UICases, keyed by CommandSpec.label -- this
+ * file no longer hardcodes per-command test plans itself, so
+ * test/e2e/testdata.json is the single source of truth for both the
+ * cross-platform wire-protocol rows and this Android UI command walk. A
+ * label with no entry in the parsed map (or no "cases" argument at all,
+ * e.g. this test invoked directly via `./gradlew connectedAndroidTest`
+ * rather than through pkg/e2erun) still gets full navigation-only coverage
+ * via [defaultCase] -- see [runAllCommandsThroughUi]'s loop -- just not a
+ * tailored execution.
  *
  * This device's build-time identity joins the shared, long-lived e2e
  * leader as a raft *learner*, not a voter, on its very first join (see
@@ -168,7 +180,8 @@ class UiCommandE2ETest {
             .firstOrNull { it.optString("role") == "leader" }
             ?.optString("peer_id") ?: selfPeerID
 
-        val cases = buildCases(selfPeerID, leaderPeerID)
+        val casesArg = InstrumentationRegistry.getArguments().getString("cases")
+        val cases = buildCasesFromArg(casesArg, selfPeerID, leaderPeerID)
 
         val allCommands = buildCommands(dataDir) { }
         Assert.assertTrue("catalog is unexpectedly empty", allCommands.isNotEmpty())
@@ -310,356 +323,56 @@ class UiCommandE2ETest {
     }
 
     /**
-     * Per-command test plans, keyed by CommandSpec.label ("$category:
-     * $name"). Anything in the live catalog with no entry here gets
-     * [defaultCase] (navigation-only) -- see class doc comment for the
-     * reasoning behind each execute=true/false choice below.
+     * Parses the "cases" instrumentation argument (JSON object form of
+     * pkg/e2edata.File.UICases, keyed by CommandSpec.label) into this
+     * test's per-command plans, substituting the runtime-only tokens
+     * "{{selfPeerID}}"/"{{leaderPeerID}}"/"{{testKey}}"/"{{testValue}}" in
+     * each input string -- those four values can't be frozen into a
+     * committed file the way every other field can (this device's own
+     * peer id, the cluster's currently-observed leader, and a
+     * randomized-per-run KV test key/value that must stay unique across
+     * runs against this long-lived shared cluster). casesJson missing or
+     * unparsable is treated the same as `"{}"` -- every command then falls
+     * back to [defaultCase] (navigation-only), never a crash.
+     *
+     * Anything in the live catalog with no entry in the parsed map still
+     * gets [defaultCase] (navigation-only) -- see class doc comment for
+     * the reasoning behind each execute=true/false choice recorded in
+     * test/e2e/testdata.json's "android_ui_cases" section.
      */
-    private fun buildCases(selfPeerID: String, leaderPeerID: String): Map<String, Case> {
+    private fun buildCasesFromArg(casesJson: String?, selfPeerID: String, leaderPeerID: String): Map<String, Case> {
         val testKey = "e2e-ui-test-key"
         val testValue = "e2e-ui-test-value-${System.currentTimeMillis()}"
-
-        return mapOf(
-            // --- Cluster ---
-            "Cluster: Start" to Case(execute = true, expect = ::assertSucceeded),
-            "Cluster: StartWithKey" to Case(
-                inputs = listOf("not-a-real-key-hex"),
-                execute = true,
-                // Kvmobile.start's own "already started" short-circuit
-                // (mobile/kvmobile/kvmobile.go's start()) fires before
-                // resolveIdentity ever looks at keyHex, since Start already
-                // ran once earlier in this same process (see
-                // runAllCommandsThroughUi) -- so within a single test run
-                // this always just idempotently returns the already-known
-                // peer id, never actually reaching the "different identity
-                // or unparseable hex" refusal path a *fresh* process would
-                // hit. Confirmed directly: an earlier version of this case
-                // assumed rejection and failed against a real device.
-                expect = ::assertSucceeded,
-            ),
-            "Cluster: GetOwnAddr" to Case(execute = true, expect = ::assertSucceeded),
-            "Cluster: CreateJoinRequest" to Case(execute = true, expect = ::assertSucceeded),
-            "Cluster: CancelJoinRequest" to Case(
-                inputs = listOf("0000000000000000"),
-                execute = true,
-                // No matching pending request -- a clean no-op/rejection,
-                // not a crash.
-                expect = ::assertNoCrash,
-            ),
-            // assertNoCrash, not a hardcoded rejection/success: this
-            // device's real current voter standing can't be determined
-            // reliably from here (see class doc comment) -- either a clean
-            // "not a current raft voter" rejection or a real, harmless
-            // success (this device's own suffrage argument, "learner,"
-            // never actually admits anyone since nobody redeems it) is
-            // fine, a thrown exception isn't.
-            "Cluster: CreateJoinInvite" to Case(inputs = listOf("learner"), execute = true, expect = ::assertNoCrash),
-            "Cluster: RevokeJoinInvite" to Case(
-                inputs = listOf("00000000000000000000000000000000"),
-                execute = true,
-                expect = ::assertNoCrash,
-            ),
-            "Cluster: Delete" to Case(
-                execute = true,
-                // Daemon is running (Start already brought it up) -- Delete
-                // must refuse rather than actually deleting anything.
-                expect = ::assertRejected,
-            ),
-            // Targets a peer id that was never a real cluster member --
-            // NOT selfPeerID (an earlier version of this case did exactly
-            // that, and it really did remove this device's own voter
-            // standing from the shared, long-lived cluster for good once
-            // it turned out to already be a voter: hashicorp/raft's
-            // RemoveServer has no separate "isVoter" check of its own to
-            // fail past -- see removeServerLine -- so a genuinely-
-            // authorized voter calling it always actually applies). A
-            // nonexistent target still exercises the exact same isVoter
-            // gate (handleForwardKickStream) with zero real mutation risk
-            // either way: RemoveServer on an id already absent from the
-            // configuration is a harmless no-op "OK", not an error.
-            // assertNoCrash for the same reason as CreateJoinInvite/
-            // RevokeJoinInvite above -- this device's real voter standing
-            // isn't reliably knowable from here.
-            "Cluster: Kick" to Case(
-                inputs = listOf("12D3KooWNoSuchPeerNoSuchPeerNoSuchPeer111111"),
-                execute = true,
-                expect = ::assertNoCrash,
-            ),
-            "Cluster: ListClusters" to Case(execute = true, expect = ::assertSucceeded),
-            "Cluster: ListClusterMembers" to Case(execute = true, expect = ::assertSucceeded),
-            "Cluster: PeerID" to Case(execute = true, expect = ::assertSucceeded),
-            "Cluster: AccessToken" to Case(execute = true, expect = ::assertSucceeded),
-
-            // --- KV --- (not voter-gated; harmless namespaced test key)
-            "KV: Submit" to Case(inputs = listOf(testKey, testValue), execute = true, expect = ::assertSucceeded),
-            // retryBudgetMs tolerates this follower's own local raft apply
-            // briefly lagging behind Submit's just-committed write on the
-            // leader -- the same replication-lag window E2ETest.kt's own
-            // sendWithRetry already retries around for get_field/get_key.
-            // Confirmed directly: an earlier version of this case had no
-            // retry and failed "key not found" against a real device.
-            "KV: Get" to Case(
-                inputs = listOf(testKey),
-                execute = true,
-                expect = ::assertSucceeded,
-                retryBudgetMs = 5_000L,
-            ),
-            "KV: RangeScan" to Case(
-                inputs = listOf(testKey, testKey + "￿", "10"),
-                execute = true,
-                expect = ::assertSucceeded,
-            ),
-
-            // --- Permits --- (Request* not voter-gated; Confirm*/Revoke* are)
-            "Permits: RequestPermit" to Case(
-                inputs = listOf("peer", selfPeerID, ""),
-                execute = true,
-                expect = ::assertSucceeded,
-            ),
-            "Permits: ConfirmPermit" to Case(
-                inputs = listOf("peer", selfPeerID),
-                execute = true,
-                expect = ::assertRejected,
-            ),
-            "Permits: RevokePermit" to Case(
-                inputs = listOf("peer", selfPeerID),
-                execute = true,
-                expect = ::assertRejected,
-            ),
-            "Permits: RequestLogPermit" to Case(
-                inputs = listOf("e2e-ui-test", selfPeerID, ""),
-                execute = true,
-                expect = ::assertSucceeded,
-            ),
-            "Permits: ConfirmLogPermit" to Case(
-                inputs = listOf("e2e-ui-test", selfPeerID),
-                execute = true,
-                expect = ::assertRejected,
-            ),
-            "Permits: RevokeLogPermit" to Case(
-                inputs = listOf("e2e-ui-test", selfPeerID),
-                execute = true,
-                expect = ::assertRejected,
-            ),
-
-            // --- Execute --- (bypasses raft entirely; fire-and-forget to the real leader is harmless)
-            "Execute: Execute" to Case(
-                inputs = listOf(leaderPeerID, testValue),
-                execute = true,
-                // leaderPeerID is only ever this device's own last-observed
-                // snapshot (see runAllCommandsThroughUi) of who's leader --
-                // on this long-lived, ever-changing shared cluster it can
-                // already be stale by the time this case runs, and even a
-                // *correct* target isn't guaranteed to have a cached,
-                // dialable address in this device's own libp2p peerstore
-                // (Execute bypasses raft's forwarding path entirely --
-                // unlike KV: Submit/Permits calls, which ride the same
-                // dialForward leader-resolution AppendEntries already
-                // depends on -- so it has nothing else to fall back on).
-                // assertNoCrash, not assertSucceeded: confirmed directly,
-                // this failed "no addresses" against a real device once the
-                // true leader had moved on from this identity's last-known
-                // snapshot. Proving the tap reaches Kvmobile.execute cleanly
-                // (matching Channel: OpenChannel's identical reasoning) is
-                // the actual goal here, not that the real network hop lands.
-                expect = ::assertNoCrash,
-            ),
-            "Execute: PollExecute" to Case(execute = true, expect = ::assertSucceeded),
-            "Execute: WatchExecute" to Case(execute = true, expect = ::assertSucceeded),
-            "Execute: StopWatchExecute" to Case(execute = true, expect = ::assertSucceeded),
-
-            // --- Channel --- (bounded by kvmobile's own callTimeout even when the target isn't listening)
-            "Channel: OpenChannel" to Case(inputs = listOf(leaderPeerID), execute = true, expect = ::assertNoCrash),
-            "Channel: StopListenChannel" to Case(execute = true, expect = ::assertSucceeded),
-            "Channel: SendChannelData" to Case(
-                inputs = listOf("no-such-channel", "AA=="),
-                execute = true,
-                expect = ::assertRejected,
-            ),
-            "Channel: CloseChannel" to Case(
-                inputs = listOf("no-such-channel"),
-                execute = true,
-                // mobile/kvmobile/channel.go's CloseChannel is a real no-op
-                // for a channel id with no local pump running (StopChannel,
-                // called unconditionally as part of it, documents exactly
-                // this "safe to call when nothing is running for it"
-                // semantics) -- confirmed directly: an earlier version of
-                // this case assumed rejection and failed against a real
-                // device.
-                expect = ::assertSucceeded,
-            ),
-            "Channel: StopChannel" to Case(inputs = listOf("no-such-channel"), execute = true, expect = ::assertNoCrash),
-
-            // --- Log records --- (may or may not require a permit depending on the shared leader's config)
-            "Log records: LogAppend" to Case(
-                inputs = listOf("e2e-ui-test", "ui-test-unit", "{}", "ui e2e test"),
-                execute = true,
-                expect = ::assertNoCrash,
-            ),
-            "Log records: LogQuery" to Case(
-                inputs = listOf("e2e-ui-test", "ui-test-unit", "", "", ""),
-                execute = true,
-                expect = ::assertNoCrash,
-            ),
-
-            // --- Group --- (Create/Update/Delete are voter-gated ACL writes; Get/List are read-only)
-            "Group: CreateGroup" to Case(
-                inputs = listOf("e2e-ui-test-group", "e2e ui test", "false"),
-                execute = true,
-                expect = ::assertRejected,
-            ),
-            "Group: UpdateGroup" to Case(
-                inputs = listOf("e2e-ui-test-group", "e2e ui test", "false"),
-                execute = true,
-                expect = ::assertRejected,
-            ),
-            "Group: DeleteGroup" to Case(
-                inputs = listOf("e2e-ui-test-group"),
-                execute = true,
-                expect = ::assertRejected,
-            ),
-            "Group: GetGroup" to Case(
-                inputs = listOf("no-such-group"),
-                execute = true,
-                expect = ::assertNoCrash,
-            ),
-            "Group: ListGroups" to Case(execute = true, expect = ::assertSucceeded),
-
-            // --- Command --- (same ACL shape as Group)
-            "Command: CreateCommand" to Case(
-                inputs = listOf("e2e-ui-test-command", "e2e ui test", selfPeerID),
-                execute = true,
-                expect = ::assertRejected,
-            ),
-            "Command: UpdateCommand" to Case(
-                inputs = listOf("e2e-ui-test-command", "e2e ui test", selfPeerID),
-                execute = true,
-                expect = ::assertRejected,
-            ),
-            "Command: DeleteCommand" to Case(
-                inputs = listOf("e2e-ui-test-command"),
-                execute = true,
-                expect = ::assertRejected,
-            ),
-            "Command: GetCommand" to Case(
-                inputs = listOf("no-such-command"),
-                execute = true,
-                expect = ::assertNoCrash,
-            ),
-            "Command: ListCommands" to Case(execute = true, expect = ::assertSucceeded),
-
-            // --- Links --- (Add/Remove are voter-gated; List* are read-only)
-            "Links: AddCommandToGroup" to Case(
-                inputs = listOf("no-such-command", "no-such-group"),
-                execute = true,
-                expect = ::assertRejected,
-            ),
-            "Links: RemoveCommandFromGroup" to Case(
-                inputs = listOf("no-such-command", "no-such-group"),
-                execute = true,
-                expect = ::assertRejected,
-            ),
-            "Links: ListGroupsForCommand" to Case(
-                inputs = listOf("no-such-command"),
-                execute = true,
-                expect = ::assertSucceeded,
-            ),
-            "Links: AddPeerToGroup" to Case(
-                inputs = listOf(selfPeerID, "no-such-group"),
-                execute = true,
-                expect = ::assertRejected,
-            ),
-            "Links: RemovePeerFromGroup" to Case(
-                inputs = listOf(selfPeerID, "no-such-group"),
-                execute = true,
-                expect = ::assertRejected,
-            ),
-            "Links: ListGroupsForPeer" to Case(
-                inputs = listOf(selfPeerID),
-                execute = true,
-                expect = ::assertSucceeded,
-            ),
-
-            // --- Dispatch --- (no matching Command exists on this learner -- clean not-found either way)
-            "Dispatch: SubmitCommand" to Case(
-                inputs = listOf("no-such-command", "{}"),
-                execute = true,
-                expect = ::assertRejected,
-            ),
-            "Dispatch: GetCommandRequest" to Case(
-                inputs = listOf("no-such-command", "no-such-instance"),
-                execute = true,
-                expect = ::assertNoCrash,
-            ),
-            "Dispatch: ListCommandRequests" to Case(
-                inputs = listOf("no-such-command"),
-                execute = true,
-                expect = ::assertSucceeded,
-            ),
-            "Dispatch: ListExecutionsByPeer" to Case(
-                inputs = listOf(selfPeerID),
-                execute = true,
-                expect = ::assertSucceeded,
-            ),
-            "Dispatch: AppendCommandLog" to Case(
-                inputs = listOf("", "e2e-ui-test-instance", "{}", "ui e2e test"),
-                execute = true,
-                expect = ::assertNoCrash,
-            ),
-            "Dispatch: QueryCommandLog" to Case(
-                inputs = listOf("e2e-ui-test-instance", "", "", ""),
-                execute = true,
-                expect = ::assertNoCrash,
-            ),
-            "Dispatch: LatestCommandLog" to Case(
-                inputs = listOf("e2e-ui-test-instance"),
-                execute = true,
-                expect = ::assertNoCrash,
-            ),
-            "Dispatch: WatchCommandLog" to Case(
-                inputs = listOf("e2e-ui-test-instance"),
-                execute = true,
-                expect = ::assertSucceeded,
-            ),
-            "Dispatch: StopWatchCommandLog" to Case(
-                inputs = listOf("e2e-ui-test-instance"),
-                execute = true,
-                expect = ::assertSucceeded,
-            ),
-            "Dispatch: RunCommandDispatcher" to Case(
-                inputs = listOf("no-such-command"),
-                execute = true,
-                expect = ::assertSucceeded,
-            ),
-            "Dispatch: StopCommandDispatcher" to Case(
-                inputs = listOf("no-such-command"),
-                execute = true,
-                expect = ::assertSucceeded,
-            ),
-
-            // --- ExecInvite --- (Create/Revoke are voter-gated; Redeem against a bogus token is a clean parse/redeem error)
-            "ExecInvite: CreateExecInvite" to Case(
-                inputs = listOf("no-such-command", "{}"),
-                execute = true,
-                expect = ::assertRejected,
-            ),
-            "ExecInvite: RevokeExecInvite" to Case(
-                inputs = listOf("00000000000000000000000000000000"),
-                execute = true,
-                expect = ::assertRejected,
-            ),
-            "ExecInvite: RedeemExecInvite" to Case(
-                inputs = listOf("/ip4/127.0.0.1/tcp/1#00000000000000000000000000000000"),
-                execute = true,
-                expect = ::assertRejected,
-            ),
-
-            // --- Raw --- (the same primitive E2ETest itself already exercises)
-            "Raw: SendEvent" to Case(
-                inputs = listOf("""{"event":"get_public_key"}"""),
-                execute = true,
-                expect = ::assertSucceeded,
-            ),
+        val tokens = mapOf(
+            "{{selfPeerID}}" to selfPeerID,
+            "{{leaderPeerID}}" to leaderPeerID,
+            "{{testKey}}" to testKey,
+            "{{testValue}}" to testValue,
         )
+        fun substitute(s: String): String {
+            var result = s
+            for ((token, value) in tokens) result = result.replace(token, value)
+            return result
+        }
+        fun expectFor(name: String): (String) -> Unit = when (name) {
+            "rejected" -> ::assertRejected
+            "no_crash" -> ::assertNoCrash
+            else -> ::assertSucceeded
+        }
+
+        val root = runCatching { JSONObject(casesJson ?: "{}") }.getOrDefault(JSONObject())
+        val cases = mutableMapOf<String, Case>()
+        for (label in root.keys()) {
+            val obj = root.getJSONObject(label)
+            val inputsArr = obj.optJSONArray("inputs")
+            val inputs = (0 until (inputsArr?.length() ?: 0)).map { substitute(inputsArr!!.getString(it)) }
+            cases[label] = Case(
+                inputs = inputs,
+                execute = obj.optBoolean("execute", false),
+                expect = expectFor(obj.optString("expect", "succeeded")),
+                retryBudgetMs = obj.optLong("retry_budget_ms", 0L),
+            )
+        }
+        return cases
     }
 }
