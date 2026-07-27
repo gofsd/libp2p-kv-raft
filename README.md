@@ -923,9 +923,17 @@ a real `gomobile bind` (baking that row's node identity and the live bootstrap a
 AAR, via the same `kvmobile.SendEvent` raw-event entry point kvctl-cli's `sendevent` exposes on
 desktop/remote) + `./gradlew installDebug installDebugAndroidTest` + `adb shell am instrument`
 against whatever device/emulator is connected, pulling back a real per-row results file (see
-`android-app/app/src/androidTest/.../E2ETest.kt`) -- degrading to a clear Skipped status if
-`gomobile`/`adb`/a connected device aren't available at all, and a clear Failed status with the
-real diagnostic (not just "exit status 1") if the build/install/instrument step itself fails --
+`android-app/app/src/androidTest/.../E2ETest.kt`), then a second, separate `adb shell am instrument`
+invocation of `UiCommandE2ETest.kt` on the same install -- unlike `E2ETest`, which drives
+`Kvmobile.sendEvent` directly and never touches a single screen, this one clicks through the real
+app (`MainActivity`'s category list -> `CommandListActivity`'s command list ->
+`CommandDetailActivity`'s dynamically-rendered param fields and Run button) for literally every
+`CommandCatalog.kt` entry, so the command surface exposed through the UI can never silently drift
+out of coverage. A command failure here fails every row in that node's batch, the same as a
+build/install failure would, since none of them can be trusted to have run against a working app --
+degrading to a clear Skipped status if `gomobile`/`adb`/a connected device aren't available at all,
+and a clear Failed status with the real diagnostic (not just "exit status 1") if the build/install/
+instrument step itself fails --
 e.g. the exact `INSTALL_FAILED_USER_RESTRICTED` MIUI/Xiaomi restriction noted under [Follower on
 Android](#follower-on-android) blocks the *instrumented test* APK's install the same way it can
 block a plain `adb install`, needing that same device-side "Install via USB" toggle enabled before

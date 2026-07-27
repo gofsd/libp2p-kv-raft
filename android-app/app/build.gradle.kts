@@ -73,4 +73,10 @@ dependencies {
     androidTestImplementation(files("libs/kvmobile.aar"))
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
+    // Drives UiCommandE2ETest (see src/androidTest) -- real clicks through
+    // MainActivity/CommandListActivity/CommandDetailActivity for every
+    // CommandCatalog.kt entry, unlike E2ETest's direct Kvmobile.sendEvent
+    // calls.
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
+    androidTestImplementation("androidx.test:core:1.6.1")
 }

@@ -23,10 +23,11 @@ const androidGoPackage = "github.com/gofsd/libp2p-kv-raft/mobile/kvmobile"
 // applicationId and testInstrumentationRunner -- AGP's default test APK id
 // is "<applicationId>.test" (no testApplicationId override is set there).
 const (
-	androidAppID      = "com.gofsd.kvdemo"
-	androidTestAppID  = androidAppID + ".test"
-	androidTestClass  = androidAppID + ".E2ETest"
-	androidTestRunner = androidTestAppID + "/androidx.test.runner.AndroidJUnitRunner"
+	androidAppID       = "com.gofsd.kvdemo"
+	androidTestAppID   = androidAppID + ".test"
+	androidTestClass   = androidAppID + ".E2ETest"
+	androidUITestClass = androidAppID + ".UiCommandE2ETest"
+	androidTestRunner  = androidTestAppID + "/androidx.test.runner.AndroidJUnitRunner"
 )
 
 // androidUnavailable checks that gomobile, adb, and a connected
@@ -105,10 +106,17 @@ func runAndroidRows(repoRoot string, f *e2edata.File, rowIndices []int, bootstra
 // runAndroidNode builds an AAR baked with node's identity and
 // bootstrapMultiaddr as the leader to join, installs the app + its
 // instrumented test APK, runs every row in rowIdxs (in order) in one
-// instrumentation invocation, and maps the per-row results back to
-// rowIdxs. A failure at the build/install/instrument-invocation level
-// (not an individual row's own event failing) marks every row in this
-// batch failed with that same error, since none of them actually ran.
+// instrumentation invocation, then runs UiCommandE2ETest -- a second,
+// separate instrumentation invocation that clicks through every real
+// screen (MainActivity/CommandListActivity/CommandDetailActivity) for
+// every CommandCatalog.kt entry, proving the whole command surface is
+// actually reachable/operable through the UI a real user taps, not just
+// reachable via the raw sendEvent path E2ETest itself drives -- and maps
+// the per-row results back to rowIdxs. A failure at the build/install/
+// instrument-invocation level, or any UiCommandE2ETest command failure
+// (not an individual row's own event failing), marks every row in this
+// batch failed with that same error, since none of them can be trusted
+// to have run against a working app.
 func runAndroidNode(repoRoot string, node e2edata.Node, bootstrapMultiaddr string, f *e2edata.File, rowIdxs []int) map[int]rowOutcome {
 	fail := func(err error) map[int]rowOutcome {
 		out := make(map[int]rowOutcome, len(rowIdxs))
@@ -156,6 +164,9 @@ func runAndroidNode(repoRoot string, node e2edata.Node, bootstrapMultiaddr strin
 	}
 	resultsJSON, err := runInstrumentedTest(string(rowsArg))
 	if err != nil {
+		return fail(err)
+	}
+	if err := runUICommandTest(); err != nil {
 		return fail(err)
 	}
 
@@ -293,4 +304,64 @@ func runInstrumentedTest(rowsArgJSON string) ([]byte, error) {
 		return nil, fmt.Errorf("e2erun: read pulled android results: %w", err)
 	}
 	return data, nil
+}
+
+// uiCommandResult is one entry of UiCommandE2ETest's own results file
+// (ui_e2e_results.json) -- keyed by command label rather than by row
+// index, since this test isn't driven by testdata.json rows at all: it
+// walks the live CommandCatalog.kt list itself (see that test's own doc
+// comment).
+type uiCommandResult struct {
+	Command string `json:"command"`
+	Pass    bool   `json:"pass"`
+	Error   string `json:"error"`
+}
+
+// runUICommandTest triggers UiCommandE2ETest via `adb shell am
+// instrument` (no "rows" argument -- unlike runInstrumentedTest, it
+// doesn't replay testdata.json rows; it clicks through every
+// CommandCatalog.kt entry's own screen instead), then pulls and parses
+// its separate ui_e2e_results.json results file, returning a summarizing
+// error if any command's UI case failed or if the instrumentation run
+// never produced a results file at all (e.g. a crash before it could
+// write one).
+func runUICommandTest() error {
+	cmd := exec.Command("adb", "shell", "am", "instrument", "-w",
+		"-e", "class", androidUITestClass,
+		androidTestRunner,
+	)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	_ = cmd.Run()
+
+	deviceResultsPath := fmt.Sprintf("/sdcard/Android/data/%s/files/ui_e2e_results.json", androidAppID)
+	localResultsPath := filepath.Join(os.TempDir(), "kvraft-e2e-android-ui-results.json")
+	defer os.Remove(localResultsPath)
+	pull := exec.Command("adb", "pull", deviceResultsPath, localResultsPath)
+	var pullOut bytes.Buffer
+	pull.Stdout = &pullOut
+	pull.Stderr = &pullOut
+	if err := pull.Run(); err != nil {
+		return fmt.Errorf("e2erun: pull android UI command results (instrument output: %s): %w: %s", out.String(), err, pullOut.String())
+	}
+	data, err := os.ReadFile(localResultsPath)
+	if err != nil {
+		return fmt.Errorf("e2erun: read pulled android UI command results: %w", err)
+	}
+
+	var results []uiCommandResult
+	if err := json.Unmarshal(data, &results); err != nil {
+		return fmt.Errorf("e2erun: parse android UI command results: %w (raw: %s)", err, data)
+	}
+	var failed []string
+	for _, r := range results {
+		if !r.Pass {
+			failed = append(failed, fmt.Sprintf("%s: %s", r.Command, r.Error))
+		}
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("e2erun: %d of %d android UI command(s) failed:\n%s", len(failed), len(results), strings.Join(failed, "\n"))
+	}
+	return nil
 }
