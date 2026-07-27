@@ -3174,11 +3174,7 @@ func (n *Node) forwardExecInviteRedeem(ctx context.Context, buf []byte) (string,
 	if leaderID == "" {
 		return "", fmt.Errorf("not leader and no leader known")
 	}
-	pid, err := peer.Decode(string(leaderID))
-	if err != nil {
-		return "", fmt.Errorf("invalid leader id %s: %w", leaderID, err)
-	}
-	s, err := n.host.NewStream(ctx, pid, ForwardExecInviteRedeemProtocolID)
+	s, err := n.dialForward(ctx, leaderID, ForwardExecInviteRedeemProtocolID)
 	if err != nil {
 		return "", fmt.Errorf("open forward stream to leader %s: %w", leaderID, err)
 	}
@@ -3308,16 +3304,10 @@ func (n *Node) recordClusterMember(ctx context.Context, peerIDStr string, role b
 
 // forwardJoin relays a join request (joinPeerID, joinAddr, suffrage,
 // inviteToken) to leaderID over ForwardJoinProtocolID and returns its
-// response line verbatim (without the trailing newline). Mirrors
-// forwardSet's reasoning: the libp2p host already knows how to reach
-// leaderID via this node's own raft transport, so no address resolution
-// beyond the peer id is needed.
+// response line verbatim (without the trailing newline). See dialForward
+// for how leaderID is actually reached.
 func (n *Node) forwardJoin(ctx context.Context, leaderID raft.ServerID, joinPeerID, joinAddr string, suffrage raft.ServerSuffrage, inviteToken []byte) (string, error) {
-	pid, err := peer.Decode(string(leaderID))
-	if err != nil {
-		return "", fmt.Errorf("invalid leader id %s: %w", leaderID, err)
-	}
-	s, err := n.host.NewStream(ctx, pid, ForwardJoinProtocolID)
+	s, err := n.dialForward(ctx, leaderID, ForwardJoinProtocolID)
 	if err != nil {
 		return "", fmt.Errorf("open forward-join stream to leader %s: %w", leaderID, err)
 	}
@@ -3476,6 +3466,61 @@ const (
 	forwardStatusErr byte = 0x01
 )
 
+// dialForward opens a stream to leaderID for one of the forward-*
+// protocols below. Every forward-* function used to assume "the libp2p
+// host already has an open connection/known address for leaderID -- it's
+// the peer this node's own raft transport talks to for AppendEntries --
+// so no address resolution is needed beyond the peer id itself", and
+// dialed with a bare pid and no relay allowance. That assumption breaks
+// exactly when it matters most: a leader only reachable via a relay
+// circuit address (see CLAUDE.md's "Known gap" note, found running a
+// real 3-node cluster) left every forward-* protocol failing with
+// "context deadline exceeded" even though raft's own AppendEntries kept
+// replicating fine. The difference is what rafttransport.Dial does that
+// this didn't: look up a real address for the peer and allow a
+// limited/relay connection for the resulting stream. dialForward closes
+// that gap the same way -- pulling leaderID's address from this node's
+// own current raft configuration (the same raft.ServerAddress
+// rafttransport.Dial already dials successfully for AppendEntries, since
+// it's this node's own up-to-date view of the cluster, not a guess) and
+// seeding the peerstore with it before dialing, with
+// network.WithAllowLimitedConn so a relay/transient connection is
+// actually usable for the stream. If no address is on file (e.g. this
+// node isn't itself a raft member yet, or a racing configuration read),
+// it falls back to the old bare pid dial -- so an already-reachable peer
+// never regresses.
+func (n *Node) dialForward(ctx context.Context, leaderID raft.ServerID, protoID protocol.ID) (network.Stream, error) {
+	pid, err := peer.Decode(string(leaderID))
+	if err != nil {
+		return nil, fmt.Errorf("invalid leader id %s: %w", leaderID, err)
+	}
+
+	if rf := n.getRaft(); rf != nil {
+		if cfgFuture := rf.GetConfiguration(); cfgFuture.Error() == nil {
+			for _, srv := range cfgFuture.Configuration().Servers {
+				if srv.ID != leaderID || srv.Address == "" {
+					continue
+				}
+				maddr, err := multiaddr.NewMultiaddr(string(srv.Address))
+				if err != nil {
+					break
+				}
+				info, err := peer.AddrInfoFromP2pAddr(maddr)
+				if err != nil || info.ID != pid {
+					break
+				}
+				n.host.Peerstore().AddAddrs(info.ID, info.Addrs, time.Hour)
+				connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				n.host.Connect(connectCtx, *info) // best-effort -- NewStream below surfaces the real failure
+				cancel()
+				break
+			}
+		}
+	}
+
+	return n.host.NewStream(network.WithAllowLimitedConn(ctx, "forward"), pid, protoID)
+}
+
 // forwardOp relays op(key, value) to leaderID over ForwardProtocolID and
 // returns the raft log index it was applied at -- generalizes what used
 // to be a Set-only forwardSet to also carry OpAppendCommandRequest (see
@@ -3483,16 +3528,10 @@ const (
 // machinery (not something a "user" ever speaks -- see pkg/shmevent's doc
 // comment), so it reuses kvfsm's own log-command framing directly rather
 // than pkg/shmevent's user-facing relational protocol for the request;
-// see forwardStatusOK's doc comment for the response framing. The libp2p
-// host already has an open connection/known address for leaderID -- it's
-// the peer this node's own raft transport talks to for AppendEntries --
-// so no address resolution is needed beyond the peer id itself.
+// see forwardStatusOK's doc comment for the response framing. See
+// dialForward for how leaderID is actually reached.
 func (n *Node) forwardOp(ctx context.Context, op kvfsm.OpType, leaderID raft.ServerID, key, value []byte) (uint64, error) {
-	pid, err := peer.Decode(string(leaderID))
-	if err != nil {
-		return 0, fmt.Errorf("forward set: invalid leader id %s: %w", leaderID, err)
-	}
-	s, err := n.host.NewStream(ctx, pid, ForwardProtocolID)
+	s, err := n.dialForward(ctx, leaderID, ForwardProtocolID)
 	if err != nil {
 		return 0, fmt.Errorf("forward set to leader %s: %w", leaderID, err)
 	}
@@ -3680,13 +3719,10 @@ func (n *Node) admitClusterJoinIfConfirmed(ctx context.Context, rf *raft.Raft, c
 // forwardConfirm relays op(key1, key2) to leaderID over
 // ForwardConfirmProtocolID, mirroring forwardSet's wire convention
 // exactly (kvfsm's own command framing; empty response = success,
-// non-empty = the leader's error message).
+// non-empty = the leader's error message). See dialForward for how
+// leaderID is actually reached.
 func (n *Node) forwardConfirm(ctx context.Context, leaderID raft.ServerID, op kvfsm.OpType, key1, key2 []byte) error {
-	pid, err := peer.Decode(string(leaderID))
-	if err != nil {
-		return fmt.Errorf("forward confirm: invalid leader id %s: %w", leaderID, err)
-	}
-	s, err := n.host.NewStream(ctx, pid, ForwardConfirmProtocolID)
+	s, err := n.dialForward(ctx, leaderID, ForwardConfirmProtocolID)
 	if err != nil {
 		return fmt.Errorf("forward confirm to leader %s: %w", leaderID, err)
 	}
@@ -3827,11 +3863,7 @@ func (n *Node) leaveCluster(ctx context.Context) error {
 // handleForwardLeaveStream reading s.Conn().RemotePeer(), not anything
 // this side writes.
 func (n *Node) forwardLeave(ctx context.Context, leaderID raft.ServerID) error {
-	pid, err := peer.Decode(string(leaderID))
-	if err != nil {
-		return fmt.Errorf("forward leave: invalid leader id %s: %w", leaderID, err)
-	}
-	s, err := n.host.NewStream(ctx, pid, ForwardLeaveProtocolID)
+	s, err := n.dialForward(ctx, leaderID, ForwardLeaveProtocolID)
 	if err != nil {
 		return fmt.Errorf("forward leave to leader %s: %w", leaderID, err)
 	}
@@ -3911,11 +3943,7 @@ func (n *Node) kickPeer(ctx context.Context, targetPeerID string) error {
 // message) -- unlike forwardLeave, targetPeerID genuinely is the payload
 // here (see ForwardKickProtocolID's doc comment for why).
 func (n *Node) forwardKick(ctx context.Context, leaderID raft.ServerID, targetPeerID string) error {
-	pid, err := peer.Decode(string(leaderID))
-	if err != nil {
-		return fmt.Errorf("forward kick: invalid leader id %s: %w", leaderID, err)
-	}
-	s, err := n.host.NewStream(ctx, pid, ForwardKickProtocolID)
+	s, err := n.dialForward(ctx, leaderID, ForwardKickProtocolID)
 	if err != nil {
 		return fmt.Errorf("forward kick to leader %s: %w", leaderID, err)
 	}

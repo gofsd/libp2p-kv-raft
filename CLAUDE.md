@@ -185,17 +185,21 @@ than relying on direct dial-back working. This is what makes the initial join (`
 address anyone else can reach directly: `newHost` reserves a circuit-relay v2 slot through the
 named bootstrap node and advertises the resulting `/p2p-circuit` address instead.
 
-**Known gap, found running a real 3-node cluster (desktop + remote bootstrap node + Android) on
-2026-07-12/13:** a follower's forwarded `Set` (`pkg/daemon.ForwardProtocolID`, `handleForwardSetStream`)
-dials whoever is the *current raft leader* directly, using that leader's own self-advertised
-address — it has no relay fallback. If the current leader is itself not reliably reachable (e.g. a
-dev laptop whose local firewall allows ICMP but rejects inbound TCP from LAN peers — confirmed
-directly: `ping` succeeded, `nc -z <ip> <port>` returned "No route to host"), every follower's
-writes fail with `failed to open stream: context deadline exceeded`, even though join and
-replication (which *do* have relay/direct fallback baked into how addresses are advertised) keep
-working fine and reads stay correct. Until the forward path itself gains a relay fallback, keep
-raft leadership on a node from `configs/bootstrap-nodes.json` (or another host with a real,
-firewall-open address) rather than letting an ad hoc dev machine become leader.
+**Fixed gap, originally found running a real 3-node cluster (desktop + remote bootstrap node +
+Android) on 2026-07-12/13:** a follower's forwarded `Set` (`pkg/daemon.ForwardProtocolID`,
+`handleForwardSetStream`) used to dial whoever was the *current raft leader* directly, using a bare
+peer id and no relay fallback, so a leader only reachable via a relay circuit address left every
+follower's writes failing with `failed to open stream: context deadline exceeded` even though join
+and replication (which *do* have relay/direct fallback baked into how addresses are advertised) kept
+working fine and reads stayed correct. Every `forward*` protocol (`ForwardProtocolID`,
+`ForwardJoinProtocolID`, `ForwardConfirmProtocolID`, `ForwardLeaveProtocolID`,
+`ForwardKickProtocolID`, `ForwardExecInviteRedeemProtocolID`) now dials through
+`(*Node).dialForward`, which looks up the leader's real address from this node's own current raft
+configuration (the same `raft.ServerAddress` `rafttransport.Dial` already dials successfully for
+`AppendEntries`) and allows a limited/relay connection for the resulting stream, instead of assuming
+an already-open connection. It's still sensible to keep raft leadership on a node with a real,
+stable address when one is available (`configs/bootstrap-nodes.json`) — direct dials are cheaper and
+faster than a relay hop — but a relay-only leader no longer breaks forwarded writes outright.
 
 ### Stale docs
 
