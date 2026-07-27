@@ -1,12 +1,20 @@
 # Changelog
 
 All notable changes to this project are documented here. Format loosely
-follows [Keep a Changelog](https://keepachangelog.com/); this project
-doesn't yet follow strict semver pre-1.0 (see `README.md`/`CLAUDE.md` for
-current architecture, which is the authoritative reference -- this file
-tracks *changes*, not a full feature description).
+follows [Keep a Changelog](https://keepachangelog.com/); starting at
+`v1.0.0` this project follows semver for the surface `docs/library-usage.md`'s
+"Stability" section defines (see `README.md`/`CLAUDE.md` for current
+architecture, which is the authoritative reference -- this file tracks
+*changes*, not a full feature description).
 
 ## [Unreleased]
+
+## [1.0.0] - 2026-07-27
+
+First tagged release -- see `SECURITY.md` and `docs/library-usage.md`'s
+"Stability" section for what this actually commits to (a self-directed,
+non-audited security process; semver against a specific, named API
+surface; no LTS branch yet).
 
 ### Added
 - `LICENSE` (Apache-2.0), `NOTICE`, `CONTRIBUTING.md`, `SECURITY.md` --
