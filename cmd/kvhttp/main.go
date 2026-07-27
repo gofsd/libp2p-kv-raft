@@ -26,11 +26,23 @@
 // outright, before kvctl-cli ever runs -- so holding one node's token lets
 // a caller drive *that* node exactly as if running kvctl-cli sendevent
 // themselves, same as before, but says nothing about any other node this
-// machine happens to also have registered. Still meant for a trusted
-// localhost network path, not a substitute for TLS/real network-level
-// access control if exposed beyond that -- token comparison is
-// constant-time (crypto/hmac.Equal) but request bodies/tokens themselves
-// travel in the clear otherwise.
+// machine happens to also have registered.
+//
+// /command is served over HTTPS only -- there is deliberately no plain-HTTP
+// fallback (an earlier version had one; it's gone). Token comparison is
+// constant-time (crypto/hmac.Equal), but that only protects against timing
+// attacks on the comparison itself: without TLS, the token and every
+// request/response body travel in the clear, which a plain Bearer scheme
+// can't make up for on its own. -tls-cert/-tls-key default to the
+// self-signed pair `mage tls:genselfsigned <hosts>` generates
+// (pkg/tlscert) under the local registry directory; kvhttp refuses to
+// start at all if they're missing, rather than silently falling back to
+// plain HTTP. A self-signed cert has no CA behind it, so every caller
+// (browser, curl, etc.) must explicitly trust this exact certificate
+// first -- expected and fine for this project's own trusted-caller model,
+// but note it for real deployment: swap in a CA-issued cert/key pair via
+// the same two flags if callers need to trust it without doing that
+// manually.
 //
 // Alongside /command, this process also always starts a second, unrelated
 // plain-HTTP server on :80 serving whatever's on disk under staticDir --
@@ -48,6 +60,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -85,6 +98,8 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:8787", "listen address -- deliberately loopback-only by default, see this file's doc comment")
 	kvctlBin := flag.String("kvctl-cli", "", "path to the kvctl-cli binary; defaults to $PATH, falling back to `go build` into a temp dir")
 	staticDir := flag.String("static-dir", defaultStaticDir, "directory served verbatim at web root by the secondary listener on "+staticAddr)
+	tlsCert := flag.String("tls-cert", "", "path to the TLS certificate (PEM); defaults to the self-signed pair `mage tls:genselfsigned` writes under the local registry directory -- required, see this file's doc comment")
+	tlsKey := flag.String("tls-key", "", "path to the TLS private key (PEM); same default/requirement as -tls-cert")
 	flag.Parse()
 
 	reg, err := registry.Open()
@@ -95,6 +110,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("kvhttp: %v", err)
 	}
+	certPath, keyPath, err := resolveTLSFiles(*tlsCert, *tlsKey, reg.Dir)
+	if err != nil {
+		log.Fatalf("kvhttp: %v", err)
+	}
 
 	h := &handler{reg: reg, kvctlBin: resolvedBin}
 	mux := http.NewServeMux()
@@ -102,8 +121,43 @@ func main() {
 
 	go serveStatic(*staticDir)
 
-	log.Printf("kvhttp: multi-tenant (every node in %s), routed by Authorization: Bearer <token> -- see `mage accesstoken <peerID>` -- via %s, listening on http://%s/command", reg.Dir, resolvedBin, *addr)
-	log.Fatal(http.ListenAndServe(*addr, mux))
+	log.Printf("kvhttp: multi-tenant (every node in %s), routed by Authorization: Bearer <token> -- see `mage accesstoken <peerID>` -- via %s, listening on https://%s/command (cert: %s)", reg.Dir, resolvedBin, *addr, certPath)
+	log.Fatal(http.ListenAndServeTLS(*addr, certPath, keyPath, mux))
+}
+
+// defaultTLSDir must match magefile.go's kvhttpTLSDir exactly -- both
+// resolve to <registry dir>/kvhttp-tls, the one being where `mage
+// tls:genselfsigned` writes cert.pem/key.pem and the other being where
+// kvhttp defaults to reading them from, so that generating the pair and
+// then just running kvhttp with no -tls-cert/-tls-key flags at all works
+// with no further wiring.
+func defaultTLSDir(registryDir string) string {
+	return filepath.Join(registryDir, "kvhttp-tls")
+}
+
+// resolveTLSFiles returns explicitCert/explicitKey if both are set,
+// otherwise the default pair under defaultTLSDir(registryDir) -- and
+// fails closed (a clear error, not a silent plain-HTTP fallback) if
+// whichever pair applies doesn't actually exist on disk. There is no
+// supported way to run kvhttp without TLS at all -- see this file's own
+// doc comment on why an earlier plain-HTTP mode was removed rather than
+// kept as a fallback.
+func resolveTLSFiles(explicitCert, explicitKey, registryDir string) (certPath, keyPath string, err error) {
+	certPath, keyPath = explicitCert, explicitKey
+	if certPath == "" && keyPath == "" {
+		dir := defaultTLSDir(registryDir)
+		certPath = filepath.Join(dir, "cert.pem")
+		keyPath = filepath.Join(dir, "key.pem")
+	} else if certPath == "" || keyPath == "" {
+		return "", "", fmt.Errorf("-tls-cert and -tls-key must both be set, or both left unset to use the default self-signed pair")
+	}
+	if _, statErr := os.Stat(certPath); statErr != nil {
+		return "", "", fmt.Errorf("TLS certificate not found at %s (run `mage tls:genselfsigned <hosts>` first, or pass -tls-cert/-tls-key explicitly): %w", certPath, statErr)
+	}
+	if _, statErr := os.Stat(keyPath); statErr != nil {
+		return "", "", fmt.Errorf("TLS private key not found at %s (run `mage tls:genselfsigned <hosts>` first, or pass -tls-cert/-tls-key explicitly): %w", keyPath, statErr)
+	}
+	return certPath, keyPath, nil
 }
 
 // serveStatic serves dir at web root, verbatim, over plain HTTP on

@@ -21,7 +21,9 @@ import (
 	"github.com/gofsd/libp2p-kv-raft/pkg/e2edata"
 	"github.com/gofsd/libp2p-kv-raft/pkg/e2erun"
 	"github.com/gofsd/libp2p-kv-raft/pkg/kvctl"
+	"github.com/gofsd/libp2p-kv-raft/pkg/registry"
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
+	"github.com/gofsd/libp2p-kv-raft/pkg/tlscert"
 )
 
 // Default target to run if none is specified
@@ -456,6 +458,60 @@ func runE2ERows(selectRows func(*e2edata.File) []int, markPublishedOnSuccess boo
 		}
 	}
 	return runErr
+}
+
+// TLS groups self-signed certificate generation behind `mage tls:<method>`
+// -- currently just the one target cmd/kvhttp needs, since it now refuses
+// to serve /command over plain HTTP at all (see that command's own doc
+// comment).
+type TLS mg.Namespace
+
+// kvhttpTLSDir returns where GenSelfSigned writes cmd/kvhttp's
+// certificate/key pair, and the directory kvhttp itself defaults to
+// reading them from (-tls-cert/-tls-key both default to a path under
+// here) -- alongside the local node registry (pkg/registry.EnvHome/Open),
+// not the repo itself: like every node's own identity.key, this is
+// generated, machine-specific material that must never be committed.
+func kvhttpTLSDir() (string, error) {
+	reg, err := registry.Open()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(reg.Dir, "kvhttp-tls"), nil
+}
+
+// GenSelfSigned generates a fresh self-signed ECDSA certificate/key pair
+// for cmd/kvhttp's HTTPS listener (see pkg/tlscert's own doc comment for
+// why self-signed/pure-Go), valid for every host/IP in the comma-separated
+// hosts argument -- e.g. "localhost,127.0.0.1,203.0.113.4" -- a caller
+// connecting to an address missing from this list gets a certificate
+// validation error regardless of the cert otherwise being trusted, so
+// list every hostname/IP a real caller will actually connect through.
+// Overwrites any previously generated pair at the same path. Prints the
+// path kvhttp's own -tls-cert/-tls-key flags default to, so `mage
+// tls:genselfsigned <hosts>` followed by plain `go run ./cmd/kvhttp` (or
+// the deployed binary with no TLS flags at all) picks it up automatically.
+// Self-signed means every caller (browser, curl, etc.) must explicitly
+// trust this exact certificate first -- there is no CA behind it for a
+// client to already trust on its own.
+//
+// Usage: mage tls:genselfsigned <comma-separated hosts/IPs>
+func (TLS) GenSelfSigned(hosts string) error {
+	dir, err := kvhttpTLSDir()
+	if err != nil {
+		return err
+	}
+	hostList := strings.Split(hosts, ",")
+	for i := range hostList {
+		hostList[i] = strings.TrimSpace(hostList[i])
+	}
+	certPath := filepath.Join(dir, "cert.pem")
+	keyPath := filepath.Join(dir, "key.pem")
+	if err := tlscert.GenerateSelfSigned(certPath, keyPath, hostList, tlscert.DefaultValidFor); err != nil {
+		return err
+	}
+	fmt.Printf("✅ self-signed cert/key generated for [%s]\n   cert: %s\n   key:  %s\n", strings.Join(hostList, ", "), certPath, keyPath)
+	return nil
 }
 
 // Githooks groups git hook installation behind `mage githooks:<method>`.

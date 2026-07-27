@@ -10,6 +10,59 @@ import (
 	"github.com/gofsd/libp2p-kv-raft/pkg/registry"
 )
 
+// TestResolveTLSFilesDefaultsToRegistryDirAndRequiresBothFiles covers
+// resolveTLSFiles' three real branches: the default pair actually existing
+// (success), one file missing from that default pair (fails closed, no
+// silent plain-HTTP fallback), and an explicit pair overriding the
+// default.
+func TestResolveTLSFilesDefaultsToRegistryDirAndRequiresBothFiles(t *testing.T) {
+	regDir := t.TempDir()
+
+	t.Run("default pair missing entirely", func(t *testing.T) {
+		if _, _, err := resolveTLSFiles("", "", regDir); err == nil {
+			t.Fatal("expected an error when neither the default cert nor key exists")
+		}
+	})
+
+	t.Run("default pair present", func(t *testing.T) {
+		dir := defaultTLSDir(regDir)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		certPath := filepath.Join(dir, "cert.pem")
+		keyPath := filepath.Join(dir, "key.pem")
+		if err := os.WriteFile(certPath, []byte("cert"), 0o644); err != nil {
+			t.Fatalf("write cert: %v", err)
+		}
+		if err := os.WriteFile(keyPath, []byte("key"), 0o600); err != nil {
+			t.Fatalf("write key: %v", err)
+		}
+
+		gotCert, gotKey, err := resolveTLSFiles("", "", regDir)
+		if err != nil {
+			t.Fatalf("resolveTLSFiles: %v", err)
+		}
+		if gotCert != certPath || gotKey != keyPath {
+			t.Fatalf("resolveTLSFiles = (%q, %q), want (%q, %q)", gotCert, gotKey, certPath, keyPath)
+		}
+	})
+
+	t.Run("only one of -tls-cert/-tls-key set", func(t *testing.T) {
+		if _, _, err := resolveTLSFiles("/some/cert.pem", "", regDir); err == nil {
+			t.Fatal("expected an error when only -tls-cert is set")
+		}
+		if _, _, err := resolveTLSFiles("", "/some/key.pem", regDir); err == nil {
+			t.Fatal("expected an error when only -tls-key is set")
+		}
+	})
+
+	t.Run("explicit pair missing on disk", func(t *testing.T) {
+		if _, _, err := resolveTLSFiles(filepath.Join(t.TempDir(), "cert.pem"), filepath.Join(t.TempDir(), "key.pem"), regDir); err == nil {
+			t.Fatal("expected an error when the explicitly-passed files don't exist")
+		}
+	})
+}
+
 func TestBearerToken(t *testing.T) {
 	cases := []struct {
 		name   string
