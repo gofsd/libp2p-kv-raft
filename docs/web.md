@@ -26,6 +26,6 @@ This file previously (before that) described a different, never-implemented appr
 compiled to `GOOS=js GOARCH=wasm`, connecting out over a WebSocket relay). That never matched
 anything in this repository (there was no `cmd/client`, and `go-libp2p`/`hashicorp/raft` compiled
 to `js/wasm` have no working browser transport regardless) — it was early, aspirational scaffolding
-never reconciled with the real architecture that solidified in `pkg/daemon`/`mobile/kvmobile`. See
-[`docs/android.md`](android.md) for the same caveat on the Android doc, which has the equivalent
-drift relative to the real `mobile/kvmobile` implementation.
+never reconciled with the real architecture that solidified in `pkg/daemon`/`mobile/kvmobile`.
+`docs/android.md` had the equivalent drift relative to the real `mobile/kvmobile` implementation
+and has since been removed; `README.md`'s "Follower on Android" section is current instead.

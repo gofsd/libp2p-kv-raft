@@ -25,6 +25,7 @@ func main() {
 	relayLimitDuration := flag.Duration("relay-limit-duration", 0, "only used alongside -relay-service: wall-clock lifetime of a relayed circuit before it's reset (0 = shmevent.DefaultRelayLimitDuration, 720h/30 days)")
 	relayMaxReservationsPerIP := flag.Int("relay-max-reservations-per-ip", 0, "only used alongside -relay-service: active relay-slot reservations allowed from one IP address (0 = shmevent.DefaultRelayMaxReservationsPerIP, 5)")
 	relayMaxReservationsPerPeer := flag.Int("relay-max-reservations-per-peer", 0, "only used alongside -relay-service: active relay-slot reservations allowed from one peer (0 = shmevent.DefaultRelayMaxReservationsPerPeer, 1)")
+	requirePermitForRemote := flag.Bool("require-permit-for-remote", false, "only accept a remote (ClientProtocolID) Set/Get/etc. request from a peer with a confirmed permit (mage requestpermit/confirmpermit, kind \"peer\") -- independent of -require-permit-for-relay, which gates the unrelated relay service instead")
 	requirePermitForRelay := flag.Bool("require-permit-for-relay", false, "only used alongside -relay-service: only let peers with a confirmed permit (mage requestpermit/confirmpermit, kind \"peer\") reserve a relay slot or open a relayed circuit through this node")
 	requirePermitForExecute := flag.Bool("require-permit-for-execute", false, "only deliver EventExecute notifications (mage execute/pollexecute) from a current raft voter/learner or a peer with a confirmed permit (mage requestpermit/confirmpermit, kind \"peer\")")
 	requirePermitForLog := flag.Bool("require-permit-for-log", false, "only let a remote peer logappend/logquery a given pkg/logrecord kind if it holds a confirmed per-kind permit for it (mage requestlogpermit/confirmlogpermit)")
@@ -63,6 +64,7 @@ func main() {
 		RelayLimitDuration:          *relayLimitDuration,
 		RelayMaxReservationsPerIP:   *relayMaxReservationsPerIP,
 		RelayMaxReservationsPerPeer: *relayMaxReservationsPerPeer,
+		RequirePermitForRemote:      *requirePermitForRemote,
 		RequirePermitForRelay:       *requirePermitForRelay,
 		RequirePermitForExecute:     *requirePermitForExecute,
 		RequirePermitForLog:         *requirePermitForLog,

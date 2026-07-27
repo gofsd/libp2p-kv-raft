@@ -11,6 +11,31 @@ tracks *changes*, not a full feature description).
 ### Added
 - `LICENSE` (Apache-2.0), `NOTICE`, `CONTRIBUTING.md`, `SECURITY.md` --
   first steps toward a publishable, production-ready release.
+- `-require-permit-for-remote` CLI flag on `kvnode`, exposing
+  `daemon.Config.RequirePermitForRemote` (which already existed and was
+  fully wired into the daemon, just unreachable from the CLI).
+- `mage buildLinux`/`buildWindows` now actually cross-compile
+  `kvnode`/`kvctl-cli`/`kvhttp`/`kvrecover` into `dist/<goos>_<goarch>/`
+  (previously no-op stubs -- `mage build` silently built nothing). Windows
+  requires restoring `thirdparty/libc`'s `windows/*` files from upstream
+  `modernc.org/libc` v1.73.4 (trimmed away along with the other
+  non-Linux/Android ports; unrelated to the `_fstatat_kstat` patch, which
+  is Linux/Android-only) -- see README's "Vendored dependency patch"
+  section. Windows binaries are cross-compiled and compile clean but
+  haven't been run on a real Windows machine yet.
+- A `release.yml` GitHub Actions workflow: on any `v*` tag push, runs
+  `mage buildLinux`/`buildWindows` and publishes the resulting binaries as
+  GitHub Release assets. `ci.yml` also gained a `release-build-smoke` job
+  that runs both on every push/PR, so a regression in either (like the
+  stub/Windows gaps above) shows up in CI instead of silently again.
+- A `## Stability` section in `docs/library-usage.md` stating what semver
+  covers starting at `v1.0.0` (`pkg/shmclient`, `pkg/daemon.Config`/`Run`,
+  `pkg/kvctl`, `api/shmevent.capnp`'s wire format) and what it doesn't
+  (everything else, plus CLI flags/output).
+- `SECURITY.md`'s "Supported versions" section now states a real policy
+  (latest minor line only, no LTS branch yet) instead of a placeholder,
+  and its audit-status bullet is now an explicit decision (v1.0.0 ships
+  without a paid third-party audit) rather than an open-ended "ongoing".
 - `kvhttp` now supports real CA-trusted TLS via Let's Encrypt/ACME
   (`-domain` flag, `golang.org/x/crypto/acme/autocert`), with a
   self-signed fallback (`mage tls:genselfsigned`, new `pkg/tlscert`
@@ -26,6 +51,17 @@ tracks *changes*, not a full feature description).
 - An end-to-end test for the Raw Channel feature driven through kvhttp's
   HTTP bridge (`cmd/kvhttp/channel_e2e_test.go`), complementing
   `pkg/daemon`'s existing in-process channel tests.
+- `web-app/fuzz/`'s cargo-fuzz targets (`decode_append_entries_request`,
+  `decode_request_vote_request`, `decode_request_pre_vote_request`) are now
+  tracked in git -- they existed on disk but were untracked.
+
+### Removed
+- `docs/getting-started.md`, `docs/linux.md`, `docs/android.md` -- stale
+  docs describing a prototype architecture (`pkg/raft.NewP2PNode`,
+  `cmd/client`) that predates `pkg/daemon`/`shmevent`/`mobile/kvmobile` and
+  was already explicitly disclaimed as not-authoritative in three separate
+  places. Deleted rather than left as permanent caveats; `docs/web.md`,
+  `docs/library-usage.md`, and `CLAUDE.md` references updated accordingly.
 
 ### Fixed
 - Three real memory-leak sources found on a 14-day-uptime production

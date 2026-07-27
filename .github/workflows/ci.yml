@@ -108,3 +108,33 @@ jobs:
       - name: wasm-pack build
         working-directory: web-app
         run: wasm-pack build --target web --out-dir pkg
+
+  release-build-smoke:
+    name: Release binary compile smoke (mage buildLinux/buildWindows)
+    runs-on: ubuntu-latest
+    # Exercises the same cross-compile paths `mage build`/release tagging
+    # depend on, on every push/PR -- these previously were no-op stubs that
+    # silently built nothing, and separately thirdparty/libc's vendored copy
+    # of modernc.org/libc was trimmed down to Linux-only, so windows/amd64
+    # builds were broken with no signal anywhere in CI. Both are real now
+    # (see README's "Vendored dependency patch" section); this job is what
+    # would have caught either regression.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: install mingw-w64 (cgo cross-compiler for windows/amd64 --
+          see magefile.go's BuildWindows doc comment)
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+
+      - name: install mage
+        run: go install github.com/magefile/mage@latest
+
+      - name: mage buildLinux
+        run: mage buildLinux
+
+      - name: mage buildWindows
+        run: mage buildWindows

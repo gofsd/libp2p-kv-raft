@@ -618,16 +618,69 @@ func Build() {
 	mg.Deps(BuildLinux, BuildWindows, BuildAndroid)
 }
 
-func BuildLinux() error {
-	fmt.Println("Building for Linux...")
-	// Implementation for go build...
+// releaseBinaries is every deployable command this repo ships, in the
+// desktop/server sense (excludes mobile/kvmobile and web-app, which have
+// their own build paths -- BuildAndroid, wasm-pack).
+var releaseBinaries = []string{"./cmd/kvnode", "./cmd/kvctl-cli", "./cmd/kvhttp", "./cmd/kvrecover"}
+
+// buildCross compiles releaseBinaries for one GOOS/GOARCH pair into
+// dist/<goos>_<goarch>/. Unlike the on-disk store (modernc.org/sqlite, a
+// pure-Go, no-cgo driver), pkg/ipc's desktop transport (ipc.go) depends on
+// github.com/hidez8891/shm for named shared memory, which is itself cgo --
+// so CGO_ENABLED=1 here is required, not optional, and a genuine cross-OS
+// build needs the right C cross-compiler set via cc (e.g. Windows from a
+// Linux host needs an x86_64-w64-mingw32-gcc on PATH).
+func buildCross(goos, goarch, cc string) error {
+	root, err := repoRoot()
+	if err != nil {
+		return err
+	}
+	outDir := filepath.Join(root, "dist", goos+"_"+goarch)
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return err
+	}
+	ext := ""
+	if goos == "windows" {
+		ext = ".exe"
+	}
+	env := append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch, "CGO_ENABLED=1")
+	if cc != "" {
+		env = append(env, "CC="+cc)
+	}
+	for _, pkg := range releaseBinaries {
+		name := filepath.Base(pkg) + ext
+		out := filepath.Join(outDir, name)
+		fmt.Printf("Building %s for %s/%s...\n", pkg, goos, goarch)
+		cmd := exec.Command("go", "build", "-ldflags=-s -w", "-o", out, pkg)
+		cmd.Dir = root
+		cmd.Env = env
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("build %s for %s/%s: %w", pkg, goos, goarch, err)
+		}
+	}
 	return nil
 }
 
+// BuildLinux compiles releaseBinaries for linux/amd64, natively -- cgo's
+// shm dependency (see buildCross's doc comment) means a genuine linux/arm64
+// cross build needs an aarch64-linux-gnu-gcc cross-compiler on PATH, which
+// isn't assumed to be installed; build natively on an arm64 host instead
+// (e.g. an arm64 CI runner) if that target is needed.
+func BuildLinux() error {
+	return buildCross("linux", "amd64", "")
+}
+
+// BuildWindows cross-compiles releaseBinaries for windows/amd64, requiring
+// an x86_64-w64-mingw32-gcc cross-compiler on PATH (e.g. `apt-get install
+// gcc-mingw-w64-x86-64` on a Debian/Ubuntu CI runner). Compiles clean as of
+// thirdparty/libc restoring its windows/* files from upstream (see README's
+// "Vendored dependency patch" section) -- but hasn't been run on a real
+// Windows machine, only cross-compiled, so treat the resulting .exe as
+// unvalidated until someone actually runs it.
 func BuildWindows() error {
-	fmt.Println("Building for Windows...")
-	// Implementation for go build...
-	return nil
+	return buildCross("windows", "amd64", "x86_64-w64-mingw32-gcc")
 }
 
 // BuildAndroid cross-compiles mobile/kvmobile into android-app/app/libs/kvmobile.aar

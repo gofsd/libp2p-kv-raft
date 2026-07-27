@@ -53,11 +53,16 @@ see the threat model below for what that does and doesn't cover.
 - `kvhttp`'s rate limiting protects against a runaway caller/bug, not a
   distributed multi-attacker flood -- it assumes a small set of trusted
   token holders, matching the rest of this project's trust model.
-- No third-party security audit has been performed. Internal hardening
-  (fuzzing the wire-format decoders in `pkg/shmevent` and
-  `web-app/src/raft_wire.rs`, `govulncheck` dependency scanning, manual
-  review of the Group/Command ACL edge cases) is tracked as ongoing work,
-  not a completed guarantee.
+- No third-party security audit has been performed, and v1.0.0 ships
+  without one -- this is a deliberate scope decision for a project at this
+  stage, not an oversight or something later releases silently promise to
+  have closed. Internal hardening (fuzzing the wire-format decoders in
+  `pkg/shmevent` and `web-app/src/raft_wire.rs`, `govulncheck` dependency
+  scanning, manual review of the Group/Command ACL edge cases) continues
+  past 1.0.0, but is not a substitute for an audit. Anyone deploying this
+  somewhere a compromised raft cluster would be high-impact should treat
+  the lack of an audit as a real, present gap -- commissioning one (or
+  contributing one) is a welcome contribution.
 - Vendored/patched third-party code (`thirdparty/anet`, `thirdparty/libc`
   -- see `CLAUDE.md`'s "Vendored dependency patch" section) carries
   whatever risk the patch itself introduces; both are narrowly scoped
@@ -65,5 +70,9 @@ see the threat model below for what that does and doesn't cover.
 
 ## Supported versions
 
-Pre-1.0: only the latest commit on `main` is supported. Once a `v1.0.0`
-tag exists, this section will be updated with a real support window.
+Starting at v1.0.0: security fixes are released against the latest minor
+release line only (a fix found against `1.2.x` lands in a new `1.2.z`
+patch release; older minor lines are not separately backported) -- there
+is no long-term-support branch yet given how new this project is. Commits
+on `main` predating `v1.0.0` are not separately supported once `v1.0.0`
+ships; upgrade to the latest tagged release to receive fixes.

@@ -7,9 +7,20 @@ CLI. If you're generating code for a caller project, this file plus reading
 the referenced source files' doc comments is enough context; you don't need
 the rest of the repo's history to get it right.
 
-**Don't use `docs/getting-started.md`, `docs/linux.md`, or `docs/android.md`**
-— they describe an earlier prototype (`pkg/raft.NewP2PNode`, `cmd/client`)
-that no longer exists. This file and `README.md` are the only current docs.
+## Stability
+
+Starting at `v1.0.0`, this module follows semver against the surface a
+caller in a different module can actually reach: `pkg/shmclient`'s exported
+functions/types, `pkg/daemon.Config`/`daemon.Run`'s exported fields and
+signature, `pkg/kvctl`'s exported functions, and `api/shmevent.capnp`'s wire
+format. A breaking change to any of those is a major version bump, not a
+minor/patch one. Everything else -- unexported identifiers, and packages
+this doc doesn't mention (their exported names are still reachable from
+outside the module, since Go has no true internal-to-a-repo visibility
+short of an `internal/` directory, but they were never meant as a public API
+and can change shape without a major bump). `mage`/`kvctl-cli` CLI flags and
+output formatting are not covered by semver either -- see `CHANGELOG.md` for
+what actually changed release to release.
 
 ## Mental model
 

@@ -79,9 +79,8 @@ mage confirmpermit peer <peerID>
 
 (`ConfirmPermit` only takes effect if run against a node that is itself a current raft
 voter) before that peer can reserve a relay slot or dial through this node's relay. This is
-independent of `-require-permit-for-remote` (not yet exposed as a flag), which instead gates
-remote `Set`/`Get`/etc. requests over `ClientProtocolID` — a node can require a permit for one
-without the other.
+independent of `-require-permit-for-remote`, which instead gates remote `Set`/`Get`/etc. requests
+over `ClientProtocolID` — a node can require a permit for one without the other.
 
 A `-relay-service` node's resource limits (per-peer circuit/reservation caps, not gated by
 `-require-permit-for-relay` — these apply to every peer using the relay, allow-listed or not)
@@ -895,9 +894,17 @@ already uses for `Stat`/`Lstat` on every architecture, so this is a no-behavior-
 Linux too, not an Android-only special case. The vendored copy is trimmed relative to upstream
 (dropped `testdata/`, its own `_test.go` files, and the generated per-arch files for
 architectures this repo never targets: `s390x`/`riscv64`/`ppc64le`/`loong64`/`mips*`, plus the
-hand-written `windows`/`darwin`/`freebsd`/`netbsd`/`openbsd`/`illumos` ports) to keep the checked-in
-size down; this is still one of the larger things in `thirdparty/` because the musl-to-Go
-transpilation it ships is inherently large, not because of anything specific to this patch.
+hand-written `darwin`/`freebsd`/`netbsd`/`openbsd`/`illumos` ports) to keep the checked-in size
+down; this is still one of the larger things in `thirdparty/` because the musl-to-Go transpilation
+it ships is inherently large, not because of anything specific to this patch. The `windows` port
+(`libc_windows*.go`/`capi_windows_{386,amd64,arm64}.go`/`musl_windows_{386,amd64,arm64}.go`) was
+restored from the same upstream v1.73.4 unmodified -- `mage buildwindows` needs it, and the
+`_fstatat_kstat` patch above is Linux/Android-only (musl's `fstatat`/`stat`/`lstat` fast path has no
+Windows equivalent), so there's nothing to re-apply to it. Compiles clean
+(`go build ./cmd/kvnode ./cmd/kvctl-cli ./cmd/kvhttp ./cmd/kvrecover` under `GOOS=windows
+GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc`) but hasn't been run on a real Windows
+machine -- there wasn't one available to validate against, so treat the resulting `.exe`s as
+untested until someone runs them for real.
 
 ## Testing
 

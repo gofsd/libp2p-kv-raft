@@ -1,0 +1,60 @@
+name: Release
+
+# Triggered by `mage major/minor/patch` (which creates and prints the
+# annotated tag locally) once that tag is pushed with `git push --tags`.
+# Builds the release binaries (see magefile.go's releaseBinaries) for every
+# platform `mage build` covers and attaches them to a GitHub Release. Does
+# not build android/web-app artifacts -- those have their own signed-release
+# paths (mage buildandroidreleasebundle/buildandroidreleaseapk, wasm-pack)
+# that need signing material this workflow has no access to.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-and-release:
+    name: Build release binaries and publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: install mingw-w64 (cgo cross-compiler for windows/amd64 --
+          see magefile.go's BuildWindows doc comment)
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+
+      - name: install mage
+        run: go install github.com/magefile/mage@latest
+
+      - name: mage buildLinux
+        run: mage buildLinux
+
+      - name: mage buildWindows
+        run: mage buildWindows
+
+      - name: package archives
+        run: |
+          cd dist
+          for platform_dir in */; do
+            platform="${platform_dir%/}"
+            if [[ "$platform" == windows_* ]]; then
+              zip -r "../${platform}.zip" "$platform"
+            else
+              tar -czf "../${platform}.tar.gz" "$platform"
+            fi
+          done
+
+      - name: create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            *.tar.gz
+            *.zip
+          generate_release_notes: true

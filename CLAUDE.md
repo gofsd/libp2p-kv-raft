@@ -214,15 +214,6 @@ an already-open connection. It's still sensible to keep raft leadership on a nod
 stable address when one is available (`configs/bootstrap-nodes.json`) — direct dials are cheaper and
 faster than a relay hop — but a relay-only leader no longer breaks forwarded writes outright.
 
-### Stale docs
-
-`docs/getting-started.md`, `docs/linux.md`, and `docs/android.md` describe an earlier prototype
-(`cmd/client/main.go`, `cmd/relay/main.go`, `pkg/raft.NewP2PNode`) that predates the current
-`pkg/daemon`/`shmevent`/`mobile/kvmobile` architecture and does not match the real codebase —
-`docs/web.md` explicitly flags this drift for itself and says android.md has the same problem.
-Don't treat any of the four as ground truth; use the top-level `README.md` and `web-app/README.md`
-instead.
-
 ## Testing conventions
 
 - `mage e2e:current` is the pre-push gate once `mage githooks:install` is run; it only re-runs rows
