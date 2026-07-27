@@ -1043,6 +1043,45 @@ func Kick(peerID, targetPeerID string) error {
 	return nil
 }
 
+// Kvrecover force-recovers a stopped node's raft configuration via
+// cmd/kvrecover -- hashicorp/raft's offline raft.RecoverCluster, for the
+// one situation Kick cannot reach: the cluster has already lost quorum
+// (Kick relies on an ordinary raft.RemoveServer command committing through
+// normal consensus, so it needs a majority to still exist -- see Kick's
+// own doc comment). Run it with the target node's kvnode daemon stopped;
+// see cmd/kvrecover's package doc comment for the full mechanics and,
+// when recovering more than one surviving node at once, why every
+// survivor needs the identical voters list before any of them restart.
+//
+// voters is one or more dialable multiaddrs (each including /p2p/<peer-id>)
+// for the surviving voters to keep in the recovered configuration --
+// space-separated in a single argument (mage targets can't take a
+// variadic arg list), so pass them quoted as one shell word, e.g.
+// "/ip4/.../p2p/<id1> /ip4/.../p2p/<id2>". The node being recovered must
+// include itself.
+//
+// Usage: mage kvrecover <dataDir> <keyPath> "<voterMultiaddr> [voterMultiaddr...]"
+func Kvrecover(dataDir, keyPath, voters string) error {
+	voterList := strings.Fields(voters)
+	if len(voterList) == 0 {
+		return fmt.Errorf("kvrecover: at least one voter multiaddr is required (the recovering node itself, plus any other survivors)")
+	}
+	root, err := repoRoot()
+	if err != nil {
+		return err
+	}
+	args := []string{"run", "./cmd/kvrecover", "-data-dir", dataDir, "-key-path", keyPath}
+	for _, v := range voterList {
+		args = append(args, "-voter", v)
+	}
+	cmd := exec.Command("go", args...)
+	cmd.Dir = root
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
 // Use selects which node Set/Get target, by peer id.
 // Usage: mage use <peerID>
 func Use(peerID string) error {

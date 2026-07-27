@@ -69,6 +69,8 @@ do):
 mage join <targetPeerID>   # ask targetPeerID's cluster to admit the current node's own identity
 mage leave <peerID>        # gracefully RemoveServer out of peerID's cluster; resumes its own solo db
 mage rm <peerID>           # leave + revoke cluster-join standing + delete the composite cluster data dir
+mage kick <peerID> <targetPeerID>   # force-RemoveServer targetPeerID out of peerID's cluster, no cooperation needed
+mage kvrecover <dataDir> <keyPath> "<voterMultiaddr> [voterMultiaddr...]"  # offline recovery once quorum is already gone
 ```
 
 `join` reuses `addfollower`'s/`rejoinnode`'s existing wire protocol as-is: whether it's admitted
@@ -79,13 +81,21 @@ confirmpermit cluster-join <peerID>`, run on any current raft voter (including t
 actually admits it (`raft.AddVoter`/`AddNonvoter`). Either path warns to stdout if the join lands the
 cluster on exactly 2 voters (`kvctl.voterCountWarning`) -- majority of 2 is 2, so that's the one
 cluster size with strictly *worse* availability than running solo: losing either voter loses quorum
-outright, with no recourse but offline recovery. `leave`/`rm` shrink the remote cluster
-gracefully (`raft.RemoveServer`) -- the remaining voters keep operating normally -- and are the
-first commands in this project with any teardown-side raft membership change at all. `leave`
-preserves the composite cluster data dir on disk (so a later `join`/`rejoinnode` back to the same
-cluster picks its local state back up); `rm` deletes it and also revokes standing via the same
+outright, with no recourse but offline recovery (see `kvrecover` below). `leave`/`rm` shrink the
+remote cluster gracefully (`raft.RemoveServer`) -- the remaining voters keep operating normally --
+and are the first commands in this project with any teardown-side raft membership change at all.
+`leave` preserves the composite cluster data dir on disk (so a later `join`/`rejoinnode` back to the
+same cluster picks its local state back up); `rm` deletes it and also revokes standing via the same
 `cluster-join` permit kind, so a later `join` attempt starts genuinely pending again rather than
-being silently re-admitted.
+being silently re-admitted. `kick` is `leave`/`rm`'s non-self-service counterpart, for a voter
+that's gone down for good and isn't coming back to gracefully leave on its own -- it still commits
+through ordinary raft consensus, though, so it only works while the *remaining* voters still hold a
+majority. Once quorum is already gone (kick can't help -- there's no majority left to commit
+anything), `kvrecover` is the last resort: a thin wrapper around `cmd/kvrecover`'s offline
+`raft.RecoverCluster`, run against a *stopped* node's on-disk raft state to force it into an explicit
+voter configuration. See `cmd/kvrecover`'s own doc comment for the full mechanics -- notably, when
+recovering more than one surviving node at once, every survivor needs the identical `-voter` list
+before any of them restart.
 
 Catalog/dispatch targets (wrap `pkg/kvctl/catalog.go`+`dispatch.go`). The Group/Command catalog
 itself (`creategroup`/`createcommand`/etc.) is **daemon-enforced ACL state** — real
