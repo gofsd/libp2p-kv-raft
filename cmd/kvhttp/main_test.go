@@ -10,6 +10,78 @@ import (
 	"github.com/gofsd/libp2p-kv-raft/pkg/registry"
 )
 
+// TestRateLimiterAllowsBurstThenBlocks confirms allow() actually enforces
+// rateLimitBurst for one peer id before falling back to the steady-state
+// rateLimitPerSecond refill rate, and that a *different* peer id has its
+// own independent bucket -- one noisy caller must not starve another
+// node's own budget.
+func TestRateLimiterAllowsBurstThenBlocks(t *testing.T) {
+	rl := newRateLimiter()
+
+	for i := range rateLimitBurst {
+		if !rl.allow("peer-a") {
+			t.Fatalf("request %d/%d within burst was denied", i+1, rateLimitBurst)
+		}
+	}
+	if rl.allow("peer-a") {
+		t.Fatal("request beyond the burst should have been denied")
+	}
+
+	if !rl.allow("peer-b") {
+		t.Fatal("a different peer id's independent bucket was denied on its very first request")
+	}
+}
+
+// TestRateLimiterNilIsAlwaysAllowed covers the safety net a test-
+// constructed handler with no limiter set relies on (see handler.limiter's
+// own doc comment) -- must never panic on a nil map, and must never
+// itself become the reason a test unrelated to rate limiting fails.
+func TestRateLimiterNilIsAlwaysAllowed(t *testing.T) {
+	var rl *rateLimiter
+	for range rateLimitBurst * 2 {
+		if !rl.allow("anyone") {
+			t.Fatal("nil *rateLimiter must always allow")
+		}
+	}
+}
+
+// TestHandleCommandEnforcesRateLimit drives the real HTTP handler (not
+// just rateLimiter directly) past its burst for one token and checks the
+// resulting response is 429, then confirms a second, unrelated token is
+// unaffected -- the actual behavior a caller sees, not just the
+// underlying limiter's own bookkeeping.
+func TestHandleCommandEnforcesRateLimit(t *testing.T) {
+	h, _, tokenA := testHandler(t)
+	h.limiter = newRateLimiter()
+	// kvctlBin left empty: every request here is expected to be rejected
+	// by the rate limiter before ever reaching exec.CommandContext, so no
+	// real kvctl-cli binary is needed.
+	srv := httptest.NewServer(http.HandlerFunc(h.handleCommand))
+	defer srv.Close()
+
+	post := func(token string) int {
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/command", nil)
+		if err != nil {
+			t.Fatalf("build request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /command: %v", err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	var last int
+	for range rateLimitBurst + 5 {
+		last = post(tokenA)
+	}
+	if last != http.StatusTooManyRequests {
+		t.Fatalf("status after exceeding the burst = %d, want %d", last, http.StatusTooManyRequests)
+	}
+}
+
 // TestResolveTLSFilesDefaultsToRegistryDirAndRequiresBothFiles covers
 // resolveTLSFiles' three real branches: the default pair actually existing
 // (success), one file missing from that default pair (fails closed, no

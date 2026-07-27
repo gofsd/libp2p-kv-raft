@@ -33,20 +33,38 @@
 // constant-time (crypto/hmac.Equal), but that only protects against timing
 // attacks on the comparison itself: without TLS, the token and every
 // request/response body travel in the clear, which a plain Bearer scheme
-// can't make up for on its own. -tls-cert/-tls-key default to the
-// self-signed pair `mage tls:genselfsigned <hosts>` generates
-// (pkg/tlscert) under the local registry directory; kvhttp refuses to
-// start at all if they're missing, rather than silently falling back to
-// plain HTTP. A self-signed cert has no CA behind it, so every caller
-// (browser, curl, etc.) must explicitly trust this exact certificate
-// first -- expected and fine for this project's own trusted-caller model,
-// but note it for real deployment: swap in a CA-issued cert/key pair via
-// the same two flags if callers need to trust it without doing that
-// manually.
+// can't make up for on its own.
 //
-// Alongside /command, this process also always starts a second, unrelated
-// plain-HTTP server on :80 serving whatever's on disk under staticDir --
-// see serveStatic below.
+// Two TLS modes, chosen by whether -domain is set:
+//
+//   - -domain set: a real CA-trusted certificate via Let's Encrypt/ACME
+//     (golang.org/x/crypto/acme/autocert), auto-issued and auto-renewed --
+//     the right choice for a real deployment, and the only mode a browser
+//     caller can use without any manual trust step (this command's whole
+//     reason for existing -- see the doc comment above). Requires the
+//     domain's A/AAAA record to already resolve to this host: ACME's
+//     HTTP-01 challenge validates ownership by fetching a token back over
+//     plain HTTP on port 80, which takes over the secondary listener
+//     below (serveACMEChallenge) instead of serveStatic. Let's Encrypt
+//     cannot issue for a bare IP address, only a real domain name.
+//   - -domain unset: falls back to a self-signed pair at -tls-cert/
+//     -tls-key, defaulting to what `mage tls:genselfsigned <hosts>`
+//     generates (pkg/tlscert) under the local registry directory. No CA
+//     behind it, so every caller must explicitly trust this exact
+//     certificate first (fine for this project's own known-caller
+//     scripts/tests; not workable for an arbitrary browser).
+//
+// Either way, kvhttp refuses to start at all if the relevant cert
+// material can't be obtained/found, rather than silently falling back to
+// plain HTTP.
+//
+// /command is also rate-limited per resolved peer id (not per source IP,
+// which an attacker can trivially rotate) -- see rateLimiter's doc
+// comment.
+//
+// Alongside /command, this process also always starts a second listener
+// on :80 -- either serveStatic (self-signed mode) or serveACMEChallenge
+// (-domain mode).
 package main
 
 import (
@@ -62,7 +80,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
+
+	"golang.org/x/crypto/acme/autocert"
+	"golang.org/x/time/rate"
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/registry"
 )
@@ -98,8 +120,9 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:8787", "listen address -- deliberately loopback-only by default, see this file's doc comment")
 	kvctlBin := flag.String("kvctl-cli", "", "path to the kvctl-cli binary; defaults to $PATH, falling back to `go build` into a temp dir")
 	staticDir := flag.String("static-dir", defaultStaticDir, "directory served verbatim at web root by the secondary listener on "+staticAddr)
-	tlsCert := flag.String("tls-cert", "", "path to the TLS certificate (PEM); defaults to the self-signed pair `mage tls:genselfsigned` writes under the local registry directory -- required, see this file's doc comment")
+	tlsCert := flag.String("tls-cert", "", "path to the TLS certificate (PEM); defaults to the self-signed pair `mage tls:genselfsigned` writes under the local registry directory -- ignored if -domain is set")
 	tlsKey := flag.String("tls-key", "", "path to the TLS private key (PEM); same default/requirement as -tls-cert")
+	domain := flag.String("domain", "", "domain name to auto-request/renew a real Let's Encrypt certificate for via ACME, instead of the self-signed -tls-cert/-tls-key pair -- its A/AAAA record must already resolve to this host (see this file's doc comment); required for a browser caller to trust this endpoint with no manual step")
 	flag.Parse()
 
 	reg, err := registry.Open()
@@ -110,18 +133,39 @@ func main() {
 	if err != nil {
 		log.Fatalf("kvhttp: %v", err)
 	}
+
+	h := &handler{reg: reg, kvctlBin: resolvedBin, limiter: newRateLimiter()}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/command", h.handleCommand)
+
+	if *domain != "" {
+		cacheDir, err := autocertCacheDir(reg.Dir)
+		if err != nil {
+			log.Fatalf("kvhttp: %v", err)
+		}
+		mgr := &autocert.Manager{
+			Prompt:     autocert.AcceptTOS,
+			HostPolicy: autocert.HostWhitelist(*domain),
+			Cache:      autocert.DirCache(cacheDir),
+		}
+		go serveACMEChallenge(mgr, *staticDir)
+
+		srv := &http.Server{Addr: *addr, Handler: mux, TLSConfig: mgr.TLSConfig()}
+		log.Printf("kvhttp: multi-tenant (every node in %s), routed by Authorization: Bearer <token> -- see `mage accesstoken <peerID>` -- via %s, listening on https://%s/command (Let's Encrypt: %s, cache: %s)", reg.Dir, resolvedBin, *addr, *domain, cacheDir)
+		// Empty cert/key paths tell ListenAndServeTLS to rely entirely on
+		// srv.TLSConfig.GetCertificate (mgr.TLSConfig() above) instead of
+		// a fixed file pair.
+		log.Fatal(srv.ListenAndServeTLS("", ""))
+		return
+	}
+
 	certPath, keyPath, err := resolveTLSFiles(*tlsCert, *tlsKey, reg.Dir)
 	if err != nil {
 		log.Fatalf("kvhttp: %v", err)
 	}
-
-	h := &handler{reg: reg, kvctlBin: resolvedBin}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/command", h.handleCommand)
-
 	go serveStatic(*staticDir)
 
-	log.Printf("kvhttp: multi-tenant (every node in %s), routed by Authorization: Bearer <token> -- see `mage accesstoken <peerID>` -- via %s, listening on https://%s/command (cert: %s)", reg.Dir, resolvedBin, *addr, certPath)
+	log.Printf("kvhttp: multi-tenant (every node in %s), routed by Authorization: Bearer <token> -- see `mage accesstoken <peerID>` -- via %s, listening on https://%s/command (self-signed cert: %s)", reg.Dir, resolvedBin, *addr, certPath)
 	log.Fatal(http.ListenAndServeTLS(*addr, certPath, keyPath, mux))
 }
 
@@ -164,12 +208,89 @@ func resolveTLSFiles(explicitCert, explicitKey, registryDir string) (certPath, k
 // staticAddr. Deliberately a separate, minimal *http.Server from the
 // loopback -addr listener above -- this has nothing to do with the
 // token-gated /command bridge, and failing/blocking here must never take
-// that down. Blocks; run in its own goroutine.
+// that down. Blocks; run in its own goroutine. Self-signed mode only --
+// -domain mode uses serveACMEChallenge instead.
 func serveStatic(dir string) {
 	log.Printf("kvhttp: secondary listener on %s, serving %s", staticAddr, dir)
 	if err := http.ListenAndServe(staticAddr, http.FileServer(http.Dir(dir))); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("secondary listener on %s: %v", staticAddr, err)
 	}
+}
+
+// autocertCacheDir returns where the ACME manager persists issued
+// certificates/keys/account state between runs (so a restart doesn't
+// re-issue from Let's Encrypt every time, which is both slow and rate
+// limited) -- alongside kvhttp-tls (defaultTLSDir), under the local
+// registry directory for the same reason: generated, machine-specific
+// material that must never be committed.
+func autocertCacheDir(registryDir string) (string, error) {
+	dir := filepath.Join(registryDir, "kvhttp-autocert-cache")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create autocert cache dir: %w", err)
+	}
+	return dir, nil
+}
+
+// serveACMEChallenge is -domain mode's counterpart to serveStatic: still
+// serves dir at web root over plain HTTP on staticAddr, but wrapped in
+// mgr.HTTPHandler, which intercepts only ACME's own
+// /.well-known/acme-challenge/* path (the HTTP-01 challenge Let's
+// Encrypt's servers fetch to confirm this host controls -domain) and
+// passes every other request through to dir unchanged -- so the same
+// port serves both without conflict. Blocks; run in its own goroutine.
+func serveACMEChallenge(mgr *autocert.Manager, dir string) {
+	log.Printf("kvhttp: secondary listener on %s, serving ACME HTTP-01 challenges + %s", staticAddr, dir)
+	fallback := http.FileServer(http.Dir(dir))
+	if err := http.ListenAndServe(staticAddr, mgr.HTTPHandler(fallback)); err != nil && err != http.ErrServerClosed {
+		log.Fatalf("secondary listener on %s: %v", staticAddr, err)
+	}
+}
+
+// rateLimitPerSecond/rateLimitBurst bound how fast one authenticated peer
+// may call /command -- protects the kvctl-cli-subprocess-per-request
+// design (commandTimeout, above) from a runaway caller or bug exhausting
+// process-spawn resources. Not a defense against many different
+// unauthenticated attackers (this endpoint's trusted-caller-with-a-token
+// model already assumes that's out of scope, per this file's own doc
+// comment) -- deliberately per resolved peer id, not per source IP, which
+// an attacker could rotate trivially to dodge a per-IP limit.
+const (
+	rateLimitPerSecond = 20
+	rateLimitBurst     = 40
+)
+
+// rateLimiter tracks one token-bucket limiter per resolved peer id.
+// Bounded by the number of nodes actually registered on this machine
+// (pkg/registry -- small in practice) rather than by attacker-controlled
+// input: a request only ever reaches allow() after
+// resolvePeerFromToken has already succeeded, so there is no way to make
+// this map grow via invalid/guessed tokens the way an IP-keyed limiter
+// could be inflated by a spoofed source address.
+type rateLimiter struct {
+	mu       sync.Mutex
+	limiters map[string]*rate.Limiter
+}
+
+func newRateLimiter() *rateLimiter {
+	return &rateLimiter{limiters: make(map[string]*rate.Limiter)}
+}
+
+// allow reports whether peerID's bucket has room for one more request
+// right now, creating a fresh bucket on first use. A nil *rateLimiter
+// (e.g. a test-constructed handler that doesn't care about rate limiting)
+// always allows, rather than panicking on a nil map.
+func (rl *rateLimiter) allow(peerID string) bool {
+	if rl == nil {
+		return true
+	}
+	rl.mu.Lock()
+	lim, ok := rl.limiters[peerID]
+	if !ok {
+		lim = rate.NewLimiter(rate.Limit(rateLimitPerSecond), rateLimitBurst)
+		rl.limiters[peerID] = lim
+	}
+	rl.mu.Unlock()
+	return lim.Allow()
 }
 
 // resolvePeerFromToken finds the registered node whose own access token
@@ -242,6 +363,10 @@ func resolveKvctlBin(explicit string) (string, error) {
 type handler struct {
 	reg      *registry.Registry
 	kvctlBin string
+	// limiter may be nil (e.g. in tests that construct a handler directly
+	// and don't care about rate limiting) -- see rateLimiter.allow's own
+	// nil-safety.
+	limiter *rateLimiter
 }
 
 func (h *handler) handleCommand(w http.ResponseWriter, r *http.Request) {
@@ -269,6 +394,10 @@ func (h *handler) handleCommand(w http.ResponseWriter, r *http.Request) {
 		// doesn't match any node" -- distinguishing them would let a
 		// caller probe for whether *some* node's token looks like theirs.
 		httpError(w, http.StatusUnauthorized, "missing or invalid access token (Authorization: Bearer <token>; see `mage accesstoken <peerID>`)")
+		return
+	}
+	if !h.limiter.allow(peerID) {
+		httpError(w, http.StatusTooManyRequests, "rate limit exceeded for this node's token, slow down")
 		return
 	}
 
