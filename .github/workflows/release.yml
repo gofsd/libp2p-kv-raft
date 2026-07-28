@@ -3,10 +3,19 @@ name: Release
 # Triggered by `mage major/minor/patch` (which creates and prints the
 # annotated tag locally) once that tag is pushed with `git push --tags`.
 # Builds the release binaries (see magefile.go's releaseBinaries) for every
-# platform `mage build` covers and attaches them to a GitHub Release. Does
-# not build android/web-app artifacts -- those have their own signed-release
-# paths (mage buildandroidreleasebundle/buildandroidreleaseapk, wasm-pack)
-# that need signing material this workflow has no access to.
+# platform `mage build` covers and attaches them to a GitHub Release. Also
+# builds and attaches a generic, leader-agnostic kvmobile.aar (no
+# -ldflags -- see docs/android.md's "Downloading a prebuilt AAR" section
+# for what that means for a consuming app) -- unlike the desktop binaries
+# this is a *library* artifact, not
+# something end users run directly, so it needs no signing of its own;
+# signing only enters the picture for android-app/'s own release APK/AAB
+# (mage buildandroidreleasebundle/buildandroidreleaseapk), which stay a
+# separate, manually-run path since they need signing material this
+# workflow has no access to. Does not build web-app artifacts -- wasm-pack
+# output has no equivalent "attach to a GitHub Release" story since it's
+# consumed as an npm/vite build input, not a binary a browser downloads
+# directly.
 
 on:
   push:
@@ -39,6 +48,29 @@ jobs:
       - name: mage buildWindows
         run: mage buildWindows
 
+      - name: install NDK (API 26+ required -- see
+          docs/android.md's "Prerequisites" section for why gomobile bind
+          needs it)
+        run: |
+          NDK_VERSION="28.2.13676358"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+
+      - name: install gobind (go tool gomobile bind shells out to a
+          `gobind` binary on PATH by literal name -- see ci.yml's
+          matching step for why this is needed)
+        run: |
+          go install golang.org/x/mobile/cmd/gobind
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: build generic kvmobile.aar (no -ldflags -- no
+          leaderMultiaddr baked in, so a consuming app must call
+          Join/JoinWithKey, never Start/StartWithKey -- see
+          docs/android.md's "Downloading a prebuilt AAR" section)
+        run: |
+          go tool gomobile bind -target=android -androidapi 26 \
+            -o kvmobile.aar ./mobile/kvmobile
+
       - name: package archives
         run: |
           cd dist
@@ -57,4 +89,5 @@ jobs:
           files: |
             *.tar.gz
             *.zip
+            kvmobile.aar
           generate_release_notes: true
