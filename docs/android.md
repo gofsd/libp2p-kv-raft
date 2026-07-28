@@ -139,6 +139,47 @@ dependencies { implementation(files(kvmobileAarFile)) }
 Either way, `./gradlew assembleDebug` (or any build) now fetches `kvmobile.aar` automatically the
 first time it's needed — no manual download-and-copy step, no local Go/NDK toolchain.
 
+#### Alternative: a real Gradle dependency coordinate via an `ivy` repository
+
+The download-task approach above works, but every consumer re-implements its own fetch-and-cache
+logic. Gradle also supports pointing a plain `ivy` repository straight at GitHub Releases, so
+`kvmobile.aar` resolves like any other `implementation("group:artifact:version")` coordinate — no
+custom task, no `files(...)` dependency. `release.yml` already attaches the AAR under the literal
+name `kvmobile.aar` (not version-suffixed) to each tag, so the pattern layout below has no
+`[module]-[revision]` in it, just `[revision]/[module]`:
+
+```kotlin
+// settings.gradle.kts
+dependencyResolutionManagement {
+    repositories {
+        exclusiveContent {
+            forRepository {
+                ivy {
+                    url = uri("https://github.com/gofsd/libp2p-kv-raft/releases/download")
+                    patternLayout { artifact("[revision]/[module].[ext]") }
+                    metadataSources { artifact() }
+                }
+            }
+            filter { includeModule("dev.gofsd", "kvmobile") }
+        }
+    }
+}
+```
+
+```kotlin
+// app/build.gradle.kts
+dependencies {
+    implementation("dev.gofsd:kvmobile:v1.0.0@aar")   // pin to a real tag from the releases page above
+}
+```
+
+`exclusiveContent`/`filter` scope this ivy repository to exactly the `dev.gofsd:kvmobile` module, so
+it never gets consulted (and never leaks a spurious 404 lookup) for any of your app's other, real
+Maven Central dependencies. This is exactly the same setup gofsd's other gomobile-bound library,
+[`shmring`](https://github.com/gofsd/shmring), documents for its own AAR — same GitHub-Releases-as-
+ivy-repo trick, same reason (no Maven Central publish, but still a proper dependency coordinate
+instead of a file path).
+
 ### Option B: build from source
 
 Needed whenever `Start`/`StartWithKey`'s build-time-baked leader convenience matters, or — the more
@@ -250,8 +291,9 @@ Gradle project and signing config.
 
 ## Step 2: Add the AAR to your app
 
-There's no Maven coordinate for `kvmobile` — no `implementation("group:artifact:version")` form,
-since this isn't published to Maven Central/JitPack/any package registry. It's always a **file**
+There's no Maven Central/JitPack publish for `kvmobile`, so the ordinary
+`implementation("group:artifact:version")` form only works if you set up the `ivy`-repository
+alternative under Option A above (`dev.gofsd:kvmobile:<tag>@aar`). Without that, it's a **file**
 dependency: Option A's Gradle task above already ends with `implementation(files(kvmobileAar))`,
 resolving to whatever the download task fetched. If you went with Option B instead, drop the AAR
 you built into your app module's `libs/` directory and reference it the same way:
