@@ -97,7 +97,7 @@ plugins {
     id("de.undercouch.download") version "5.6.0"
 }
 
-val kvmobileVersion = "v1.0.0"   // pin to a real tag from the releases page above
+val kvmobileVersion = "v0.1.1"   // pin to a real tag from the releases page above
 val kvmobileAar = layout.buildDirectory.file("kvmobile/kvmobile-$kvmobileVersion.aar")
 
 tasks.register<de.undercouch.gradle.tasks.download.Download>("downloadKvmobileAar") {
@@ -119,7 +119,7 @@ Prefer not to add a third-party Gradle plugin? A plain custom task does the same
 but the JDK's own `java.net` classes:
 
 ```kotlin
-val kvmobileVersion = "v1.0.0"
+val kvmobileVersion = "v0.1.1"
 val kvmobileAarFile = layout.buildDirectory.file("kvmobile/kvmobile-$kvmobileVersion.aar").get().asFile
 
 tasks.register("downloadKvmobileAar") {
@@ -169,7 +169,7 @@ dependencyResolutionManagement {
 ```kotlin
 // app/build.gradle.kts
 dependencies {
-    implementation("dev.gofsd:kvmobile:v1.0.0@aar")   // pin to a real tag from the releases page above
+    implementation("dev.gofsd:kvmobile:v0.1.1@aar")   // pin to a real tag from the releases page above
 }
 ```
 
