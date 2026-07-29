@@ -18,8 +18,19 @@ const SystemKeyPrefix = 0x00
 // 0x0B and above are still unassigned, reserved for future system
 // operations.
 const (
-	KindPermitPeer    byte = 0x01 // permission for a peer to join/use the cluster's relay
-	KindBootstrapNode byte = 0x02 // registration of a stable relay/bootstrap point
+	KindPermitPeer byte = 0x01 // permission for a peer to join/use the cluster's relay
+	// KindBootstrapNode registers a stable relay/bootstrap point: a known
+	// circuit-relay v2 server's multiaddr, plus a failover priority (see
+	// EncodeBootstrapNodeMetadata/DecodeBootstrapNodeMetadata in
+	// bootstrapnode.go), that pkg/daemon's own newHost draws its relay
+	// candidate list from (relayCandidates) alongside any -relay-peer/
+	// Config.RelayPeers seed values -- so a node picks up newly
+	// registered relays without a restart, and EnableAutoRelayWithStaticRelays
+	// can fail over between candidates if one goes down. Same
+	// two-stage request/confirm/revoke lifecycle as KindPermitPeer
+	// (create/activate/delete); BootstrapNodeKeyBounds is this kind's
+	// read side, for a ListRange scan of every currently-confirmed entry.
+	KindBootstrapNode byte = 0x02
 	// KindClusterMember records a raft member's public key and current
 	// role (RoleVoter/RoleLearner/RoleLeader) -- see ClusterMemberKey/
 	// EncodeClusterMemberPayload. Unlike KindPermitPeer/KindBootstrapNode

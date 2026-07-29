@@ -557,26 +557,57 @@ rather than only the higher-level Set/Get shape.
 "Unknown sources" allowed — there's a separate Developer Options toggle, **"Install via USB"**,
 that must also be enabled.
 
-**Relay reservations for NAT'd followers**: `pkg/daemon.Config.RelayPeer` (and the mirroring
-`mobile/kvmobile.relayMultiaddr` build-time var) let a follower with no directly-dialable address
-(e.g. a phone behind carrier-grade NAT) proactively reserve a circuit-relay v2 slot through the
-leader, so a raft voter that nothing can dial directly can still be reached. This previously
-failed the join handshake with a libp2p stream-protocol-negotiation error (`0x1001`): the relay
-reservation wait was sitting between opening the join stream and writing to it, easily outlasting
-the remote's negotiation timeout. It's fixed — `join()` now waits for the reservation before
-opening the stream at all, and the node also forces itself privately reachable when `RelayPeer` is
-set rather than leaving that judgment to AutoNAT — and covered by a real relay+leader+follower
-cluster test (`pkg/daemon.TestJoinThroughRelay`). A plain direct join (no `relayMultiaddr`) has
-also been tested working from a phone on cellular data, joining a publicly reachable leader.
+**Relay reservations for NAT'd followers**: `pkg/daemon.Config.RelayPeers` (and the mirroring
+`mobile/kvmobile.relayMultiaddr` build-time var, comma-separated for more than one) let a follower
+with no directly-dialable address (e.g. a phone behind carrier-grade NAT) proactively reserve a
+circuit-relay v2 slot through one or more relays, so a raft voter that nothing can dial directly
+can still be reached. This previously failed the join handshake with a libp2p
+stream-protocol-negotiation error (`0x1001`): the relay reservation wait was sitting between
+opening the join stream and writing to it, easily outlasting the remote's negotiation timeout.
+It's fixed — `join()` now waits for the reservation before opening the stream at all, and the node
+also forces itself privately reachable when any relay candidate is configured rather than leaving
+that judgment to AutoNAT — and covered by a real relay+leader+follower cluster test
+(`pkg/daemon.TestJoinThroughRelay`). A plain direct join (no `relayMultiaddr`) has also been tested
+working from a phone on cellular data, joining a publicly reachable leader.
 
-**Which node to point `RelayPeer`/`relayMultiaddr` at**: `configs/bootstrap-nodes.json` (read via
+**Relay list and failover**: `RelayPeers`/`relayMultiaddr` are only the *seed* list — enough to
+reach the cluster on a device's very first join, before it has any replicated data of its own yet.
+Once running, `pkg/daemon`'s `relayCandidates` (called from `newHost`) merges that seed list with
+every currently-*confirmed* `shmevent.KindBootstrapNode` record already in the node's own local
+store, sorted by ascending priority (lower tried first), and hands the whole ordered set to
+`libp2p.EnableAutoRelayWithStaticRelays` — which already accepts, and fails over between, more than
+one candidate, so a node isn't stuck if its first-choice relay goes down. `KindBootstrapNode`
+reuses the same request/confirm/revoke lifecycle `KindPermitPeer` already has (`mage
+requestpermit`/`confirmpermit`/`revokepermit`, above -- any node may request, only a current raft
+voter's confirm actually activates one), extended with a priority byte and a proper read side:
+
+```bash
+mage addrelaynode "<multiaddr>" 0       # request (pending) -- multiaddr's own /p2p/<peerID> is the key
+mage confirmrelaynode "<multiaddr>"     # (on a current voter) activate -- now picked up by every member
+mage listrelaynodes                     # every confirmed relay, ascending priority
+mage getrelaynode "<multiaddr>"
+mage removerelaynode "<multiaddr>"      # (on a current voter) delete
+```
+
+`mobile/kvmobile.AddRelayNode`/`ConfirmRelayNode`/`GetRelayNode`/`ListRelayNodes`/`RemoveRelayNode`
+are the Android-bound equivalents, same request/confirm/revoke shape, `priority` as a plain `int`
+clamped into `0-255`. Because this is ordinary raft-replicated state, a newly confirmed relay
+reaches every cluster member's own candidate list the next time each one calls `relayCandidates`
+(startup, or the next `join()`) — no coordinated restart needed.
+
+**Which node to point `RelayPeers`/`relayMultiaddr` at**: `configs/bootstrap-nodes.json` (read via
 `mage bootstrapnodes`) is the catalog of already-deployed `-relay-service` nodes -- any node that
 can't guarantee it's directly dialable (a phone, a browser, a dev laptop on a LAN/firewall/dynamic
 IP) should reserve its relay slot through one of those rather than assume direct dial-back will
-work. See `CLAUDE.md`'s "Node connectivity policy" for a real gap this surfaced: relay only covers
-join/replication today, not a follower's forwarded `Set` (`ForwardProtocolID` dials the current
-leader directly, no relay fallback) -- so leadership should stay on a bootstrap-nodes.json host,
-not an ad hoc dev machine, until that path gets the same fallback.
+work; `addrelaynode`/`confirmrelaynode` above is how to register one of them (or any other
+`-relay-service` node) as an ongoing failover candidate for the whole cluster, not just this one
+node's own seed list. See `CLAUDE.md`'s "Node connectivity policy" for a real gap this surfaced
+and its fix: a follower's forwarded `Set` used to dial the current leader directly with no relay
+fallback at all, so a relay-only leader broke every follower's writes even though join/replication
+kept working — every `forward*` protocol now dials through `(*Node).dialForward` instead, so a
+relay-only leader no longer breaks forwarded writes outright. It's still sensible to keep raft
+leadership on a bootstrap-nodes.json host when one is available (direct dials are cheaper/faster
+than a relay hop), just no longer a correctness requirement.
 
 ### Client in a browser
 

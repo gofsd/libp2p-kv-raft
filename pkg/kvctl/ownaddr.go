@@ -10,7 +10,7 @@ import (
 // comment) -- the address to embed in a "<ownAddr>#<tokenHex>" ticket
 // (printjoinrequestdatamatrix) or invite (printjoininvitedatamatrix/
 // printexecinvitedatamatrix). Queried live, never cached: a node whose
-// Config.RelayPeer reservation completed after startup only returns the
+// Config.RelayPeers reservation completed after startup only returns the
 // up-to-date circuit address once that reservation has actually landed --
 // call it again a moment later if an earlier call returned a private/
 // loopback address instead.

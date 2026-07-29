@@ -328,7 +328,7 @@ const (
 	// multiaddr (Value: pkg/daemon's advertisedAddrs()[0] -- public first,
 	// then a /p2p-circuit relay reservation, then any other address,
 	// loopback last) as a plain UTF-8 string. Queried live on every call,
-	// never cached: a node with Config.RelayPeer set gets its circuit
+	// never cached: a node with Config.RelayPeers set gets its circuit
 	// reservation asynchronously in the background after startup (see
 	// join's own doc comment on awaitRelayAddr), so the address available
 	// right after EventJoinRequestCreate may not yet be the relayed one --

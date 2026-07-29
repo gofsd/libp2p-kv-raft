@@ -196,12 +196,24 @@ or transport code here — see `api/shmevent.capnp`'s doc comment for the full d
 (circuit-relay v2 points) — read via `mage bootstrapnodes`. Any node that can't guarantee it's
 directly dialable by the rest of the cluster (a phone, a browser, a dev laptop on a LAN/firewall/
 dynamic IP — anything that isn't a stable, port-open host like the `configs/bootstrap-nodes.json`
-entries) **must** join with its relay peer set to one of those bootstrap nodes — `-relay-peer`/
-`Config.RelayPeer` on desktop, `mobile/kvmobile.relayMultiaddr` at build time for Android — rather
-than relying on direct dial-back working. This is what makes the initial join (`AddVoter`/
-`AddNonvoter`) and ongoing `AppendEntries` replication succeed even when the joining node has no
-address anyone else can reach directly: `newHost` reserves a circuit-relay v2 slot through the
-named bootstrap node and advertises the resulting `/p2p-circuit` address instead.
+entries) **must** join with its relay peer(s) seeded from one of those bootstrap nodes —
+`-relay-peer`/`Config.RelayPeers` on desktop (comma-separated for more than one), `mobile/
+kvmobile.relayMultiaddr` at build time for Android — rather than relying on direct dial-back
+working. This is what makes the initial join (`AddVoter`/`AddNonvoter`) and ongoing
+`AppendEntries` replication succeed even when the joining node has no address anyone else can
+reach directly: `newHost` reserves a circuit-relay v2 slot through each candidate returned by
+`relayCandidates` and advertises the resulting `/p2p-circuit` address instead.
+
+`Config.RelayPeers` is only that seed list, though — enough to reach the cluster for a device's
+very first join. `relayCandidates` (in `pkg/daemon/daemon.go`, called from `newHost` and
+`awaitRelayAddr`) additionally merges in every currently-*confirmed* `shmevent.KindBootstrapNode`
+record already replicated into the node's own local store, sorted by ascending priority, and hands
+the whole ordered set to `libp2p.EnableAutoRelayWithStaticRelays` — which already fails over
+between more than one candidate on its own, so a node isn't stuck if its first-choice relay goes
+down. `KindBootstrapNode` reuses `KindPermitPeer`'s existing request/confirm/revoke lifecycle
+(`mage addrelaynode`/`confirmrelaynode`/`removerelaynode`/`listrelaynodes`/`getrelaynode`,
+`mobile/kvmobile`'s identically-named bindings) — see README's "Relay list and failover" section
+for the full command set and design.
 
 **Fixed gap, originally found running a real 3-node cluster (desktop + remote bootstrap node +
 Android) on 2026-07-12/13:** a follower's forwarded `Set` (`pkg/daemon.ForwardProtocolID`,

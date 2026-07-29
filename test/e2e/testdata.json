@@ -9,27 +9,27 @@
   "nodes": {
     "1": {
       "platform": "desktop",
-      "peer_id": "12D3KooWN8Te7pzDWWvV9DL2TBoMRC9k7rDRPhfoXPLoYWYJBeuh",
-      "public_key": "b6eee285adbf32b47b75c59f1e5f7dccf0732bf0c05484498678f3985b0612e4",
-      "private_key": "e9d4b81b6aa067254f31bce0d87cfb7efa8fddf41d2ea115cadcc8fdf8a2792eb6eee285adbf32b47b75c59f1e5f7dccf0732bf0c05484498678f3985b0612e4"
+      "peer_id": "12D3KooWB9t41LVYXS8Q4k2aSfnmHNgLkbesgQL3gXcCwKZ9XUCM",
+      "public_key": "13db8315f02ae9778203761dd63c98ab1d0bc93b3a653272310531a6e58da30e",
+      "private_key": "9680067b0f5ff9dd096f453101ef0045bc5c8554f40948fec4be7f9a615dab1f13db8315f02ae9778203761dd63c98ab1d0bc93b3a653272310531a6e58da30e"
     },
     "2": {
       "platform": "android",
-      "peer_id": "12D3KooWQUiZtb4YdF5bS5NciDx6VcZJMhXQmC3jNHfU17hTbgKu",
-      "public_key": "d9d6c0c54ffcae7510bb95de566222f1f3d56f91cf31b7a6f11a20ada7215734",
-      "private_key": "0a2b0586d523b7abafa300cdc954843eaac1b04b46b6c6e4e20363d24c1b5f13d9d6c0c54ffcae7510bb95de566222f1f3d56f91cf31b7a6f11a20ada7215734"
+      "peer_id": "12D3KooWMdbpdEuiPMXdZjjnVgC8iHrqSHzx6GESVEPkh3AQEaDC",
+      "public_key": "af8a4ab6df5bf154628e7cb2a868ddb27c776a0ebd69953033dd13659523f2ff",
+      "private_key": "c22c138008b60888397fc71d7f54cb9a534de42031d8bc08b7ac0466dd708bfcaf8a4ab6df5bf154628e7cb2a868ddb27c776a0ebd69953033dd13659523f2ff"
     },
     "3": {
       "platform": "web",
-      "peer_id": "12D3KooWAPC5fbfgagHEvUMQSvS81KjDbYPbHqZbmfsN27Wp5MjZ",
-      "public_key": "0868c2baf6eaeed34a1e664f8593d8f2ee045df5a06bad67e49bbb947835c324",
-      "private_key": "6019fd40e662b104e272fbee293198b30564723c3ad326f592f1c4738503e1410868c2baf6eaeed34a1e664f8593d8f2ee045df5a06bad67e49bbb947835c324"
+      "peer_id": "12D3KooWGiCuigoRw338C2UzbR4QwXNto9LoJaQqKLq3sfBq39VX",
+      "public_key": "666ddab937dda039336a4cf7d49c19a88218277af63bb705b0f35df816f927a6",
+      "private_key": "d1b0412336f9103d5056973663b8c13be411d29581cfd5ef5f0f7c48a5494c54666ddab937dda039336a4cf7d49c19a88218277af63bb705b0f35df816f927a6"
     },
     "4": {
       "platform": "remote",
-      "peer_id": "12D3KooWMyFTsKcHixpQzzW7Sv8Znffni7tdaqUwN5S8bjaJU98r",
-      "public_key": "b492e3a954ab914ab74133c9e663e0a50dd4ff7b765a33557299382f4324094f",
-      "private_key": "86eb7922058f8fa8996b35ba6ba7f0eacd3e68dd2f3636590b81dc9534ab46b6b492e3a954ab914ab74133c9e663e0a50dd4ff7b765a33557299382f4324094f"
+      "peer_id": "12D3KooWH5euGiKrH8Beryo4tDRVQgb5R2JxW1rRSHMpJ7tVdFfD",
+      "public_key": "6bec70e19fc741229ecd98c0bda35b6b935e03133a709305ed5358a100f3a1e0",
+      "private_key": "759fa5f338d6145bb49e1a15c4048777308f689030a6d52297f173288b4d17016bec70e19fc741229ecd98c0bda35b6b935e03133a709305ed5358a100f3a1e0"
     }
   },
   "rows": [
@@ -791,8 +791,301 @@
     }
   },
   "android_ui_result": {
-    "ran_at": "2026-07-28T11:07:35.667634879+03:00",
-    "status": 1,
-    "error": "node 12D3KooWQUiZtb4YdF5bS5NciDx6VcZJMhXQmC3jNHfU17hTbgKu: e2erun: pull android UI command results (instrument err: \u003cnil\u003e, instrument output: \ncom.gofsd.kvdemo.UiCommandE2ETest:\nError in runAllCommandsThroughUi(com.gofsd.kvdemo.UiCommandE2ETest):\ngo.Universe$proxyerror: kvmobile: join cluster: shmclient: add: join: leader rejected join: ERR: not leader\n\tat kvmobile.Kvmobile.start(Native Method)\n\tat com.gofsd.kvdemo.UiCommandE2ETest.runAllCommandsThroughUi(UiCommandE2ETest.kt:173)\n\n\nTime: 1.689\nThere was 1 failure:\n1) runAllCommandsThroughUi(com.gofsd.kvdemo.UiCommandE2ETest)\ngo.Universe$proxyerror: kvmobile: join cluster: shmclient: add: join: leader rejected join: ERR: not leader\n\tat kvmobile.Kvmobile.start(Native Method)\n\tat com.gofsd.kvdemo.UiCommandE2ETest.runAllCommandsThroughUi(UiCommandE2ETest.kt:173)\n\nFAILURES!!!\nTests run: 1,  Failures: 1\n\n\n): exit status 1: adb: error: failed to stat remote object '/sdcard/Android/data/com.gofsd.kvdemo/files/ui_e2e_results.json': No such file or directory\n"
+    "ran_at": "2026-07-29T17:31:53.742851021+03:00",
+    "status": 0,
+    "cases": [
+      {
+        "command": "Cluster: Start",
+        "pass": true
+      },
+      {
+        "command": "Cluster: StartWithKey",
+        "pass": true
+      },
+      {
+        "command": "Cluster: Join",
+        "pass": true
+      },
+      {
+        "command": "Cluster: JoinWithKey",
+        "pass": true
+      },
+      {
+        "command": "Cluster: StartPending",
+        "pass": true
+      },
+      {
+        "command": "Cluster: StartPendingWithKey",
+        "pass": true
+      },
+      {
+        "command": "Cluster: GetOwnAddr",
+        "pass": true
+      },
+      {
+        "command": "Cluster: CreateJoinRequest",
+        "pass": true
+      },
+      {
+        "command": "Cluster: CancelJoinRequest",
+        "pass": true
+      },
+      {
+        "command": "Cluster: RecruitPeer",
+        "pass": true
+      },
+      {
+        "command": "Cluster: CreateJoinInvite",
+        "pass": true
+      },
+      {
+        "command": "Cluster: RevokeJoinInvite",
+        "pass": true
+      },
+      {
+        "command": "Cluster: Stop",
+        "pass": true
+      },
+      {
+        "command": "Cluster: Delete",
+        "pass": true
+      },
+      {
+        "command": "Cluster: Leave",
+        "pass": true
+      },
+      {
+        "command": "Cluster: Rm",
+        "pass": true
+      },
+      {
+        "command": "Cluster: Kick",
+        "pass": true
+      },
+      {
+        "command": "Cluster: ListClusters",
+        "pass": true
+      },
+      {
+        "command": "Cluster: ListClusterMembers",
+        "pass": true
+      },
+      {
+        "command": "Cluster: PeerID",
+        "pass": true
+      },
+      {
+        "command": "Cluster: AccessToken",
+        "pass": true
+      },
+      {
+        "command": "KV: Submit",
+        "pass": true
+      },
+      {
+        "command": "KV: Get",
+        "pass": true
+      },
+      {
+        "command": "KV: RangeScan",
+        "pass": true
+      },
+      {
+        "command": "Permits: RequestPermit",
+        "pass": true
+      },
+      {
+        "command": "Permits: ConfirmPermit",
+        "pass": true
+      },
+      {
+        "command": "Permits: RevokePermit",
+        "pass": true
+      },
+      {
+        "command": "Permits: RequestLogPermit",
+        "pass": true
+      },
+      {
+        "command": "Permits: ConfirmLogPermit",
+        "pass": true
+      },
+      {
+        "command": "Permits: RevokeLogPermit",
+        "pass": true
+      },
+      {
+        "command": "Execute: Execute",
+        "pass": true
+      },
+      {
+        "command": "Execute: PollExecute",
+        "pass": true
+      },
+      {
+        "command": "Execute: WatchExecute",
+        "pass": true
+      },
+      {
+        "command": "Execute: StopWatchExecute",
+        "pass": true
+      },
+      {
+        "command": "Channel: OpenChannel",
+        "pass": true
+      },
+      {
+        "command": "Channel: ListenChannel",
+        "pass": true
+      },
+      {
+        "command": "Channel: StopListenChannel",
+        "pass": true
+      },
+      {
+        "command": "Channel: SendChannelData",
+        "pass": true
+      },
+      {
+        "command": "Channel: CloseChannel",
+        "pass": true
+      },
+      {
+        "command": "Channel: StopChannel",
+        "pass": true
+      },
+      {
+        "command": "Log records: LogAppend",
+        "pass": true
+      },
+      {
+        "command": "Log records: LogQuery",
+        "pass": true
+      },
+      {
+        "command": "Group: CreateGroup",
+        "pass": true
+      },
+      {
+        "command": "Group: UpdateGroup",
+        "pass": true
+      },
+      {
+        "command": "Group: DeleteGroup",
+        "pass": true
+      },
+      {
+        "command": "Group: GetGroup",
+        "pass": true
+      },
+      {
+        "command": "Group: ListGroups",
+        "pass": true
+      },
+      {
+        "command": "Command: CreateCommand",
+        "pass": true
+      },
+      {
+        "command": "Command: UpdateCommand",
+        "pass": true
+      },
+      {
+        "command": "Command: DeleteCommand",
+        "pass": true
+      },
+      {
+        "command": "Command: GetCommand",
+        "pass": true
+      },
+      {
+        "command": "Command: ListCommands",
+        "pass": true
+      },
+      {
+        "command": "Links: AddCommandToGroup",
+        "pass": true
+      },
+      {
+        "command": "Links: RemoveCommandFromGroup",
+        "pass": true
+      },
+      {
+        "command": "Links: ListGroupsForCommand",
+        "pass": true
+      },
+      {
+        "command": "Links: AddPeerToGroup",
+        "pass": true
+      },
+      {
+        "command": "Links: RemovePeerFromGroup",
+        "pass": true
+      },
+      {
+        "command": "Links: ListGroupsForPeer",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: SubmitCommand",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: GetCommandRequest",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: ListCommandRequests",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: ListExecutionsByPeer",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: AppendCommandLog",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: QueryCommandLog",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: LatestCommandLog",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: WatchCommandLog",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: StopWatchCommandLog",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: RunCommandDispatcher",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: StopCommandDispatcher",
+        "pass": true
+      },
+      {
+        "command": "ExecInvite: CreateExecInvite",
+        "pass": true
+      },
+      {
+        "command": "ExecInvite: RevokeExecInvite",
+        "pass": true
+      },
+      {
+        "command": "ExecInvite: RedeemExecInvite",
+        "pass": true
+      },
+      {
+        "command": "Raw: SendEvent",
+        "pass": true
+      }
+    ]
   }
 }

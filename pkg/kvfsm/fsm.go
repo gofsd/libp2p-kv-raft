@@ -32,13 +32,17 @@ var maxSystemListEntries = 65000
 
 // systemListLimits overrides maxSystemListEntries for specific kinds that
 // need a tighter cap than the generous system-wide default -- currently
-// just shmevent.KindGroup/KindCommand, whose limits (200/2000) were
-// chosen as real, meaningful caps rather than a DoS backstop the way
-// maxSystemListEntries is for everything else. A var, not a const, for
-// the same test-lowering reason as maxSystemListEntries.
+// shmevent.KindGroup/KindCommand (200/2000) and KindBootstrapNode (50),
+// whose limits were chosen as real, meaningful caps rather than a DoS
+// backstop the way maxSystemListEntries is for everything else --
+// KindBootstrapNode in particular is meant to stay a small, curated
+// relay-failover list (see pkg/daemon's relayCandidates), not general
+// data. A var, not a const, for the same test-lowering reason as
+// maxSystemListEntries.
 var systemListLimits = map[byte]int{
-	shmevent.KindGroup:   200,
-	shmevent.KindCommand: 2000,
+	shmevent.KindGroup:         200,
+	shmevent.KindCommand:       2000,
+	shmevent.KindBootstrapNode: 50,
 }
 
 // systemKeyPrefixLen is how many leading bytes of a shmevent.SystemKey

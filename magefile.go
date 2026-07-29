@@ -1412,6 +1412,87 @@ func RevokePermit(kind, peerID string) error {
 	return nil
 }
 
+// AddRelayNode implements `mage addrelaynode <multiaddr> <priority>`:
+// lodges a pending shmevent.KindBootstrapNode record for multiaddr's own
+// embedded /p2p/<peerID> -- the relay list pkg/daemon's relayCandidates
+// draws its EnableAutoRelayWithStaticRelays candidate set from (merged
+// with -relay-peer's own seed value, see Config.RelayPeers). Lower
+// priority values are tried first. Any raft node may originate a request;
+// it needs `mage confirmrelaynode` from a current voter before it's
+// actually picked up.
+// Usage: mage addrelaynode <multiaddr> <priority>
+func AddRelayNode(multiaddr, priority string) error {
+	p, err := strconv.ParseUint(priority, 10, 8)
+	if err != nil {
+		return fmt.Errorf("priority: %w", err)
+	}
+	if err := kvctl.AddRelayNode(multiaddr, uint8(p)); err != nil {
+		return err
+	}
+	fmt.Println("✅ relay node requested (pending confirmrelaynode)")
+	return nil
+}
+
+// ConfirmRelayNode implements `mage confirmrelaynode <multiaddr>`:
+// promotes a pending relay-node record to confirmed, the point at which
+// every cluster member's relayCandidates actually starts considering it.
+// Only takes effect if the current node is itself a raft voter.
+// Usage: mage confirmrelaynode <multiaddr>
+func ConfirmRelayNode(multiaddr string) error {
+	if err := kvctl.ConfirmRelayNode(multiaddr); err != nil {
+		return err
+	}
+	fmt.Println("✅ relay node confirmed")
+	return nil
+}
+
+// RemoveRelayNode implements `mage removerelaynode <multiaddr>`: deletes
+// a confirmed relay-node record outright. Only takes effect if the
+// current node is itself a raft voter.
+// Usage: mage removerelaynode <multiaddr>
+func RemoveRelayNode(multiaddr string) error {
+	if err := kvctl.RemoveRelayNode(multiaddr); err != nil {
+		return err
+	}
+	fmt.Println("✅ relay node removed")
+	return nil
+}
+
+// GetRelayNode implements `mage getrelaynode <multiaddr>`: prints
+// multiaddr's current confirmed relay-node record as one JSON object.
+// Usage: mage getrelaynode <multiaddr>
+func GetRelayNode(multiaddr string) error {
+	node, err := kvctl.GetRelayNode(multiaddr)
+	if err != nil {
+		return err
+	}
+	out, err := json.Marshal(node)
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(out))
+	return nil
+}
+
+// ListRelayNodes implements `mage listrelaynodes`: prints every confirmed
+// relay-node record, one JSON object per line, in the same ascending-
+// priority order relayCandidates prefers them in.
+// Usage: mage listrelaynodes
+func ListRelayNodes() error {
+	nodes, err := kvctl.ListRelayNodes()
+	if err != nil {
+		return err
+	}
+	for _, n := range nodes {
+		out, err := json.Marshal(n)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(out))
+	}
+	return nil
+}
+
 // CreateJoinInvite generates a fresh one-time join-invite token and
 // prints it -- append it to a leader multiaddr as
 // "<multiaddr>#<tokenHex>" and pass that to mage addfollower/addnode to

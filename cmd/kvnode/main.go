@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/daemon"
@@ -19,7 +20,7 @@ func main() {
 	keyPath := flag.String("key-path", "", "path to this node's libp2p identity key")
 	listenPort := flag.Int("listen-port", 0, "TCP/QUIC port to listen on (0 = ephemeral; pin this for publicly reachable deployments)")
 	relayService := flag.Bool("relay-service", false, "act as a circuit-relay v2 point for other nodes and force public reachability (only for nodes with a real public address)")
-	relayPeer := flag.String("relay-peer", "", "a known circuit-relay v2 server's multiaddr (a node running with -relay-service) to proactively reserve a relay slot through -- required for any node that isn't reliably directly dialable by the rest of the cluster (see Config.RelayPeer's doc comment and README's Node connectivity policy)")
+	relayPeer := flag.String("relay-peer", "", "comma-separated known circuit-relay v2 server multiaddr(s) (a node running with -relay-service) to proactively reserve a relay slot through -- required for any node that isn't reliably directly dialable by the rest of the cluster (see Config.RelayPeers' doc comment and README's Node connectivity policy). Only the seed list: mage addrelaynode/confirmrelaynode/listrelaynodes manage the full, failover-ordered relay list this grows into once the node is running")
 	relayMaxCircuitsPerPeer := flag.Int("relay-max-circuits-per-peer", 0, "only used alongside -relay-service: concurrent open relayed circuits a single peer may hold through this node (0 = shmevent.DefaultRelayMaxCircuitsPerPeer, 1)")
 	relayLimitDataBytes := flag.Int64("relay-limit-data-bytes", 0, "only used alongside -relay-service: bytes relayed, each direction, before a circuit is reset (0 = shmevent.DefaultRelayLimitData, 1GB)")
 	relayLimitDuration := flag.Duration("relay-limit-duration", 0, "only used alongside -relay-service: wall-clock lifetime of a relayed circuit before it's reset (0 = shmevent.DefaultRelayLimitDuration, 720h/30 days)")
@@ -53,12 +54,19 @@ func main() {
 		cancel()
 	}()
 
+	var relayPeers []string
+	for addr := range strings.SplitSeq(*relayPeer, ",") {
+		if addr != "" {
+			relayPeers = append(relayPeers, addr)
+		}
+	}
+
 	err := daemon.Run(ctx, daemon.Config{
 		DataDir:                     *dataDir,
 		KeyPath:                     *keyPath,
 		ListenPort:                  *listenPort,
 		RelayService:                *relayService,
-		RelayPeer:                   *relayPeer,
+		RelayPeers:                  relayPeers,
 		RelayMaxCircuitsPerPeer:     *relayMaxCircuitsPerPeer,
 		RelayLimitData:              *relayLimitDataBytes,
 		RelayLimitDuration:          *relayLimitDuration,

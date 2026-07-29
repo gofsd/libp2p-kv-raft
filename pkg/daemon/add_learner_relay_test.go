@@ -25,7 +25,7 @@ import (
 // for what web-app/'s rust-libp2p-in-wasm build would be -- a peer with no
 // directly-dialable address of its own, reachable only through a relay
 // reservation, exactly like an Android device behind carrier-grade NAT (see
-// Config.RelayPeer's doc comment). It doesn't exercise the Rust wire codec
+// Config.RelayPeers' doc comment). It doesn't exercise the Rust wire codec
 // itself (that's covered byte-for-byte by web-app's own raft_wire tests
 // against real hashicorp/raft fixtures) -- what it proves is the Go-side
 // half: that a signed SetKey+EventAdd pair, signed with the browser's own

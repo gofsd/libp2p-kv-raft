@@ -22,8 +22,8 @@ import (
 //
 // Topology:
 //
-//	leader   -- bootstraps itself, no RelayPeer (has a normal dialable addr)
-//	follower -- RelayPeer set to the relay, forcing every join() call through
+//	leader   -- bootstraps itself, no RelayPeers (has a normal dialable addr)
+//	follower -- RelayPeers set to the relay, forcing every join() call through
 //	            the exact awaitRelayAddr path the fix targets
 //
 // On this same-machine test topology, go-libp2p's address-reachability
@@ -102,7 +102,7 @@ func TestJoinThroughRelay(t *testing.T) {
 	followerCfg := fastRaft
 	followerCfg.DataDir = filepath.Join(tmpDir, "follower")
 	followerCfg.KeyPath = followerKey
-	followerCfg.RelayPeer = relayAddr
+	followerCfg.RelayPeers = []string{relayAddr}
 	follower, err := start(followerCfg)
 	if err != nil {
 		t.Fatalf("start follower: %v", err)

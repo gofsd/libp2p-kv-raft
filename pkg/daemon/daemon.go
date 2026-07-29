@@ -126,7 +126,7 @@ const ForwardKickProtocolID = protocol.ID("/libp2p-kv-raft/forward-kick/1.0.0")
 // any time -- see rafttransport's doc comment), but it *can* be dialed
 // through a circuit-relay v2 reservation it already holds (the same
 // mechanism an Android device behind carrier-grade NAT already relies on --
-// see Config.RelayPeer), which makes it a real raft *non-voter* (learner):
+// see Config.RelayPeers), which makes it a real raft *non-voter* (learner):
 // Key carries the browser's own peer id, Value its reserved
 // /p2p-circuit multiaddr -- see handleAddLearner.
 const ClientProtocolID = protocol.ID("/libp2p-kv-raft/client/1.0.0")
@@ -221,22 +221,38 @@ type Config struct {
 	// controls whether it also serves as one for others.
 	RelayService bool
 
-	// RelayPeer is a known circuit-relay v2 server's multiaddr (a node
-	// running with RelayService=true) this node should proactively reserve
-	// a relay slot through, so it ends up with a /p2p-circuit address that
+	// RelayPeers seeds the known circuit-relay v2 servers (nodes running
+	// with RelayService=true) this node should proactively reserve a
+	// relay slot through, so it ends up with a /p2p-circuit address that
 	// someone can dial it on even though it has no directly-dialable
 	// address of its own -- e.g. a phone on a cellular connection behind
 	// carrier-grade NAT, which blocks *inbound* connections entirely.
 	// EnableRelay/EnableHolePunching (always on regardless of this field)
 	// only let a node *use* a relay connection someone else already set
-	// up; without a static relay target here, a node that nothing can dial
+	// up; without a static relay target, a node that nothing can dial
 	// directly has no way to make its own reservation, and ends up
 	// advertising only addresses that raft's leader can never use to send
 	// it AppendEntries -- leaving it permanently stuck as a voter that
 	// never learns who the leader is. Leave empty for a node with a real
 	// public or otherwise directly-dialable address, where a reservation
 	// would just be wasted overhead.
-	RelayPeer string
+	//
+	// This is only the *seed* list -- typically just enough to reach the
+	// cluster for the very first join, before this node has any
+	// replicated data of its own yet (cmd/kvnode's -relay-peer flag,
+	// mobile/kvmobile's build-time relayMultiaddr). Once running,
+	// relayCandidates (see newHost) merges these with every currently-
+	// confirmed shmevent.KindBootstrapNode record already in this node's
+	// own local store -- see pkg/kvctl's AddRelayNode/ConfirmRelayNode/
+	// RemoveRelayNode/ListRelayNodes and mobile/kvmobile's identical
+	// bindings -- so the full candidate set can grow (or shrink) across
+	// the cluster's lifetime with no restart needed, and
+	// EnableAutoRelayWithStaticRelays gets more than one candidate to
+	// fail over between if the first one it tries is down. Order here is
+	// preference order: entries listed first are tried first, ahead of
+	// every KindBootstrapNode entry regardless of that record's own
+	// priority value.
+	RelayPeers []string
 
 	// Relay resource knobs, only meaningful alongside RelayService. Zero
 	// means "use shmevent.DefaultRelay*" (see those constants' doc
@@ -1108,32 +1124,95 @@ func newHost(priv crypto.PrivKey, cfg Config, st *store.Store) (lp2phost.Host, e
 		)
 	}
 
-	if cfg.RelayPeer != "" {
-		maddr, err := multiaddr.NewMultiaddr(cfg.RelayPeer)
-		if err != nil {
-			return nil, fmt.Errorf("invalid relay peer address %q: %w", cfg.RelayPeer, err)
-		}
-		info, err := peer.AddrInfoFromP2pAddr(maddr)
-		if err != nil {
-			return nil, fmt.Errorf("relay peer address %q missing peer id: %w", cfg.RelayPeer, err)
-		}
+	if candidates := relayCandidates(cfg, st); len(candidates) > 0 {
 		// AutoRelay only actively reserves a relay slot once it believes
 		// this host is privately reachable, a judgment it otherwise leaves
 		// to AutoNAT -- which can be slow, or simply wrong on a network
 		// (like this project's own test environment) that looks publicly
 		// dialable but isn't actually reachable by the specific peer that
-		// matters (the raft leader). RelayPeer is only ever set by a caller
-		// who already knows this node needs a relay to be reached at all
-		// (see the field's doc comment), so force that judgment instead of
-		// leaving the reservation -- and therefore the /p2p-circuit address
-		// join()'s awaitRelayAddr waits for -- contingent on AutoNAT.
+		// matters (the raft leader). RelayPeers is only ever set (or a
+		// KindBootstrapNode record only ever confirmed) by a caller who
+		// already knows this node needs a relay to be reached at all (see
+		// Config.RelayPeers' doc comment), so force that judgment instead
+		// of leaving the reservation -- and therefore the /p2p-circuit
+		// address join()'s awaitRelayAddr waits for -- contingent on
+		// AutoNAT.
 		opts = append(opts,
 			libp2p.ForceReachabilityPrivate(),
-			libp2p.EnableAutoRelayWithStaticRelays([]peer.AddrInfo{*info}),
+			libp2p.EnableAutoRelayWithStaticRelays(candidates),
 		)
 	}
 
 	return libp2p.New(opts...)
+}
+
+// relayCandidates builds newHost's full ordered relay candidate list --
+// Config.RelayPeers (the seed list a caller already knows about, e.g.
+// cmd/kvnode's -relay-peer flag or mobile/kvmobile's build-time
+// relayMultiaddr, tried first and in the order given) followed by every
+// currently-confirmed shmevent.KindBootstrapNode record already replicated
+// into this node's own local store (see pkg/kvctl's AddRelayNode/
+// ConfirmRelayNode/ListRelayNodes), sorted by ascending priority (lower
+// tried first -- see EncodeBootstrapNodeMetadata). This is a plain local
+// store read, no raft/leader round trip needed, the same same-machine
+// trust boundary rangescan/Get already rely on -- so it works even before
+// this node has (re)joined a cluster, as long as st already holds
+// KindBootstrapNode records from a prior session.
+//
+// libp2p's EnableAutoRelayWithStaticRelays already accepts (and rotates
+// reservations across) more than one peer.AddrInfo, so handing it every
+// known-good relay here -- rather than just one -- is what gives a node
+// failover if its first-choice relay goes down, without any extra
+// dial/retry logic of this package's own. A malformed or unparseable
+// entry (RelayPeers or KindBootstrapNode alike) is skipped rather than
+// failing node startup outright -- one bad relay address shouldn't take
+// down every other candidate still worth trying.
+func relayCandidates(cfg Config, st *store.Store) []peer.AddrInfo {
+	seen := make(map[peer.ID]bool)
+	var candidates []peer.AddrInfo
+	addCandidate := func(addr string) {
+		maddr, err := multiaddr.NewMultiaddr(addr)
+		if err != nil {
+			return
+		}
+		info, err := peer.AddrInfoFromP2pAddr(maddr)
+		if err != nil || seen[info.ID] {
+			return
+		}
+		seen[info.ID] = true
+		candidates = append(candidates, *info)
+	}
+
+	for _, addr := range cfg.RelayPeers {
+		if addr != "" {
+			addCandidate(addr)
+		}
+	}
+
+	if st != nil {
+		lo, hi := shmevent.BootstrapNodeKeyBounds()
+		matches, err := st.ScanRange(lo, hi, 0)
+		if err == nil {
+			type bootstrapEntry struct {
+				addr     string
+				priority uint8
+			}
+			entries := make([]bootstrapEntry, 0, len(matches))
+			for _, kv := range matches {
+				addr, priority, err := shmevent.DecodeBootstrapNodeMetadata(kv.Value)
+				if err != nil {
+					continue
+				}
+				entries = append(entries, bootstrapEntry{addr: addr, priority: priority})
+			}
+			sort.SliceStable(entries, func(i, j int) bool { return entries[i].priority < entries[j].priority })
+			for _, e := range entries {
+				addCandidate(e.addr)
+			}
+		}
+	}
+
+	return candidates
 }
 
 // initRaft lazily constructs the raft transport and raft.Raft instance. It
@@ -1326,7 +1405,7 @@ func (n *Node) advertisedAddrs() []string {
 		switch {
 		case manet.IsPublicAddr(a):
 			return scorePublic
-		// A /p2p-circuit address is a relay reservation (see Config.RelayPeer):
+		// A /p2p-circuit address is a relay reservation (see Config.RelayPeers):
 		// unlike a raw private/NAT address, it's actually dialable by
 		// whoever needs to reach this node, so it belongs ahead of the
 		// "other" tier even though it isn't a direct address either.
@@ -1350,11 +1429,12 @@ func (n *Node) advertisedAddrs() []string {
 }
 
 // awaitRelayAddr waits up to timeout for a /p2p-circuit address -- proof
-// the Config.RelayPeer reservation configured in newHost has completed --
-// to appear in n.host.Addrs(). A no-op that returns immediately when
-// RelayPeer isn't set, since there's then nothing to wait for.
+// one of the relayCandidates reservations configured in newHost has
+// completed -- to appear in n.host.Addrs(). A no-op that returns
+// immediately when there are no candidates at all, since there's then
+// nothing to wait for.
 func (n *Node) awaitRelayAddr(timeout time.Duration) {
-	if n.cfg.RelayPeer == "" {
+	if len(relayCandidates(n.cfg, n.store)) == 0 {
 		return
 	}
 	deadline := time.After(timeout)
@@ -2518,7 +2598,7 @@ func (n *Node) handleAdd(ctx context.Context, leaderPeerID string) (string, erro
 // see admitOrLodgeJoin.
 func (n *Node) join(ctx context.Context, leaderAddr string, suffrage raft.ServerSuffrage, inviteToken []byte) (string, error) {
 	// If this node needs a relay reservation to be reachable at all (see
-	// Config.RelayPeer), give it a moment to complete before doing anything
+	// Config.RelayPeers), give it a moment to complete before doing anything
 	// else: AutoRelay's reservation happens asynchronously in the background
 	// from newHost, and raft's configuration stores whatever address we send
 	// below permanently -- getting it before the /p2p-circuit address exists

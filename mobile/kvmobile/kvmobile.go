@@ -79,14 +79,33 @@ var joinSuffrage string
 // relayMultiaddr is baked in at build time the same way as leaderMultiaddr
 // (via `gomobile bind -ldflags "-X .../mobile/kvmobile.relayMultiaddr=..."`),
 // and is normally just the leader's own multiaddr, since the leader is
-// what's deployed with -relay-service. It's threaded into
-// daemon.Config.RelayPeer so this device -- typically a phone on a
-// cellular connection behind carrier-grade NAT -- proactively reserves a
-// relay slot instead of ending up stuck advertising only addresses the
-// leader can never dial back; see Config.RelayPeer's doc comment in
-// pkg/daemon. Leave unset at build time for a device with its own
-// directly-dialable address (e.g. same LAN as the leader).
+// what's deployed with -relay-service -- comma-separate more than one to
+// seed several. It's threaded into daemon.Config.RelayPeers (via
+// relayPeers, below) so this device -- typically a phone on a cellular
+// connection behind carrier-grade NAT -- proactively reserves a relay
+// slot instead of ending up stuck advertising only addresses the leader
+// can never dial back; see Config.RelayPeers' doc comment in pkg/daemon.
+// Leave unset at build time for a device with its own directly-dialable
+// address (e.g. same LAN as the leader). This is only ever the seed
+// list -- once running, the device also picks up every confirmed
+// shmevent.KindBootstrapNode record already in its own local store (see
+// AddRelayNode/ConfirmRelayNode/ListRelayNodes below), so its actual
+// relay candidate set can grow across the cluster's lifetime with no
+// rebuild needed.
 var relayMultiaddr string
+
+// relayPeers splits relayMultiaddr's build-time, comma-separated form
+// into the []string daemon.Config.RelayPeers expects, dropping any empty
+// entries (e.g. relayMultiaddr left at its unset default, "").
+func relayPeers() []string {
+	var peers []string
+	for addr := range strings.SplitSeq(relayMultiaddr, ",") {
+		if addr != "" {
+			peers = append(peers, addr)
+		}
+	}
+	return peers
+}
 
 // callTimeout bounds a single Start/Submit/Get round trip. Comfortably
 // exceeds 5*raftElectionTimeout, the longest wait handleSetForward can do
@@ -238,7 +257,7 @@ func startAgainst(dataDirRoot, leaderAddr, suffrage string, resolveIdentity func
 		errC <- daemon.Run(ctx, daemon.Config{
 			DataDir:            clusterDir,
 			KeyPath:            keyPath,
-			RelayPeer:          relayMultiaddr,
+			RelayPeers:         relayPeers(),
 			HeartbeatTimeout:   raftHeartbeatTimeout,
 			ElectionTimeout:    raftElectionTimeout,
 			CommitTimeout:      raftCommitTimeout,

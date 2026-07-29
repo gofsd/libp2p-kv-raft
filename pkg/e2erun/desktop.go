@@ -85,7 +85,7 @@ var raftWANTimingFlags = []string{
 // *voter* (see test/e2e/testdata.json's "BOOTSTRAP"-valued add rows), and
 // without a relay reservation it only ever advertises whatever bare local/
 // LAN address this machine happens to have -- exactly the permanently-
-// stuck-voter failure mode Config.RelayPeer's doc comment describes. Caught
+// stuck-voter failure mode Config.RelayPeers's doc comment describes. Caught
 // running a real e2e pass: the shared bootstrap's raft log filled with
 // continuous "leadership lost while committing log"/"not leader and no
 // leader known" because this voter's address was never actually dialable

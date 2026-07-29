@@ -151,7 +151,7 @@ func (s *Session) Add(ctx context.Context, leaderPeerID string) (string, error) 
 // GetOwnAddr returns the session's node's own current best-advertised
 // multiaddr (public first, then a relay reservation, then anything else,
 // loopback last -- see pkg/daemon's advertisedAddrs) -- queried live, never
-// cached, so a node whose Config.RelayPeer reservation completed after
+// cached, so a node whose Config.RelayPeers reservation completed after
 // startup returns the up-to-date circuit address on a later call even if
 // an earlier one didn't have it yet.
 func (s *Session) GetOwnAddr(ctx context.Context) (string, error) {

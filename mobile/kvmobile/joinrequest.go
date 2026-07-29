@@ -76,7 +76,7 @@ func startPending(dataDirRoot string, resolveIdentity func(dataDir string) (keyP
 		errC <- daemon.Run(ctx, daemon.Config{
 			DataDir:            pendingDir,
 			KeyPath:            keyPath,
-			RelayPeer:          relayMultiaddr,
+			RelayPeers:         relayPeers(),
 			HeartbeatTimeout:   raftHeartbeatTimeout,
 			ElectionTimeout:    raftElectionTimeout,
 			CommitTimeout:      raftCommitTimeout,
