@@ -2,7 +2,9 @@ package kvmobile
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -112,6 +114,63 @@ func TestStartWithKeyDerivesGivenIdentity(t *testing.T) {
 	}
 	if got := PeerID(); got != wantPeerID {
 		t.Fatalf("PeerID() = %s, want %s", got, wantPeerID)
+	}
+}
+
+// TestStartSoloBootstrapsSingleNodeClusterAndServesWrites drives StartSolo
+// with no leader configured at all (leaderMultiaddr left at its zero value,
+// unlike every Start-based test above) and checks it comes up self-elected
+// as the sole voter of its own cluster -- immediately able to serve Submit/
+// Get, exactly like a normal Start-ed follower once it's caught up -- rather
+// than erroring the way Start does when leaderMultiaddr is unset.
+func TestStartSoloBootstrapsSingleNodeClusterAndServesWrites(t *testing.T) {
+	prevLeader := leaderMultiaddr
+	leaderMultiaddr = ""
+	t.Cleanup(func() {
+		leaderMultiaddr = prevLeader
+		if err := Stop(); err != nil {
+			t.Errorf("Stop: %v", err)
+		}
+	})
+
+	peerID, err := StartSolo(t.TempDir())
+	if err != nil {
+		t.Fatalf("StartSolo: %v", err)
+	}
+	if peerID == "" {
+		t.Fatalf("StartSolo: empty peer id")
+	}
+	if got := PeerID(); got != peerID {
+		t.Fatalf("PeerID() = %s, want %s", got, peerID)
+	}
+
+	if err := Submit("k", "v"); err != nil {
+		t.Fatalf("Submit against solo cluster: %v", err)
+	}
+	if got, err := Get("k"); err != nil {
+		t.Fatalf("Get against solo cluster: %v", err)
+	} else if got != "v" {
+		t.Fatalf("Get(k) = %q, want %q", got, "v")
+	}
+
+	membersJSON, err := ListClusterMembers()
+	if err != nil {
+		t.Fatalf("ListClusterMembers: %v", err)
+	}
+	var members []ClusterMember
+	if err := json.Unmarshal([]byte(membersJSON), &members); err != nil {
+		t.Fatalf("unmarshal ListClusterMembers: %v", err)
+	}
+	if len(members) != 1 || members[0].PeerID != peerID || members[0].Role != "leader" {
+		t.Fatalf("ListClusterMembers = %s, want exactly this device as leader", membersJSON)
+	}
+
+	// A second StartSolo call while already running is a no-op returning
+	// the same peer id, same as Start's documented behavior.
+	if again, err := StartSolo(t.TempDir()); err != nil {
+		t.Fatalf("StartSolo (already running): %v", err)
+	} else if again != peerID {
+		t.Fatalf("StartSolo (already running) peer id = %s, want %s", again, peerID)
 	}
 }
 
@@ -250,6 +309,67 @@ func TestJoinSwitchesClusterAtRuntime(t *testing.T) {
 	// reads this follower's own locally replicated state, which can lag a
 	// moment behind a Submit that just committed on the leader (see
 	// TestJoinThroughRelay in pkg/daemon for the same pattern).
+	if err := Submit("k", "v"); err != nil {
+		t.Fatalf("Submit after Join: %v", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		got, err := Get("k")
+		if err == nil && got == "v" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Get after Join never observed replicated value: err=%v value=%q", err, got)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// TestJoinRedeemsInviteTicketWithToken proves Join can redeem a
+// CreateJoinInvite-shaped ticket, "<leaderAddr>#<tokenHex>" (see that
+// function's doc comment), directly -- not just a bare leaderAddr, which is
+// all TestJoinSwitchesClusterAtRuntime above exercises. Regression test for
+// a bug where registry.ExtractPeerID (used by startAgainst only to name
+// this identity's local cluster subdirectory) tried to parse the whole
+// ticket, "#<tokenHex>" suffix included, as a multiaddr, and failed outright
+// -- before Join ever got as far as sess.Add, the call that actually
+// negotiates the join and would consume/validate the token itself.
+func TestJoinRedeemsInviteTicketWithToken(t *testing.T) {
+	leaderAddr := spawnTestLeader(t, t.TempDir())
+	leaderPeerID, err := registry.ExtractPeerID(leaderAddr)
+	if err != nil {
+		t.Fatalf("ExtractPeerID: %v", err)
+	}
+
+	ctx := context.Background()
+	leaderSess, err := shmclient.Open(ctx, leaderPeerID)
+	if err != nil {
+		t.Fatalf("shmclient.Open(leader): %v", err)
+	}
+	token := make([]byte, shmevent.JoinInviteTokenSize)
+	if _, err := rand.Read(token); err != nil {
+		t.Fatalf("generate invite token: %v", err)
+	}
+	if err := leaderSess.CreateJoinInvite(ctx, token, shmevent.SuffrageVoter); err != nil {
+		t.Fatalf("CreateJoinInvite: %v", err)
+	}
+	ticket := leaderAddr + "#" + hex.EncodeToString(token)
+
+	t.Cleanup(func() { _ = Stop() })
+
+	dataDirRoot := t.TempDir()
+	id, err := Join(dataDirRoot, ticket)
+	if err != nil {
+		t.Fatalf("Join(invite ticket): %v", err)
+	}
+
+	memberKey := string(shmevent.ClusterMemberKey([]byte(id)))
+	if _, err := shmclient.Get(ctx, leaderPeerID, memberKey); err != nil {
+		t.Fatalf("follower not a cluster member after Join(invite ticket): %v", err)
+	}
+
+	// Fully functional against the cluster it was just admitted into, same
+	// as TestJoinSwitchesClusterAtRuntime's tail end.
 	if err := Submit("k", "v"); err != nil {
 		t.Fatalf("Submit after Join: %v", err)
 	}

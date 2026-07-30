@@ -15,6 +15,10 @@ prompts
 # mage build's cross-compiled release binaries (BuildLinux/BuildWindows).
 /dist/
 
+# cmd/relayrepro's own compiled binary -- a debug repro tool, never
+# meant to be committed, same reasoning as /kvnode, /kvctl-cli above.
+/relayrepro
+
 # cmd/kvhttp's secondary-listener content root -- deployment-specific,
 # copied onto the deployed host by hand (e.g. scp), never committed and
 # never part of the build. See staticDir's doc comment in

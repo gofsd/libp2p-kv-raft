@@ -252,7 +252,21 @@ func (r *Registry) ResolveAddress(peerID string) (string, error) {
 // does). This is the one place that turns "whatever the operator typed" into
 // the bare peer id ClusterDataDir's naming scheme and the join-confirm
 // gate's bootstrap-peer allowlist both key on.
+//
+// leaderPeerIDOrMultiaddr may also be a combined join-invite/join-request
+// ticket, "<multiaddr-or-peerid>#<tokenHex>" (see CreateJoinInvite/
+// CreateJoinRequest's doc comments) -- callers redeeming one of those
+// (kvmobile.Join/JoinWithKey) pass it through whole, token included, since
+// the token still has to reach sess.Add for the actual invite/request
+// validation. Strip it here first: it's never part of the multiaddr or
+// peer id itself (neither can contain '#'), and left in place it makes
+// multiaddr.NewMultiaddr reject the whole string outright (the trailing
+// "#<tokenHex>" gets parsed as part of the /p2p/<peer-id> component, which
+// then fails to decode as a valid multihash).
 func ExtractPeerID(leaderPeerIDOrMultiaddr string) (string, error) {
+	if hashIdx := strings.IndexByte(leaderPeerIDOrMultiaddr, '#'); hashIdx >= 0 {
+		leaderPeerIDOrMultiaddr = leaderPeerIDOrMultiaddr[:hashIdx]
+	}
 	if !IsMultiaddr(leaderPeerIDOrMultiaddr) {
 		return leaderPeerIDOrMultiaddr, nil
 	}
