@@ -39,19 +39,35 @@ const pendingDirName = "pending"
 // those read the device's actual live raft state, not that bookkeeping
 // field.
 func StartPending(dataDir string) (string, error) {
-	return startPending(dataDir, ensureIdentity)
+	return startPending(dataDir, 0, ensureIdentity)
 }
 
 // StartPendingWithKey is like StartPending but provisions dataDir's
 // identity from keyHex (see StartWithKey) instead of always falling back
 // to ensureIdentity's persisted-or-generated-or-build-seeded key.
 func StartPendingWithKey(dataDir, keyHex string) (string, error) {
-	return startPending(dataDir, func(dataDir string) (keyPath, peerID string, err error) {
+	return startPending(dataDir, 0, func(dataDir string) (keyPath, peerID string, err error) {
 		return importIdentity(dataDir, keyHex)
 	})
 }
 
-func startPending(dataDirRoot string, resolveIdentity func(dataDir string) (keyPath, peerID string, err error)) (string, error) {
+// StartPendingWithKeyAndPort is StartPendingWithKey, additionally pinning
+// the libp2p listen port instead of leaving it ephemeral (port == 0
+// behaves exactly like StartPendingWithKey) -- see
+// StartSoloWithKeyAndPort's doc comment for why pkg/e2erun/android_pair.go's
+// two-emulator Join/RecruitPeer scenario specifically needs this: an
+// address captured in one `adb shell am instrument` invocation must still
+// be valid when dialed from a *different* device's own, later, separate
+// invocation, which an ephemeral port (freshly, randomly re-chosen every
+// time this device's own daemon is resumed in a fresh process) can't
+// guarantee.
+func StartPendingWithKeyAndPort(dataDir, keyHex string, port int) (string, error) {
+	return startPending(dataDir, port, func(dataDir string) (keyPath, peerID string, err error) {
+		return importIdentity(dataDir, keyHex)
+	})
+}
+
+func startPending(dataDirRoot string, port int, resolveIdentity func(dataDir string) (keyPath, peerID string, err error)) (string, error) {
 	mu.Lock()
 	defer mu.Unlock()
 	if started {
@@ -76,6 +92,7 @@ func startPending(dataDirRoot string, resolveIdentity func(dataDir string) (keyP
 		errC <- daemon.Run(ctx, daemon.Config{
 			DataDir:            pendingDir,
 			KeyPath:            keyPath,
+			ListenPort:         port,
 			RelayPeers:         relayPeers(),
 			HeartbeatTimeout:   raftHeartbeatTimeout,
 			ElectionTimeout:    raftElectionTimeout,

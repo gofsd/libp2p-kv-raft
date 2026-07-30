@@ -35,14 +35,33 @@ func isAlreadyBootstrappedErr(err error) bool {
 // Like Start, calling this again once already running (solo or otherwise)
 // is a no-op returning the existing peer id.
 func StartSolo(dataDir string) (string, error) {
-	return startSolo(dataDir, ensureIdentity)
+	return startSolo(dataDir, 0, ensureIdentity)
 }
 
 // StartSoloWithKey is StartSolo plus StartWithKey's identity provisioning
 // (see StartWithKey) instead of always falling back to ensureIdentity's
 // persisted-or-generated-or-build-seeded key.
 func StartSoloWithKey(dataDir, keyHex string) (string, error) {
-	return startSolo(dataDir, func(dataDir string) (keyPath, peerID string, err error) {
+	return startSolo(dataDir, 0, func(dataDir string) (keyPath, peerID string, err error) {
+		return importIdentity(dataDir, keyHex)
+	})
+}
+
+// StartSoloWithKeyAndPort is StartSoloWithKey, additionally pinning the
+// libp2p listen port instead of leaving it ephemeral (port == 0 behaves
+// exactly like StartSoloWithKey). A real device never needs this -- an
+// ephemeral port is fine when nothing outside this process ever needs to
+// predict this device's own address ahead of time -- but
+// pkg/e2erun/android_pair.go's two-emulator Join/RecruitPeer scenario
+// does: it captures this device's address (GetOwnAddr) in one
+// instrumentation invocation and dials it from a *different* device's own,
+// later, separate invocation, and every `adb shell am instrument`
+// invocation is a genuinely fresh process (kvmobile's package-level
+// session does not survive between them) -- an ephemeral port would pick
+// a new, different value on each such resume, silently invalidating any
+// address captured before it, hence this dedicated port-pinning variant.
+func StartSoloWithKeyAndPort(dataDir, keyHex string, port int) (string, error) {
+	return startSolo(dataDir, port, func(dataDir string) (keyPath, peerID string, err error) {
 		return importIdentity(dataDir, keyHex)
 	})
 }
@@ -53,7 +72,7 @@ func StartSoloWithKey(dataDir, keyHex string) (string, error) {
 // brand new single-node cluster with this node as its only, immediately-
 // elected voter" rather than "join someone else's" (see BootstrapCluster
 // there). Callers must not hold mu.
-func startSolo(dataDirRoot string, resolveIdentity func(dataDir string) (keyPath, peerID string, err error)) (string, error) {
+func startSolo(dataDirRoot string, port int, resolveIdentity func(dataDir string) (keyPath, peerID string, err error)) (string, error) {
 	mu.Lock()
 	defer mu.Unlock()
 	if started {
@@ -87,6 +106,7 @@ func startSolo(dataDirRoot string, resolveIdentity func(dataDir string) (keyPath
 		errC <- daemon.Run(ctx, daemon.Config{
 			DataDir:            soloDir,
 			KeyPath:            keyPath,
+			ListenPort:         port,
 			RelayPeers:         relayPeers(),
 			HeartbeatTimeout:   raftHeartbeatTimeout,
 			ElectionTimeout:    raftElectionTimeout,

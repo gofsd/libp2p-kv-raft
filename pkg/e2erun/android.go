@@ -58,12 +58,51 @@ func androidUnavailable() string {
 // ending in "\tdevice" (as opposed to "\toffline"/"\tunauthorized", or the
 // header line).
 func hasConnectedDevice(adbDevicesOutput string) bool {
+	return len(parseConnectedSerials(adbDevicesOutput)) > 0
+}
+
+// parseConnectedSerials returns every serial in adbDevicesOutput whose
+// state line ends "\tdevice" (as opposed to "\toffline"/"\tunauthorized",
+// or the header line) -- hasConnectedDevice's list-returning counterpart,
+// for callers (runAndroidPairScenario) that need to address more than one
+// connected device/emulator by serial rather than just checking "is there
+// at least one."
+func parseConnectedSerials(adbDevicesOutput string) []string {
+	var serials []string
 	for line := range strings.SplitSeq(adbDevicesOutput, "\n") {
-		if strings.HasSuffix(strings.TrimRight(line, "\r"), "\tdevice") {
-			return true
+		line = strings.TrimRight(line, "\r")
+		if rest, ok := strings.CutSuffix(line, "\tdevice"); ok {
+			serials = append(serials, rest)
 		}
 	}
-	return false
+	return serials
+}
+
+// connectedAndroidSerials runs `adb devices` and returns every currently
+// connected device/emulator's serial (see parseConnectedSerials) -- used
+// by runAndroidPairScenario to discover whether a second device is
+// available, since androidUnavailable/hasConnectedDevice only ever answer
+// "is there at least one."
+func connectedAndroidSerials() ([]string, error) {
+	out, err := exec.Command("adb", "devices").Output()
+	if err != nil {
+		return nil, fmt.Errorf("adb devices: %w", err)
+	}
+	return parseConnectedSerials(string(out)), nil
+}
+
+// withSerial sets cmd.Env so every adb/gradlew invocation this package
+// makes routes to a specific device/emulator when more than one might be
+// connected (ANDROID_SERIAL is honored by both adb directly and by
+// gradlew's own shelled-out adb calls). serial == "" (every call site
+// except runAndroidPairScenario) leaves cmd.Env untouched -- exactly
+// today's behavior of letting adb/gradlew fall back to whatever single
+// device is connected, unchanged.
+func withSerial(cmd *exec.Cmd, serial string) {
+	if serial == "" {
+		return
+	}
+	cmd.Env = append(os.Environ(), "ANDROID_SERIAL="+serial)
 }
 
 // runAndroidRows runs every PlatformAndroid row in rowIndices, grouped by
@@ -129,11 +168,29 @@ func runAndroidRows(repoRoot string, f *e2edata.File, rowIndices []int, bootstra
 		return results, nil, fmt.Errorf("e2erun: encode android UI cases: %w", err)
 	}
 
+	// Pick one serial explicitly, even though androidUnavailable already
+	// confirmed at least one is connected: leaving every adb/gradlew call
+	// unqualified (serial "") only ever worked because exactly one device
+	// was ever connected in practice -- with runAndroidPairScenario now
+	// able to have a second device/emulator up at the same time, an
+	// unqualified adb call would fail outright with "more than one
+	// device/emulator". Deterministically using the first one keeps this
+	// existing single-device path's own behavior/target unchanged whenever
+	// there's still only one connected, the common case.
+	serials, err := connectedAndroidSerials()
+	if err != nil {
+		return results, nil, fmt.Errorf("e2erun: %w", err)
+	}
+	serial := ""
+	if len(serials) > 0 {
+		serial = serials[0]
+	}
+
 	var uiErrs []error
 	var uiCaseResults []e2edata.UICaseResult
 	for nodeID, idxs := range byNode {
 		node := f.Nodes[nodeID]
-		out, cases, uiErr := runAndroidNode(repoRoot, node, bootstrapMultiaddr, f, idxs, runUI, string(uiCasesJSON))
+		out, cases, uiErr := runAndroidNode(repoRoot, node, bootstrapMultiaddr, f, idxs, runUI, string(uiCasesJSON), serial)
 		maps.Copy(results, out)
 		uiCaseResults = append(uiCaseResults, cases...)
 		if uiErr != nil {
@@ -167,7 +224,7 @@ func runAndroidRows(repoRoot string, f *e2edata.File, rowIndices []int, bootstra
 // call's own error, with its per-case results (nil if runUI is false, or
 // if the build/install/instrumentation invocation itself never got far
 // enough to produce any) alongside it for the caller to persist.
-func runAndroidNode(repoRoot string, node e2edata.Node, bootstrapMultiaddr string, f *e2edata.File, rowIdxs []int, runUI bool, uiCasesJSON string) (map[int]rowOutcome, []e2edata.UICaseResult, error) {
+func runAndroidNode(repoRoot string, node e2edata.Node, bootstrapMultiaddr string, f *e2edata.File, rowIdxs []int, runUI bool, uiCasesJSON string, serial string) (map[int]rowOutcome, []e2edata.UICaseResult, error) {
 	fail := func(err error) (map[int]rowOutcome, []e2edata.UICaseResult, error) {
 		if len(rowIdxs) == 0 {
 			return map[int]rowOutcome{}, nil, err
@@ -179,10 +236,10 @@ func runAndroidNode(repoRoot string, node e2edata.Node, bootstrapMultiaddr strin
 		return out, nil, nil
 	}
 
-	if err := buildAndroidAAR(repoRoot, node, bootstrapMultiaddr); err != nil {
+	if err := buildAndroidAAR(repoRoot, node, bootstrapMultiaddr, serial); err != nil {
 		return fail(err)
 	}
-	if err := gradleInstall(repoRoot); err != nil {
+	if err := gradleInstall(repoRoot, serial); err != nil {
 		return fail(err)
 	}
 
@@ -218,7 +275,7 @@ func runAndroidNode(repoRoot string, node e2edata.Node, bootstrapMultiaddr strin
 			return fail(fmt.Errorf("e2erun: encode android rows argument: %w", err))
 		}
 
-		resultsJSON, err := runInstrumentedTest(string(rowsArg))
+		resultsJSON, err := runInstrumentedTest(string(rowsArg), serial)
 		if err != nil {
 			return fail(err)
 		}
@@ -229,7 +286,7 @@ func runAndroidNode(repoRoot string, node e2edata.Node, bootstrapMultiaddr strin
 	}
 
 	if runUI {
-		cases, err := runUICommandTest(uiCasesJSON)
+		cases, err := runUICommandTest(uiCasesJSON, serial, false)
 		if err != nil {
 			return out, cases, err
 		}
@@ -243,8 +300,12 @@ func runAndroidNode(repoRoot string, node e2edata.Node, bootstrapMultiaddr strin
 // result to android-app/app/libs/kvmobile.aar -- the exact path
 // android-app/app/build.gradle.kts's `implementation(files("libs/kvmobile.aar"))`
 // expects (see README.md's "Follower on Android" section for the manual
-// equivalent of this same command).
-func buildAndroidAAR(repoRoot string, node e2edata.Node, bootstrapMultiaddr string) error {
+// equivalent of this same command). serial is passed through to withSerial
+// -- gomobile bind itself never touches a device, but see runAndroidNode's
+// callers for why every step of a build+install+run cycle takes it anyway
+// (a consistent signature makes it obvious at each call site whether that
+// step is device-specific).
+func buildAndroidAAR(repoRoot string, node e2edata.Node, bootstrapMultiaddr string, serial string) error {
 	aarPath := filepath.Join(repoRoot, "android-app", "app", "libs", "kvmobile.aar")
 	if err := os.MkdirAll(filepath.Dir(aarPath), 0o755); err != nil {
 		return err
@@ -261,6 +322,7 @@ func buildAndroidAAR(repoRoot string, node e2edata.Node, bootstrapMultiaddr stri
 	cmd := exec.Command("gomobile", "bind", "-target=android", "-androidapi", "26",
 		"-ldflags", ldflags, "-o", aarPath, "./mobile/kvmobile")
 	cmd.Dir = repoRoot
+	withSerial(cmd, serial)
 	if err := runCaptured(cmd, "gomobile bind"); err != nil {
 		return err
 	}
@@ -268,12 +330,14 @@ func buildAndroidAAR(repoRoot string, node e2edata.Node, bootstrapMultiaddr stri
 }
 
 // gradleInstall builds and installs both the app and its instrumented
-// test APK onto whatever adb device/emulator is connected.
-func gradleInstall(repoRoot string) error {
+// test APK onto whatever adb device/emulator is connected, or -- if
+// serial is non-empty -- specifically that device (see withSerial).
+func gradleInstall(repoRoot string, serial string) error {
 	androidDir := filepath.Join(repoRoot, "android-app")
 	gradlew := filepath.Join(androidDir, "gradlew")
 	cmd := exec.Command(gradlew, "installDebug", "installDebugAndroidTest")
 	cmd.Dir = androidDir
+	withSerial(cmd, serial)
 	return runCaptured(cmd, "gradlew installDebug")
 }
 
@@ -339,12 +403,13 @@ func summarizeFailure(out string) string {
 // (E2ETest.fail()s if any row failed) without that being treated as a Go
 // error here -- the results file, not the instrumentation exit status, is
 // authoritative for per-row pass/fail.
-func runInstrumentedTest(rowsArgJSON string) ([]byte, error) {
+func runInstrumentedTest(rowsArgJSON string, serial string) ([]byte, error) {
 	cmd := exec.Command("adb", "shell", "am", "instrument", "-w",
 		"-e", "class", androidTestClass,
 		"-e", "rows", rowsArgJSON,
 		androidTestRunner,
 	)
+	withSerial(cmd, serial)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
@@ -354,6 +419,7 @@ func runInstrumentedTest(rowsArgJSON string) ([]byte, error) {
 	localResultsPath := filepath.Join(os.TempDir(), "kvraft-e2e-android-results.json")
 	defer os.Remove(localResultsPath)
 	pull := exec.Command("adb", "pull", deviceResultsPath, localResultsPath)
+	withSerial(pull, serial)
 	var pullOut bytes.Buffer
 	pull.Stdout = &pullOut
 	pull.Stderr = &pullOut
@@ -401,16 +467,32 @@ func runInstrumentedTest(rowsArgJSON string) ([]byte, error) {
 // should when instrumentation didn't actually produce fresh output. This
 // bug was real, not hypothetical: it produced a false "PASS" for this
 // exact test before both fixes here.
-func runUICommandTest(casesJSON string) ([]e2edata.UICaseResult, error) {
+// serial (see withSerial) targets a specific device -- used by
+// runAndroidPairScenario to drive two devices independently; every other
+// call site passes "". onlyListedCases, when true, appends "-e
+// onlyListedCases true" so UiCommandE2ETest.kt only navigates to/executes
+// commands actually present in casesJSON instead of walking the whole
+// catalog -- used by runAndroidPairScenario so each of its many small,
+// single-case instrumentation invocations stays fast; every other call
+// site passes false, preserving today's full-catalog-walk behavior
+// unchanged.
+func runUICommandTest(casesJSON string, serial string, onlyListedCases bool) ([]e2edata.UICaseResult, error) {
 	deviceResultsPath := fmt.Sprintf("/sdcard/Android/data/%s/files/ui_e2e_results.json", androidAppID)
-	_ = exec.Command("adb", "shell", "rm", "-f", deviceResultsPath).Run()
+	rm := exec.Command("adb", "shell", "rm", "-f", deviceResultsPath)
+	withSerial(rm, serial)
+	_ = rm.Run()
 
 	encodedCases := base64.StdEncoding.EncodeToString([]byte(casesJSON))
-	cmd := exec.Command("adb", "shell", "am", "instrument", "-w",
+	args := []string{"shell", "am", "instrument", "-w",
 		"-e", "class", androidUITestClass,
 		"-e", "cases", encodedCases,
-		androidTestRunner,
-	)
+	}
+	if onlyListedCases {
+		args = append(args, "-e", "onlyListedCases", "true")
+	}
+	args = append(args, androidTestRunner)
+	cmd := exec.Command("adb", args...)
+	withSerial(cmd, serial)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
@@ -419,6 +501,7 @@ func runUICommandTest(casesJSON string) ([]e2edata.UICaseResult, error) {
 	localResultsPath := filepath.Join(os.TempDir(), "kvraft-e2e-android-ui-results.json")
 	defer os.Remove(localResultsPath)
 	pull := exec.Command("adb", "pull", deviceResultsPath, localResultsPath)
+	withSerial(pull, serial)
 	var pullOut bytes.Buffer
 	pull.Stdout = &pullOut
 	pull.Stderr = &pullOut

@@ -276,10 +276,46 @@ type Row struct {
 // writes to the device's ui_e2e_results.json, pulled back into this file
 // so it survives past the next run overwriting/deleting that on-device
 // file (see pkg/e2erun/android.go's runUICommandTest).
+//
+// Output is the command's own real return value (UiCommandE2ETest.kt
+// strips CommandDetailActivity.onRun's "$label(args) ->\n" prefix before
+// recording it), populated only when Execute was true and the call
+// succeeded -- unused by the flat per-label sweep this type was
+// originally built for, but what lets pkg/e2erun/android_pair.go's
+// step-by-step two-device orchestration thread one step's real result
+// (a ticket string, a ListClusterMembers JSON array) into a later step's
+// input.
 type UICaseResult struct {
 	Command string `json:"command"`
 	Pass    bool   `json:"pass"`
 	Error   string `json:"error,omitempty"`
+	Output  string `json:"output,omitempty"`
+}
+
+// AndroidPairCaseResult is one step's outcome from the two-device
+// Join/RecruitPeer orchestration (pkg/e2erun/android_pair.go) -- same
+// {command, pass, error} shape as UICaseResult, minus Output (that
+// package consumes each step's output directly while orchestrating; it
+// isn't meaningful to a reader of the recorded result afterward).
+type AndroidPairCaseResult struct {
+	Command string `json:"command"`
+	Pass    bool   `json:"pass"`
+	Error   string `json:"error,omitempty"`
+}
+
+// AndroidPairResult is the most recent outcome of the two-device
+// Join/RecruitPeer scenario (pkg/e2erun/android_pair.go) -- mirrors
+// AndroidUIResult's shape/semantics exactly (one overwritten value, not
+// versioned/appended history; nil means "never run since this field was
+// introduced," not "it failed"), kept as a separate field rather than
+// folded into AndroidUIResult since this exercises a curated, ordered,
+// cross-device scenario, not the flat single-device per-label sweep
+// AndroidUIResult/UICaseResult describe.
+type AndroidPairResult struct {
+	RanAt  time.Time               `json:"ran_at"`
+	Status int                     `json:"status"`
+	Error  string                  `json:"error,omitempty"`
+	Cases  []AndroidPairCaseResult `json:"cases,omitempty"`
 }
 
 // AndroidUIResult is the most recent outcome of the catalog-driven
@@ -329,6 +365,9 @@ type File struct {
 	// AndroidUIResult is the most recent UiCommandE2ETest walk's outcome --
 	// see that type's own doc comment.
 	AndroidUIResult *AndroidUIResult `json:"android_ui_result,omitempty"`
+	// AndroidUIPairResult is the most recent two-device Join/RecruitPeer
+	// scenario's outcome -- see AndroidPairResult's own doc comment.
+	AndroidUIPairResult *AndroidPairResult `json:"android_ui_pair_result,omitempty"`
 }
 
 // DefaultPath is where the testdata file lives relative to the repo root.

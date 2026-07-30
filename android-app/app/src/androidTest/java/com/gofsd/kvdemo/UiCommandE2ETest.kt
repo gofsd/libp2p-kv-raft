@@ -101,6 +101,14 @@ import java.io.File
  * shared, single-device topology" reasoning `mage e2e:all`'s own
  * documented one-time-row caveats already apply elsewhere in this
  * project's e2e design.
+ *
+ * Join/RecruitPeer's "needs a second real device" gap is closed
+ * separately, by pkg/e2erun/android_pair.go -- a step-by-step (not
+ * single-shot) orchestration across two throwaway, never-shared devices,
+ * reusing this same class one small case at a time via the
+ * `onlyListedCases` instrumentation arg (see below) rather than a whole
+ * new test class. This class's own flat, single-device `cases` sweep
+ * still deliberately excludes them, for the reasons above.
  */
 @RunWith(AndroidJUnit4::class)
 class UiCommandE2ETest {
@@ -169,8 +177,15 @@ class UiCommandE2ETest {
         // before any UI is even on screen, just to learn this device's
         // own peer id and the shared cluster's current leader without
         // needing a UI round trip for fixture data no real user would
-        // ever type in by hand.
-        val selfPeerID = Kvmobile.start(dataDir)
+        // ever type in by hand. Best-effort: pkg/e2erun/android_pair.go's
+        // AAR build deliberately bakes in no leaderMultiaddr at all (its
+        // two devices only ever use StartSoloWithKey/StartPendingWithKey,
+        // never this build-time-leader Start), so Start throws
+        // "no leader multiaddr baked in at build time" there on every
+        // invocation -- that's expected and must not fail the whole test,
+        // since selfPeerID/leaderPeerID are unused by that orchestration's
+        // own literal, pre-computed case inputs anyway.
+        val selfPeerID = runCatching { Kvmobile.start(dataDir) }.getOrDefault("")
         // Best-effort only: this device's own listClusterMembers() is its
         // locally-replicated snapshot, confirmed directly to go
         // permanently stale once this identity stops actively voting/
@@ -187,18 +202,26 @@ class UiCommandE2ETest {
 
         val casesArg = InstrumentationRegistry.getArguments().getString("cases")
         val cases = buildCasesFromArg(casesArg, selfPeerID, leaderPeerID)
+        // onlyListedCases: pkg/e2erun/android_pair.go's step-by-step
+        // orchestration passes this so each single-case instrumentation
+        // call only touches the one command it cares about, instead of
+        // walking (and Run-tapping-or-not) the whole ~60-command catalog
+        // every time -- absent (every other call site), behavior is
+        // unchanged from before this flag existed.
+        val onlyListedCases = (InstrumentationRegistry.getArguments().getString("onlyListedCases") ?: "false").toBoolean()
 
         val allCommands = buildCommands(dataDir) { }
         Assert.assertTrue("catalog is unexpectedly empty", allCommands.isNotEmpty())
+        val commandsToWalk = if (onlyListedCases) allCommands.filter { cases.containsKey(it.label) } else allCommands
 
         val failures = mutableListOf<String>()
         val results = JSONArray()
 
         launchMainActivity()
-        val categories = allCommands.map { it.category }.distinct()
+        val categories = commandsToWalk.map { it.category }.distinct()
         for (category in categories) {
             clickListItem(category)
-            val commandsInCategory = allCommands.filter { it.category == category }
+            val commandsInCategory = commandsToWalk.filter { it.category == category }
             for (spec in commandsInCategory) {
                 val label = spec.label
                 val case = cases[label] ?: Case()
@@ -215,6 +238,18 @@ class UiCommandE2ETest {
                         )
                         val output = runCommandWithRetry(detail, case.inputs, case.retryBudgetMs)
                         case.expect(output)
+                        // Surface the command's real return value back to
+                        // the Go harness -- CommandDetailActivity.onRun's
+                        // success format is "$label(args) ->\n$result", so
+                        // strip that fixed prefix to recover $result alone
+                        // (e.g. GetOwnAddr's address, CreateJoinRequest's
+                        // token, ListClusterMembers' JSON) -- needed by
+                        // pkg/e2erun/android_pair.go's cross-device
+                        // orchestration, unused by the flat per-label sweep.
+                        val prefix = "$label(${case.inputs.joinToString(", ")}) ->\n"
+                        if (output.startsWith(prefix)) {
+                            entry.put("output", output.removePrefix(prefix))
+                        }
                     }
                     entry.put("pass", true)
                 } catch (e: Throwable) {
@@ -225,11 +260,21 @@ class UiCommandE2ETest {
                     pressBack()
                 }
                 results.put(entry)
+                // Written after every entry, not just once at the very end
+                // (an earlier version of this file did that): lets
+                // pkg/e2erun/android_pair.go's runUIStepsBackgroundPeek pull
+                // and observe an early op's own result (e.g. CreateJoinRequest's
+                // token) via `adb pull` while this SAME instrumentation
+                // invocation is still running a later op (e.g. a trailing
+                // "Test: SleepMillis" hold keeping this process -- and so its
+                // daemon's listener -- alive for a concurrently-dialing peer
+                // on a different device). The last entry's own write already
+                // covers the final steady-state content, so there's no
+                // separate write after the loop.
+                File(context.getExternalFilesDir(null), "ui_e2e_results.json").writeText(results.toString())
             }
             pressBack()
         }
-
-        File(context.getExternalFilesDir(null), "ui_e2e_results.json").writeText(results.toString())
 
         if (failures.isNotEmpty()) {
             Assert.fail("${failures.size} of ${results.length()} command(s) failed:\n" + failures.joinToString("\n"))

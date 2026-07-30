@@ -57,6 +57,21 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     add("Cluster", "StartWithKey", listOf("keyHex")) { a -> Kvmobile.startWithKey(dataDir, a[0]) }
     add("Cluster", "Join", listOf("leaderAddr")) { a -> Kvmobile.join(dataDir, a[0]) }
     add("Cluster", "JoinWithKey", listOf("keyHex", "leaderAddr")) { a -> Kvmobile.joinWithKey(dataDir, a[0], a[1]) }
+    // StartSolo/StartSoloWithKey bootstrap this device as the sole leader
+    // of its own brand new single-node cluster, instead of joining
+    // leaderMultiaddr -- desktop's `mage addnode` with no leaderPeerID.
+    // Only safe to invoke for real against a genuinely fresh device (it's
+    // destructive to this device's existing membership, same category as
+    // Join/StartPending -- see UiCommandE2ETest.kt's own doc comment).
+    add("Cluster", "StartSolo", emptyList()) { Kvmobile.startSolo(dataDir) }
+    add("Cluster", "StartSoloWithKey", listOf("keyHex")) { a -> Kvmobile.startSoloWithKey(dataDir, a[0]) }
+    // StartSoloWithKeyAndPort/StartPendingWithKeyAndPort (below) pin the
+    // libp2p listen port instead of leaving it ephemeral -- only needed
+    // by pkg/e2erun/android_pair.go's two-emulator Join/RecruitPeer
+    // scenario, see StartSoloWithKeyAndPort's own doc comment for why.
+    add("Cluster", "StartSoloWithKeyAndPort", listOf("keyHex", "port")) { a ->
+        Kvmobile.startSoloWithKeyAndPort(dataDir, a[0], a[1].toLongOrThrow("port"))
+    }
 
     // Reverse invite ("join-request"): StartPending brings this device up
     // with no cluster yet (instead of Start/Join's immediate leader join);
@@ -71,6 +86,9 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     // join-request section and mobile/kvmobile/joinrequest.go.
     add("Cluster", "StartPending", emptyList()) { Kvmobile.startPending(dataDir) }
     add("Cluster", "StartPendingWithKey", listOf("keyHex")) { a -> Kvmobile.startPendingWithKey(dataDir, a[0]) }
+    add("Cluster", "StartPendingWithKeyAndPort", listOf("keyHex", "port")) { a ->
+        Kvmobile.startPendingWithKeyAndPort(dataDir, a[0], a[1].toLongOrThrow("port"))
+    }
     add("Cluster", "GetOwnAddr", emptyList()) { Kvmobile.getOwnAddr() }
     add("Cluster", "CreateJoinRequest", emptyList()) { Kvmobile.createJoinRequest() }
     add("Cluster", "CancelJoinRequest", listOf("tokenHex")) { a -> Kvmobile.cancelJoinRequest(a[0]); ok() }
@@ -288,6 +306,21 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     // Raw escape hatch -- the same one E2ETest uses, see its own doc
     // comment and README's "Follower on Android" section.
     add("Raw", "SendEvent", listOf("eventJSON")) { a -> Kvmobile.sendEvent(a[0]) }
+
+    // Test-only utility, not a kvmobile call: keeps this instrumentation
+    // invocation's process (and so whatever daemon an earlier op in the
+    // same invocation just resumed) alive for millis. Only needed by
+    // pkg/e2erun/android_pair.go's runDialStep -- a cross-device dial
+    // needs the *receiving* device to still be up and listening at the
+    // exact moment the *other* device dials in, which a device's own
+    // single `adb shell am instrument` invocation can't otherwise
+    // guarantee once its own ops finish (confirmed live via a tcpdump
+    // capture on the host loopback interface: the adb-forwarded TCP
+    // handshake completed, but the far end sent a bare FIN within ~2.5ms,
+    // before any bytes were exchanged, because that receiving device's
+    // prior instrumentation process -- and with it, its daemon's listen
+    // socket -- had already exited).
+    add("Test", "SleepMillis", listOf("millis")) { a -> Thread.sleep(a[0].toLongOrThrow("millis")); ok() }
 
     return commands
 }

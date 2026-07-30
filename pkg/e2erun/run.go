@@ -244,6 +244,21 @@ func Run(repoRoot, path string, f *e2edata.File, rowIndices []int, types Types) 
 		}
 	}
 
+	if types.AndroidUI {
+		if pairResult := runAndroidPairScenario(repoRoot); pairResult != nil {
+			if pairResult.Status == e2edata.StatusFail {
+				fmt.Fprintf(os.Stderr, "e2erun: android join/recruit pair scenario: FAIL: %s\n", pairResult.Error)
+				failures++
+			} else {
+				fmt.Fprintln(os.Stderr, "e2erun: android join/recruit pair scenario: PASS")
+			}
+			f.AndroidUIPairResult = pairResult
+			if err := f.Save(path); err != nil {
+				return err
+			}
+		}
+	}
+
 	if failures > 0 {
 		return fmt.Errorf("e2erun: %d failure(s) (rows + checks)", failures)
 	}
