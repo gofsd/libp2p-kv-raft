@@ -123,6 +123,45 @@ func checkGroupNameUnique(s *store.Store, key, value []byte) error {
 	return nil
 }
 
+// checkCommandPeerIDUnique enforces that no two Command records share the
+// same peerID, called from Apply's OpSet case whenever key is a CommandKey
+// -- same rationale as checkGroupNameUnique: doing this check in
+// pkg/daemon/pkg/kvctl before ever reaching Apply would leave a TOCTOU race
+// between two concurrent PutCommand calls choosing the same peerID: Apply
+// runs exactly once, in raft log order, so there's nothing to race against.
+// A command being overwritten under its own id (a rename, or a plain
+// re-Put) is not a collision with itself -- only a genuinely different id
+// already holding that peerID is rejected. At most systemListLimits' own
+// KindCommand cap (2000) records exist at once, so a full scan here is
+// cheap and bounded.
+func checkCommandPeerIDUnique(s *store.Store, key, value []byte) error {
+	if len(key) < systemKeyPrefixLen || key[0] != shmevent.SystemKeyPrefix || key[1] != shmevent.KindCommand {
+		return nil
+	}
+	_, peerID, err := shmevent.DecodeCommandPayload(value)
+	if err != nil {
+		return err
+	}
+	lo, hi := shmevent.CommandKeyBounds()
+	matches, err := s.ScanRange(lo, hi, 0)
+	if err != nil {
+		return err
+	}
+	for _, m := range matches {
+		if bytes.Equal(m.Key, key) {
+			continue
+		}
+		_, existingPeerID, err := shmevent.DecodeCommandPayload(m.Value)
+		if err != nil {
+			return err
+		}
+		if bytes.Equal(existingPeerID, peerID) {
+			return fmt.Errorf("kvfsm: peer %s already has a command assigned", peerID)
+		}
+	}
+	return nil
+}
+
 // OpType identifies the kind of mutation carried by a raft log entry.
 type OpType uint8
 
@@ -281,6 +320,9 @@ func (f *FSM) Apply(l *raft.Log) any {
 			return ApplyResult{Err: err}
 		}
 		if err := checkGroupNameUnique(f.Store, key, value); err != nil {
+			return ApplyResult{Err: err}
+		}
+		if err := checkCommandPeerIDUnique(f.Store, key, value); err != nil {
 			return ApplyResult{Err: err}
 		}
 		return ApplyResult{Err: f.Store.Set(key, value)}
