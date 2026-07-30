@@ -1303,6 +1303,17 @@ func Get(key string) error {
 	return nil
 }
 
+// Txn atomically applies a space-separated list of ops through raft on the
+// current node -- either all of them land, or none do. Each op is
+// `<key>=<value>` (a Set) or `del:<key>` (a Delete); pass the whole list as
+// one quoted argument, the same convention `mage kvrecover`'s voterMultiaddr
+// list already uses.
+//
+// Usage: mage txn "<key1>=<value1> [key2=value2 ...] [del:key3 ...]"
+func Txn(ops string) error {
+	return kvctl.Txn(ops)
+}
+
 // RangeScan lists every key/value pair between start and end (both
 // inclusive, lexicographic byte order over the raw key bytes) on the
 // current node's local state, one JSON object per line -- a generic

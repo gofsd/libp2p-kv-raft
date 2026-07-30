@@ -524,6 +524,61 @@ func GetFrom(peerID, key string) (string, error) {
 	return value, nil
 }
 
+// ParseTxnOps parses `mage txn`'s single space-separated ops argument (the
+// same "one quoted string, space-separated" convention `mage kvrecover`'s
+// own voterMultiaddr list argument already uses) into a shmevent.TxnOp
+// list: each token is either `<key>=<value>` (a Set -- split on the first
+// `=` only, so a value itself containing `=` is preserved verbatim) or
+// `del:<key>` (a Delete).
+func ParseTxnOps(ops string) ([]shmevent.TxnOp, error) {
+	fields := strings.Fields(ops)
+	if len(fields) == 0 {
+		return nil, fmt.Errorf("txn: no ops given (want e.g. \"k1=v1 k2=v2 del:k3\")")
+	}
+	parsed := make([]shmevent.TxnOp, 0, len(fields))
+	for _, field := range fields {
+		if key, ok := strings.CutPrefix(field, "del:"); ok {
+			if key == "" {
+				return nil, fmt.Errorf("txn: %q has an empty key", field)
+			}
+			parsed = append(parsed, shmevent.TxnOp{Op: shmevent.TxnOpDelete, Key: []byte(key)})
+			continue
+		}
+		key, value, ok := strings.Cut(field, "=")
+		if !ok || key == "" {
+			return nil, fmt.Errorf("txn: %q is neither <key>=<value> nor del:<key>", field)
+		}
+		parsed = append(parsed, shmevent.TxnOp{Op: shmevent.TxnOpSet, Key: []byte(key), Value: []byte(value)})
+	}
+	return parsed, nil
+}
+
+// Txn implements `mage txn "<op1> [op2] ..."`: atomically applies every op
+// in ops (parsed by ParseTxnOps) through raft on the current node -- either
+// all of them land, or none do (see shmevent.EventTxn's doc comment).
+func Txn(ops string) error {
+	parsed, err := ParseTxnOps(ops)
+	if err != nil {
+		return err
+	}
+
+	reg, err := registry.Open()
+	if err != nil {
+		return err
+	}
+	peerID, err := reg.Current()
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
+	defer cancel()
+	if err := shmclient.Txn(ctx, peerID, parsed); err != nil {
+		return fmt.Errorf("txn: %w", err)
+	}
+	return nil
+}
+
 // RequestPermit implements `mage requestpermit <kind> <peerID> [metadata]`:
 // lodges a pending permit record for targetPeerID (of the given kind --
 // shmevent.KindPermitPeer or KindBootstrapNode) on the current node,

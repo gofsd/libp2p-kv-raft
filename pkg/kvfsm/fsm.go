@@ -240,6 +240,32 @@ const (
 	// OpConsumeExecInvite there's no prior record to consume -- an ACL
 	// failure here just means nothing is ever written, no cleanup needed.
 	OpAppendCommandRequest OpType = 7
+	// OpTxn atomically applies an ordered list of plain Set/Delete ops --
+	// value is shmevent.EncodeTxnPayload(ops) (key is unused; unlike every
+	// op above, a single EncodeCommand key/value pair can't hold more than
+	// one op, so OpTxn packs its whole op list into value instead). Every
+	// op is validated (a well-formed shmevent.TxnOpSet/TxnOpDelete) before
+	// any of them are written, so a malformed op fails the transaction
+	// with no partial effect -- the same "check everything first"
+	// discipline OpAppendCommandRequest's ACL check already follows.
+	// Reserved-namespace keys (shmevent.SystemKeyPrefix/
+	// logrecord.LogKeyPrefix) are rejected one layer up, in pkg/daemon's
+	// EventTxn handler, before ever reaching here -- OpTxn itself trusts
+	// that gate rather than re-checking it (its only call site), unlike
+	// OpSet, which also serves the Group/Command catalog's own Puts and
+	// so must re-validate at this layer regardless of caller.
+	//
+	// Atomicity here is still purely "one raft log entry -> one Apply
+	// call," not a real Store-level transaction: pkg/store.Store's
+	// Set/Delete each autocommit independently (see this file's own doc
+	// comment on OpCascadeDelete), so a write failing partway through
+	// this op list -- after every op already passed validation above --
+	// has no rollback, the same latent gap OpCascadeDelete's multi-write
+	// case already has. The write loop below is where a real
+	// Store-level BEGIN/COMMIT/ROLLBACK would go if that gap is ever
+	// closed; nothing about EventTxn's wire shape or this op's
+	// validate-then-write structure would need to change to add it.
+	OpTxn OpType = 8
 )
 
 // EncodeCommand builds the raft log payload for a Set/Delete operation.
@@ -411,6 +437,31 @@ func (f *FSM) Apply(l *raft.Log) any {
 			return ApplyResult{Err: err}
 		}
 		return ApplyResult{Err: f.Store.Set(key, recordValue)}
+	case OpTxn:
+		ops, err := shmevent.DecodeTxnPayload(value)
+		if err != nil {
+			return ApplyResult{Err: fmt.Errorf("kvfsm: txn: decode payload: %w", err)}
+		}
+		for i, op := range ops {
+			if op.Op != shmevent.TxnOpSet && op.Op != shmevent.TxnOpDelete {
+				return ApplyResult{Err: fmt.Errorf("kvfsm: txn: op %d has unknown kind %d", i, op.Op)}
+			}
+		}
+		// See OpTxn's own doc comment for why this loop -- not any single
+		// Store call -- is where future rollback support would wrap a
+		// real Store-level transaction.
+		for _, op := range ops {
+			var err error
+			if op.Op == shmevent.TxnOpSet {
+				err = f.Store.Set(op.Key, op.Value)
+			} else {
+				err = f.Store.Delete(op.Key)
+			}
+			if err != nil {
+				return ApplyResult{Err: fmt.Errorf("kvfsm: txn: op on key %x: %w", op.Key, err)}
+			}
+		}
+		return ApplyResult{}
 	default:
 		return ApplyResult{Err: fmt.Errorf("kvfsm: unknown op %d", op)}
 	}

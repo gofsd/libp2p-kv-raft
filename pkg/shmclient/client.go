@@ -108,6 +108,30 @@ func (s *Session) LogAppend(ctx context.Context, key, value []byte) error {
 	return nil
 }
 
+// Txn atomically applies every op in ops through raft on the session's
+// node, in a single EventTxn round trip: either all of them land, or none
+// do (see shmevent.EventTxn's doc comment). Each op is a plain Set
+// (shmevent.TxnOpSet, key and value both required) or Delete
+// (shmevent.TxnOpDelete, value ignored).
+func (s *Session) Txn(ctx context.Context, ops []shmevent.TxnOp) error {
+	payload, err := shmevent.EncodeTxnPayload(ops)
+	if err != nil {
+		return fmt.Errorf("shmclient: txn: %w", err)
+	}
+	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
+		EventType: shmevent.EventTxn,
+		Value:     payload,
+		ID:        newID(),
+	}, s.priv)
+	if err != nil {
+		return fmt.Errorf("shmclient: txn: %w", err)
+	}
+	if resp.EventType == shmevent.EventError {
+		return fmt.Errorf("shmclient: txn: %s", resp.Value)
+	}
+	return nil
+}
+
 // Get reads key from the session's node -- a one-shot GetField carrying
 // key directly in Value (SourceID left 0), skipping the registry
 // round-trip Set needs -- which, like any raft follower's local read, may
@@ -846,6 +870,15 @@ func LogAppend(ctx context.Context, peerID string, key, value []byte) error {
 		return err
 	}
 	return s.LogAppend(ctx, key, value)
+}
+
+// Txn is the one-shot convenience wrapper around Open+Session.Txn.
+func Txn(ctx context.Context, peerID string, ops []shmevent.TxnOp) error {
+	s, err := Open(ctx, peerID)
+	if err != nil {
+		return err
+	}
+	return s.Txn(ctx, ops)
 }
 
 // Get is the one-shot convenience wrapper around Open+Session.Get.

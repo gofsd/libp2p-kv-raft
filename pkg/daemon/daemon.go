@@ -1786,6 +1786,21 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		}
 		return shmevent.Msg{EventType: shmevent.EventSet, ID: m.ID}
 
+	case shmevent.EventTxn:
+		ops, err := shmevent.DecodeTxnPayload(m.Value)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		for _, op := range ops {
+			if err := rejectReservedKey(op.Key); err != nil {
+				return errorMsg(m.ID, err)
+			}
+		}
+		if _, err := n.handleOpForward(ctx, kvfsm.OpTxn, nil, m.Value, true); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventTxn, ID: m.ID}
+
 	case shmevent.EventPermitRequest:
 		kind, peerID, metadata, err := shmevent.DecodePermitRequestPayload(m.Value)
 		if err != nil {

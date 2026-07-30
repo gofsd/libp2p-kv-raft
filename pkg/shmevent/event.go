@@ -427,6 +427,23 @@ const (
 	// (pkg/daemon.ForwardKickProtocolID), mirroring EventLeave's own
 	// forwarding shape.
 	EventKick uint8 = 43
+	// EventTxn atomically applies an ordered list of plain Set/Delete
+	// ops -- Value is EncodeTxnPayload(ops) (see TxnOp/EncodeTxnPayload/
+	// DecodeTxnPayload) -- as a single raft log entry: every op lands or
+	// none do, the same "one log entry -> one kvfsm.Apply call" guarantee
+	// that already makes a single EventSet atomic (see kvfsm.OpTxn's doc
+	// comment), just widened to more than one key. pkg/daemon rejects the
+	// whole request if any op's key starts with a reserved namespace byte
+	// (shmevent.SystemKeyPrefix/logrecord.LogKeyPrefix), the same
+	// rejectReservedKey check EventSet/EventSetField already apply per
+	// key -- EventTxn is a plain-KV feature only, not a way to batch
+	// writes into the Group/Command catalog or any other reserved
+	// namespace. Applied via handleOpForward exactly like EventSet
+	// (forwarded one hop to the leader if this node isn't it). Like
+	// EventSet, every op's key and value together share ops' one Value
+	// (ValueSize, 512 bytes) budget -- a transaction is a handful of
+	// small ops, not a bulk-write mechanism.
+	EventTxn uint8 = 44
 	// EventError is response-only: Value carries a UTF-8 error message,
 	// ID echoes the failed request's ID. Not part of the fields the
 	// protocol was specified with -- added because the struct has no
@@ -525,6 +542,8 @@ func EventName(e uint8) string {
 		return "channel_close_write"
 	case EventKick:
 		return "kick"
+	case EventTxn:
+		return "txn"
 	case EventError:
 		return "error"
 	default:
