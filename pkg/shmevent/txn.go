@@ -1,6 +1,9 @@
 package shmevent
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // TxnOpSet and TxnOpDelete are TxnOp.Op's two valid values -- EventTxn only
 // ever expresses plain key writes/deletes, not the compare-and-swap or
@@ -102,4 +105,34 @@ func DecodeTxnPayload(payload []byte) ([]TxnOp, error) {
 		return nil, fmt.Errorf("shmevent: txn payload has %d trailing bytes", len(payload)-off)
 	}
 	return ops, nil
+}
+
+// ParseTxnOpsString parses a human-typeable transaction description into a
+// TxnOp list: a space-separated list of `<key>=<value>` (a Set -- split on
+// the first `=` only, so a value itself containing `=` is preserved
+// verbatim) or `del:<key>` (a Delete) tokens. Shared by pkg/kvctl's `mage
+// txn` target and mobile/kvmobile.Txn, so both bindings accept the exact
+// same one-string grammar rather than each inventing (and drifting from)
+// their own.
+func ParseTxnOpsString(ops string) ([]TxnOp, error) {
+	fields := strings.Fields(ops)
+	if len(fields) == 0 {
+		return nil, fmt.Errorf("shmevent: txn: no ops given (want e.g. \"k1=v1 k2=v2 del:k3\")")
+	}
+	parsed := make([]TxnOp, 0, len(fields))
+	for _, field := range fields {
+		if key, ok := strings.CutPrefix(field, "del:"); ok {
+			if key == "" {
+				return nil, fmt.Errorf("shmevent: txn: %q has an empty key", field)
+			}
+			parsed = append(parsed, TxnOp{Op: TxnOpDelete, Key: []byte(key)})
+			continue
+		}
+		key, value, ok := strings.Cut(field, "=")
+		if !ok || key == "" {
+			return nil, fmt.Errorf("shmevent: txn: %q is neither <key>=<value> nor del:<key>", field)
+		}
+		parsed = append(parsed, TxnOp{Op: TxnOpSet, Key: []byte(key), Value: []byte(value)})
+	}
+	return parsed, nil
 }

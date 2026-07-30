@@ -67,3 +67,39 @@ func TestDecodeTxnPayloadRejectsTrailingBytes(t *testing.T) {
 		t.Fatal("DecodeTxnPayload with trailing bytes unexpectedly succeeded")
 	}
 }
+
+func TestParseTxnOpsString(t *testing.T) {
+	ops, err := ParseTxnOpsString("k1=v1 k2=with=equals del:k3")
+	if err != nil {
+		t.Fatalf("ParseTxnOpsString: %v", err)
+	}
+	want := []TxnOp{
+		{Op: TxnOpSet, Key: []byte("k1"), Value: []byte("v1")},
+		{Op: TxnOpSet, Key: []byte("k2"), Value: []byte("with=equals")},
+		{Op: TxnOpDelete, Key: []byte("k3")},
+	}
+	if !reflect.DeepEqual(ops, want) {
+		t.Fatalf("ParseTxnOpsString = %+v, want %+v", ops, want)
+	}
+}
+
+func TestParseTxnOpsStringRejectsEmptyString(t *testing.T) {
+	if _, err := ParseTxnOpsString(""); err == nil {
+		t.Fatal("ParseTxnOpsString(\"\") unexpectedly succeeded")
+	}
+	if _, err := ParseTxnOpsString("   "); err == nil {
+		t.Fatal("ParseTxnOpsString of an all-whitespace string unexpectedly succeeded")
+	}
+}
+
+func TestParseTxnOpsStringRejectsMalformedToken(t *testing.T) {
+	if _, err := ParseTxnOpsString("k1=v1 not-a-valid-op"); err == nil {
+		t.Fatal("ParseTxnOpsString with a malformed token unexpectedly succeeded")
+	}
+}
+
+func TestParseTxnOpsStringRejectsEmptyDeleteKey(t *testing.T) {
+	if _, err := ParseTxnOpsString("del:"); err == nil {
+		t.Fatal("ParseTxnOpsString(\"del:\") unexpectedly succeeded")
+	}
+}

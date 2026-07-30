@@ -567,6 +567,30 @@ func Get(key string) (string, error) {
 	return value, nil
 }
 
+// Txn atomically applies a space-separated list of ops through raft --
+// either all of them land, or none do (see shmevent.EventTxn's doc
+// comment) -- forwarding to the current leader exactly like Submit. Each
+// op is `<key>=<value>` (a Set) or `del:<key>` (a Delete); see
+// shmevent.ParseTxnOpsString's doc comment for the full grammar, shared
+// as-is with desktop's `mage txn`.
+func Txn(ops string) error {
+	parsed, err := shmevent.ParseTxnOpsString(ops)
+	if err != nil {
+		return fmt.Errorf("kvmobile: %w", err)
+	}
+	sess, err := currentSession()
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	if err := sess.Txn(ctx, parsed); err != nil {
+		return fmt.Errorf("kvmobile: txn: %w", err)
+	}
+	return nil
+}
+
 // PeerID returns this device's peer id, or "" if Start hasn't completed
 // successfully yet.
 func PeerID() string {
