@@ -102,7 +102,7 @@ func TestChannelOpenBidirectionalSendPollOverHTTP(t *testing.T) {
 	}
 
 	// A -> B.
-	payloadAtoB, err := shmevent.EncodeChannelSendPayload(channelIDA, []byte("hello from A"))
+	payloadAtoB, err := shmevent.EncodeChannelSendPayload(channelIDA, shmevent.ChannelPurposeData, []byte("hello from A"))
 	if err != nil {
 		t.Fatalf("EncodeChannelSendPayload(A->B): %v", err)
 	}
@@ -117,7 +117,7 @@ func TestChannelOpenBidirectionalSendPollOverHTTP(t *testing.T) {
 	// B -> A, on B's own independently minted channel id -- proving this
 	// is a genuine bidirectional pipe, not just A's own request echoed
 	// back.
-	payloadBtoA, err := shmevent.EncodeChannelSendPayload(channelIDB, []byte("hello from B"))
+	payloadBtoA, err := shmevent.EncodeChannelSendPayload(channelIDB, shmevent.ChannelPurposeData, []byte("hello from B"))
 	if err != nil {
 		t.Fatalf("EncodeChannelSendPayload(B->A): %v", err)
 	}
@@ -137,7 +137,7 @@ func TestChannelOpenBidirectionalSendPollOverHTTP(t *testing.T) {
 	}
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		status, _ := pollChannel(t, srv, tokenB, channelIDB)
+		status, _, _ := pollChannel(t, srv, tokenB, channelIDB)
 		if status == shmevent.ChannelPollClosed {
 			break
 		}
@@ -185,27 +185,31 @@ func postEvent(t *testing.T, srv *httptest.Server, token string, req shmevent.Ms
 
 // pollChannel is postEvent's EventChannelPoll-specific counterpart,
 // mirroring pkg/daemon/channel_test.go's identically named helper.
-func pollChannel(t *testing.T, srv *httptest.Server, token, channelID string) (status byte, chunk []byte) {
+func pollChannel(t *testing.T, srv *httptest.Server, token, channelID string) (status, purpose byte, chunk []byte) {
 	t.Helper()
 	resp := postEvent(t, srv, token, shmevent.Msg{EventType: shmevent.EventChannelPoll, Value: []byte(channelID)})
 	if resp.EventType == shmevent.EventError {
 		t.Fatalf("channel_poll rejected: %s", resp.Value)
 	}
-	status, chunk, err := shmevent.DecodeChannelPollResponse(resp.Value)
+	status, purpose, chunk, err := shmevent.DecodeChannelPollResponse(resp.Value)
 	if err != nil {
 		t.Fatalf("DecodeChannelPollResponse: %v", err)
 	}
-	return status, chunk
+	return status, purpose, chunk
 }
 
 // pollChannelUntilChunk polls channelID via srv until a chunk arrives or
-// the deadline passes.
+// the deadline passes -- also asserts its purpose round-trips as
+// ChannelPurposeData, since every send in this file uses that purpose.
 func pollChannelUntilChunk(t *testing.T, srv *httptest.Server, token, channelID string) []byte {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		status, chunk := pollChannel(t, srv, token, channelID)
+		status, purpose, chunk := pollChannel(t, srv, token, channelID)
 		if status == shmevent.ChannelPollChunk {
+			if purpose != shmevent.ChannelPurposeData {
+				t.Fatalf("got purpose %d, want %d (ChannelPurposeData)", purpose, shmevent.ChannelPurposeData)
+			}
 			return chunk
 		}
 		if time.Now().After(deadline) {

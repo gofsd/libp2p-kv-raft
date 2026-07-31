@@ -11,6 +11,7 @@ import (
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/registry"
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmclient"
+	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
 
 // channelPollInterval bounds how often pumpChannelRecv/ListenChannel's
@@ -20,19 +21,29 @@ import (
 const channelPollInterval = 100 * time.Millisecond
 
 // channelSendChunkSize bounds how many bytes pumpChannelSend reads from
-// stdin per SendChannel call -- comfortably under shmevent.ValueSize
-// (512) once EncodeChannelSendPayload's own length-prefixed channelID
-// field is accounted for.
-const channelSendChunkSize = 400
+// stdin per SendChannel call -- comfortably under shmevent.ChannelValueSize
+// (16KB, EventChannelSend/EventChannelPoll's own much larger analogue of
+// the 512-byte shmevent.ValueSize every other event's Value obeys) once
+// EncodeChannelSendPayload's own length-prefixed channelID field is
+// accounted for.
+const channelSendChunkSize = 16000
 
-// OpenChannel implements `mage openchannel <peerID>`: opens a raw,
-// bidirectional byte pipe from the current node to peerID and pumps this
+// OpenChannel implements `mage openchannel <peerID> <purpose>`: opens a
+// persistent, bidirectional stream from the current node to peerID,
+// tagging everything this process sends with purpose (resolved via
+// shmevent.ChannelPurposeFromName -- "" for the default data purpose,
+// "control"/"video"/a numeric string for anything else), and pumps this
 // process's own stdin/stdout through it -- everything read from stdin is
 // sent to peerID, everything peerID sends back is written to stdout --
 // until stdin reaches EOF, the remote side closes the channel, or this
 // process receives SIGINT/SIGTERM. See shmevent.EventChannelOpen's doc
 // comment for the wire design.
-func OpenChannel(peerID string) error {
+func OpenChannel(peerID, purposeName string) error {
+	purpose, ok := shmevent.ChannelPurposeFromName(purposeName)
+	if !ok {
+		return fmt.Errorf("open channel: unknown purpose %q", purposeName)
+	}
+
 	reg, err := registry.Open()
 	if err != nil {
 		return err
@@ -56,15 +67,23 @@ func OpenChannel(peerID string) error {
 		return fmt.Errorf("open channel: %w", err)
 	}
 
-	return pumpChannel(sess, channelID)
+	return pumpChannel(sess, channelID, purpose)
 }
 
-// ListenChannel implements `mage listenchannel`: blocks until another
-// peer opens an incoming channel to the current node, then pumps stdin/
-// stdout through it exactly like OpenChannel does -- the callee-side
-// counterpart. Prints the remote peer id to stderr once claimed; stdout
-// is reserved for the raw pipe itself.
-func ListenChannel() error {
+// ListenChannel implements `mage listenchannel <purpose>`: blocks until
+// another peer opens an incoming channel to the current node, then pumps
+// stdin/stdout through it exactly like OpenChannel does -- the
+// callee-side counterpart. purpose tags this process's own outgoing data
+// the same way OpenChannel's does; the incoming side's purpose is
+// whatever the remote peer tagged it with, per chunk (see
+// pumpChannelRecv). Prints the remote peer id to stderr once claimed;
+// stdout is reserved for the pipe itself.
+func ListenChannel(purposeName string) error {
+	purpose, ok := shmevent.ChannelPurposeFromName(purposeName)
+	if !ok {
+		return fmt.Errorf("listen channel: unknown purpose %q", purposeName)
+	}
+
 	reg, err := registry.Open()
 	if err != nil {
 		return err
@@ -97,29 +116,29 @@ func ListenChannel() error {
 	}
 	fmt.Fprintf(os.Stderr, "channel from %s\n", remotePeerID)
 
-	return pumpChannel(sess, channelID)
+	return pumpChannel(sess, channelID, purpose)
 }
 
 // pumpChannel is OpenChannel/ListenChannel's shared body once a
 // channelID is in hand: pumpChannelSend chunks os.Stdin into SendChannel
-// calls (in its own goroutine) until EOF, then half-closes (see
-// pumpChannelSend's own doc comment for why a half- rather than full
-// close matters here); pumpChannelRecv polls PollChannel and writes
-// chunks to os.Stdout (also in its own goroutine) until the channel
-// reports closed. Waits for *both* directions to finish -- one side
-// reaching EOF must not cut off whatever the peer still has left to send
-// -- then fully closes the channel. Returns immediately on SIGINT/
-// SIGTERM instead, abandoning whichever goroutine(s) are still blocked
-// (Go's stdlib has no way to interrupt a blocking os.Stdin.Read or an
-// in-flight ipc.Call, but that's fine: this process is about to exit
-// either way).
-func pumpChannel(sess *shmclient.Session, channelID string) error {
+// calls tagged with purpose (in its own goroutine) until EOF, then
+// half-closes (see pumpChannelSend's own doc comment for why a half-
+// rather than full close matters here); pumpChannelRecv polls
+// PollChannel and writes chunks to os.Stdout (also in its own goroutine)
+// until the channel reports closed. Waits for *both* directions to
+// finish -- one side reaching EOF must not cut off whatever the peer
+// still has left to send -- then fully closes the channel. Returns
+// immediately on SIGINT/SIGTERM instead, abandoning whichever
+// goroutine(s) are still blocked (Go's stdlib has no way to interrupt a
+// blocking os.Stdin.Read or an in-flight ipc.Call, but that's fine: this
+// process is about to exit either way).
+func pumpChannel(sess *shmclient.Session, channelID string, purpose byte) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
 
 	sendDone := make(chan error, 1)
-	go func() { sendDone <- pumpChannelSend(sess, channelID) }()
+	go func() { sendDone <- pumpChannelSend(sess, channelID, purpose) }()
 
 	recvDone := make(chan error, 1)
 	go func() { recvDone <- pumpChannelRecv(sess, channelID) }()
@@ -150,18 +169,19 @@ func pumpChannel(sess *shmclient.Session, channelID string) error {
 	return recvErr
 }
 
-// pumpChannelSend chunks os.Stdin into SendChannel calls until EOF, then
-// half-closes (CloseChannelWrite, not CloseChannel) -- reaching EOF only
-// means this side has nothing more to *send*; the remote peer may still
-// have data in flight the other direction, which a full close would cut
-// off before pumpChannelRecv ever saw it.
-func pumpChannelSend(sess *shmclient.Session, channelID string) error {
+// pumpChannelSend chunks os.Stdin into SendChannel calls tagged with
+// purpose until EOF, then half-closes (CloseChannelWrite, not
+// CloseChannel) -- reaching EOF only means this side has nothing more to
+// *send*; the remote peer may still have data in flight the other
+// direction, which a full close would cut off before pumpChannelRecv
+// ever saw it.
+func pumpChannelSend(sess *shmclient.Session, channelID string, purpose byte) error {
 	buf := make([]byte, channelSendChunkSize)
 	for {
 		n, err := os.Stdin.Read(buf)
 		if n > 0 {
 			ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
-			sendErr := sess.SendChannel(ctx, channelID, buf[:n])
+			sendErr := sess.SendChannel(ctx, channelID, purpose, buf[:n])
 			cancel()
 			if sendErr != nil {
 				return sendErr
@@ -179,10 +199,13 @@ func pumpChannelSend(sess *shmclient.Session, channelID string) error {
 	}
 }
 
+// pumpChannelRecv discards each chunk's purpose -- stdout piping stays
+// purpose-agnostic; an operator piping raw bytes through `mage
+// openchannel`/`listenchannel` doesn't need the tag echoed back.
 func pumpChannelRecv(sess *shmclient.Session, channelID string) error {
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
-		chunk, status, err := sess.PollChannel(ctx, channelID)
+		chunk, _, status, err := sess.PollChannel(ctx, channelID)
 		cancel()
 		if err != nil {
 			return err

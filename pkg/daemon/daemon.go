@@ -141,18 +141,26 @@ const ClientProtocolID = protocol.ID("/libp2p-kv-raft/client/1.0.0")
 const ExecuteProtocolID = protocol.ID("/libp2p-kv-raft/execute/1.0.0")
 
 // ChannelProtocolID is the libp2p protocol one raft node uses to open a
-// raw, persistent, bidirectional byte pipe directly to another --
+// persistent, bidirectional, multipurpose stream directly to another --
 // EventChannelOpen/Send/Poll/Listen/Close's transport, see those events'
 // doc comments in pkg/shmevent. Unlike every other protocol in this file
 // (including ExecuteProtocolID), the stream is never a single
 // write-then-EOF request/response: after a short signed handshake
 // (mirroring ExecuteProtocolID's self-contained-signature design) the
-// stream stays open indefinitely and carries raw, unframed bytes in both
-// directions -- see writeFramed/readFramed (used only for the handshake)
-// and handleChannelStream's own doc comment for the full wire design.
-// Like ExecuteProtocolID, the traffic it carries never touches raft or
-// the store.
-const ChannelProtocolID = protocol.ID("/libp2p-kv-raft/channel/1.0.0")
+// stream stays open indefinitely, but -- unlike version 1.0.0 of this
+// protocol -- every message exchanged over it afterward is *also* a
+// signed shmevent.Event frame (writeFramed/readFramed wrapping
+// shmevent.Encode/Decode/Verify), the same machinery the handshake itself
+// uses, not raw unframed bytes: see channelSession.write and
+// pumpChannelReads for where each direction does this. Bumped from 1.0.0
+// because that's a wire-incompatible change -- an old peer speaking raw
+// bytes and a new peer expecting signed frames must never be allowed to
+// negotiate a stream together and silently misinterpret each other, so a
+// version bump makes that mismatch fail cleanly at libp2p's protocol
+// negotiation step instead. See handleChannelStream's own doc comment for
+// the full wire design. Like ExecuteProtocolID, the traffic it carries
+// never touches raft or the store.
+const ChannelProtocolID = protocol.ID("/libp2p-kv-raft/channel/2.0.0")
 
 // ExecInviteRedeemProtocolID is the libp2p protocol a redeeming peer's own
 // daemon dials directly at a shmevent.KindExecInvite invite's sourceAddr to
@@ -580,35 +588,66 @@ var (
 	channelPendingTimeout = 2 * time.Minute
 )
 
-// channelReadBufferSize is pumpChannelReads' read buffer size -- large
-// enough for reasonable throughput, small enough that one channel can't
-// hog an outsized chunk of memory per Read call.
-const channelReadBufferSize = 4096
+// channelMaxChunkSize bounds how many bytes a single channel chunk may
+// carry, in both directions. EventChannelPoll's response wraps a popped
+// chunk plus a 2-byte status+purpose header (shmevent.EncodeChannelPollResponse)
+// through the same shmevent.ChannelValueSize transport cap
+// EventChannelSend/EventChannelPoll get (bigger than the shmevent.ValueSize
+// every *other* IPC request/response obeys -- see ChannelValueSize's doc
+// comment for why channel data alone gets a much larger, independent
+// ceiling), so this is shmevent.ChannelValueSize - 2. Under
+// ChannelProtocolID's per-message-framed design (see that constant's own
+// doc comment), each network read is already exactly one signed frame --
+// there is no raw-byte coalescing left to guard against, unlike this
+// package's earlier raw-pipe design -- but the cap is still enforced in
+// both directions rather than assumed: dispatchChannelSend rejects an
+// oversized chunk before it's ever written (an honest local caller's own
+// EventChannelSend request is already bounded well under this by
+// shmevent.ChannelValueSize's own IPC-request budget), and pumpChannelReads
+// closes the session if a peer's frame exceeds it -- a peer isn't bound by
+// this package's own Encode-time checks and could otherwise hand-craft a
+// frame up to maxFramedMessage directly.
+const channelMaxChunkSize = shmevent.ChannelValueSize - 2
+
+// channelChunk is one entry in channelSession.inbox -- a purpose-tagged
+// chunk pumpChannelReads has already verified and unwrapped from one
+// signed network frame (see ChannelProtocolID's doc comment). Unlike this
+// package's earlier raw-pipe design, one channelChunk always corresponds
+// to exactly one wire frame -- never a coalesced or split read.
+type channelChunk struct {
+	purpose byte
+	data    []byte
+}
 
 // channelSession is one live EventChannelOpen/handleChannelStream
 // session (see ChannelProtocolID's doc comment for the wire design):
-// stream carries raw, unframed bytes in both directions once the initial
-// handshake completes. inbox buffers bytes pumpChannelReads has already
-// read off stream, for EventChannelPoll to drain -- entries are raw
-// chunks straight off the wire, chunk boundaries carry no meaning.
-// writeMu serializes EventChannelSend's writes to stream (in practice
-// only ever this node's own local caller, one at a time, but this
-// matches executeInbox's own defensive-mutex style rather than relying
-// on that).
+// stream carries a signed shmevent.Event frame per message in both
+// directions once the initial handshake completes. remotePub is the
+// remote peer's Ed25519 public key (derived from its peer id, the same
+// way the handshake itself verifies -- see dispatchChannelOpen/
+// handleChannelStream, both of which already have what's needed to
+// compute this at session-creation time), used by pumpChannelReads to
+// verify every subsequent frame, not just the handshake. inbox buffers
+// chunks pumpChannelReads has already read, verified and unwrapped off
+// stream, for EventChannelPoll to drain. writeMu serializes
+// EventChannelSend's writes to stream (in practice only ever this node's
+// own local caller, one at a time, but this matches executeInbox's own
+// defensive-mutex style rather than relying on that).
 type channelSession struct {
 	stream       network.Stream
 	remotePeerID string
+	remotePub    shmevent.PublicKey
 	writeMu      sync.Mutex
 
 	mu           sync.Mutex
-	inbox        [][]byte
+	inbox        []channelChunk
 	closed       bool
 	closeReason  string
 	lastActivity time.Time
 }
 
-func newChannelSession(stream network.Stream, remotePeerID string) *channelSession {
-	return &channelSession{stream: stream, remotePeerID: remotePeerID, lastActivity: time.Now()}
+func newChannelSession(stream network.Stream, remotePeerID string, remotePub shmevent.PublicKey) *channelSession {
+	return &channelSession{stream: stream, remotePeerID: remotePeerID, remotePub: remotePub, lastActivity: time.Now()}
 }
 
 func (s *channelSession) touch() {
@@ -623,28 +662,32 @@ func (s *channelSession) idleFor(now time.Time) time.Duration {
 	return now.Sub(s.lastActivity)
 }
 
-// pushChunk records one chunk pumpChannelReads just read off the wire.
-func (s *channelSession) pushChunk(chunk []byte) {
+// pushChunk records one purpose-tagged chunk pumpChannelReads just
+// verified and unwrapped off the wire.
+func (s *channelSession) pushChunk(purpose byte, chunk []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastActivity = time.Now()
 	if len(s.inbox) >= maxChannelInbox {
 		s.inbox = s.inbox[1:]
 	}
-	s.inbox = append(s.inbox, chunk)
+	s.inbox = append(s.inbox, channelChunk{purpose: purpose, data: chunk})
 }
 
 // popChunk returns the oldest buffered chunk, if any -- EventChannelPoll's
-// read side.
-func (s *channelSession) popChunk() ([]byte, bool) {
+// read side. Each inbox entry is already bounded to channelMaxChunkSize
+// (enforced by pumpChannelReads on the way in), so unlike this package's
+// earlier raw-pipe design there is nothing left to split across polls:
+// one call pops exactly one whole entry.
+func (s *channelSession) popChunk() (purpose byte, chunk []byte, ok bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.inbox) == 0 {
-		return nil, false
+		return 0, nil, false
 	}
 	c := s.inbox[0]
 	s.inbox = s.inbox[1:]
-	return c, true
+	return c.purpose, c.data, true
 }
 
 // markClosed records that stream has ended (pumpChannelReads hit EOF or
@@ -667,12 +710,19 @@ func (s *channelSession) status() (closed bool, reason string) {
 	return s.closed, s.closeReason
 }
 
-// write sends chunk directly over stream, with no framing -- see
-// ChannelProtocolID's doc comment.
-func (s *channelSession) write(chunk []byte) error {
+// write encodes purpose and chunk into a signed shmevent.Event frame
+// (EventChannelSend, shmevent.EncodeChannelWireChunk) using priv --
+// always this node's own identity key, n.ed25519Priv -- and writes it as
+// one length-framed message onto stream -- see ChannelProtocolID's doc
+// comment.
+func (s *channelSession) write(priv shmevent.PrivateKey, purpose byte, chunk []byte) error {
+	buf, err := shmevent.Encode(shmevent.Msg{EventType: shmevent.EventChannelSend, Value: shmevent.EncodeChannelWireChunk(purpose, chunk)}, priv)
+	if err != nil {
+		return fmt.Errorf("channel: encode frame: %w", err)
+	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if _, err := s.stream.Write(chunk); err != nil {
+	if err := writeFramed(s.stream, buf); err != nil {
 		return err
 	}
 	s.touch()
@@ -2280,11 +2330,11 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		return shmevent.Msg{EventType: shmevent.EventChannelOpen, ID: m.ID, Value: []byte(channelID)}
 
 	case shmevent.EventChannelSend:
-		channelID, chunk, err := shmevent.DecodeChannelSendPayload(m.Value)
+		channelID, purpose, chunk, err := shmevent.DecodeChannelSendPayload(m.Value)
 		if err != nil {
 			return errorMsg(m.ID, err)
 		}
-		if err := n.dispatchChannelSend(string(channelID), chunk); err != nil {
+		if err := n.dispatchChannelSend(string(channelID), purpose, chunk); err != nil {
 			return errorMsg(m.ID, err)
 		}
 		return shmevent.Msg{EventType: shmevent.EventChannelSend, ID: m.ID}
@@ -4339,15 +4389,20 @@ func (n *Node) handleExecuteStream(s network.Stream) {
 }
 
 // maxFramedMessage caps readFramed's length prefix before allocating, so
-// a peer can't claim an enormous length and force a large allocation.
-const maxFramedMessage = 4096
+// a peer can't claim an enormous length and force a large allocation. Must
+// comfortably fit a full channelMaxChunkSize-sized EventChannelSend frame
+// once capnp/crc32/signature overhead is added (empirically ~112 bytes for
+// a full shmevent.ChannelValueSize Value) -- sized with generous headroom
+// above that, not tuned to the exact byte count.
+const maxFramedMessage = 20 * 1024
 
 // writeFramed writes a 4-byte big-endian length prefix followed by buf --
-// ChannelProtocolID's handshake framing (see that protocol's doc
-// comment): every other stream protocol in this file writes one message
-// and half-closes, relying on EOF to mark the end (see e.g.
+// ChannelProtocolID's framing for every message it carries (see that
+// protocol's doc comment), handshake and post-handshake data frames
+// alike: every other stream protocol in this file writes one message and
+// half-closes, relying on EOF to mark the end (see e.g.
 // handleExecuteStream's io.ReadAll), which doesn't work here since the
-// stream must stay open afterward carrying raw, unframed bytes.
+// stream must stay open afterward carrying many further framed messages.
 func writeFramed(s network.Stream, buf []byte) error {
 	var lenBuf [4]byte
 	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(buf)))
@@ -4471,13 +4526,24 @@ func (n *Node) dispatchChannelOpen(ctx context.Context, destPeerIDStr string) (s
 		return "", fmt.Errorf("channel: %s rejected: %s", dest, reason)
 	}
 
+	destPub, err := dest.ExtractPublicKey()
+	if err != nil {
+		s.Close()
+		return "", fmt.Errorf("channel: extract public key for %s: %w", dest, err)
+	}
+	rawDestPub, err := destPub.Raw()
+	if err != nil {
+		s.Close()
+		return "", fmt.Errorf("channel: raw public key for %s: %w", dest, err)
+	}
+
 	channelID, err := newChannelID()
 	if err != nil {
 		s.Close()
 		return "", err
 	}
 	_ = s.SetDeadline(time.Time{}) // handshake done -- see the SetDeadline call above
-	sess := newChannelSession(s, dest.String())
+	sess := newChannelSession(s, dest.String(), shmevent.PublicKey(rawDestPub))
 	n.channels.register(channelID, sess)
 	go n.pumpChannelReads(sess)
 	return channelID, nil
@@ -4560,28 +4626,27 @@ func (n *Node) handleChannelStream(s network.Stream) {
 	// pumpChannelReads' intentionally long-lived read loop below. See
 	// streamRequestTimeout's doc comment.
 	_ = s.SetDeadline(time.Time{})
-	sess := newChannelSession(s, senderPeer.String())
+	sess := newChannelSession(s, senderPeer.String(), shmevent.PublicKey(rawSenderPub))
 	n.channels.register(channelID, sess)
 	n.channels.pushPending(channelID)
 	go n.pumpChannelReads(sess)
 }
 
-// pumpChannelReads is sess's background read pump: copies bytes off
-// sess.stream into sess's inbox for EventChannelPoll to drain, until the
-// stream errors/EOFs (the peer closed their write side, or the
-// connection dropped) or this node's own EventChannelClose/the reaper
-// closes it first -- either way, stream.Read then returns and this marks
-// the session closed rather than removing it outright, so any chunks
-// already buffered are still readable via a final poll.
+// pumpChannelReads is sess's background read pump: reads one signed
+// shmevent.Event frame at a time off sess.stream (readFramed), decodes
+// and verifies each against sess.remotePub, unwraps its purpose+chunk
+// (shmevent.DecodeChannelWireChunk) and pushes it onto sess's inbox for
+// EventChannelPoll to drain -- until the stream errors/EOFs (the peer
+// closed their write side, or the connection dropped), a frame fails to
+// read/decode/verify/fit channelMaxChunkSize (treated as fatal to the
+// session -- a peer that can't hold up its end of the framing contract
+// can't be trusted for anything after that point either), or this node's
+// own EventChannelClose/the reaper closes the stream first -- any of
+// which marks the session closed rather than removing it outright, so
+// chunks already buffered are still readable via a final poll.
 func (n *Node) pumpChannelReads(sess *channelSession) {
-	buf := make([]byte, channelReadBufferSize)
 	for {
-		nRead, err := sess.stream.Read(buf)
-		if nRead > 0 {
-			chunk := make([]byte, nRead)
-			copy(chunk, buf[:nRead])
-			sess.pushChunk(chunk)
-		}
+		buf, err := readFramed(sess.stream)
 		if err != nil {
 			reason := ""
 			if err != io.EOF {
@@ -4590,25 +4655,53 @@ func (n *Node) pumpChannelReads(sess *channelSession) {
 			sess.markClosed(reason)
 			return
 		}
+		m, crc, sig, err := shmevent.Decode(buf)
+		if err != nil {
+			sess.markClosed(fmt.Sprintf("decode channel frame: %v", err))
+			return
+		}
+		if m.EventType != shmevent.EventChannelSend {
+			sess.markClosed(fmt.Sprintf("unexpected channel frame event type %d", m.EventType))
+			return
+		}
+		if err := shmevent.Verify(sess.remotePub, m, crc, sig); err != nil {
+			sess.markClosed(fmt.Sprintf("verify channel frame: %v", err))
+			return
+		}
+		purpose, chunk, err := shmevent.DecodeChannelWireChunk(m.Value)
+		if err != nil {
+			sess.markClosed(fmt.Sprintf("decode channel wire chunk: %v", err))
+			return
+		}
+		if len(chunk) > channelMaxChunkSize {
+			sess.markClosed(fmt.Sprintf("peer sent an oversized channel chunk: %d bytes", len(chunk)))
+			return
+		}
+		sess.pushChunk(purpose, chunk)
 	}
 }
 
-// dispatchChannelSend implements EventChannelSend: writes chunk directly
-// to channelID's stream, with no framing. Deliberately does not
-// pre-check channelSession.status()'s closed flag: that flag tracks
-// whether *this node's own read side* has hit EOF (the peer half-closed
-// or fully closed their outgoing direction -- see EventChannelCloseWrite),
-// which says nothing about whether writing is still valid -- half-close
-// is directional. If this node's own outgoing direction has itself been
+// dispatchChannelSend implements EventChannelSend: signs and frames
+// purpose+chunk (channelSession.write) onto channelID's stream. Rejects
+// chunk outright if it exceeds channelMaxChunkSize, before ever writing
+// it -- see that constant's doc comment. Deliberately does not pre-check
+// channelSession.status()'s closed flag: that flag tracks whether *this
+// node's own read side* has hit EOF (the peer half-closed or fully
+// closed their outgoing direction -- see EventChannelCloseWrite), which
+// says nothing about whether writing is still valid -- half-close is
+// directional. If this node's own outgoing direction has itself been
 // closed (EventChannelCloseWrite, or a full EventChannelClose), the
-// underlying stream.Write below fails on its own, which is what actually
-// gates this.
-func (n *Node) dispatchChannelSend(channelID string, chunk []byte) error {
+// underlying write below fails on its own, which is what actually gates
+// this.
+func (n *Node) dispatchChannelSend(channelID string, purpose byte, chunk []byte) error {
+	if len(chunk) > channelMaxChunkSize {
+		return fmt.Errorf("channel: chunk too large: %d bytes (max %d)", len(chunk), channelMaxChunkSize)
+	}
 	sess, ok := n.channels.get(channelID)
 	if !ok {
 		return fmt.Errorf("channel: no such channel %q", channelID)
 	}
-	return sess.write(chunk)
+	return sess.write(n.ed25519Priv, purpose, chunk)
 }
 
 // dispatchChannelPoll implements EventChannelPoll: pops the oldest
@@ -4621,13 +4714,13 @@ func (n *Node) dispatchChannelPoll(channelID string) ([]byte, error) {
 	if !ok {
 		return nil, fmt.Errorf("channel: no such channel %q", channelID)
 	}
-	if chunk, ok := sess.popChunk(); ok {
-		return shmevent.EncodeChannelPollResponse(shmevent.ChannelPollChunk, chunk), nil
+	if purpose, chunk, ok := sess.popChunk(); ok {
+		return shmevent.EncodeChannelPollResponse(shmevent.ChannelPollChunk, purpose, chunk), nil
 	}
 	if closed, _ := sess.status(); closed {
-		return shmevent.EncodeChannelPollResponse(shmevent.ChannelPollClosed, nil), nil
+		return shmevent.EncodeChannelPollResponse(shmevent.ChannelPollClosed, shmevent.ChannelPurposeData, nil), nil
 	}
-	return shmevent.EncodeChannelPollResponse(shmevent.ChannelPollNoData, nil), nil
+	return shmevent.EncodeChannelPollResponse(shmevent.ChannelPollNoData, shmevent.ChannelPurposeData, nil), nil
 }
 
 // dispatchChannelListen implements EventChannelListen: claims the oldest

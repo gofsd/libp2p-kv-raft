@@ -142,9 +142,17 @@ func callerLock(peerID string) *sync.Mutex {
 }
 
 // capacity is the shared-memory data region size for both channels. It must
-// be a power of two and comfortably fit the larger of an encoded
-// request/response (see pkg/shmevent.ValueSize).
-const capacity = 4096
+// be a power of two and comfortably fit the largest encoded request/
+// response this package ever carries -- today, an EventChannelSend
+// request or EventChannelPoll response near shmevent.ChannelValueSize
+// (16KB), not the much smaller shmevent.ValueSize (512 bytes) every other
+// event's Value obeys -- see ChannelValueSize's doc comment for why
+// channel data alone gets a bigger ceiling. Each shmring segment this
+// package creates is transient (opened, used for one round trip, then
+// CloseStorage'd -- see Call/Serve), so sizing this for the rare large
+// message costs a bigger but short-lived mmap on every call, never a
+// long-lived allocation, even for a call that only carries a few bytes.
+const capacity = 32 * 1024
 
 const (
 	minPoll = 200 * time.Microsecond

@@ -8,15 +8,17 @@ import (
 	"time"
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmclient"
+	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
 
 // channelEvent is one ChannelCallback call recorded by
-// recordingChannelCallback -- either an OnData chunk or the terminal
-// OnClosed, distinguished by closed.
+// recordingChannelCallback -- either an OnData chunk (with its purpose)
+// or the terminal OnClosed, distinguished by closed.
 type channelEvent struct {
-	chunk  string
-	closed bool
-	reason string
+	purpose string
+	chunk   string
+	closed  bool
+	reason  string
 }
 
 // recordingChannelCallback is a Go-side ChannelCallback implementation
@@ -31,8 +33,8 @@ func newRecordingChannelCallback() *recordingChannelCallback {
 	return &recordingChannelCallback{ch: make(chan channelEvent, 16)}
 }
 
-func (r *recordingChannelCallback) OnData(chunk string) {
-	r.ch <- channelEvent{chunk: chunk}
+func (r *recordingChannelCallback) OnData(purpose, chunk string) {
+	r.ch <- channelEvent{purpose: purpose, chunk: chunk}
 }
 
 func (r *recordingChannelCallback) OnClosed(reason string) {
@@ -57,7 +59,7 @@ func (r *recordingChannelCallback) expectNone(t *testing.T, window time.Duration
 	t.Helper()
 	select {
 	case e := <-r.ch:
-		t.Fatalf("unexpected channel event: chunk=%q closed=%v reason=%q", e.chunk, e.closed, e.reason)
+		t.Fatalf("unexpected channel event: purpose=%q chunk=%q closed=%v reason=%q", e.purpose, e.chunk, e.closed, e.reason)
 	case <-time.After(window):
 	}
 }
@@ -103,24 +105,32 @@ func TestOpenChannelDeliversAndSends(t *testing.T) {
 		t.Fatalf("leader's listen reported remote peer %s, want %s", leaderRemote, PeerID())
 	}
 
-	// This device -> leader.
-	if err := SendChannelData(channelID, base64.StdEncoding.EncodeToString([]byte("from device"))); err != nil {
+	// This device -> leader, tagged with a non-default purpose --
+	// confirms purpose survives SendChannelData -> the signed network
+	// frame -> the leader's own PollChannel intact.
+	if err := SendChannelData(channelID, "video", base64.StdEncoding.EncodeToString([]byte("from device"))); err != nil {
 		t.Fatalf("SendChannelData: %v", err)
 	}
-	gotOnLeader := pollChannelUntilChunk(t, leaderPeerID, leaderChannelID, 10*time.Second)
+	gotOnLeader, gotOnLeaderPurpose := pollChannelUntilChunk(t, leaderPeerID, leaderChannelID, 10*time.Second)
 	if string(gotOnLeader) != "from device" {
 		t.Fatalf("leader received %q, want %q", gotOnLeader, "from device")
 	}
+	if gotOnLeaderPurpose != shmevent.ChannelPurposeVideo {
+		t.Fatalf("leader received purpose %d, want %d (ChannelPurposeVideo)", gotOnLeaderPurpose, shmevent.ChannelPurposeVideo)
+	}
 
-	// Leader -> this device.
+	// Leader -> this device, tagged with a different non-default purpose.
 	sendCtx, sendCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer sendCancel()
-	if err := shmclient.SendChannel(sendCtx, leaderPeerID, leaderChannelID, []byte("from leader")); err != nil {
+	if err := shmclient.SendChannel(sendCtx, leaderPeerID, leaderChannelID, shmevent.ChannelPurposeControl, []byte("from leader")); err != nil {
 		t.Fatalf("shmclient.SendChannel: %v", err)
 	}
 	e := cb.next(t, 10*time.Second)
 	if e.closed {
 		t.Fatalf("unexpected OnClosed(%q) before any data", e.reason)
+	}
+	if e.purpose != shmevent.ChannelPurposeName(shmevent.ChannelPurposeControl) {
+		t.Fatalf("device received purpose %q, want %q", e.purpose, shmevent.ChannelPurposeName(shmevent.ChannelPurposeControl))
 	}
 	gotOnDevice, err := base64.StdEncoding.DecodeString(e.chunk)
 	if err != nil {
@@ -189,7 +199,7 @@ func TestListenChannelClaimsIncomingChannel(t *testing.T) {
 
 	sendCtx, sendCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer sendCancel()
-	if err := shmclient.SendChannel(sendCtx, leaderPeerID, leaderChannelID, []byte("hello device")); err != nil {
+	if err := shmclient.SendChannel(sendCtx, leaderPeerID, leaderChannelID, shmevent.ChannelPurposeData, []byte("hello device")); err != nil {
 		t.Fatalf("shmclient.SendChannel: %v", err)
 	}
 	e := cb.next(t, 10*time.Second)
@@ -243,7 +253,7 @@ func TestCloseChannelStopsDeliveryAndNotifiesPeer(t *testing.T) {
 	deadline := time.After(10 * time.Second)
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_, status, err := shmclient.PollChannel(ctx, leaderPeerID, leaderChannelID)
+		_, _, status, err := shmclient.PollChannel(ctx, leaderPeerID, leaderChannelID)
 		cancel()
 		if err != nil {
 			t.Fatalf("shmclient.PollChannel: %v", err)
@@ -302,7 +312,7 @@ func TestStopChannelStopsLocalDeliveryWithoutClosingChannel(t *testing.T) {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := shmclient.SendChannel(ctx, leaderPeerID, leaderChannelID, []byte(value)); err != nil {
+		if err := shmclient.SendChannel(ctx, leaderPeerID, leaderChannelID, shmevent.ChannelPurposeData, []byte(value)); err != nil {
 			t.Fatalf("shmclient.SendChannel: %v", err)
 		}
 	}
@@ -327,10 +337,10 @@ func TestStopChannelStopsLocalDeliveryWithoutClosingChannel(t *testing.T) {
 	// The channel itself is still alive -- SendChannelData (going through
 	// this device's own daemon, independent of the now-stopped local
 	// delivery loop) must still work.
-	if err := SendChannelData(channelID, base64.StdEncoding.EncodeToString([]byte("still open"))); err != nil {
+	if err := SendChannelData(channelID, "", base64.StdEncoding.EncodeToString([]byte("still open"))); err != nil {
 		t.Fatalf("SendChannelData after StopChannel: %v", err)
 	}
-	if got := pollChannelUntilChunk(t, leaderPeerID, leaderChannelID, 10*time.Second); string(got) != "still open" {
+	if got, _ := pollChannelUntilChunk(t, leaderPeerID, leaderChannelID, 10*time.Second); string(got) != "still open" {
 		t.Fatalf("leader received %q, want %q", got, "still open")
 	}
 }
@@ -353,21 +363,21 @@ func listenChannelUntil(t *testing.T, peerID string, timeout time.Duration) (cha
 	return "", "", false, nil
 }
 
-func pollChannelUntilChunk(t *testing.T, peerID, channelID string, timeout time.Duration) []byte {
+func pollChannelUntilChunk(t *testing.T, peerID, channelID string, timeout time.Duration) (chunk []byte, purpose byte) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		chunk, status, err := shmclient.PollChannel(ctx, peerID, channelID)
+		chunk, purpose, status, err := shmclient.PollChannel(ctx, peerID, channelID)
 		cancel()
 		if err != nil {
 			t.Fatalf("shmclient.PollChannel: %v", err)
 		}
 		if status == shmclient.ChannelChunk {
-			return chunk
+			return chunk, purpose
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("channel chunk never arrived")
-	return nil
+	return nil, 0
 }

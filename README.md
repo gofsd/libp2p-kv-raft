@@ -847,25 +847,33 @@ other `submitcommand` dispatch.
 
 `EventExecute` above is a one-shot, fire-and-forget notification. `EventChannelOpen` (and its
 `Send`/`Poll`/`Listen`/`Close`/`CloseWrite` counterparts, `pkg/daemon.ChannelProtocolID`) is its
-persistent-session sibling: a raw, unreplicated, bidirectional byte pipe directly to another
-peer's process, with no framing of its own — chunk boundaries carry no meaning on the wire, the
-same netcat-style contract a raw TCP pipe has. Traffic on it never touches raft or the store,
-exactly like Execute's.
+persistent-session sibling: an unreplicated, bidirectional, **multipurpose** stream directly to
+another peer's process — usable for a plain data transfer, a control link, a video stream, or any
+mix of those interleaved on the same session, each chunk tagged with a purpose
+(`shmevent.ChannelPurposeData`/`ChannelPurposeControl`/`ChannelPurposeVideo`, or any other byte a
+caller chooses — the set is open-ended). Every message the channel carries, in both directions,
+including every data chunk after the initial handshake, is a real signed `shmevent.Event` frame —
+not raw unframed bytes the way earlier versions of this feature worked — so a chunk is
+authenticated per-message, not just once at handshake time. Traffic on it never touches raft or
+the store, exactly like Execute's.
 
 ```bash
-mage listenchannel                    # (on the receiving peer) blocks until a channel arrives
-mage openchannel <peerID>             # (on the opening peer) dials in
+mage listenchannel <purpose>                    # (on the receiving peer) blocks until a channel arrives
+mage openchannel <peerID> <purpose>             # (on the opening peer) dials in
 ```
 
-Both commands pump the current process's own stdin/stdout through the channel once one is open:
-`openchannel`/`listenchannel` are effectively `nc`/`socat` for this cluster's own transport —
-everything piped into stdin on one side comes out stdout on the other, and vice versa, until
-stdin reaches EOF, the remote side closes the channel, or the process gets SIGINT/SIGTERM. For
-example, to send a file from one peer to another:
+`<purpose>` may be `""` for the default data purpose, or `"control"`/`"video"`/a plain decimal
+number for anything else (`shmevent.ChannelPurposeName`/`ChannelPurposeFromName`) — it tags every
+chunk *this* process sends; the purpose of what it receives is whatever the remote peer tagged it
+with, per chunk. Both commands pump the current process's own stdin/stdout through the channel
+once one is open: `openchannel`/`listenchannel` are effectively `nc`/`socat` for this cluster's
+own transport — everything piped into stdin on one side comes out stdout on the other, and vice
+versa, until stdin reaches EOF, the remote side closes the channel, or the process gets
+SIGINT/SIGTERM. For example, to send a file from one peer to another:
 
 ```bash
-mage listenchannel > received.bin              # receiver
-mage openchannel <receiverPeerID> < send.bin    # sender
+mage listenchannel "" > received.bin              # receiver
+mage openchannel <receiverPeerID> "" < send.bin    # sender
 ```
 
 The two directions are independent: reaching stdin EOF only half-closes this side's *outgoing*
@@ -875,9 +883,13 @@ for both directions to finish (or an explicit signal) before sending `EventChann
 the session outright. Under the hood, opening a channel dials `ChannelProtocolID` and performs a
 short signed handshake (the same self-contained-signature recipe `EventExecute` uses —
 `shmevent.EncodeExecuteNotification`, verified against the *claimed* sender peer id's own
-extracted pubkey, never the raw connection) before the stream is handed off to carry raw bytes
-directly; `EventChannelPoll`/`EventChannelListen` are local, no-push polls a caller loops (same
-shape as `EventPollExecute`), since shmring IPC has no server-push mechanism of its own.
+extracted pubkey, never the raw connection); every message afterward reuses that same
+signed-frame machinery (`shmevent.Encode`/`Decode`/`Verify`, `EventChannelSend`,
+`shmevent.EncodeChannelWireChunk(purpose, chunk)`) rather than handing the stream off to carry
+raw bytes directly, so a frame forged with an unrelated key is rejected the moment it arrives, not
+silently delivered as data. `EventChannelPoll`/`EventChannelListen` are local, no-push polls a
+caller loops (same shape as `EventPollExecute`), since shmring IPC has no server-push mechanism of
+its own.
 
 Like Execute, a channel is local-only to operate (`EventChannelOpen/Send/Poll/Listen/Close/
 CloseWrite` all reject a remote/`ClientProtocolID` caller — only this node's own operator drives
@@ -891,12 +903,15 @@ dedicated background goroutine, the same "simplest thing that could work" reason
 `executeInbox` already uses.
 
 `kvmobile`'s `OpenChannel(peerID, cb)`/`ListenChannel(cb)`/`StopListenChannel()`/
-`SendChannelData(channelID, base64Chunk)`/`CloseChannel(channelID)`/`StopChannel(channelID)` are
-the Android port — see the "`kvmobile`" section below. Data crosses the gomobile boundary as
-base64 rather than raw bytes in both directions (a phone has no literal stdin/stdout the way
-desktop piping does, and gomobile's string-only boundary can't otherwise carry arbitrary binary
-safely); `ChannelCallback.OnData(chunk)`/`OnClosed(reason)` is the reverse-binding interface
-Kotlin implements to receive incoming data, mirroring `ExecuteCallback`'s shape.
+`SendChannelData(channelID, purposeName, base64Chunk)`/`CloseChannel(channelID)`/
+`StopChannel(channelID)` are the Android port — see the "`kvmobile`" section below. Data crosses
+the gomobile boundary as base64 rather than raw bytes in both directions (a phone has no literal
+stdin/stdout the way desktop piping does, and gomobile's string-only boundary can't otherwise
+carry arbitrary binary safely); `purposeName` is the same string convention `mage
+openchannel`/`listenchannel` uses (`""`/`"control"`/`"video"`/a decimal number).
+`ChannelCallback.OnData(purpose, chunk)`/`OnClosed(reason)` is the reverse-binding interface
+Kotlin implements to receive incoming data, mirroring `ExecuteCallback`'s shape — `purpose` is the
+sender's tag as a string (`shmevent.ChannelPurposeName`).
 
 ## Vendored dependency patch
 

@@ -662,10 +662,11 @@ func (s *Session) OpenChannel(ctx context.Context, destPeerID string) (channelID
 	return string(resp.Value), nil
 }
 
-// SendChannel writes one chunk of raw bytes to channelID -- see
+// SendChannel writes one chunk of bytes to channelID, tagged with
+// purpose (see shmevent.ChannelPurposeData/Control/Video) -- see
 // shmevent.EventChannelSend's doc comment.
-func (s *Session) SendChannel(ctx context.Context, channelID string, chunk []byte) error {
-	payload, err := shmevent.EncodeChannelSendPayload(channelID, chunk)
+func (s *Session) SendChannel(ctx context.Context, channelID string, purpose byte, chunk []byte) error {
+	payload, err := shmevent.EncodeChannelSendPayload(channelID, purpose, chunk)
 	if err != nil {
 		return fmt.Errorf("shmclient: send_channel: %w", err)
 	}
@@ -697,30 +698,31 @@ const (
 // last poll, if any -- see shmevent.EventChannelPoll's doc comment. A
 // caller loops this (with a short sleep between empty polls) to observe
 // a channel's incoming traffic, the same "no push transport" shape
-// PollExecute already uses.
-func (s *Session) PollChannel(ctx context.Context, channelID string) (chunk []byte, status ChannelStatus, err error) {
+// PollExecute already uses. purpose (see shmevent.ChannelPurposeData/
+// Control/Video) is only meaningful when status is ChannelChunk.
+func (s *Session) PollChannel(ctx context.Context, channelID string) (chunk []byte, purpose byte, status ChannelStatus, err error) {
 	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
 		EventType: shmevent.EventChannelPoll,
 		Value:     []byte(channelID),
 		ID:        newID(),
 	}, s.priv)
 	if err != nil {
-		return nil, ChannelNoData, fmt.Errorf("shmclient: poll_channel: %w", err)
+		return nil, 0, ChannelNoData, fmt.Errorf("shmclient: poll_channel: %w", err)
 	}
 	if resp.EventType == shmevent.EventError {
-		return nil, ChannelNoData, fmt.Errorf("shmclient: poll_channel: %s", resp.Value)
+		return nil, 0, ChannelNoData, fmt.Errorf("shmclient: poll_channel: %s", resp.Value)
 	}
-	wireStatus, wireChunk, err := shmevent.DecodeChannelPollResponse(resp.Value)
+	wireStatus, wirePurpose, wireChunk, err := shmevent.DecodeChannelPollResponse(resp.Value)
 	if err != nil {
-		return nil, ChannelNoData, fmt.Errorf("shmclient: poll_channel: decode: %w", err)
+		return nil, 0, ChannelNoData, fmt.Errorf("shmclient: poll_channel: decode: %w", err)
 	}
 	switch wireStatus {
 	case shmevent.ChannelPollChunk:
-		return wireChunk, ChannelChunk, nil
+		return wireChunk, wirePurpose, ChannelChunk, nil
 	case shmevent.ChannelPollClosed:
-		return nil, ChannelClosed, nil
+		return nil, 0, ChannelClosed, nil
 	default:
-		return nil, ChannelNoData, nil
+		return nil, 0, ChannelNoData, nil
 	}
 }
 
@@ -1092,20 +1094,20 @@ func OpenChannel(ctx context.Context, peerID, destPeerID string) (channelID stri
 
 // SendChannel is the one-shot convenience wrapper around
 // Open+Session.SendChannel.
-func SendChannel(ctx context.Context, peerID, channelID string, chunk []byte) error {
+func SendChannel(ctx context.Context, peerID, channelID string, purpose byte, chunk []byte) error {
 	s, err := Open(ctx, peerID)
 	if err != nil {
 		return err
 	}
-	return s.SendChannel(ctx, channelID, chunk)
+	return s.SendChannel(ctx, channelID, purpose, chunk)
 }
 
 // PollChannel is the one-shot convenience wrapper around
 // Open+Session.PollChannel.
-func PollChannel(ctx context.Context, peerID, channelID string) (chunk []byte, status ChannelStatus, err error) {
+func PollChannel(ctx context.Context, peerID, channelID string) (chunk []byte, purpose byte, status ChannelStatus, err error) {
 	s, err := Open(ctx, peerID)
 	if err != nil {
-		return nil, ChannelNoData, err
+		return nil, 0, ChannelNoData, err
 	}
 	return s.PollChannel(ctx, channelID)
 }

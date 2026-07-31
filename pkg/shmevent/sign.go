@@ -21,19 +21,23 @@ type (
 
 // canonicalPayload returns the fixed-width byte sequence CRC32 and the
 // Ed25519 signature are computed over: event(1) || sourceId_BE(2) ||
-// destinationId_BE(2) || value, zero-padded/truncated to ValueSize (512)
-// || id_BE(2) -- see api/shmevent.capnp's doc comment. This is the
-// *logical* field values, deliberately not capnp's own encoded bytes:
-// signing the transport encoding directly would make the signature
-// fragile to encoding-level changes (segment layout, padding) that don't
-// change the message's meaning.
+// destinationId_BE(2) || value, zero-padded/truncated to valueSizeFor(
+// m.EventType) (ValueSize -- 512 -- for every event except
+// EventChannelSend/EventChannelPoll, which get ChannelValueSize instead;
+// see that function's doc comment for why a fixed width keyed by event
+// type is still unambiguous) || id_BE(2) -- see api/shmevent.capnp's doc
+// comment. This is the *logical* field values, deliberately not capnp's
+// own encoded bytes: signing the transport encoding directly would make
+// the signature fragile to encoding-level changes (segment layout,
+// padding) that don't change the message's meaning.
 func canonicalPayload(m Msg) []byte {
-	buf := make([]byte, 1+2+2+ValueSize+2)
+	vs := valueSizeFor(m.EventType)
+	buf := make([]byte, 1+2+2+vs+2)
 	buf[0] = m.EventType
 	binary.BigEndian.PutUint16(buf[1:3], m.SourceID)
 	binary.BigEndian.PutUint16(buf[3:5], m.DestinationID)
-	copy(buf[5:5+ValueSize], m.Value) // zero-padded; copy truncates if longer, but Encode already rejects that
-	binary.BigEndian.PutUint16(buf[5+ValueSize:], m.ID)
+	copy(buf[5:5+vs], m.Value) // zero-padded; copy truncates if longer, but Encode already rejects that
+	binary.BigEndian.PutUint16(buf[5+vs:], m.ID)
 	return buf
 }
 

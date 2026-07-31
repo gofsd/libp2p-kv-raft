@@ -19,29 +19,39 @@ import (
 // pollChannel is a small test helper wrapping EventChannelPoll's
 // decode step -- used throughout below to avoid repeating
 // DecodeChannelPollResponse's error handling at every call site.
-func pollChannel(t *testing.T, ctx context.Context, n *Node, channelID string) (status byte, chunk []byte) {
+func pollChannel(t *testing.T, ctx context.Context, n *Node, channelID string) (status, purpose byte, chunk []byte) {
 	t.Helper()
 	resp := callLocal(t, ctx, n, shmevent.Msg{EventType: shmevent.EventChannelPoll, Value: []byte(channelID), ID: 1}, n.ed25519Priv)
 	if resp.EventType == shmevent.EventError {
 		t.Fatalf("channel_poll rejected: %s", resp.Value)
 	}
-	status, chunk, err := shmevent.DecodeChannelPollResponse(resp.Value)
+	status, purpose, chunk, err := shmevent.DecodeChannelPollResponse(resp.Value)
 	if err != nil {
 		t.Fatalf("DecodeChannelPollResponse: %v", err)
 	}
-	return status, chunk
+	return status, purpose, chunk
 }
 
 // pollChannelUntilChunk polls channelID on n until a chunk arrives or
 // deadline passes, mirroring TestExecuteEventDeliversAcrossNodes' own
-// poll loop.
+// poll loop. Discards purpose -- see pollChannelUntilChunkWithPurpose for
+// a variant that asserts on it.
 func pollChannelUntilChunk(t *testing.T, ctx context.Context, n *Node, channelID string) []byte {
+	t.Helper()
+	chunk, _ := pollChannelUntilChunkWithPurpose(t, ctx, n, channelID)
+	return chunk
+}
+
+// pollChannelUntilChunkWithPurpose is pollChannelUntilChunk, but also
+// returns the chunk's purpose -- for tests asserting purpose is carried
+// through correctly.
+func pollChannelUntilChunkWithPurpose(t *testing.T, ctx context.Context, n *Node, channelID string) (chunk []byte, purpose byte) {
 	t.Helper()
 	deadline := time.After(10 * time.Second)
 	for {
-		status, chunk := pollChannel(t, ctx, n, channelID)
+		status, purpose, chunk := pollChannel(t, ctx, n, channelID)
 		if status == shmevent.ChannelPollChunk {
-			return chunk
+			return chunk, purpose
 		}
 		select {
 		case <-deadline:
@@ -103,7 +113,7 @@ func TestChannelOpenBidirectionalSendPoll(t *testing.T) {
 
 	sendResp := callLocal(t, ctx, a, shmevent.Msg{
 		EventType: shmevent.EventChannelSend,
-		Value:     mustEncodeChannelSend(t, aChannelID, []byte("hello from a")),
+		Value:     mustEncodeChannelSend(t, aChannelID, shmevent.ChannelPurposeData, []byte("hello from a")),
 		ID:        2,
 	}, a.ed25519Priv)
 	if sendResp.EventType == shmevent.EventError {
@@ -122,7 +132,7 @@ func TestChannelOpenBidirectionalSendPoll(t *testing.T) {
 
 	replyResp := callLocal(t, ctx, b, shmevent.Msg{
 		EventType: shmevent.EventChannelSend,
-		Value:     mustEncodeChannelSend(t, bChannelID, []byte("hello from b")),
+		Value:     mustEncodeChannelSend(t, bChannelID, shmevent.ChannelPurposeData, []byte("hello from b")),
 		ID:        3,
 	}, b.ed25519Priv)
 	if replyResp.EventType == shmevent.EventError {
@@ -132,6 +142,124 @@ func TestChannelOpenBidirectionalSendPoll(t *testing.T) {
 	gotReply := pollChannelUntilChunk(t, ctx, a, aChannelID)
 	if string(gotReply) != "hello from b" {
 		t.Fatalf("a received %q, want %q", gotReply, "hello from b")
+	}
+}
+
+// TestChannelPurposeCarriedEndToEnd is the central assertion this whole
+// framed/purpose-tagged rewrite exists for: a purpose other than the
+// default (ChannelPurposeVideo, ChannelPurposeControl) survives
+// EncodeChannelSendPayload -> the signed network frame
+// (EncodeChannelWireChunk) -> EncodeChannelPollResponse intact, in both
+// directions.
+func TestChannelPurposeCarriedEndToEnd(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmpDir := t.TempDir()
+	a := startExecuteTestNode(t, filepath.Join(tmpDir, "a"))
+	b := startExecuteTestNode(t, filepath.Join(tmpDir, "b"))
+	connectPeers(t, ctx, a, b)
+
+	openResp := callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(b.peerID), ID: 1}, a.ed25519Priv)
+	if openResp.EventType == shmevent.EventError {
+		t.Fatalf("channel_open rejected: %s", openResp.Value)
+	}
+	aChannelID := string(openResp.Value)
+
+	sendResp := callLocal(t, ctx, a, shmevent.Msg{
+		EventType: shmevent.EventChannelSend,
+		Value:     mustEncodeChannelSend(t, aChannelID, shmevent.ChannelPurposeVideo, []byte("frame bytes")),
+		ID:        2,
+	}, a.ed25519Priv)
+	if sendResp.EventType == shmevent.EventError {
+		t.Fatalf("channel_send rejected: %s", sendResp.Value)
+	}
+
+	bChannelID, _ := listenChannelUntilClaimed(t, ctx, b)
+	gotChunk, gotPurpose := pollChannelUntilChunkWithPurpose(t, ctx, b, bChannelID)
+	if string(gotChunk) != "frame bytes" {
+		t.Fatalf("b received %q, want %q", gotChunk, "frame bytes")
+	}
+	if gotPurpose != shmevent.ChannelPurposeVideo {
+		t.Fatalf("b received purpose %d, want %d (ChannelPurposeVideo)", gotPurpose, shmevent.ChannelPurposeVideo)
+	}
+
+	replyResp := callLocal(t, ctx, b, shmevent.Msg{
+		EventType: shmevent.EventChannelSend,
+		Value:     mustEncodeChannelSend(t, bChannelID, shmevent.ChannelPurposeControl, []byte("ack")),
+		ID:        3,
+	}, b.ed25519Priv)
+	if replyResp.EventType == shmevent.EventError {
+		t.Fatalf("reply channel_send rejected: %s", replyResp.Value)
+	}
+
+	gotReply, gotReplyPurpose := pollChannelUntilChunkWithPurpose(t, ctx, a, aChannelID)
+	if string(gotReply) != "ack" {
+		t.Fatalf("a received %q, want %q", gotReply, "ack")
+	}
+	if gotReplyPurpose != shmevent.ChannelPurposeControl {
+		t.Fatalf("a received purpose %d, want %d (ChannelPurposeControl)", gotReplyPurpose, shmevent.ChannelPurposeControl)
+	}
+}
+
+// TestChannelLargeChunkNearChannelMaxSize confirms a channel chunk can
+// carry far more than the old, shared shmevent.ValueSize (512 bytes)
+// every other event's Value is still capped at -- proving
+// EventChannelSend/EventChannelPoll's own, much larger
+// shmevent.ChannelValueSize ceiling (see that constant's doc comment)
+// actually applies end to end: local IPC send, the signed network frame,
+// and local IPC poll all carry a single chunk right up against
+// channelMaxChunkSize with no splitting.
+func TestChannelLargeChunkNearChannelMaxSize(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmpDir := t.TempDir()
+	a := startExecuteTestNode(t, filepath.Join(tmpDir, "a"))
+	b := startExecuteTestNode(t, filepath.Join(tmpDir, "b"))
+	connectPeers(t, ctx, a, b)
+
+	openResp := callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(b.peerID), ID: 1}, a.ed25519Priv)
+	if openResp.EventType == shmevent.EventError {
+		t.Fatalf("channel_open rejected: %s", openResp.Value)
+	}
+	aChannelID := string(openResp.Value)
+
+	// channelMaxChunkSize itself (see that constant's doc comment) is
+	// sized for EventChannelPoll's response overhead, not
+	// EncodeChannelSendPayload's own extra channelID+purpose overhead on
+	// the send side -- so the send payload here is channelMaxChunkSize
+	// minus that overhead, well beyond the old 512-byte shmevent.ValueSize
+	// ceiling either way.
+	sendOverhead := 2 + len(aChannelID) + 1 // EncodeChannelSendPayload's own packing
+	want := make([]byte, channelMaxChunkSize-sendOverhead)
+	for i := range want {
+		want[i] = byte(i % 256)
+	}
+	if len(want) <= shmevent.ValueSize {
+		t.Fatalf("test chunk (%d bytes) isn't actually bigger than the old shared ValueSize (%d) -- test no longer proves anything", len(want), shmevent.ValueSize)
+	}
+
+	sendResp := callLocal(t, ctx, a, shmevent.Msg{
+		EventType: shmevent.EventChannelSend,
+		Value:     mustEncodeChannelSend(t, aChannelID, shmevent.ChannelPurposeData, want),
+		ID:        2,
+	}, a.ed25519Priv)
+	if sendResp.EventType == shmevent.EventError {
+		t.Fatalf("channel_send rejected: %s", sendResp.Value)
+	}
+
+	bChannelID, _ := listenChannelUntilClaimed(t, ctx, b)
+	got := pollChannelUntilChunk(t, ctx, b, bChannelID)
+	if len(got) != len(want) {
+		t.Fatalf("got %d bytes, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("byte %d mismatch: got %x, want %x", i, got[i], want[i])
+		}
 	}
 }
 
@@ -163,7 +291,7 @@ func TestChannelCloseIsObservedAsClosedByPeer(t *testing.T) {
 
 	deadline := time.After(10 * time.Second)
 	for {
-		status, _ := pollChannel(t, ctx, b, bChannelID)
+		status, _, _ := pollChannel(t, ctx, b, bChannelID)
 		if status == shmevent.ChannelPollClosed {
 			break
 		}
@@ -175,7 +303,7 @@ func TestChannelCloseIsObservedAsClosedByPeer(t *testing.T) {
 	}
 
 	// Idempotent: polling again must still report closed, not an error.
-	status, _ := pollChannel(t, ctx, b, bChannelID)
+	status, _, _ := pollChannel(t, ctx, b, bChannelID)
 	if status != shmevent.ChannelPollClosed {
 		t.Fatalf("second poll after close returned status %d, want ChannelPollClosed", status)
 	}
@@ -216,7 +344,7 @@ func TestChannelCloseWriteLeavesOtherDirectionOpen(t *testing.T) {
 	// -- the direction b->a was never touched by a's half-close.
 	replyResp := callLocal(t, ctx, b, shmevent.Msg{
 		EventType: shmevent.EventChannelSend,
-		Value:     mustEncodeChannelSend(t, bChannelID, []byte("still here")),
+		Value:     mustEncodeChannelSend(t, bChannelID, shmevent.ChannelPurposeData, []byte("still here")),
 		ID:        3,
 	}, b.ed25519Priv)
 	if replyResp.EventType == shmevent.EventError {
@@ -235,7 +363,7 @@ func TestChannelCloseWriteLeavesOtherDirectionOpen(t *testing.T) {
 	}
 	deadline := time.After(10 * time.Second)
 	for {
-		status, _ := pollChannel(t, ctx, a, aChannelID)
+		status, _, _ := pollChannel(t, ctx, a, aChannelID)
 		if status == shmevent.ChannelPollClosed {
 			break
 		}
@@ -313,6 +441,76 @@ func TestChannelStreamRejectsForgedSignature(t *testing.T) {
 	}
 	if len(listenResp.Value) != 0 {
 		t.Fatalf("forged channel_open was accepted and became listenable: %q", listenResp.Value)
+	}
+}
+
+// TestChannelDataFrameForgedAfterHandshakeRejected proves per-frame
+// signature verification -- not just handshake-time verification --
+// actually gates channel data: after a's real handshake with b succeeds,
+// a frame written directly onto the stream but signed with an unrelated
+// key must never be delivered via channel_poll. This is the whole point
+// of framing every post-handshake message as a signed shmevent.Event
+// instead of raw bytes (see ChannelProtocolID's doc comment) -- without
+// per-frame verification, this same injection would have silently
+// appeared as ordinary received bytes under this package's earlier
+// raw-pipe design.
+func TestChannelDataFrameForgedAfterHandshakeRejected(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmpDir := t.TempDir()
+	a := startExecuteTestNode(t, filepath.Join(tmpDir, "a"))
+	b := startExecuteTestNode(t, filepath.Join(tmpDir, "b"))
+	connectPeers(t, ctx, a, b)
+
+	openResp := callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(b.peerID), ID: 1}, a.ed25519Priv)
+	if openResp.EventType == shmevent.EventError {
+		t.Fatalf("channel_open rejected: %s", openResp.Value)
+	}
+	aChannelID := string(openResp.Value)
+	bChannelID, _ := listenChannelUntilClaimed(t, ctx, b)
+
+	// Inject a frame directly onto a's side of the stream, signed with an
+	// unrelated key instead of a's real identity -- bypassing
+	// dispatchChannelSend/channelSession.write entirely, exactly the way
+	// a malicious or buggy peer might.
+	aSess, ok := a.channels.get(aChannelID)
+	if !ok {
+		t.Fatal("a's own channel session vanished")
+	}
+	forgerPriv, _, err := crypto.GenerateKeyPair(crypto.Ed25519, -1)
+	if err != nil {
+		t.Fatalf("generate forger key: %v", err)
+	}
+	forgedBuf, err := shmevent.Encode(shmevent.Msg{
+		EventType: shmevent.EventChannelSend,
+		Value:     shmevent.EncodeChannelWireChunk(shmevent.ChannelPurposeData, []byte("forged")),
+	}, shmevent.PrivateKey(mustRaw(t, forgerPriv)))
+	if err != nil {
+		t.Fatalf("Encode forged frame: %v", err)
+	}
+	if err := writeFramed(aSess.stream, forgedBuf); err != nil {
+		t.Fatalf("write forged frame: %v", err)
+	}
+
+	// b must never deliver "forged" via channel_poll -- it must instead
+	// observe the channel closed, since a forged frame is fatal to the
+	// session (see pumpChannelReads' doc comment).
+	deadline := time.After(10 * time.Second)
+	for {
+		status, _, chunk := pollChannel(t, ctx, b, bChannelID)
+		if string(chunk) == "forged" {
+			t.Fatal("b delivered a chunk forged with an unrelated key")
+		}
+		if status == shmevent.ChannelPollClosed {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("b never observed the channel as closed after a forged frame")
+		case <-time.After(20 * time.Millisecond):
+		}
 	}
 }
 
@@ -459,11 +657,127 @@ func TestChannelReapEvictsUnclaimedPendingChannel(t *testing.T) {
 	}
 }
 
-func mustEncodeChannelSend(t *testing.T, channelID string, chunk []byte) []byte {
+func mustEncodeChannelSend(t *testing.T, channelID string, purpose byte, chunk []byte) []byte {
 	t.Helper()
-	payload, err := shmevent.EncodeChannelSendPayload(channelID, chunk)
+	payload, err := shmevent.EncodeChannelSendPayload(channelID, purpose, chunk)
 	if err != nil {
 		t.Fatalf("EncodeChannelSendPayload: %v", err)
 	}
 	return payload
+}
+
+// TestChannelSessionPushPopPreservesPurposeAndOrder is a deterministic,
+// struct-level regression test for channelSession's inbox: pushes several
+// purpose-tagged chunks and confirms popChunk drains them in the same
+// FIFO order, each with its purpose and data intact and unsplit -- unlike
+// this package's earlier raw-pipe design, one pushChunk call always
+// corresponds to exactly one popChunk call (see channelMaxChunkSize's doc
+// comment for why there's nothing left to split).
+func TestChannelSessionPushPopPreservesPurposeAndOrder(t *testing.T) {
+	sess := newChannelSession(nil, "remote-peer", nil)
+
+	pushed := []struct {
+		purpose byte
+		data    []byte
+	}{
+		{shmevent.ChannelPurposeData, []byte("first")},
+		{shmevent.ChannelPurposeControl, []byte("second")},
+		{shmevent.ChannelPurposeVideo, []byte("third")},
+	}
+	for _, p := range pushed {
+		sess.pushChunk(p.purpose, p.data)
+	}
+
+	for i, want := range pushed {
+		purpose, chunk, ok := sess.popChunk()
+		if !ok {
+			t.Fatalf("popChunk %d: no entry, want %q", i, want.data)
+		}
+		if purpose != want.purpose {
+			t.Fatalf("popChunk %d: purpose %d, want %d", i, purpose, want.purpose)
+		}
+		if string(chunk) != string(want.data) {
+			t.Fatalf("popChunk %d: chunk %q, want %q", i, chunk, want.data)
+		}
+	}
+
+	if _, _, ok := sess.popChunk(); ok {
+		t.Fatal("popChunk unexpectedly returned an entry after the inbox was drained")
+	}
+}
+
+// TestChannelBurstSendStaysUnderPollResponseLimit fires several
+// EventChannelSend calls back-to-back at b with no poll from b in between
+// (burst load, receiver polls slower than sender sends), confirming no
+// individual poll ever errors and the full concatenated result exactly
+// matches what a sent, in order and undamaged -- a general burst/ordering
+// regression, independent of any one chunk's size (each send here is
+// already its own signed wire frame -- see ChannelProtocolID's doc
+// comment -- so there's no raw-byte read-coalescing to guard against the
+// way this package's earlier raw-pipe design had to).
+func TestChannelBurstSendStaysUnderPollResponseLimit(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmpDir := t.TempDir()
+	a := startExecuteTestNode(t, filepath.Join(tmpDir, "a"))
+	b := startExecuteTestNode(t, filepath.Join(tmpDir, "b"))
+	connectPeers(t, ctx, a, b)
+
+	openResp := callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(b.peerID), ID: 1}, a.ed25519Priv)
+	if openResp.EventType == shmevent.EventError {
+		t.Fatalf("channel_open rejected: %s", openResp.Value)
+	}
+	aChannelID := string(openResp.Value)
+
+	// Fire every send before b ever polls, each its own frame well within
+	// channelMaxChunkSize.
+	const sendCount = 12
+	const sendSize = 400
+	var want []byte
+	for i := range sendCount {
+		chunk := make([]byte, sendSize)
+		for j := range chunk {
+			chunk[j] = byte((i*sendSize + j) % 256)
+		}
+		want = append(want, chunk...)
+		sendResp := callLocal(t, ctx, a, shmevent.Msg{
+			EventType: shmevent.EventChannelSend,
+			Value:     mustEncodeChannelSend(t, aChannelID, shmevent.ChannelPurposeData, chunk),
+			ID:        uint16(2 + i),
+		}, a.ed25519Priv)
+		if sendResp.EventType == shmevent.EventError {
+			t.Fatalf("channel_send %d rejected: %s", i, sendResp.Value)
+		}
+	}
+
+	bChannelID, _ := listenChannelUntilClaimed(t, ctx, b)
+
+	var got []byte
+	deadline := time.After(10 * time.Second)
+	for len(got) < len(want) {
+		status, _, chunk := pollChannel(t, ctx, b, bChannelID)
+		if len(chunk) > channelMaxChunkSize {
+			t.Fatalf("poll returned %d bytes, want <= %d", len(chunk), channelMaxChunkSize)
+		}
+		got = append(got, chunk...)
+		if status == shmevent.ChannelPollChunk {
+			continue
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("only received %d/%d bytes before deadline", len(got), len(want))
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("received %d bytes, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("byte %d mismatch: got %x, want %x", i, got[i], want[i])
+		}
+	}
 }

@@ -9,24 +9,28 @@ import (
 	"time"
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmclient"
+	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
 
 // ChannelCallback is a gomobile-bindable interface Kotlin implements to
-// receive a raw channel's incoming data -- OpenChannel/ListenChannel's
+// receive a channel's incoming data -- OpenChannel/ListenChannel's
 // reverse-binding counterpart to ExecuteCallback/CommandDispatchHandler
 // (see kvmobile.go). See pkg/shmevent.EventChannelOpen's doc comment for
-// the underlying wire design: a persistent, unreplicated, bidirectional
-// byte pipe to another peer, the mobile port of desktop's `mage
+// the underlying wire design: a persistent, unreplicated, bidirectional,
+// multipurpose stream to another peer, the mobile port of desktop's `mage
 // openchannel`/`listenchannel`.
 type ChannelCallback interface {
-	// OnData delivers one received chunk, base64-encoded -- gomobile's
-	// bindings are string-only across the boundary (see this package's
-	// other reverse-binding interfaces), and unlike ExecuteCallback's raw
-	// UTF-8 string (fine for Execute's typical text payloads), arbitrary
-	// binary channel data would be mangled by JNI string marshaling.
-	// Called on the channel's own pump goroutine, never the caller's --
-	// see ExecuteCallback.OnNotification's identical threading note.
-	OnData(chunk string)
+	// OnData delivers one received chunk, tagged with purpose
+	// (shmevent.ChannelPurposeName -- "data"/"control"/"video", or a
+	// plain decimal number for a custom purpose) and base64-encoded --
+	// gomobile's bindings are string-only across the boundary (see this
+	// package's other reverse-binding interfaces), and unlike
+	// ExecuteCallback's raw UTF-8 string (fine for Execute's typical text
+	// payloads), arbitrary binary channel data would be mangled by JNI
+	// string marshaling. Called on the channel's own pump goroutine,
+	// never the caller's -- see ExecuteCallback.OnNotification's
+	// identical threading note.
+	OnData(purpose, chunk string)
 	// OnClosed is called exactly once, when the channel itself ends
 	// (either side closed it, or an error occurred) -- reason is empty
 	// for a clean close. Never called just because StopChannel stopped
@@ -166,9 +170,15 @@ func StopListenChannel() {
 }
 
 // SendChannelData writes one chunk of raw bytes (base64-encoded, the
-// inverse of ChannelCallback.OnData) to channelID -- see
+// inverse of ChannelCallback.OnData) to channelID, tagged with purpose
+// (shmevent.ChannelPurposeFromName -- "" for the default data purpose,
+// "control"/"video"/a numeric string for anything else) -- see
 // shmevent.EventChannelSend's doc comment.
-func SendChannelData(channelID, base64Chunk string) error {
+func SendChannelData(channelID, purposeName, base64Chunk string) error {
+	purpose, ok := shmevent.ChannelPurposeFromName(purposeName)
+	if !ok {
+		return fmt.Errorf("kvmobile: send channel data: unknown purpose %q", purposeName)
+	}
 	sess, err := currentSession()
 	if err != nil {
 		return err
@@ -179,7 +189,7 @@ func SendChannelData(channelID, base64Chunk string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
-	if err := sess.SendChannel(ctx, channelID, chunk); err != nil {
+	if err := sess.SendChannel(ctx, channelID, purpose, chunk); err != nil {
 		return fmt.Errorf("kvmobile: send channel data: %w", err)
 	}
 	return nil
@@ -271,7 +281,7 @@ func runChannelWatch(ctx context.Context, done chan struct{}, channelID string, 
 		}
 
 		pollCtx, cancel := context.WithTimeout(ctx, channelPollCallTimeout)
-		chunk, status, pollErr := sess.PollChannel(pollCtx, channelID)
+		chunk, purpose, status, pollErr := sess.PollChannel(pollCtx, channelID)
 		cancel()
 		if pollErr != nil {
 			if sleepOrCancelled(ctx, channelPollInterval) {
@@ -282,7 +292,7 @@ func runChannelWatch(ctx context.Context, done chan struct{}, channelID string, 
 
 		switch status {
 		case shmclient.ChannelChunk:
-			callOnDataSafely(cb, base64.StdEncoding.EncodeToString(chunk))
+			callOnDataSafely(cb, shmevent.ChannelPurposeName(purpose), base64.StdEncoding.EncodeToString(chunk))
 			// Loop again immediately (no wait) to drain any backlog
 			// quickly -- mirrors runExecuteWatch's identical shape.
 		case shmclient.ChannelClosed:
@@ -296,9 +306,9 @@ func runChannelWatch(ctx context.Context, done chan struct{}, channelID string, 
 	}
 }
 
-func callOnDataSafely(cb ChannelCallback, chunk string) {
+func callOnDataSafely(cb ChannelCallback, purpose, chunk string) {
 	defer func() { recover() }()
-	cb.OnData(chunk)
+	cb.OnData(purpose, chunk)
 }
 
 func callOnClosedSafely(cb ChannelCallback, reason string) {

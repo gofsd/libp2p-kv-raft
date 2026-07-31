@@ -337,15 +337,18 @@ const (
 	// leaderMultiaddr) can just query again a moment later instead of
 	// guessing or constructing the circuit address by hand.
 	EventGetOwnAddr uint8 = 36
-	// EventChannelOpen opens a raw, unreplicated, bidirectional byte pipe
-	// to another peer -- the persistent-session counterpart to
-	// EventExecute's one-shot notification (see that event's doc comment
-	// for the shared self-contained-signature/permit-gate design this
-	// reuses). Value is the target peer id, as a plain string. The daemon
-	// dials pkg/daemon.ChannelProtocolID, performs a signed handshake
-	// (identical in spirit to EncodeExecuteNotification), and on
-	// acceptance registers a live channel session backed by that raw
-	// libp2p stream. Local-only, like EventLeave/EventRecruit -- a remote
+	// EventChannelOpen opens a persistent, unreplicated, bidirectional,
+	// multipurpose stream to another peer -- the persistent-session
+	// counterpart to EventExecute's one-shot notification (see that
+	// event's doc comment for the shared self-contained-signature/
+	// permit-gate design this reuses). Value is the target peer id, as a
+	// plain string. The daemon dials pkg/daemon.ChannelProtocolID,
+	// performs a signed handshake (identical in spirit to
+	// EncodeExecuteNotification), and on acceptance registers a live
+	// channel session backed by that libp2p stream. Unlike the handshake
+	// alone, every message exchanged afterward over that stream is also a
+	// full signed shmevent.Event frame -- see EventChannelSend's doc
+	// comment. Local-only, like EventLeave/EventRecruit -- a remote
 	// (ClientProtocolID) caller has no legitimate use for opening a
 	// channel on this node's behalf. Response Value is a freshly minted
 	// opaque channelID string: a pure local handle this node chose for
@@ -353,25 +356,36 @@ const (
 	// -- see EventChannelSend/Poll/Close, which all take it as their own
 	// Value.
 	EventChannelOpen uint8 = 37
-	// EventChannelSend writes one chunk of raw bytes to an already-open
-	// channel (see EventChannelOpen). Value is
-	// EncodeChannelSendPayload(channelID, chunk) -- chunk is written
-	// directly to the underlying stream with no further framing, exactly
-	// the netcat-style raw pipe this feature implements: chunk boundaries
-	// carry no meaning to the receiving side. Local-only.
+	// EventChannelSend writes one chunk of bytes to an already-open
+	// channel (see EventChannelOpen), tagged with a purpose (see
+	// ChannelPurposeData/Control/Video -- a caller can freely interleave
+	// more than one purpose over the same channel, e.g. a control message
+	// alongside a bulk data transfer, or a video frame). Value is
+	// EncodeChannelSendPayload(channelID, purpose, chunk). Unlike a raw
+	// pipe, chunk boundaries are preserved end to end: this Value's
+	// purpose and chunk become the Value of a second, distinct
+	// shmevent.Event (EncodeChannelWireChunk(purpose, chunk), same
+	// EventChannelSend event type) that the daemon signs
+	// (shmevent.Encode) and writes as one length-framed message directly
+	// onto the underlying libp2p stream -- the receiving daemon verifies
+	// that signature against the sender's own Ed25519 public key (exactly
+	// like EventChannelOpen's handshake does) before ever buffering the
+	// chunk for EventChannelPoll to drain, so a forged or corrupted frame
+	// is rejected per-message, not just at handshake time. Local-only.
 	EventChannelSend uint8 = 38
 	// EventChannelPoll drains one buffered chunk received on channelID
 	// (Value, a plain string) since the last poll, oldest first -- the
 	// same "no push transport, a local caller loops this" design
 	// EventPollExecute already uses, for the identical reason (see that
 	// event's doc comment). Response Value is
-	// EncodeChannelPollResponse(status, chunk): status is
+	// EncodeChannelPollResponse(status, purpose, chunk): status is
 	// ChannelPollNoData (nothing new yet, channel still open),
-	// ChannelPollChunk (chunk follows), or ChannelPollClosed (the channel
-	// has ended -- returned idempotently on every poll after any
-	// already-buffered chunks are drained, never an error, so a caller
-	// that stops polling immediately after seeing it once doesn't miss
-	// anything). Local-only.
+	// ChannelPollChunk (purpose and chunk follow), or ChannelPollClosed
+	// (the channel has ended -- returned idempotently on every poll after
+	// any already-buffered chunks are drained, never an error, so a
+	// caller that stops polling immediately after seeing it once doesn't
+	// miss anything; purpose is ChannelPurposeData and chunk empty for
+	// both ChannelPollNoData and ChannelPollClosed). Local-only.
 	EventChannelPoll uint8 = 39
 	// EventChannelListen drains one pending *incoming* channel this node
 	// has accepted (via another peer's EventChannelOpen dialing in) but
@@ -653,8 +667,51 @@ func EventFromName(name string) (uint8, bool) {
 
 // ValueSize is the maximum length of Msg.Value this package enforces (a
 // convention, not a capnp schema constraint -- see api/shmevent.capnp's
-// doc comment on Event.value).
+// doc comment on Event.value) for every event type except
+// EventChannelSend/EventChannelPoll -- see ChannelValueSize.
 const ValueSize = 512
+
+// ChannelValueSize is EventChannelSend/EventChannelPoll's own, much
+// larger analogue of ValueSize -- a channel chunk needs to move real bulk
+// data (a file transfer, a video frame), where every other event's Value
+// is a handful of small fields (a key, a peer id, a permit record) that
+// have no reason to grow. Kept independent of ValueSize rather than
+// raising that shared constant so that:
+//
+//   - every other event's canonicalPayload (see sign.go) stays exactly
+//     as small as before -- no extra CRC32/signing cost, no bigger
+//     shmring segment, for the vast majority of traffic that never
+//     touches a channel.
+//   - web-app's Rust client (web-app/src/shmevent.rs), which mirrors
+//     ValueSize=512 for every event it actually sends/verifies (Set,
+//     Get, ...) but implements no Channel support at all, needs no
+//     matching change -- it never constructs or verifies an
+//     EventChannelSend/EventChannelPoll message.
+//
+// valueSizeFor is what actually applies this per-event-type ceiling; see
+// its doc comment for why a fixed (not length-prefixed) width per event
+// type is still safe here, the same way ValueSize's fixed width is.
+const ChannelValueSize = 16 * 1024
+
+// valueSizeFor returns the maximum Msg.Value length -- and the fixed
+// width canonicalPayload zero-pads/truncates Value to -- for e.
+// EventChannelSend/EventChannelPoll (the two event types whose Value
+// carries a channel chunk, in the request and response direction
+// respectively -- see those events' doc comments) get ChannelValueSize;
+// every other event type keeps the original ValueSize. This is still
+// safe as a *fixed* per-message width, not a length-prefixed variable
+// one: e (a message's EventType) sits at a constant offset (byte 0) in
+// canonicalPayload, ahead of Value, so a verifier always knows which
+// width the signer must have used before it needs to know Value's own
+// length -- exactly the same property ValueSize's single fixed width
+// already relied on, just keyed by event type instead of being one
+// constant for everything.
+func valueSizeFor(e uint8) int {
+	if e == EventChannelSend || e == EventChannelPoll {
+		return ChannelValueSize
+	}
+	return ValueSize
+}
 
 // SignatureSize is the length of an Ed25519 signature.
 const SignatureSize = 64
@@ -762,10 +819,12 @@ func DecodeExecuteNotification(data []byte) (senderPeerID, payload []byte, err e
 
 // Encode serializes m to its capnp wire form, computing CRC32 and signing
 // with priv. priv may be nil only for EventGetPublicKey/EventGetPrivateKey
-// requests (see Sign's doc comment).
+// requests (see Sign's doc comment). m.Value's ceiling is ValueSize,
+// except for EventChannelSend/EventChannelPoll -- see
+// ChannelValueSize/valueSizeFor.
 func Encode(m Msg, priv PrivateKey) ([]byte, error) {
-	if len(m.Value) > ValueSize {
-		return nil, fmt.Errorf("shmevent: value too long: %d bytes (max %d)", len(m.Value), ValueSize)
+	if maxSize := valueSizeFor(m.EventType); len(m.Value) > maxSize {
+		return nil, fmt.Errorf("shmevent: value too long: %d bytes (max %d)", len(m.Value), maxSize)
 	}
 
 	msg, seg, err := capnp.NewMessage(capnp.SingleSegment(nil))
