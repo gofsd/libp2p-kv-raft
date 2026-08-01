@@ -4488,7 +4488,17 @@ func (n *Node) dispatchChannelOpen(ctx context.Context, destPeerIDStr string) (s
 	if err != nil {
 		return "", fmt.Errorf("channel: invalid destination peer id %q: %w", destPeerIDStr, err)
 	}
-	s, err := n.host.NewStream(ctx, dest, ChannelProtocolID)
+	// ctx here is ipc.Serve's own top-level, whole-process-lifetime
+	// context (see Run), not a per-request one -- Serve handles one
+	// request at a time synchronously, so an unbounded dial that never
+	// succeeds or fails (e.g. a peer whose addresses aren't yet resolvable,
+	// such as one that only just joined the cluster) wedges this node's
+	// entire IPC Serve loop indefinitely, not just this one call. Bound it
+	// to streamRequestTimeout, the same budget the handshake right below
+	// already gets.
+	dialCtx, dialCancel := context.WithTimeout(ctx, streamRequestTimeout)
+	s, err := n.host.NewStream(dialCtx, dest, ChannelProtocolID)
+	dialCancel()
 	if err != nil {
 		return "", fmt.Errorf("channel: open stream to %s: %w", dest, err)
 	}
