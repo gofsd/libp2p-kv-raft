@@ -43,15 +43,44 @@ fi
 # needed.
 #
 # Deliberately narrow: only auto-commits when test/e2e/testdata.json is
-# the *only* tracked file with a pending change, so a push made mid-way
-# through unrelated work never gets a surprise commit mixed into it --
-# that case is left for the operator to sort out and commit themselves.
-dirty=$(git status --porcelain --untracked-files=no)
-if [ "$dirty" = " M test/e2e/testdata.json" ]; then
+# the *only* tracked file with a pending change (staged or not -- covered
+# by the plain grep below rather than matching one exact `git status
+# --porcelain` status-code string, since that same file can legitimately
+# show up as "M ", " M", or "MM" depending on what's already staged), so a
+# push made mid-way through unrelated work never gets a surprise commit
+# mixed into it -- that case is left for the operator to sort out and
+# commit themselves.
+other_dirty=$(git status --porcelain --untracked-files=no | grep -v ' test/e2e/testdata\.json$')
+testdata_dirty=$(git status --porcelain --untracked-files=no | grep ' test/e2e/testdata\.json$')
+if [ -n "$testdata_dirty" ] && [ -z "$other_dirty" ]; then
 	git add test/e2e/testdata.json
-	git commit -m "Record latest android_ui_result (passing run)" >/dev/null
-	echo "pre-push: auto-committed the refreshed android_ui_result timestamp"
-elif [ -n "$dirty" ]; then
+	commit_log=$(mktemp)
+	if git commit -m "Record latest android_ui_result (passing run)" >"$commit_log" 2>&1; then
+		echo "pre-push: auto-committed the refreshed android_ui_result timestamp"
+	elif grep -q "Please tell me who you are" "$commit_log"; then
+		# No git identity configured at all -- never set one globally from
+		# a hook (or anywhere else automated); instead borrow whoever
+		# authored the most recent commit, the same identity a human would
+		# already be pushing this branch under anyway.
+		author=$(git log -1 --format='%an <%ae>' HEAD)
+		name=$(printf '%s' "$author" | sed 's/ <.*//')
+		email=$(printf '%s' "$author" | sed 's/.*<\(.*\)>.*/\1/')
+		if git -c "user.name=$name" -c "user.email=$email" commit -m "Record latest android_ui_result (passing run)" >"$commit_log" 2>&1; then
+			echo "pre-push: auto-committed the refreshed android_ui_result timestamp (as $author -- no git identity configured)"
+		else
+			echo "pre-push: failed to auto-commit test/e2e/testdata.json -- commit it yourself before pushing again:" >&2
+			cat "$commit_log" >&2
+			rm -f "$commit_log"
+			exit 1
+		fi
+	else
+		echo "pre-push: failed to auto-commit test/e2e/testdata.json -- commit it yourself before pushing again:" >&2
+		cat "$commit_log" >&2
+		rm -f "$commit_log"
+		exit 1
+	fi
+	rm -f "$commit_log"
+elif [ -n "$testdata_dirty" ]; then
 	echo "pre-push: test/e2e/testdata.json (and possibly other files) changed after e2e:current -- not auto-committing since other changes are also pending; commit test/e2e/testdata.json yourself before pushing again." >&2
 fi
 
