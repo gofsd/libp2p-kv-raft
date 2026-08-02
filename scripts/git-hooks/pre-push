@@ -37,10 +37,19 @@ fi
 # git history already has a long-standing convention for exactly that
 # follow-up commit ("Record latest android_ui_result (passing run)",
 # `git log --grep`); auto-committing it here just does that same step
-# without needing a human to type it by hand after every push. Since a
-# pre-push hook runs strictly before the actual network push, whatever
-# this commits here rides along with the same push -- no second push
-# needed.
+# without needing a human to type it by hand after every push.
+#
+# This can NOT ride along with the *current* push, despite running before
+# it: git captures the exact local sha1 to push (the "local ref" line on
+# this hook's own stdin) before invoking pre-push at all, and pushes
+# exactly that captured value regardless of what HEAD moves to while the
+# hook is still running -- confirmed directly (a commit made here stayed
+# local-only; origin/main only caught up on the *next* push). So this
+# commit is always exactly one push behind -- harmless and self-healing,
+# since it becomes an ordinary ancestor of whatever real commit comes
+# next and rides along with *that* push instead, but genuinely one more
+# `git push` if this repo is ever left at just this commit with nothing
+# else queued behind it.
 #
 # Deliberately narrow: only auto-commits when test/e2e/testdata.json is
 # the *only* tracked file with a pending change (staged or not -- covered
