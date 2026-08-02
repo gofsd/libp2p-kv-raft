@@ -29,4 +29,30 @@ if ! mage e2e:current; then
 	exit 1
 fi
 
+# A successful e2e:current always re-records android_ui_result's own
+# ran_at/status in test/e2e/testdata.json (see pkg/e2erun.Run), even when
+# nothing else about the run changed -- so a routine push otherwise always
+# leaves this one-line bookkeeping diff sitting uncommitted afterward,
+# needing a manual follow-up commit every single time. This repo's own
+# git history already has a long-standing convention for exactly that
+# follow-up commit ("Record latest android_ui_result (passing run)",
+# `git log --grep`); auto-committing it here just does that same step
+# without needing a human to type it by hand after every push. Since a
+# pre-push hook runs strictly before the actual network push, whatever
+# this commits here rides along with the same push -- no second push
+# needed.
+#
+# Deliberately narrow: only auto-commits when test/e2e/testdata.json is
+# the *only* tracked file with a pending change, so a push made mid-way
+# through unrelated work never gets a surprise commit mixed into it --
+# that case is left for the operator to sort out and commit themselves.
+dirty=$(git status --porcelain --untracked-files=no)
+if [ "$dirty" = " M test/e2e/testdata.json" ]; then
+	git add test/e2e/testdata.json
+	git commit -m "Record latest android_ui_result (passing run)" >/dev/null
+	echo "pre-push: auto-committed the refreshed android_ui_result timestamp"
+elif [ -n "$dirty" ]; then
+	echo "pre-push: test/e2e/testdata.json (and possibly other files) changed after e2e:current -- not auto-committing since other changes are also pending; commit test/e2e/testdata.json yourself before pushing again." >&2
+fi
+
 exit 0
