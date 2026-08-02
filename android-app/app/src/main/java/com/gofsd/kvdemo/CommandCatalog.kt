@@ -1,5 +1,6 @@
 package com.gofsd.kvdemo
 
+import android.util.Base64
 import kvmobile.ChannelCallback
 import kvmobile.CommandDispatchHandler
 import kvmobile.ExecuteCallback
@@ -167,17 +168,21 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     // peer, the mobile port of desktop's `mage openchannel`/`listenchannel`
     // (see README's "Raw Channel" section and
     // mobile/kvmobile/channel.go's own doc comments for the wire design).
-    // Data here is base64 in both directions: a phone keyboard isn't
-    // literal stdin/stdout the way desktop's piping is, and gomobile's
-    // string-only boundary can't carry arbitrary binary safely otherwise
-    // (see ChannelCallback.OnData's doc comment). OpenChannel/ListenChannel
-    // both start a standing delivery loop, same "outlives this screen,
-    // logged to the shared Activity Log" treatment WatchExecute/
-    // WatchCommandLog already get.
+    // Kvmobile.sendChannelData/ChannelCallback.onData carry raw ByteArray
+    // across the gomobile boundary directly (gobind binds Go []byte to
+    // Kotlin ByteArray natively -- no base64 needed there); base64 only
+    // shows up here, at the UI edge, because a phone keyboard has no way
+    // to type arbitrary binary into an EditText -- SendChannelData's own
+    // "chunk (base64)" field is decoded before the actual call, and
+    // received data is re-encoded only for display in the shared,
+    // text-only Activity Log. OpenChannel/ListenChannel both start a
+    // standing delivery loop, same "outlives this screen, logged to the
+    // shared Activity Log" treatment WatchExecute/WatchCommandLog already
+    // get.
     val channelCallback = { label: String ->
         object : ChannelCallback {
-            override fun onData(chunk: String) {
-                appendLog("$label data (base64): $chunk")
+            override fun onData(purpose: String, chunk: ByteArray) {
+                appendLog("$label [$purpose] data (base64): ${Base64.encodeToString(chunk, Base64.NO_WRAP)}")
             }
             override fun onClosed(reason: String) {
                 appendLog(if (reason.isEmpty()) "$label closed" else "$label closed: $reason")
@@ -193,9 +198,10 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
         "Claimed $resultJson -- incoming data appears below as it arrives"
     }
     add("Channel", "StopListenChannel", emptyList()) { Kvmobile.stopListenChannel(); ok() }
-    add("Channel", "SendChannelData", listOf("channelID", "chunk (base64)")) { a ->
-        Kvmobile.sendChannelData(a[0], a[1]); ok()
+    add("Channel", "SendChannelData", listOf("channelID", "purpose", "chunk (base64)")) { a ->
+        Kvmobile.sendChannelData(a[0], a[1], Base64.decode(a[2], Base64.NO_WRAP)); ok()
     }
+    add("Channel", "CloseChannelWrite", listOf("channelID")) { a -> Kvmobile.closeChannelWrite(a[0]); ok() }
     add("Channel", "CloseChannel", listOf("channelID")) { a -> Kvmobile.closeChannel(a[0]); ok() }
     add("Channel", "StopChannel", listOf("channelID")) { a -> Kvmobile.stopChannel(a[0]); ok() }
 

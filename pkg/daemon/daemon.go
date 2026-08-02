@@ -41,6 +41,7 @@ import (
 	"github.com/multiformats/go-multiaddr"
 	manet "github.com/multiformats/go-multiaddr/net"
 
+	"github.com/gofsd/libp2p-kv-raft/pkg/chandata"
 	"github.com/gofsd/libp2p-kv-raft/pkg/ipc"
 	"github.com/gofsd/libp2p-kv-raft/pkg/kvfsm"
 	"github.com/gofsd/libp2p-kv-raft/pkg/logrecord"
@@ -142,25 +143,33 @@ const ExecuteProtocolID = protocol.ID("/libp2p-kv-raft/execute/1.0.0")
 
 // ChannelProtocolID is the libp2p protocol one raft node uses to open a
 // persistent, bidirectional, multipurpose stream directly to another --
-// EventChannelOpen/Send/Poll/Listen/Close's transport, see those events'
-// doc comments in pkg/shmevent. Unlike every other protocol in this file
-// (including ExecuteProtocolID), the stream is never a single
-// write-then-EOF request/response: after a short signed handshake
-// (mirroring ExecuteProtocolID's self-contained-signature design) the
-// stream stays open indefinitely, but -- unlike version 1.0.0 of this
-// protocol -- every message exchanged over it afterward is *also* a
-// signed shmevent.Event frame (writeFramed/readFramed wrapping
-// shmevent.Encode/Decode/Verify), the same machinery the handshake itself
-// uses, not raw unframed bytes: see channelSession.write and
-// pumpChannelReads for where each direction does this. Bumped from 1.0.0
-// because that's a wire-incompatible change -- an old peer speaking raw
-// bytes and a new peer expecting signed frames must never be allowed to
-// negotiate a stream together and silently misinterpret each other, so a
-// version bump makes that mismatch fail cleanly at libp2p's protocol
-// negotiation step instead. See handleChannelStream's own doc comment for
-// the full wire design. Like ExecuteProtocolID, the traffic it carries
-// never touches raft or the store.
-const ChannelProtocolID = protocol.ID("/libp2p-kv-raft/channel/2.0.0")
+// EventChannelOpen/Send/Poll/Listen/Close/DataReady's transport, see
+// those events' doc comments in pkg/shmevent. Unlike every other
+// protocol in this file (including ExecuteProtocolID), the stream is
+// never a single write-then-EOF request/response: after a short signed
+// handshake (mirroring ExecuteProtocolID's self-contained-signature
+// design, still the ordinary shmevent.Encode/Decode/Verify Msg
+// machinery) the stream stays open indefinitely, and every message
+// exchanged over it afterward is *also* signed and framed
+// (writeFramed/readFramed), but -- unlike version 2.0.0 of this protocol
+// -- using shmevent.SignChannelChunk/VerifyChannelChunk/
+// EncodeChannelFrame/DecodeChannelFrame's own variable-length scheme
+// instead of a Msg's fixed-width one: see channelSession.write and
+// pumpChannelReads for where each direction does this, and
+// SignChannelChunk's own doc comment for why a fixed-width scheme (2.0.0's
+// only option, since it reused Msg/EventChannelSend directly) doesn't fit
+// pkg/chandata's own much larger per-chunk ceiling. Every version bump
+// here (1.0.0's raw unframed bytes -> 2.0.0's signed-Msg-per-message ->
+// 3.0.0's variable-length signed frame) has been a wire-incompatible
+// change, so each is a real protocol.ID bump rather than a change to
+// 2.0.0's own wire format in place -- an old peer speaking one and a new
+// peer expecting the other must never be allowed to negotiate a stream
+// together and silently misinterpret each other; the version bump makes
+// that mismatch fail cleanly at libp2p's protocol negotiation step
+// instead. See handleChannelStream's own doc comment for the full wire
+// design. Like ExecuteProtocolID, the traffic it carries never touches
+// raft or the store.
+const ChannelProtocolID = protocol.ID("/libp2p-kv-raft/channel/3.0.0")
 
 // ExecInviteRedeemProtocolID is the libp2p protocol a redeeming peer's own
 // daemon dials directly at a shmevent.KindExecInvite invite's sourceAddr to
@@ -589,25 +598,25 @@ var (
 )
 
 // channelMaxChunkSize bounds how many bytes a single channel chunk may
-// carry, in both directions. EventChannelPoll's response wraps a popped
-// chunk plus a 2-byte status+purpose header (shmevent.EncodeChannelPollResponse)
-// through the same shmevent.ChannelValueSize transport cap
-// EventChannelSend/EventChannelPoll get (bigger than the shmevent.ValueSize
-// every *other* IPC request/response obeys -- see ChannelValueSize's doc
-// comment for why channel data alone gets a much larger, independent
-// ceiling), so this is shmevent.ChannelValueSize - 2. Under
-// ChannelProtocolID's per-message-framed design (see that constant's own
-// doc comment), each network read is already exactly one signed frame --
-// there is no raw-byte coalescing left to guard against, unlike this
-// package's earlier raw-pipe design -- but the cap is still enforced in
-// both directions rather than assumed: dispatchChannelSend rejects an
-// oversized chunk before it's ever written (an honest local caller's own
-// EventChannelSend request is already bounded well under this by
-// shmevent.ChannelValueSize's own IPC-request budget), and pumpChannelReads
-// closes the session if a peer's frame exceeds it -- a peer isn't bound by
-// this package's own Encode-time checks and could otherwise hand-craft a
-// frame up to maxFramedMessage directly.
-const channelMaxChunkSize = shmevent.ChannelValueSize - 2
+// carry over the network, in both directions -- independent of (and much
+// larger than) shmevent.ChannelValueSize, which only bounds
+// EventChannelSend/Poll's own IPC payload on the legacy per-chunk-round-
+// trip path (see that constant's doc comment). The primary path -- a local
+// caller's pkg/chandata data-plane ring, drained by pumpChannelUpload -- is
+// capped at chandata.MaxChunkSize instead (see that constant's doc comment
+// on why bigger chunks matter for throughput), and this is set equal to
+// it so a chunk that fits through the ring always fits in one wire frame
+// with no further splitting. Under ChannelProtocolID's per-message-framed
+// design (see that constant's own doc comment), each network read is
+// already exactly one signed frame -- there is no raw-byte coalescing left
+// to guard against, unlike this package's earlier raw-pipe design -- but the
+// cap is still enforced in both directions rather than assumed:
+// dispatchChannelSend/pumpChannelUpload reject an oversized chunk before
+// it's ever written, and pumpChannelReads closes the session if a peer's
+// frame exceeds it -- a peer isn't bound by this package's own Encode-time
+// checks and could otherwise hand-craft a frame up to maxFramedMessage
+// directly.
+const channelMaxChunkSize = chandata.MaxChunkSize
 
 // channelChunk is one entry in channelSession.inbox -- a purpose-tagged
 // chunk pumpChannelReads has already verified and unwrapped from one
@@ -629,25 +638,92 @@ type channelChunk struct {
 // compute this at session-creation time), used by pumpChannelReads to
 // verify every subsequent frame, not just the handshake. inbox buffers
 // chunks pumpChannelReads has already read, verified and unwrapped off
-// stream, for EventChannelPoll to drain. writeMu serializes
-// EventChannelSend's writes to stream (in practice only ever this node's
-// own local caller, one at a time, but this matches executeInbox's own
-// defensive-mutex style rather than relying on that).
+// stream, for the legacy EventChannelPoll path to drain -- down (see
+// below) is the primary path new callers use instead. writeMu serializes
+// writes to stream: dispatchChannelSend's legacy per-chunk IPC path and
+// pumpChannelUpload's ring-drain path (see pkg/chandata's doc comment)
+// both call write, potentially from different goroutines, unlike before
+// when only ever one local caller wrote at a time.
 type channelSession struct {
 	stream       network.Stream
 	remotePeerID string
 	remotePub    shmevent.PublicKey
 	writeMu      sync.Mutex
 
+	// channelID duplicates channelTable's own map key on the session
+	// itself, purely so pumpChannelReads/pumpChannelUpload/
+	// dispatchChannelDataReady (all of which already have a *channelSession
+	// in hand) can name this channel's chandata rings without a second
+	// parameter threaded through every call site.
+	channelID string
+
+	// closeCtx/closeCancel bound every chandata call this session's
+	// goroutines make (WriteChunk/ReadChunk/Open), so tearing the channel
+	// down (dispatchChannelClose, channelTable.reap) promptly unblocks
+	// them instead of leaving them waiting on a ring that will never see
+	// further activity.
+	closeCtx    context.Context
+	closeCancel context.CancelFunc
+
+	// down is this node's own outgoing data-plane ring toward the local
+	// caller (pkg/chandata.DirDown) -- created synchronously before this
+	// channelID is ever handed back to any caller (dispatchChannelOpen/
+	// handleChannelStream), so it always exists by the time a local
+	// caller could possibly go looking for it. Written to only by
+	// pumpChannelReads (a single goroutine), which also owns closing it.
+	down *chandata.ChunkWriter
+
 	mu           sync.Mutex
 	inbox        []channelChunk
 	closed       bool
 	closeReason  string
 	lastActivity time.Time
+
+	// up is the local caller's own outgoing ring, opened lazily by
+	// dispatchChannelDataReady once its handshake
+	// (shmevent.EventChannelDataReady) confirms the caller has already
+	// created it -- nil until then, guarded by mu since it's set from the
+	// IPC dispatch goroutine and read (via hasUploadRing) from
+	// dispatchChannelCloseWrite, possibly concurrently.
+	up *chandata.ChunkReader
+	// uploadDrained is closed by pumpChannelUpload when it returns, for
+	// dispatchChannelCloseWrite to wait on (only meaningful once
+	// hasUploadRing is true -- see that method's doc comment).
+	uploadDrained chan struct{}
 }
 
-func newChannelSession(stream network.Stream, remotePeerID string, remotePub shmevent.PublicKey) *channelSession {
-	return &channelSession{stream: stream, remotePeerID: remotePeerID, remotePub: remotePub, lastActivity: time.Now()}
+func newChannelSession(channelID string, stream network.Stream, remotePeerID string, remotePub shmevent.PublicKey, down *chandata.ChunkWriter) *channelSession {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &channelSession{
+		channelID:     channelID,
+		stream:        stream,
+		remotePeerID:  remotePeerID,
+		remotePub:     remotePub,
+		lastActivity:  time.Now(),
+		closeCtx:      ctx,
+		closeCancel:   cancel,
+		down:          down,
+		uploadDrained: make(chan struct{}),
+	}
+}
+
+// hasUploadRing reports whether dispatchChannelDataReady has already
+// confirmed and opened this session's upload ring -- see
+// dispatchChannelCloseWrite's doc comment on why this is safe to check
+// without a race: a genuine pkg/chandata caller always completes that
+// handshake strictly before it could possibly call CloseChannelWrite.
+func (s *channelSession) hasUploadRing() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.up != nil
+}
+
+// setUploadRing records the opened upload ring reader -- called once, by
+// dispatchChannelDataReady, before pumpChannelUpload starts draining it.
+func (s *channelSession) setUploadRing(r *chandata.ChunkReader) {
+	s.mu.Lock()
+	s.up = r
+	s.mu.Unlock()
 }
 
 func (s *channelSession) touch() {
@@ -710,16 +786,19 @@ func (s *channelSession) status() (closed bool, reason string) {
 	return s.closed, s.closeReason
 }
 
-// write encodes purpose and chunk into a signed shmevent.Event frame
-// (EventChannelSend, shmevent.EncodeChannelWireChunk) using priv --
-// always this node's own identity key, n.ed25519Priv -- and writes it as
-// one length-framed message onto stream -- see ChannelProtocolID's doc
-// comment.
+// write signs and encodes purpose and chunk into one
+// shmevent.EncodeChannelFrame wire frame using priv -- always this
+// node's own identity key, n.ed25519Priv -- and writes it as one length-
+// framed message onto stream -- see ChannelProtocolID's doc comment, and
+// shmevent.SignChannelChunk's on why this is a separate, variable-length
+// signing scheme rather than the fixed-width Msg one every other event
+// type (including the legacy EventChannelSend/Poll IPC path) uses.
 func (s *channelSession) write(priv shmevent.PrivateKey, purpose byte, chunk []byte) error {
-	buf, err := shmevent.Encode(shmevent.Msg{EventType: shmevent.EventChannelSend, Value: shmevent.EncodeChannelWireChunk(purpose, chunk)}, priv)
+	crc, sig, err := shmevent.SignChannelChunk(priv, purpose, chunk)
 	if err != nil {
-		return fmt.Errorf("channel: encode frame: %w", err)
+		return fmt.Errorf("channel: sign frame: %w", err)
 	}
+	buf := shmevent.EncodeChannelFrame(purpose, crc, sig, chunk)
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	if err := writeFramed(s.stream, buf); err != nil {
@@ -834,6 +913,7 @@ func (t *channelTable) reap() {
 		if now.Sub(p.addedAt) > channelPendingTimeout {
 			if s, ok := t.sessions[p.channelID]; ok {
 				s.stream.Close()
+				s.closeCancel()
 				delete(t.sessions, p.channelID)
 			}
 			continue
@@ -845,6 +925,7 @@ func (t *channelTable) reap() {
 	for id, s := range t.sessions {
 		if s.idleFor(now) > channelIdleTimeout {
 			s.stream.Close()
+			s.closeCancel()
 			delete(t.sessions, id)
 		}
 	}
@@ -1782,7 +1863,7 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 	}
 	if caller.remotePeer != "" && (m.EventType == shmevent.EventChannelOpen || m.EventType == shmevent.EventChannelSend ||
 		m.EventType == shmevent.EventChannelPoll || m.EventType == shmevent.EventChannelListen || m.EventType == shmevent.EventChannelClose ||
-		m.EventType == shmevent.EventChannelCloseWrite) {
+		m.EventType == shmevent.EventChannelCloseWrite || m.EventType == shmevent.EventChannelDataReady) {
 		return errorMsg(m.ID, fmt.Errorf("%s: not available to a remote caller -- only this node's own operator drives its own channel sessions", shmevent.EventName(m.EventType)))
 	}
 	if shmevent.RequiresSignature(m.EventType) {
@@ -2360,10 +2441,16 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		return shmevent.Msg{EventType: shmevent.EventChannelClose, ID: m.ID}
 
 	case shmevent.EventChannelCloseWrite:
-		if err := n.dispatchChannelCloseWrite(string(m.Value)); err != nil {
+		if err := n.dispatchChannelCloseWrite(ctx, string(m.Value)); err != nil {
 			return errorMsg(m.ID, err)
 		}
 		return shmevent.Msg{EventType: shmevent.EventChannelCloseWrite, ID: m.ID}
+
+	case shmevent.EventChannelDataReady:
+		if err := n.dispatchChannelDataReady(ctx, string(m.Value)); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventChannelDataReady, ID: m.ID}
 
 	case shmevent.EventGetField:
 		key := m.Value
@@ -4392,9 +4479,9 @@ func (n *Node) handleExecuteStream(s network.Stream) {
 // a peer can't claim an enormous length and force a large allocation. Must
 // comfortably fit a full channelMaxChunkSize-sized EventChannelSend frame
 // once capnp/crc32/signature overhead is added (empirically ~112 bytes for
-// a full shmevent.ChannelValueSize Value) -- sized with generous headroom
-// above that, not tuned to the exact byte count.
-const maxFramedMessage = 20 * 1024
+// a full-sized Value) -- sized with generous headroom above that, not tuned
+// to the exact byte count.
+const maxFramedMessage = channelMaxChunkSize + 8*1024
 
 // writeFramed writes a 4-byte big-endian length prefix followed by buf --
 // ChannelProtocolID's framing for every message it carries (see that
@@ -4552,8 +4639,17 @@ func (n *Node) dispatchChannelOpen(ctx context.Context, destPeerIDStr string) (s
 		s.Close()
 		return "", err
 	}
+	// Created synchronously, before channelID is ever handed back to the
+	// caller below -- see pkg/chandata's doc comment and
+	// shmevent.EventChannelDataReady's on why this ordering makes the
+	// caller's own subsequent chandata.Open race-free.
+	down, err := chandata.Create(n.peerID, channelID, chandata.DirDown)
+	if err != nil {
+		s.Close()
+		return "", fmt.Errorf("channel: create data-plane ring: %w", err)
+	}
 	_ = s.SetDeadline(time.Time{}) // handshake done -- see the SetDeadline call above
-	sess := newChannelSession(s, dest.String(), shmevent.PublicKey(rawDestPub))
+	sess := newChannelSession(channelID, s, dest.String(), shmevent.PublicKey(rawDestPub), down)
 	n.channels.register(channelID, sess)
 	go n.pumpChannelReads(sess)
 	return channelID, nil
@@ -4627,7 +4723,17 @@ func (n *Node) handleChannelStream(s network.Stream) {
 		s.Close()
 		return
 	}
+	// Created synchronously, before this channelID is ever handed back to
+	// a local caller via EventChannelListen -- see the identical ordering
+	// reasoning in dispatchChannelOpen just above.
+	down, err := chandata.Create(n.peerID, channelID, chandata.DirDown)
+	if err != nil {
+		writeChannelAccept(s, false, "internal error preparing data plane")
+		s.Close()
+		return
+	}
 	if err := writeChannelAccept(s, true, ""); err != nil {
+		down.CloseStorage()
 		s.Close()
 		return
 	}
@@ -4636,25 +4742,47 @@ func (n *Node) handleChannelStream(s network.Stream) {
 	// pumpChannelReads' intentionally long-lived read loop below. See
 	// streamRequestTimeout's doc comment.
 	_ = s.SetDeadline(time.Time{})
-	sess := newChannelSession(s, senderPeer.String(), shmevent.PublicKey(rawSenderPub))
+	sess := newChannelSession(channelID, s, senderPeer.String(), shmevent.PublicKey(rawSenderPub), down)
 	n.channels.register(channelID, sess)
 	n.channels.pushPending(channelID)
 	go n.pumpChannelReads(sess)
 }
 
+// downRingWriteTimeout bounds each individual attempt pumpChannelReads
+// makes to also mirror a received chunk into sess.down (see that field's
+// doc comment) -- deliberately short relative to sess.closeCtx's own
+// lifetime, not because a slow-but-live local caller should ever actually
+// hit it (chandata.Capacity comfortably outpaces one downRingWriteTimeout
+// window at any realistic drain rate), but so a caller that never opens
+// this ring at all (the legacy EventChannelPoll-only path, which has no
+// reason to ever call shmevent.EventChannelDataReady) can't wedge this
+// pump's read loop forever once the ring fills up -- sess.inbox above
+// already has this chunk buffered for that path regardless, so a dropped
+// mirror write here costs nothing but the ring's own throughput advantage
+// for a caller that was never going to use it in the first place.
+const downRingWriteTimeout = 250 * time.Millisecond
+
 // pumpChannelReads is sess's background read pump: reads one signed
-// shmevent.Event frame at a time off sess.stream (readFramed), decodes
-// and verifies each against sess.remotePub, unwraps its purpose+chunk
-// (shmevent.DecodeChannelWireChunk) and pushes it onto sess's inbox for
-// EventChannelPoll to drain -- until the stream errors/EOFs (the peer
-// closed their write side, or the connection dropped), a frame fails to
-// read/decode/verify/fit channelMaxChunkSize (treated as fatal to the
-// session -- a peer that can't hold up its end of the framing contract
-// can't be trusted for anything after that point either), or this node's
-// own EventChannelClose/the reaper closes the stream first -- any of
-// which marks the session closed rather than removing it outright, so
-// chunks already buffered are still readable via a final poll.
+// shmevent.EncodeChannelFrame frame at a time off sess.stream
+// (readFramed), decodes and verifies each against sess.remotePub
+// (shmevent.DecodeChannelFrame/VerifyChannelChunk) and delivers it two
+// ways: pushed onto sess.inbox for the legacy EventChannelPoll path to
+// drain, and written into sess.down (see downRingWriteTimeout) for
+// pkg/chandata callers --
+// until the stream errors/EOFs (the peer closed their write side, or the
+// connection dropped), a frame fails to read/decode/verify/fit
+// channelMaxChunkSize (treated as fatal to the session -- a peer that
+// can't hold up its end of the framing contract can't be trusted for
+// anything after that point either), or this node's own
+// EventChannelClose/the reaper closes the stream first -- any of which
+// marks the session closed rather than removing it outright, so chunks
+// already buffered are still readable via a final poll, and releases
+// sess.down's storage (pumpChannelReads is that ring's sole writer for its
+// whole lifetime -- see ChunkWriter.CloseStorage's doc comment on why
+// that's the right owner to release it, regardless of whether every byte
+// has actually been drained yet).
 func (n *Node) pumpChannelReads(sess *channelSession) {
+	defer sess.down.CloseStorage()
 	for {
 		buf, err := readFramed(sess.stream)
 		if err != nil {
@@ -4665,22 +4793,13 @@ func (n *Node) pumpChannelReads(sess *channelSession) {
 			sess.markClosed(reason)
 			return
 		}
-		m, crc, sig, err := shmevent.Decode(buf)
+		purpose, crc, sig, chunk, err := shmevent.DecodeChannelFrame(buf)
 		if err != nil {
 			sess.markClosed(fmt.Sprintf("decode channel frame: %v", err))
 			return
 		}
-		if m.EventType != shmevent.EventChannelSend {
-			sess.markClosed(fmt.Sprintf("unexpected channel frame event type %d", m.EventType))
-			return
-		}
-		if err := shmevent.Verify(sess.remotePub, m, crc, sig); err != nil {
+		if err := shmevent.VerifyChannelChunk(sess.remotePub, purpose, chunk, crc, sig); err != nil {
 			sess.markClosed(fmt.Sprintf("verify channel frame: %v", err))
-			return
-		}
-		purpose, chunk, err := shmevent.DecodeChannelWireChunk(m.Value)
-		if err != nil {
-			sess.markClosed(fmt.Sprintf("decode channel wire chunk: %v", err))
 			return
 		}
 		if len(chunk) > channelMaxChunkSize {
@@ -4688,6 +4807,41 @@ func (n *Node) pumpChannelReads(sess *channelSession) {
 			return
 		}
 		sess.pushChunk(purpose, chunk)
+
+		writeCtx, writeCancel := context.WithTimeout(sess.closeCtx, downRingWriteTimeout)
+		_ = sess.down.WriteChunk(writeCtx, purpose, chunk)
+		writeCancel()
+	}
+}
+
+// pumpChannelUpload is sess's background upload-forward pump: started by
+// dispatchChannelDataReady once r (sess's upload ring) is confirmed open,
+// it reads one purpose-tagged chunk at a time off r and forwards each
+// through sess.write -- the exact same signed-frame path
+// dispatchChannelSend's legacy per-chunk IPC calls already use, so both
+// can safely interleave on the same stream (writeMu serializes them).
+// Returns once r reaches io.EOF (the local caller closed its writer and
+// every already-buffered chunk has been forwarded -- see
+// shmevent.EventChannelCloseWrite's doc comment on why this is what makes
+// its drain-then-half-close guarantee correct), sess.closeCtx is
+// cancelled (the channel is being torn down some other way), or a write
+// fails (the underlying stream itself is gone, fatal to the session same
+// as pumpChannelReads' own read errors). Closes sess.uploadDrained on
+// return either way, and releases r -- pumpChannelUpload is r's only
+// reader for its whole lifetime, but never owns its storage (the local
+// caller created it -- see ChunkWriter.CloseStorage's doc comment).
+func (n *Node) pumpChannelUpload(sess *channelSession, r *chandata.ChunkReader) {
+	defer close(sess.uploadDrained)
+	defer r.Close()
+	for {
+		purpose, chunk, err := r.ReadChunk(sess.closeCtx)
+		if err != nil {
+			return
+		}
+		if err := sess.write(n.ed25519Priv, purpose, chunk); err != nil {
+			sess.markClosed(fmt.Sprintf("forward upload chunk: %v", err))
+			return
+		}
 	}
 }
 
@@ -4763,18 +4917,70 @@ func (n *Node) dispatchChannelClose(channelID string) error {
 		return nil
 	}
 	sess.stream.Close()
+	sess.closeCancel()
 	n.channels.remove(channelID)
+	return nil
+}
+
+// dispatchChannelDataReady implements EventChannelDataReady: opens
+// channelID's upload ring (pkg/chandata.DirUp, already created by the
+// caller before sending this -- see that event's doc comment) and starts
+// pumpChannelUpload draining it. ctx (the incoming request's) is
+// deliberately *not* used to bound the open attempt -- like
+// dispatchChannelOpen's own identical reasoning (see that function's
+// comment on why its dial gets its own bounded context), ctx here is
+// ipc.Serve's whole-process-lifetime context, not a per-request one, and
+// Serve handles one request at a time synchronously -- an open that never
+// succeeds (a caller that sends this without ever having created the
+// ring) would otherwise wedge this node's entire IPC loop indefinitely,
+// not just this one call. Bound to streamRequestTimeout instead, same as
+// dispatchChannelOpen's own dial+handshake.
+func (n *Node) dispatchChannelDataReady(ctx context.Context, channelID string) error {
+	sess, ok := n.channels.get(channelID)
+	if !ok {
+		return fmt.Errorf("channel: no such channel %q", channelID)
+	}
+	openCtx, cancel := context.WithTimeout(context.Background(), streamRequestTimeout)
+	defer cancel()
+	r, err := chandata.Open(openCtx, n.peerID, channelID, chandata.DirUp)
+	if err != nil {
+		return fmt.Errorf("channel: open upload ring: %w", err)
+	}
+	sess.setUploadRing(r)
+	go n.pumpChannelUpload(sess, r)
 	return nil
 }
 
 // dispatchChannelCloseWrite implements EventChannelCloseWrite: half-closes
 // channelID's outgoing direction only, leaving the session registered
 // (still pollable/receivable) -- see that event's doc comment. A no-op,
-// not an error, if channelID is already gone.
-func (n *Node) dispatchChannelCloseWrite(channelID string) error {
+// not an error, if channelID is already gone. If channelID's local caller
+// completed the EventChannelDataReady handshake (sess.hasUploadRing),
+// this first blocks until pumpChannelUpload's own uploadDrained signal
+// fires -- i.e. until every chunk already buffered in the upload ring has
+// genuinely been forwarded onto the wire -- before actually half-closing,
+// so the caller's "this call returned" still means "everything I sent is
+// on the wire," the same guarantee the plain EventChannelSend path gets
+// for free by being synchronous per chunk (see EventChannelDataReady's
+// doc comment). hasUploadRing is race-free here specifically because a
+// genuine pkg/chandata caller always completes that handshake strictly
+// before it could possibly reach this call. The wait is bounded by
+// streamRequestTimeout, not the incoming ctx -- see
+// dispatchChannelDataReady's identical reasoning on why that ctx is
+// ipc.Serve's whole-process-lifetime one, not a per-request deadline.
+func (n *Node) dispatchChannelCloseWrite(ctx context.Context, channelID string) error {
 	sess, ok := n.channels.get(channelID)
 	if !ok {
 		return nil
+	}
+	if sess.hasUploadRing() {
+		drainCtx, cancel := context.WithTimeout(context.Background(), streamRequestTimeout)
+		defer cancel()
+		select {
+		case <-sess.uploadDrained:
+		case <-drainCtx.Done():
+			return fmt.Errorf("channel: waiting for upload ring to drain: %w", drainCtx.Err())
+		}
 	}
 	return sess.closeWrite()
 }

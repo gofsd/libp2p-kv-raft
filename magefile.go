@@ -428,6 +428,40 @@ func (E2E) All() error {
 	return runE2ERows(func(f *e2edata.File) []int { return f.AllRowIndices() }, false)
 }
 
+// ChannelFileTransfer drives a real, large, bidirectional Raw Channel file
+// transfer between a fresh local desktop node and a connected Android
+// emulator/device (desktop -> android, then android -> desktop, each
+// verified byte-for-byte via SHA-256) -- see
+// pkg/e2erun.RunChannelFileTransferScenario's own doc comment for the full
+// mechanism, and README's "Raw Channel"/"Data plane: pkg/chandata"
+// sections for what it's actually proving. sizeBytes defaults to 1GiB
+// (1073741824) if 0/omitted -- pass a smaller value for a quick sanity
+// check before committing to the real thing. Requires gomobile + adb + a
+// connected android device/emulator, the same prerequisites the android
+// e2e commands above need. Deliberately never part of e2e:current/e2e:all:
+// it has no recorded row/version of its own in testdata.json (this is a
+// live capability check, not a replayable regression row), and a full
+// 1GiB transfer is far too slow for a routine pre-push gate -- run it
+// directly whenever this codebase's Channel data plane itself needs
+// verifying against real hardware. Every file either side creates
+// (desktop's generated source file, android's own generated source file
+// and received copy) is deleted before this returns, pass or fail; the
+// throwaway desktop node this spins up is also stopped and its data dir
+// removed, unlike this project's other e2e nodes (see that function's own
+// doc comment on why this one specifically is never left running).
+//
+// Usage: mage e2e:channelfiletransfer [sizeBytes]
+func (E2E) ChannelFileTransfer(sizeBytes int) error {
+	if sizeBytes <= 0 {
+		sizeBytes = 1 << 30 // 1GiB
+	}
+	root, err := repoRoot()
+	if err != nil {
+		return err
+	}
+	return e2erun.RunChannelFileTransferScenario(root, int64(sizeBytes))
+}
+
 func runE2ERows(selectRows func(*e2edata.File) []int, markPublishedOnSuccess bool) error {
 	types, err := e2erun.SelectedTypes()
 	if err != nil {

@@ -34,10 +34,14 @@ func DecodeChannelSendPayload(payload []byte) (channelID []byte, purpose byte, c
 	return channelID, rest[0], rest[1:], nil
 }
 
-// EncodeChannelWireChunk packs purpose and chunk into the Value of the
-// signed shmevent.Event frame a channel's underlying network stream
-// actually carries once its handshake completes -- see
-// pkg/daemon.ChannelProtocolID's doc comment for the full wire design.
+// EncodeChannelWireChunk packs purpose and chunk into a Msg.Value shape --
+// historically what a channel's underlying network stream carried once its
+// handshake completed; the real wire frame moved to
+// EncodeChannelFrame/SignChannelChunk's own variable-length scheme instead
+// (see ChannelProtocolID's doc comment in pkg/daemon for why), so this is
+// kept only as EncodeChannelSendPayload's own Value-shape sibling (packing
+// purpose+chunk without a channelID, unlike that function) for anything
+// that still wants it -- e.g. constructing a test frame in the old shape.
 // Unlike EncodeChannelSendPayload, there is no channelID field here: the
 // stream itself already is the channel, so there is nothing to look up.
 func EncodeChannelWireChunk(purpose byte, chunk []byte) []byte {

@@ -362,16 +362,26 @@ const (
 	// more than one purpose over the same channel, e.g. a control message
 	// alongside a bulk data transfer, or a video frame). Value is
 	// EncodeChannelSendPayload(channelID, purpose, chunk). Unlike a raw
-	// pipe, chunk boundaries are preserved end to end: this Value's
-	// purpose and chunk become the Value of a second, distinct
-	// shmevent.Event (EncodeChannelWireChunk(purpose, chunk), same
-	// EventChannelSend event type) that the daemon signs
-	// (shmevent.Encode) and writes as one length-framed message directly
-	// onto the underlying libp2p stream -- the receiving daemon verifies
-	// that signature against the sender's own Ed25519 public key (exactly
-	// like EventChannelOpen's handshake does) before ever buffering the
-	// chunk for EventChannelPoll to drain, so a forged or corrupted frame
-	// is rejected per-message, not just at handshake time. Local-only.
+	// pipe, chunk boundaries are preserved end to end: the daemon signs
+	// purpose+chunk (shmevent.SignChannelChunk) and writes them as one
+	// length-framed shmevent.EncodeChannelFrame message directly onto the
+	// underlying libp2p stream -- the receiving daemon verifies that
+	// signature against the sender's own Ed25519 public key
+	// (shmevent.VerifyChannelChunk, exactly like EventChannelOpen's
+	// handshake verifies its own sender) before ever buffering the chunk
+	// for EventChannelPoll to drain, so a forged or corrupted frame is
+	// rejected per-message, not just at handshake time. This is this
+	// package's own request/response IPC path -- a per-chunk round trip,
+	// capped at ChannelValueSize -- kept for any caller that wants a
+	// synchronous "this call returning means the daemon has it" guarantee
+	// per chunk, or has no reason to bother with pkg/chandata; every
+	// pkg/shmclient caller (pkg/kvctl, kvmobile) instead sends
+	// EventChannelDataReady once per channel and moves its real chunk
+	// traffic onto that package's own much higher-throughput ring pair --
+	// see EventChannelDataReady's doc comment. Either path ends up
+	// signed/framed onto the wire the same way (channelSession.write is
+	// shared), so a peer receiving a channel's traffic never needs to
+	// know or care which path the sender chose per chunk. Local-only.
 	EventChannelSend uint8 = 38
 	// EventChannelPoll drains one buffered chunk received on channelID
 	// (Value, a plain string) since the last poll, oldest first -- the
@@ -420,7 +430,15 @@ const (
 	// the remote peer still has left to send -- only calling
 	// EventChannelClose once its own receiving side has also finished
 	// (ChannelPollClosed) or it's giving up early (e.g. SIGINT). Value is
-	// ignored on the response.
+	// ignored on the response. If this channelID has an EventChannelDataReady
+	// ring in play, the response is deliberately delayed (not just a fire-
+	// and-forget signal) until every chunk already buffered in that ring
+	// has actually been forwarded onto the wire -- see
+	// EventChannelDataReady's doc comment -- so a caller that only ever
+	// sends through the ring can still rely on "this call returned" to
+	// mean "everything I wrote is genuinely on the wire," the same
+	// guarantee the plain EventChannelSend path always had for free by
+	// virtue of being synchronous per chunk.
 	EventChannelCloseWrite uint8 = 42
 	// EventKick force-removes an arbitrary peer from the raft cluster
 	// this node currently belongs to (raft.RemoveServer), without that
@@ -458,6 +476,32 @@ const (
 	// (ValueSize, 512 bytes) budget -- a transaction is a handful of
 	// small ops, not a bulk-write mechanism.
 	EventTxn uint8 = 44
+	// EventChannelDataReady is the handshake that hands an already-open
+	// channel (EventChannelOpen/Listen) off to pkg/chandata's high-
+	// throughput data plane: Value is channelID (a plain string), sent
+	// once the local caller has already itself created its own outgoing
+	// shared-memory ring (pkg/chandata.Create with pkg/chandata.DirUp) for
+	// this channelID -- see that package's doc comment for the full
+	// design, and pkg/daemon.ChannelProtocolID's for why bulk channel
+	// traffic moves off this event-request/response IPC path entirely
+	// once this handshake completes. The daemon opens that same ring as a
+	// reader (pkg/chandata.Open, DirUp) and starts forwarding every chunk
+	// it yields onto the underlying libp2p stream (signed, framed,
+	// exactly like the direct EventChannelSend path always has) until the
+	// ring reaches EOF or the channel closes; the *incoming* direction
+	// needs no equivalent handshake, since the daemon always creates that
+	// ring (DirDown) itself, synchronously, before EventChannelOpen/
+	// EventChannelListen's own response ever reaches the caller with a
+	// channelID to open it by. This makes ring readiness a fully
+	// synchronous, race-free precondition for EventChannelCloseWrite's
+	// drain-then-half-close behavior (see that event's doc comment): by
+	// the time this call returns, dispatchChannelCloseWrite can rely on
+	// the ring's presence with no ambiguity about whether one is coming.
+	// Sending this is optional -- a caller that never does stays on the
+	// plain EventChannelSend/Poll path exactly as before -- but
+	// pkg/shmclient.Session always sends it immediately after
+	// OpenChannel/ListenChannel resolves a channelID. Local-only.
+	EventChannelDataReady uint8 = 45
 	// EventError is response-only: Value carries a UTF-8 error message,
 	// ID echoes the failed request's ID. Not part of the fields the
 	// protocol was specified with -- added because the struct has no
@@ -558,6 +602,8 @@ func EventName(e uint8) string {
 		return "kick"
 	case EventTxn:
 		return "txn"
+	case EventChannelDataReady:
+		return "channel_data_ready"
 	case EventError:
 		return "error"
 	default:
@@ -658,6 +704,10 @@ func EventFromName(name string) (uint8, bool) {
 		return EventChannelCloseWrite, true
 	case "kick":
 		return EventKick, true
+	case "txn":
+		return EventTxn, true
+	case "channel_data_ready":
+		return EventChannelDataReady, true
 	case "error":
 		return EventError, true
 	default:

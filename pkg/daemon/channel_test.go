@@ -210,7 +210,12 @@ func TestChannelPurposeCarriedEndToEnd(t *testing.T) {
 // shmevent.ChannelValueSize ceiling (see that constant's doc comment)
 // actually applies end to end: local IPC send, the signed network frame,
 // and local IPC poll all carry a single chunk right up against
-// channelMaxChunkSize with no splitting.
+// shmevent.ChannelValueSize with no splitting. This exercises the legacy
+// per-chunk IPC path (raw EventChannelSend/Poll, the same as every other
+// test in this file) rather than the much larger pkg/chandata ring path
+// (channelMaxChunkSize, see that constant's doc comment) -- that path's
+// own near-ceiling coverage lives in pkg/shmclient instead, since it has
+// no IPC-request-sized payload to stay under in the first place.
 func TestChannelLargeChunkNearChannelMaxSize(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -227,14 +232,13 @@ func TestChannelLargeChunkNearChannelMaxSize(t *testing.T) {
 	}
 	aChannelID := string(openResp.Value)
 
-	// channelMaxChunkSize itself (see that constant's doc comment) is
-	// sized for EventChannelPoll's response overhead, not
-	// EncodeChannelSendPayload's own extra channelID+purpose overhead on
-	// the send side -- so the send payload here is channelMaxChunkSize
-	// minus that overhead, well beyond the old 512-byte shmevent.ValueSize
-	// ceiling either way.
+	// shmevent.ChannelValueSize (see that constant's doc comment) is
+	// EventChannelSend/Poll's actual IPC ceiling; EncodeChannelSendPayload
+	// adds its own channelID+purpose overhead on top of the raw chunk, so
+	// the send payload here is that ceiling minus that overhead -- well
+	// beyond the old 512-byte shmevent.ValueSize ceiling either way.
 	sendOverhead := 2 + len(aChannelID) + 1 // EncodeChannelSendPayload's own packing
-	want := make([]byte, channelMaxChunkSize-sendOverhead)
+	want := make([]byte, shmevent.ChannelValueSize-sendOverhead)
 	for i := range want {
 		want[i] = byte(i % 256)
 	}
@@ -605,6 +609,7 @@ func TestChannelEventsRejectRemoteCaller(t *testing.T) {
 		shmevent.EventChannelListen,
 		shmevent.EventChannelClose,
 		shmevent.EventChannelCloseWrite,
+		shmevent.EventChannelDataReady,
 	}
 	for _, evt := range events {
 		resp, err := callClientProtocol(ctx, remote, leaderPeerID, shmevent.Msg{EventType: evt, ID: 1}, remotePriv)
@@ -674,7 +679,7 @@ func mustEncodeChannelSend(t *testing.T, channelID string, purpose byte, chunk [
 // corresponds to exactly one popChunk call (see channelMaxChunkSize's doc
 // comment for why there's nothing left to split).
 func TestChannelSessionPushPopPreservesPurposeAndOrder(t *testing.T) {
-	sess := newChannelSession(nil, "remote-peer", nil)
+	sess := newChannelSession("test-channel", nil, "remote-peer", nil, nil)
 
 	pushed := []struct {
 		purpose byte

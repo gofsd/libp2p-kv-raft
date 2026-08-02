@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gofsd/libp2p-kv-raft/pkg/chandata"
 	"github.com/gofsd/libp2p-kv-raft/pkg/registry"
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmclient"
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
@@ -21,12 +22,15 @@ import (
 const channelPollInterval = 100 * time.Millisecond
 
 // channelSendChunkSize bounds how many bytes pumpChannelSend reads from
-// stdin per SendChannel call -- comfortably under shmevent.ChannelValueSize
-// (16KB, EventChannelSend/EventChannelPoll's own much larger analogue of
-// the 512-byte shmevent.ValueSize every other event's Value obeys) once
-// EncodeChannelSendPayload's own length-prefixed channelID field is
-// accounted for.
-const channelSendChunkSize = 16000
+// stdin per SendChannel call -- set to chandata.MaxChunkSize (the most a
+// single SendChannel call may ever carry, see that constant's doc
+// comment) rather than the old, much smaller shmevent.ChannelValueSize:
+// SendChannel is a pkg/chandata ring write now, not a per-chunk IPC round
+// trip, so there's no longer any reason to read stdin in small pieces --
+// bigger reads here mean fewer, larger signed wire frames end to end,
+// which is the single biggest lever on this pipe's real throughput (see
+// pkg/chandata's doc comment).
+const channelSendChunkSize = chandata.MaxChunkSize
 
 // OpenChannel implements `mage openchannel <peerID> <purpose>`: opens a
 // persistent, bidirectional stream from the current node to peerID,

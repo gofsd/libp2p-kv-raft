@@ -330,6 +330,13 @@
       "execute": true,
       "expect": "succeeded"
     },
+    "Channel: CloseChannelWrite": {
+      "inputs": [
+        "no-such-channel"
+      ],
+      "execute": true,
+      "expect": "succeeded"
+    },
     "Channel: OpenChannel": {
       "inputs": [
         "{{leaderPeerID}}"
@@ -340,6 +347,7 @@
     "Channel: SendChannelData": {
       "inputs": [
         "no-such-channel",
+        "",
         "AA=="
       ],
       "execute": true,
@@ -773,7 +781,7 @@
     }
   },
   "android_ui_result": {
-    "ran_at": "2026-07-30T17:43:12.75674014+03:00",
+    "ran_at": "2026-07-30T17:49:22.677454212+03:00",
     "status": 0
   }
 }

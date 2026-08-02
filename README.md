@@ -461,18 +461,27 @@ live "command execution log" view fed by whichever peer is running the command (
 own `LogAppend` calls, watched for and re-fetched via `LogQuery` on each poke).
 
 `OpenChannel(peerID, cb)`/`ListenChannel(cb)`/`StopListenChannel()`/`SendChannelData(channelID,
-base64Chunk)`/`CloseChannel(channelID)`/`StopChannel(channelID)` (`channel.go`) are the mobile
-port of desktop's `mage openchannel`/`listenchannel` raw byte pipe (see "Raw Channel" above).
+purposeName, chunk)`/`CloseChannelWrite(channelID)`/`CloseChannel(channelID)`/
+`StopChannel(channelID)` (`channel.go`) are the mobile port of desktop's `mage openchannel`/
+`listenchannel` raw byte pipe (see "Raw Channel" above). `CloseChannelWrite` is the half-close a
+bulk sender should call once done — unlike `CloseChannel`, it doesn't return until every chunk
+already handed to `SendChannelData` has actually reached the wire, and it doesn't stop this
+device's own delivery loop, so a reply the remote peer still has in flight is never cut short.
 `OpenChannel`/`ListenChannel` each start a background pump loop delivering incoming data to
 `cb.OnData`/`cb.OnClosed` (the `ChannelCallback` reverse-binding interface, mirroring
 `ExecuteCallback`) until `StopChannel` is called or the channel ends on its own — same
 outlives-this-screen, "replace, don't stack" treatment `WatchExecute`/
 `RunCommandDispatcher` already get, including recovering a panicking callback so one misbehaving
-Kotlin implementation can't take the loop down. Chunks cross the gomobile boundary base64-encoded
-in both directions (`SendChannelData`'s argument, `OnData`'s callback argument) since gomobile's
-string-only boundary can't otherwise carry arbitrary binary safely, unlike `ExecuteCallback`'s raw
-UTF-8 string. `StopChannel`/`StopListenChannel` are local-only, like `StopWatchExecute` — they
-stop this device's own delivery loop without necessarily ending the channel/pending listen
+Kotlin implementation can't take the loop down. Chunks cross the gomobile boundary as raw bytes in
+both directions (`SendChannelData`'s `chunk` argument, `OnData`'s callback argument are both plain
+`[]byte`/`ByteArray`, not base64 text) — gobind binds a Go `[]byte` parameter directly to a Kotlin
+`ByteArray`, so unlike `ExecuteCallback`'s deliberately text-only `OnNotification` (Execute's
+payloads are genuinely text), there was no boundary limitation forcing base64 here; an earlier
+version of this interface used it anyway, on a mistaken assumption about gomobile's own
+capabilities, and a real desktop↔android bulk-transfer benchmark confirmed removing it recovered a
+substantial share of this path's own throughput. `StopChannel`/`StopListenChannel` are local-only,
+like `StopWatchExecute` — they stop this device's own delivery loop without necessarily ending the
+channel/pending listen
 itself; `CloseChannel` ends the session server-side too.
 
 `kvmobile` also has a `Group`/`Command` catalog layer (`catalog.go`), built on the same
@@ -846,13 +855,13 @@ other `submitcommand` dispatch.
 ## Raw Channel
 
 `EventExecute` above is a one-shot, fire-and-forget notification. `EventChannelOpen` (and its
-`Send`/`Poll`/`Listen`/`Close`/`CloseWrite` counterparts, `pkg/daemon.ChannelProtocolID`) is its
-persistent-session sibling: an unreplicated, bidirectional, **multipurpose** stream directly to
-another peer's process — usable for a plain data transfer, a control link, a video stream, or any
-mix of those interleaved on the same session, each chunk tagged with a purpose
+`Send`/`Poll`/`Listen`/`Close`/`CloseWrite`/`DataReady` counterparts, `pkg/daemon.ChannelProtocolID`)
+is its persistent-session sibling: an unreplicated, bidirectional, **multipurpose** stream directly
+to another peer's process — usable for a plain data transfer, a control link, a video stream, or
+any mix of those interleaved on the same session, each chunk tagged with a purpose
 (`shmevent.ChannelPurposeData`/`ChannelPurposeControl`/`ChannelPurposeVideo`, or any other byte a
-caller chooses — the set is open-ended). Every message the channel carries, in both directions,
-including every data chunk after the initial handshake, is a real signed `shmevent.Event` frame —
+caller chooses — the set is open-ended). Every message the channel carries over the network, in
+both directions, including every data chunk after the initial handshake, is a real signed frame —
 not raw unframed bytes the way earlier versions of this feature worked — so a chunk is
 authenticated per-message, not just once at handshake time. Traffic on it never touches raft or
 the store, exactly like Execute's.
@@ -880,38 +889,122 @@ The two directions are independent: reaching stdin EOF only half-closes this sid
 direction (`EventChannelCloseWrite`, mirroring a TCP `shutdown(SHUT_WR)`) so that whatever the
 remote peer still has in flight the other way is never cut short — `pkg/kvctl.pumpChannel` waits
 for both directions to finish (or an explicit signal) before sending `EventChannelClose` to end
-the session outright. Under the hood, opening a channel dials `ChannelProtocolID` and performs a
-short signed handshake (the same self-contained-signature recipe `EventExecute` uses —
-`shmevent.EncodeExecuteNotification`, verified against the *claimed* sender peer id's own
-extracted pubkey, never the raw connection); every message afterward reuses that same
-signed-frame machinery (`shmevent.Encode`/`Decode`/`Verify`, `EventChannelSend`,
-`shmevent.EncodeChannelWireChunk(purpose, chunk)`) rather than handing the stream off to carry
-raw bytes directly, so a frame forged with an unrelated key is rejected the moment it arrives, not
-silently delivered as data. `EventChannelPoll`/`EventChannelListen` are local, no-push polls a
-caller loops (same shape as `EventPollExecute`), since shmring IPC has no server-push mechanism of
-its own.
+the session outright.
+
+### Data plane: `pkg/chandata`
+
+The commands, purpose tagging, half-close semantics and `kvmobile` bindings above are the whole
+user-facing surface, and none of it changed to get here — what moved is *how* a chunk actually gets
+from a local caller's `SendChannel`/`PollChannel` call onto (and off) the wire. `EventChannelOpen`/
+`Listen`/`Close`/`CloseWrite` remain ordinary `pkg/shmevent` capnp `Msg` round trips over `pkg/ipc`,
+same as every other control operation in this document — opening/claiming/ending a session is rare
+and latency-insensitive, exactly what that request/response transport is for. Bulk chunk traffic is
+not: `pkg/ipc.Call` pays a real cost per round trip (on desktop, a fresh named `shmring` segment
+pair — a real `shm_open`+`mmap` and later `shm_unlink`+`munmap` — plus a capnp encode/CRC/sign, all
+to move one chunk capped at `shmevent.ChannelValueSize`, 16KB), and since each call only returns
+once the daemon has fully consumed it, a sender's stdin-reading loop could never get more than one
+chunk ahead of the network write it was waiting on — throughput was bounded by round-trip latency
+divided into chunk size, not by the libp2p connection's real bandwidth.
+
+`pkg/chandata` replaces that per-chunk round trip with a pair of long-lived
+[`github.com/gofsd/shmring`](https://github.com/gofsd/shmring) ring buffers set up once per channel
+and drained continuously for its whole lifetime: an *upload* ring (`chandata.DirUp`) the local
+caller writes into and the daemon drains onto the libp2p stream, and a *download* ring
+(`chandata.DirDown`) the daemon writes into as it reads the stream and the local caller drains.
+`Writer.TryWrite`/`Reader.TryRead` are non-blocking memory operations bridged by a poll-with-backoff
+loop (there's no cross-process wakeup primitive to block on — see `shmring`'s own doc comment), so a
+producer can run arbitrarily far ahead of its consumer, bounded only by `chandata.Capacity` (1MiB) —
+exactly the pipelining a bulk transfer needs to actually saturate the connection, instead of the old
+design's inherent stop-and-wait. A ring is a raw byte stream with no message boundaries of its own,
+so each `WriteChunk`/`ReadChunk` call frames its chunk with a small purpose+length header — this
+framing is local-only (never sent over the network, no CRC/signature of its own), safe because it
+never crosses the same-machine trust boundary `pkg/shmevent`'s own doc comment describes.
+
+Wiring a channel's rings up is `shmevent.EventChannelDataReady`: sent once by
+`pkg/shmclient.Session.OpenChannel`/`ListenChannel` immediately after each obtains a channelID,
+*after* that session has already created its own upload ring and opened the daemon's download ring
+(both by then guaranteed to exist — the daemon always creates the download ring synchronously,
+before `EventChannelOpen`/`Listen`'s own response ever reaches a caller with a channelID to open it
+by, so there is nothing to race there). The daemon's own handler
+(`(*Node).dispatchChannelDataReady`) opens that same upload ring as a reader and starts
+`pumpChannelUpload`, a goroutine that drains it and forwards each chunk over the wire through the
+exact same signed-frame path (`channelSession.write`) `EventChannelSend`'s legacy per-chunk path
+still uses — sending is deliberately not an either/or: a raw caller that never sends
+`EventChannelDataReady` stays on the plain `EventChannelSend`/`EventChannelPoll` IPC path exactly as
+before (still exercised end to end by `pkg/daemon`'s own `channel_test.go`), while `pkg/shmclient`
+(and so every `mage openchannel`/`listenchannel`/`kvmobile` caller) always uses the ring. On the
+receive side, `pumpChannelReads` delivers every verified chunk both ways unconditionally — into the
+legacy in-memory inbox *and* into the download ring — so neither path needs to know which one a
+caller is actually using.
+
+Because a chunk's real length is no longer ambiguous the way a capnp `Msg.Value` zero-padded to a
+fixed per-event-type width is (see `ValueSize`/`ChannelValueSize` above), the wire frame itself
+moved off that scheme too: `shmevent.SignChannelChunk`/`VerifyChannelChunk`/`EncodeChannelFrame`/
+`DecodeChannelFrame` sign purpose+chunk at their actual, variable length instead of a fixed
+ceiling — raising `ChannelValueSize` itself to fit a much bigger chunk would have forced *every*
+frame, including a tiny control ping, to pay CRC32/Ed25519 cost over however big that new ceiling
+was, defeating the point. `channelMaxChunkSize` (`pkg/daemon`, equal to `chandata.MaxChunkSize`,
+256KB) is this frame's own independent ceiling instead — bigger chunks mean fewer, larger signed
+frames per byte transferred, which matters far more for throughput than per-chunk latency does for
+a bulk transfer, since signing and the network write syscall both have a mostly-fixed per-frame
+cost. This is a wire-incompatible change from the previous `shmevent.Encode`/`Msg`-based per-message
+framing, so `ChannelProtocolID` bumped to `3.0.0` (see that constant's own doc comment for the full
+version history) — an old peer expecting the fixed-width scheme and a new peer speaking the
+variable-length one must never silently negotiate a stream together.
+
+One behavioral consequence worth calling out: because the download ring has a real, bounded
+capacity and `pumpChannelReads` blocks (briefly, `downRingWriteTimeout`) writing into it, a local
+caller that stops draining `PollChannel` for a sustained period now applies genuine backpressure
+all the way back through libp2p's own flow control to the sending peer, rather than the old
+design's silent oldest-entry eviction once its in-memory inbox filled up — a slow receiver now
+slows the sender down instead of silently losing data. `EventChannelCloseWrite`'s guarantee is
+preserved across this rewrite too, just relocated: `Session.CloseChannelWrite` closes the local
+upload ring writer (visible to the daemon's `pumpChannelUpload` across the shared memory
+immediately) and only *then* sends `EventChannelCloseWrite`, whose handler now deliberately blocks
+until `pumpChannelUpload` reports every already-buffered chunk has actually been forwarded before
+half-closing the underlying stream — so a caller that sent its last chunk and immediately called
+`CloseChannelWrite`, with no chunk yet drained by the daemon, still gets the same "this call
+returning means everything I sent is genuinely on the wire" guarantee the old fully-synchronous
+per-chunk design had for free.
 
 Like Execute, a channel is local-only to operate (`EventChannelOpen/Send/Poll/Listen/Close/
-CloseWrite` all reject a remote/`ClientProtocolID` caller — only this node's own operator drives
-its own sessions) but gated on the *receiving* side by `-require-permit-for-channel`
+CloseWrite/DataReady` all reject a remote/`ClientProtocolID` caller — only this node's own operator
+drives its own sessions) but gated on the *receiving* side by `-require-permit-for-channel`
 (`Config.RequirePermitForChannel`, default off): with it set, `handleChannelStream` only accepts
 an incoming channel from a current raft voter/learner or a peer holding the same confirmed
 `KindPermitPeer` record `-require-permit-for-execute`/relay reuse — no new permit kind. An idle
 established channel and an accepted-but-unclaimed incoming one are both reaped opportunistically
 after a timeout (`channelIdleTimeout`/`channelPendingTimeout` in `pkg/daemon`) rather than by a
 dedicated background goroutine, the same "simplest thing that could work" reasoning
-`executeInbox` already uses.
+`executeInbox` already uses; reaping cancels the session's own context, which promptly unblocks
+`pumpChannelUpload`/any in-flight ring wait rather than leaving it stuck until its own timeout.
 
 `kvmobile`'s `OpenChannel(peerID, cb)`/`ListenChannel(cb)`/`StopListenChannel()`/
-`SendChannelData(channelID, purposeName, base64Chunk)`/`CloseChannel(channelID)`/
-`StopChannel(channelID)` are the Android port — see the "`kvmobile`" section below. Data crosses
-the gomobile boundary as base64 rather than raw bytes in both directions (a phone has no literal
-stdin/stdout the way desktop piping does, and gomobile's string-only boundary can't otherwise
-carry arbitrary binary safely); `purposeName` is the same string convention `mage
+`SendChannelData(channelID, purposeName, chunk)`/`CloseChannel(channelID)`/
+`StopChannel(channelID)` are the Android port — see the "`kvmobile`" section below — and, like
+`pkg/kvctl`'s desktop commands, needed no *existing* method's signature changed to move onto the
+ring: both sit on top of the same `pkg/shmclient.Session` methods, so `pkg/chandata`'s Android
+backend
+(`chandata_android.go`, `ASharedMemory`-backed with an in-process fd registry — mirroring
+`pkg/ipc/ipc_android.go`'s own reasoning for why Android needs a different rendezvous than desktop's
+named `CreateShm`/`OpenShm`, since ASharedMemory has no OS-level naming, only fd handoff, which only
+works within one process) is what changes, invisibly, underneath them. One new method,
+`CloseChannelWrite(channelID)`, *was* added by that same rewrite — see the equivalent desktop
+paragraph above for why: a bulk sender needs some way to ask "has everything I sent actually
+reached the wire yet," a question that only exists because the ring made `SendChannelData`
+asynchronous in the first place. Separately, `chunk`/`OnData`'s own callback argument moved from
+base64 text to raw `[]byte`/`ByteArray` — see `ChannelCallback.OnData`'s own doc comment in
+`channel.go` for why that was a correctness-neutral throughput fix, not something the ring rewrite
+itself required; `purposeName` is the same string convention `mage
 openchannel`/`listenchannel` uses (`""`/`"control"`/`"video"`/a decimal number).
-`ChannelCallback.OnData(purpose, chunk)`/`OnClosed(reason)` is the reverse-binding interface
-Kotlin implements to receive incoming data, mirroring `ExecuteCallback`'s shape — `purpose` is the
-sender's tag as a string (`shmevent.ChannelPurposeName`).
+`ChannelCallback.OnData(purpose, chunk)`/`OnClosed(reason)` is the reverse-binding interface Kotlin
+implements to receive incoming data, mirroring `ExecuteCallback`'s shape — `purpose` is the sender's
+tag as a string (`shmevent.ChannelPurposeName`). Because `SendChannelData`/`PollChannel`-driving
+code/`CloseChannel` may be called from different Kotlin threads concurrently (unlike `pkg/kvctl`'s
+own single-threaded pump loops), `pkg/shmclient`'s per-channel ring handles are synchronized against
+a concurrent close (cancel-then-wait, not a plain mutex, so a `CloseChannel` never has to wait out
+some other blocked call's own full timeout) rather than assuming one goroutine drives a channel
+end to end.
 
 ## Vendored dependency patch
 

@@ -2,7 +2,6 @@ package kvmobile
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"testing"
 	"time"
@@ -16,7 +15,7 @@ import (
 // or the terminal OnClosed, distinguished by closed.
 type channelEvent struct {
 	purpose string
-	chunk   string
+	chunk   []byte
 	closed  bool
 	reason  string
 }
@@ -33,7 +32,7 @@ func newRecordingChannelCallback() *recordingChannelCallback {
 	return &recordingChannelCallback{ch: make(chan channelEvent, 16)}
 }
 
-func (r *recordingChannelCallback) OnData(purpose, chunk string) {
+func (r *recordingChannelCallback) OnData(purpose string, chunk []byte) {
 	r.ch <- channelEvent{purpose: purpose, chunk: chunk}
 }
 
@@ -64,6 +63,26 @@ func (r *recordingChannelCallback) expectNone(t *testing.T, window time.Duration
 	}
 }
 
+// leaderChannelSession opens a single pkg/shmclient.Session against
+// leaderPeerID for a test to drive raw channel calls against it as an
+// independent peer -- unlike pkg/shmclient's one-shot free functions
+// (Open+one call), a channel's SendChannel/PollChannel now read/write a
+// pkg/chandata ring pair that only the *Session which itself OpenChannel/
+// ListenChannel'd that channelID ever set up (see Session.
+// setupChannelData), so every test below needs to keep reusing the same
+// Session across a channel's whole lifecycle rather than opening a fresh
+// one per call.
+func leaderChannelSession(t *testing.T, leaderPeerID string) *shmclient.Session {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sess, err := shmclient.Open(ctx, leaderPeerID)
+	if err != nil {
+		t.Fatalf("shmclient.Open(leader): %v", err)
+	}
+	return sess
+}
+
 // TestOpenChannelDeliversAndSends drives OpenChannel end to end: this
 // device opens a channel to a real (non-kvmobile) leader, the leader
 // sends a chunk back which must reach the callback, and a chunk this
@@ -71,6 +90,7 @@ func (r *recordingChannelCallback) expectNone(t *testing.T, window time.Duration
 func TestOpenChannelDeliversAndSends(t *testing.T) {
 	leaderAddr := spawnTestLeader(t, t.TempDir())
 	leaderPeerID := peerIDFromMultiaddr(t, leaderAddr)
+	leaderSess := leaderChannelSession(t, leaderPeerID)
 
 	prevLeader := leaderMultiaddr
 	leaderMultiaddr = leaderAddr
@@ -94,9 +114,9 @@ func TestOpenChannelDeliversAndSends(t *testing.T) {
 
 	// The leader must see this device's own channel as an incoming,
 	// listenable one.
-	leaderChannelID, leaderRemote, ok, err := listenChannelUntil(t, leaderPeerID, 10*time.Second)
+	leaderChannelID, leaderRemote, ok, err := listenChannelUntil(t, leaderSess, 10*time.Second)
 	if err != nil {
-		t.Fatalf("shmclient.ListenChannel: %v", err)
+		t.Fatalf("leaderSess.ListenChannel: %v", err)
 	}
 	if !ok {
 		t.Fatal("leader never saw the incoming channel as listenable")
@@ -108,10 +128,10 @@ func TestOpenChannelDeliversAndSends(t *testing.T) {
 	// This device -> leader, tagged with a non-default purpose --
 	// confirms purpose survives SendChannelData -> the signed network
 	// frame -> the leader's own PollChannel intact.
-	if err := SendChannelData(channelID, "video", base64.StdEncoding.EncodeToString([]byte("from device"))); err != nil {
+	if err := SendChannelData(channelID, "video", []byte("from device")); err != nil {
 		t.Fatalf("SendChannelData: %v", err)
 	}
-	gotOnLeader, gotOnLeaderPurpose := pollChannelUntilChunk(t, leaderPeerID, leaderChannelID, 10*time.Second)
+	gotOnLeader, gotOnLeaderPurpose := pollChannelUntilChunk(t, leaderSess, leaderChannelID, 10*time.Second)
 	if string(gotOnLeader) != "from device" {
 		t.Fatalf("leader received %q, want %q", gotOnLeader, "from device")
 	}
@@ -122,8 +142,8 @@ func TestOpenChannelDeliversAndSends(t *testing.T) {
 	// Leader -> this device, tagged with a different non-default purpose.
 	sendCtx, sendCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer sendCancel()
-	if err := shmclient.SendChannel(sendCtx, leaderPeerID, leaderChannelID, shmevent.ChannelPurposeControl, []byte("from leader")); err != nil {
-		t.Fatalf("shmclient.SendChannel: %v", err)
+	if err := leaderSess.SendChannel(sendCtx, leaderChannelID, shmevent.ChannelPurposeControl, []byte("from leader")); err != nil {
+		t.Fatalf("leaderSess.SendChannel: %v", err)
 	}
 	e := cb.next(t, 10*time.Second)
 	if e.closed {
@@ -132,12 +152,8 @@ func TestOpenChannelDeliversAndSends(t *testing.T) {
 	if e.purpose != shmevent.ChannelPurposeName(shmevent.ChannelPurposeControl) {
 		t.Fatalf("device received purpose %q, want %q", e.purpose, shmevent.ChannelPurposeName(shmevent.ChannelPurposeControl))
 	}
-	gotOnDevice, err := base64.StdEncoding.DecodeString(e.chunk)
-	if err != nil {
-		t.Fatalf("decode base64 chunk: %v", err)
-	}
-	if string(gotOnDevice) != "from leader" {
-		t.Fatalf("device received %q, want %q", gotOnDevice, "from leader")
+	if string(e.chunk) != "from leader" {
+		t.Fatalf("device received %q, want %q", e.chunk, "from leader")
 	}
 }
 
@@ -150,6 +166,7 @@ func TestOpenChannelDeliversAndSends(t *testing.T) {
 func TestListenChannelClaimsIncomingChannel(t *testing.T) {
 	leaderAddr := spawnTestLeader(t, t.TempDir())
 	leaderPeerID := peerIDFromMultiaddr(t, leaderAddr)
+	leaderSess := leaderChannelSession(t, leaderPeerID)
 
 	prevLeader := leaderMultiaddr
 	leaderMultiaddr = leaderAddr
@@ -165,10 +182,10 @@ func TestListenChannelClaimsIncomingChannel(t *testing.T) {
 	}
 
 	openCtx, openCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	leaderChannelID, err := shmclient.OpenChannel(openCtx, leaderPeerID, PeerID())
+	leaderChannelID, err := leaderSess.OpenChannel(openCtx, PeerID())
 	openCancel()
 	if err != nil {
-		t.Fatalf("shmclient.OpenChannel: %v", err)
+		t.Fatalf("leaderSess.OpenChannel: %v", err)
 	}
 
 	cb := newRecordingChannelCallback()
@@ -199,19 +216,15 @@ func TestListenChannelClaimsIncomingChannel(t *testing.T) {
 
 	sendCtx, sendCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer sendCancel()
-	if err := shmclient.SendChannel(sendCtx, leaderPeerID, leaderChannelID, shmevent.ChannelPurposeData, []byte("hello device")); err != nil {
-		t.Fatalf("shmclient.SendChannel: %v", err)
+	if err := leaderSess.SendChannel(sendCtx, leaderChannelID, shmevent.ChannelPurposeData, []byte("hello device")); err != nil {
+		t.Fatalf("leaderSess.SendChannel: %v", err)
 	}
 	e := cb.next(t, 10*time.Second)
 	if e.closed {
 		t.Fatalf("unexpected OnClosed(%q) before any data", e.reason)
 	}
-	got, err := base64.StdEncoding.DecodeString(e.chunk)
-	if err != nil {
-		t.Fatalf("decode base64 chunk: %v", err)
-	}
-	if string(got) != "hello device" {
-		t.Fatalf("device received %q, want %q", got, "hello device")
+	if string(e.chunk) != "hello device" {
+		t.Fatalf("device received %q, want %q", e.chunk, "hello device")
 	}
 }
 
@@ -221,6 +234,7 @@ func TestListenChannelClaimsIncomingChannel(t *testing.T) {
 func TestCloseChannelStopsDeliveryAndNotifiesPeer(t *testing.T) {
 	leaderAddr := spawnTestLeader(t, t.TempDir())
 	leaderPeerID := peerIDFromMultiaddr(t, leaderAddr)
+	leaderSess := leaderChannelSession(t, leaderPeerID)
 
 	prevLeader := leaderMultiaddr
 	leaderMultiaddr = leaderAddr
@@ -241,9 +255,9 @@ func TestCloseChannelStopsDeliveryAndNotifiesPeer(t *testing.T) {
 		t.Fatalf("OpenChannel: %v", err)
 	}
 
-	leaderChannelID, _, ok, err := listenChannelUntil(t, leaderPeerID, 10*time.Second)
+	leaderChannelID, _, ok, err := listenChannelUntil(t, leaderSess, 10*time.Second)
 	if err != nil || !ok {
-		t.Fatalf("shmclient.ListenChannel: ok=%v err=%v", ok, err)
+		t.Fatalf("leaderSess.ListenChannel: ok=%v err=%v", ok, err)
 	}
 
 	if err := CloseChannel(channelID); err != nil {
@@ -253,10 +267,10 @@ func TestCloseChannelStopsDeliveryAndNotifiesPeer(t *testing.T) {
 	deadline := time.After(10 * time.Second)
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_, _, status, err := shmclient.PollChannel(ctx, leaderPeerID, leaderChannelID)
+		_, _, status, err := leaderSess.PollChannel(ctx, leaderChannelID)
 		cancel()
 		if err != nil {
-			t.Fatalf("shmclient.PollChannel: %v", err)
+			t.Fatalf("leaderSess.PollChannel: %v", err)
 		}
 		if status == shmclient.ChannelClosed {
 			break
@@ -278,6 +292,7 @@ func TestCloseChannelStopsDeliveryAndNotifiesPeer(t *testing.T) {
 func TestStopChannelStopsLocalDeliveryWithoutClosingChannel(t *testing.T) {
 	leaderAddr := spawnTestLeader(t, t.TempDir())
 	leaderPeerID := peerIDFromMultiaddr(t, leaderAddr)
+	leaderSess := leaderChannelSession(t, leaderPeerID)
 
 	prevLeader := leaderMultiaddr
 	leaderMultiaddr = leaderAddr
@@ -300,20 +315,20 @@ func TestStopChannelStopsLocalDeliveryWithoutClosingChannel(t *testing.T) {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		shmclient.CloseChannel(ctx, leaderPeerID, channelID)
+		leaderSess.CloseChannel(ctx, channelID)
 	})
 
-	leaderChannelID, _, ok, err := listenChannelUntil(t, leaderPeerID, 10*time.Second)
+	leaderChannelID, _, ok, err := listenChannelUntil(t, leaderSess, 10*time.Second)
 	if err != nil || !ok {
-		t.Fatalf("shmclient.ListenChannel: ok=%v err=%v", ok, err)
+		t.Fatalf("leaderSess.ListenChannel: ok=%v err=%v", ok, err)
 	}
 
 	send := func(value string) {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := shmclient.SendChannel(ctx, leaderPeerID, leaderChannelID, shmevent.ChannelPurposeData, []byte(value)); err != nil {
-			t.Fatalf("shmclient.SendChannel: %v", err)
+		if err := leaderSess.SendChannel(ctx, leaderChannelID, shmevent.ChannelPurposeData, []byte(value)); err != nil {
+			t.Fatalf("leaderSess.SendChannel: %v", err)
 		}
 	}
 
@@ -322,12 +337,8 @@ func TestStopChannelStopsLocalDeliveryWithoutClosingChannel(t *testing.T) {
 	if e.closed {
 		t.Fatalf("unexpected OnClosed(%q) before-stop", e.reason)
 	}
-	gotBefore, err := base64.StdEncoding.DecodeString(e.chunk)
-	if err != nil {
-		t.Fatalf("decode base64 chunk: %v", err)
-	}
-	if string(gotBefore) != "before-stop" {
-		t.Fatalf("got %q, want %q", gotBefore, "before-stop")
+	if string(e.chunk) != "before-stop" {
+		t.Fatalf("got %q, want %q", e.chunk, "before-stop")
 	}
 
 	StopChannel(channelID)
@@ -337,20 +348,20 @@ func TestStopChannelStopsLocalDeliveryWithoutClosingChannel(t *testing.T) {
 	// The channel itself is still alive -- SendChannelData (going through
 	// this device's own daemon, independent of the now-stopped local
 	// delivery loop) must still work.
-	if err := SendChannelData(channelID, "", base64.StdEncoding.EncodeToString([]byte("still open"))); err != nil {
+	if err := SendChannelData(channelID, "", []byte("still open")); err != nil {
 		t.Fatalf("SendChannelData after StopChannel: %v", err)
 	}
-	if got, _ := pollChannelUntilChunk(t, leaderPeerID, leaderChannelID, 10*time.Second); string(got) != "still open" {
+	if got, _ := pollChannelUntilChunk(t, leaderSess, leaderChannelID, 10*time.Second); string(got) != "still open" {
 		t.Fatalf("leader received %q, want %q", got, "still open")
 	}
 }
 
-func listenChannelUntil(t *testing.T, peerID string, timeout time.Duration) (channelID, remotePeerID string, ok bool, err error) {
+func listenChannelUntil(t *testing.T, sess *shmclient.Session, timeout time.Duration) (channelID, remotePeerID string, ok bool, err error) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		id, remote, gotOne, listenErr := shmclient.ListenChannel(ctx, peerID)
+		id, remote, gotOne, listenErr := sess.ListenChannel(ctx)
 		cancel()
 		if listenErr != nil {
 			return "", "", false, listenErr
@@ -363,15 +374,15 @@ func listenChannelUntil(t *testing.T, peerID string, timeout time.Duration) (cha
 	return "", "", false, nil
 }
 
-func pollChannelUntilChunk(t *testing.T, peerID, channelID string, timeout time.Duration) (chunk []byte, purpose byte) {
+func pollChannelUntilChunk(t *testing.T, sess *shmclient.Session, channelID string, timeout time.Duration) (chunk []byte, purpose byte) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		chunk, purpose, status, err := shmclient.PollChannel(ctx, peerID, channelID)
+		chunk, purpose, status, err := sess.PollChannel(ctx, channelID)
 		cancel()
 		if err != nil {
-			t.Fatalf("shmclient.PollChannel: %v", err)
+			t.Fatalf("sess.PollChannel: %v", err)
 		}
 		if status == shmclient.ChannelChunk {
 			return chunk, purpose
