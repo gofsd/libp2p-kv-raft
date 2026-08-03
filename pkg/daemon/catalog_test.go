@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/peer"
+
 	p2praft "github.com/gofsd/libp2p-kv-raft/pkg/raft"
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
@@ -140,5 +142,83 @@ func TestGroupPutRequiresVoter(t *testing.T) {
 			t.Fatal("group delete by voter never took effect")
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// TestPersonalGroupPutDeleteRejected proves isPeerIdentityGroupID's
+// protection: a solo bootstrap leader (a voter, so it would otherwise be
+// allowed to Put/Delete any group) is rejected outright when the target
+// group id is shaped like a peer id -- whether that's its own personal
+// group (ensurePersonalGroup already created one for it, via
+// syncMemberGroups reacting to its own self-election) or some other
+// peer's, which was never created here at all. Format alone is enough to
+// reserve the id; the daemon doesn't need to have actually seen that peer
+// before to protect the namespace.
+func TestPersonalGroupPutDeleteRejected(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmpDir := t.TempDir()
+	key := filepath.Join(tmpDir, "leader.key")
+	if _, err := p2praft.LoadOrGenerateKey(key); err != nil {
+		t.Fatalf("generate leader key: %v", err)
+	}
+	leader, err := start(Config{
+		DataDir:            filepath.Join(tmpDir, "leader"),
+		KeyPath:            key,
+		HeartbeatTimeout:   200 * time.Millisecond,
+		ElectionTimeout:    200 * time.Millisecond,
+		CommitTimeout:      20 * time.Millisecond,
+		LeaderLeaseTimeout: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("start leader: %v", err)
+	}
+	defer leader.shutdown()
+	if _, err := leader.handleAdd(ctx, ""); err != nil {
+		t.Fatalf("bootstrap leader: %v", err)
+	}
+
+	call := func(m shmevent.Msg) shmevent.Msg {
+		t.Helper()
+		buf, err := shmevent.Encode(m, leader.ed25519Priv)
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		decoded, crc, sig, err := shmevent.Decode(buf)
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return leader.handleShmEvent(ctx, decoded, crc, sig, leader.localCaller())
+	}
+
+	// Some arbitrary other peer's id (never seen by this daemon at all --
+	// no personal group record for it was ever created here) is rejected
+	// purely on format.
+	otherKeyPath := filepath.Join(tmpDir, "other.key")
+	otherPriv, err := p2praft.LoadOrGenerateKey(otherKeyPath)
+	if err != nil {
+		t.Fatalf("generate other key: %v", err)
+	}
+	otherPeerID, err := peer.IDFromPrivateKey(otherPriv)
+	if err != nil {
+		t.Fatalf("derive other peer id: %v", err)
+	}
+
+	for _, id := range []string{leader.peerID, otherPeerID.String()} {
+		putPayload, err := shmevent.EncodeGroupPutPayload(id, "renamed", false)
+		if err != nil {
+			t.Fatalf("EncodeGroupPutPayload: %v", err)
+		}
+		resp := call(shmevent.Msg{EventType: shmevent.EventGroupPut, Value: putPayload, ID: 1})
+		if resp.EventType != shmevent.EventError {
+			t.Fatalf("group_put against peer-identity-shaped id %q unexpectedly succeeded", id)
+		}
+		resp = call(shmevent.Msg{EventType: shmevent.EventGroupDelete, Value: []byte(id), ID: 2})
+		if resp.EventType != shmevent.EventError {
+			t.Fatalf("group_delete against peer-identity-shaped id %q unexpectedly succeeded", id)
+		}
 	}
 }

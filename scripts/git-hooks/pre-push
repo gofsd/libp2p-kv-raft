@@ -1,17 +1,40 @@
 #!/bin/sh
 # Runs before every `git push`, once `git config core.hooksPath` points here
-# (see `mage githooks:install`). Blocks the push if `mage e2e:current`
-# fails -- the rows recorded since the last published testdata.json
-# version (see pkg/e2edata.File.PendingRows) -- rather than every row ever
-# recorded (`mage e2e:all`), so a routine push isn't slowed down re-running
-# the whole history every time.
+# (see `mage githooks:install`). Blocks the push if the e2e gate below
+# fails.
+#
+# Which gate runs depends on what's actually being pushed, read from this
+# hook's own stdin (git feeds it "<local ref> <local sha1> <remote ref>
+# <remote sha1>" lines, one per ref the push covers):
+#
+#   - A routine push (no version tag among the pushed refs) runs
+#     `mage e2e:current` -- just the rows recorded since the last published
+#     testdata.json version (see pkg/e2edata.File.PendingRows) -- so a
+#     routine push isn't slowed down re-running the whole history every
+#     time.
+#   - A push that includes a version tag (`mage patch`/`minor`/`major`/
+#     `alpha`/`beta`/`rc` followed by `git push --tags`, or `git push
+#     <remote> <tag>`) runs `mage e2e:release` instead -- the full recorded
+#     suite (same rows as `mage e2e:all`), since a version bump is exactly
+#     the point where everything, not just what's new, should be
+#     reconfirmed before that version ships. Both gates advance
+#     PublishedVersion on success.
 #
 # Set SKIP_E2E=1 to bypass this for a push that genuinely can't reach the
 # e2e infrastructure (e.g. no network to the SSH bootstrap host) -- deliberate,
 # so the escape hatch is visible in the command line, not a silent --no-verify.
 
+e2e_target="e2e:current"
+while read -r local_ref local_sha remote_ref remote_sha; do
+	case "$local_ref" in
+	refs/tags/v[0-9]*)
+		e2e_target="e2e:release"
+		;;
+	esac
+done
+
 if [ -n "$SKIP_E2E" ]; then
-	echo "pre-push: SKIP_E2E set, skipping mage e2e:current"
+	echo "pre-push: SKIP_E2E set, skipping mage $e2e_target"
 	exit 0
 fi
 
@@ -23,13 +46,17 @@ if ! command -v mage >/dev/null 2>&1; then
 	exit 1
 fi
 
-echo "pre-push: running mage e2e:current..."
-if ! mage e2e:current; then
-	echo "pre-push: mage e2e:current failed -- push blocked. See test/e2e/testdata.json for per-row status/error, or push with SKIP_E2E=1 git push to bypass." >&2
+if [ "$e2e_target" = "e2e:release" ]; then
+	echo "pre-push: version tag among pushed refs -- running full mage e2e:release..."
+else
+	echo "pre-push: running mage e2e:current..."
+fi
+if ! mage "$e2e_target"; then
+	echo "pre-push: mage $e2e_target failed -- push blocked. See test/e2e/testdata.json for per-row status/error, or push with SKIP_E2E=1 git push to bypass." >&2
 	exit 1
 fi
 
-# A successful e2e:current always re-records android_ui_result's own
+# A successful e2e run above always re-records android_ui_result's own
 # ran_at/status in test/e2e/testdata.json (see pkg/e2erun.Run), even when
 # nothing else about the run changed -- so a routine push otherwise always
 # leaves this one-line bookkeeping diff sitting uncommitted afterward,
@@ -90,7 +117,7 @@ if [ -n "$testdata_dirty" ] && [ -z "$other_dirty" ]; then
 	fi
 	rm -f "$commit_log"
 elif [ -n "$testdata_dirty" ]; then
-	echo "pre-push: test/e2e/testdata.json (and possibly other files) changed after e2e:current -- not auto-committing since other changes are also pending; commit test/e2e/testdata.json yourself before pushing again." >&2
+	echo "pre-push: test/e2e/testdata.json (and possibly other files) changed after the e2e run above -- not auto-committing since other changes are also pending; commit test/e2e/testdata.json yourself before pushing again." >&2
 fi
 
 exit 0

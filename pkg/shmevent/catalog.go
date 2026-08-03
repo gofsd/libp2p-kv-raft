@@ -394,3 +394,104 @@ func DecodePeerGroupPayload(payload []byte) (peerID, groupID []byte, err error) 
 	}
 	return payload[off : off+idLen], payload[off+idLen:], nil
 }
+
+// Reserved Group ids that pkg/daemon creates once, at cluster bootstrap,
+// and keeps current automatically from then on -- see that package's
+// syncMemberGroups/clearMemberGroups/ensureReservedGroups. Every current
+// raft voter or learner belongs to ReservedGroupCluster, and to exactly
+// one of ReservedGroupVoter/ReservedGroupLearner matching its current
+// suffrage (a raft leader counts as a voter for this purpose); a peer that
+// leaves or is kicked is removed from all three. Their own Group records
+// (id/name/public) are protected -- pkg/daemon's EventGroupPut/
+// EventGroupDelete reject any attempt to create, rename, or delete one of
+// these four ids -- and PeerGroup membership in the first three is
+// likewise daemon-managed only: EventPeerGroupPut/EventPeerGroupDelete
+// reject a manual edit against ReservedGroupCluster/Voter/Learner (see
+// IsAutoManagedGroupID).
+//
+// ReservedGroupChannel, ReservedGroupRelay, ReservedGroupRemote, and
+// ReservedGroupExecute are the deliberate exception to that last rule:
+// their Group records are equally protected, but their PeerGroup
+// membership remains an ordinary, operator-editable grant (mage
+// addpeertogroup/removepeerfromgroup) -- the mechanism for letting a peer
+// that isn't a cluster member use a raw Channel, this cluster's relay
+// service, the generic remote Set/Get/etc. RPC surface, or Execute
+// delivery, anyway. pkg/daemon's handleChannelStream/relayACL/
+// handleShmEvent/handleExecuteStream each accept access from any peer in
+// ReservedGroupCluster or their own respective group (or a pairwise
+// personal grant -- see isPeerIdentityGroupID in pkg/daemon) and reject
+// everyone else, identically -- see pkg/daemon's isAuthorizedForGatedAccess.
+// ReservedGroupRemote/ReservedGroupExecute have no opt-out Config flag,
+// same as Channel/Relay: a non-member remote caller's only other door
+// into a cluster it doesn't belong to is the narrow, always-on
+// SubmitCommand-plus-its-own-log-readback carve-out (see pkg/daemon's
+// isCommandLogCarveOut) -- a public command's own execution logic can use
+// addpeertogroup to grant a stranger into remote/execute/channel/relay
+// from there, but nothing does so automatically.
+const (
+	ReservedGroupCluster = "cluster"
+	ReservedGroupVoter   = "voter"
+	ReservedGroupLearner = "learner"
+	ReservedGroupChannel = "channel"
+	ReservedGroupRelay   = "relay"
+	ReservedGroupRemote  = "remote"
+	ReservedGroupExecute = "execute"
+)
+
+// IsReservedGroupID reports whether id names one of the seven reserved
+// groups above -- used to reject EventGroupPut/EventGroupDelete against
+// any of them, since their Group records are daemon-managed, created once
+// at cluster bootstrap (see pkg/daemon's ensureReservedGroups).
+func IsReservedGroupID(id string) bool {
+	switch id {
+	case ReservedGroupCluster, ReservedGroupVoter, ReservedGroupLearner, ReservedGroupChannel, ReservedGroupRelay, ReservedGroupRemote, ReservedGroupExecute:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsAutoManagedGroupID reports whether id is one of the three reserved
+// groups whose *membership* (not just their Group record) is exclusively
+// daemon-managed -- ReservedGroupChannel/ReservedGroupRelay are
+// deliberately excluded, see their own doc comment above.
+func IsAutoManagedGroupID(id string) bool {
+	switch id {
+	case ReservedGroupCluster, ReservedGroupVoter, ReservedGroupLearner:
+		return true
+	default:
+		return false
+	}
+}
+
+// DefaultPublicGroupID/DefaultPublicCommandID name the Group+Command
+// pkg/daemon.ensureDefaultPublicCommand creates once, at the same moment
+// ensureReservedGroups creates the seven reserved groups above -- a
+// ready-made, always-public front door into an otherwise closed cluster.
+// Any peer at all, including one with no standing whatsoever, may submit
+// this exact command (SubmitCommand, gated by the identical
+// IsPermittedForCommand check every command uses, trivially satisfied
+// here since DefaultPublicGroupID's own Public flag is true and
+// DefaultPublicCommandID is linked to it via GroupCommand) -- and
+// pkg/kvfsm.Apply's OpAppendCommandRequest case special-cases this
+// specific commandID: submitting it doesn't just log a request, it also
+// grants the submitting peer real ReservedGroupChannel and
+// ReservedGroupRelay access, atomically, in the same raft-committed
+// write (see kvfsm's grantChannelRelayAccess). This is the concrete
+// escalation path pkg/daemon's isCommandLogCarveOut doc comment already
+// describes: the one thing a completely unknown peer may do to an
+// otherwise closed cluster is submit this one command, and doing so is
+// itself what grants it more.
+//
+// Unlike the seven groups above, this Group/Command pair is deliberately
+// NOT reserved/protected -- IsReservedGroupID doesn't include
+// DefaultPublicGroupID: it's a sensible starting default, not permanent
+// infrastructure. An operator who wants to close open self-service
+// enrollment can deletegroup/updategroup it (public=false) or unlink it
+// from the command via removecommandfromgroup, the same way they already
+// control every other ACL decision in this catalog -- voters already
+// have full authority over it, same as anything else here.
+const (
+	DefaultPublicGroupID   = "public"
+	DefaultPublicCommandID = "public-access"
+)

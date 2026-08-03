@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -87,6 +88,30 @@ func listenChannelUntilClaimed(t *testing.T, ctx context.Context, n *Node) (chan
 	}
 }
 
+// grantChannelAccess grants sender's peer id membership in receiver's
+// reserved "channel" group directly in receiver's store -- the minimal
+// standing handleChannelStream's always-enforced gate now requires
+// between two standalone test nodes with no cluster relationship to each
+// other (see shmevent.ReservedGroupChannel's own doc comment). Every
+// EventChannelOpen in this file dials from a to b, never the other way
+// (b's own replies reuse the channel a already opened, via
+// EventChannelSend -- see TestChannelOpenBidirectionalSendPoll), so a
+// single grant of a into b's store is always what these tests need.
+func grantChannelAccess(t *testing.T, sender, receiver *Node) {
+	t.Helper()
+	senderPeerID, err := peer.Decode(sender.peerID)
+	if err != nil {
+		t.Fatalf("decode sender peer id: %v", err)
+	}
+	key, err := shmevent.PeerGroupKey([]byte(senderPeerID.String()), []byte(shmevent.ReservedGroupChannel))
+	if err != nil {
+		t.Fatalf("build channel PeerGroup key: %v", err)
+	}
+	if err := receiver.store.Set(key, nil); err != nil {
+		t.Fatalf("grant channel access: %v", err)
+	}
+}
+
 // TestChannelOpenBidirectionalSendPoll is the end-to-end happy path: a
 // opens a channel to b, sends a chunk, b claims it via channel_listen and
 // receives it via channel_poll; b then sends a chunk back on its own
@@ -101,6 +126,7 @@ func TestChannelOpenBidirectionalSendPoll(t *testing.T) {
 	a := startExecuteTestNode(t, filepath.Join(tmpDir, "a"))
 	b := startExecuteTestNode(t, filepath.Join(tmpDir, "b"))
 	connectPeers(t, ctx, a, b)
+	grantChannelAccess(t, a, b)
 
 	openResp := callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(b.peerID), ID: 1}, a.ed25519Priv)
 	if openResp.EventType == shmevent.EventError {
@@ -160,6 +186,7 @@ func TestChannelPurposeCarriedEndToEnd(t *testing.T) {
 	a := startExecuteTestNode(t, filepath.Join(tmpDir, "a"))
 	b := startExecuteTestNode(t, filepath.Join(tmpDir, "b"))
 	connectPeers(t, ctx, a, b)
+	grantChannelAccess(t, a, b)
 
 	openResp := callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(b.peerID), ID: 1}, a.ed25519Priv)
 	if openResp.EventType == shmevent.EventError {
@@ -225,6 +252,7 @@ func TestChannelLargeChunkNearChannelMaxSize(t *testing.T) {
 	a := startExecuteTestNode(t, filepath.Join(tmpDir, "a"))
 	b := startExecuteTestNode(t, filepath.Join(tmpDir, "b"))
 	connectPeers(t, ctx, a, b)
+	grantChannelAccess(t, a, b)
 
 	openResp := callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(b.peerID), ID: 1}, a.ed25519Priv)
 	if openResp.EventType == shmevent.EventError {
@@ -280,6 +308,7 @@ func TestChannelCloseIsObservedAsClosedByPeer(t *testing.T) {
 	a := startExecuteTestNode(t, filepath.Join(tmpDir, "a"))
 	b := startExecuteTestNode(t, filepath.Join(tmpDir, "b"))
 	connectPeers(t, ctx, a, b)
+	grantChannelAccess(t, a, b)
 
 	openResp := callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(b.peerID), ID: 1}, a.ed25519Priv)
 	if openResp.EventType == shmevent.EventError {
@@ -330,6 +359,7 @@ func TestChannelCloseWriteLeavesOtherDirectionOpen(t *testing.T) {
 	a := startExecuteTestNode(t, filepath.Join(tmpDir, "a"))
 	b := startExecuteTestNode(t, filepath.Join(tmpDir, "b"))
 	connectPeers(t, ctx, a, b)
+	grantChannelAccess(t, a, b)
 
 	openResp := callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(b.peerID), ID: 1}, a.ed25519Priv)
 	if openResp.EventType == shmevent.EventError {
@@ -467,6 +497,7 @@ func TestChannelDataFrameForgedAfterHandshakeRejected(t *testing.T) {
 	a := startExecuteTestNode(t, filepath.Join(tmpDir, "a"))
 	b := startExecuteTestNode(t, filepath.Join(tmpDir, "b"))
 	connectPeers(t, ctx, a, b)
+	grantChannelAccess(t, a, b)
 
 	openResp := callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(b.peerID), ID: 1}, a.ed25519Priv)
 	if openResp.EventType == shmevent.EventError {
@@ -518,10 +549,12 @@ func TestChannelDataFrameForgedAfterHandshakeRejected(t *testing.T) {
 	}
 }
 
-// TestRequirePermitForChannelGate mirrors TestRequirePermitForExecuteGate
-// line-for-line, against handleChannelStream's identically-shaped gate
-// instead of handleExecuteStream's.
-func TestRequirePermitForChannelGate(t *testing.T) {
+// TestChannelGroupGate mirrors what TestRequirePermitForChannelGate used to
+// check against Config.RequirePermitForChannel/KindPermitPeer, updated for
+// handleChannelStream's current, always-enforced gate: a sender must
+// belong to shmevent.ReservedGroupCluster or ReservedGroupChannel (see
+// those constants' doc comment), not hold a KindPermitPeer permit.
+func TestChannelGroupGate(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -537,7 +570,7 @@ func TestRequirePermitForChannelGate(t *testing.T) {
 	if _, err := p2praft.LoadOrGenerateKey(bKeyPath); err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
-	b, err := start(Config{DataDir: bDir, KeyPath: bKeyPath, RequirePermitForChannel: true})
+	b, err := start(Config{DataDir: bDir, KeyPath: bKeyPath})
 	if err != nil {
 		t.Fatalf("start b: %v", err)
 	}
@@ -550,43 +583,139 @@ func TestRequirePermitForChannelGate(t *testing.T) {
 		return callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(b.peerID), ID: id}, a.ed25519Priv)
 	}
 
-	// Neither permitted nor a cluster member: dispatchChannelOpen reads
-	// b's reject response synchronously, so the gate's rejection on b
-	// surfaces straight back as a local error on a.
+	// Neither a cluster member nor in the channel group: rejected.
+	// dispatchChannelOpen reads b's reject response synchronously, so the
+	// gate's rejection on b surfaces straight back as a local error on a.
 	if resp := open(1); resp.EventType != shmevent.EventError {
-		t.Fatal("channel_open from an unpermitted, non-member sender unexpectedly succeeded")
+		t.Fatal("channel_open from a sender in neither reserved group unexpectedly succeeded")
 	}
 
-	// Grant a a confirmed KindPermitPeer record directly in b's store.
 	aPeerID, err := peer.Decode(a.peerID)
 	if err != nil {
 		t.Fatalf("decode a peer id: %v", err)
 	}
-	permitKey := shmevent.SystemKey(shmevent.KindPermitPeer, shmevent.StatusConfirmed, []byte(aPeerID.String()))
-	if err := b.store.Set(permitKey, nil); err != nil {
-		t.Fatalf("grant permit: %v", err)
+
+	// Grant a membership in b's "channel" group directly.
+	channelGroupKey, err := shmevent.PeerGroupKey([]byte(aPeerID.String()), []byte(shmevent.ReservedGroupChannel))
+	if err != nil {
+		t.Fatalf("build channel PeerGroup key: %v", err)
+	}
+	if err := b.store.Set(channelGroupKey, nil); err != nil {
+		t.Fatalf("grant channel group membership: %v", err)
 	}
 	if resp := open(2); resp.EventType == shmevent.EventError {
-		t.Fatalf("channel_open from a permitted sender rejected: %s", resp.Value)
+		t.Fatalf("channel_open from a channel-group member rejected: %s", resp.Value)
 	}
 
-	// Revoke it again and confirm a KindClusterMember record alone is
-	// sufficient (the cluster-member exemption), independent of the
-	// permit.
-	if err := b.store.Delete(permitKey); err != nil {
-		t.Fatalf("revoke permit: %v", err)
+	// Revoke it again and confirm "cluster" group membership alone is
+	// sufficient, independent of the channel group.
+	if err := b.store.Delete(channelGroupKey); err != nil {
+		t.Fatalf("revoke channel group membership: %v", err)
 	}
 	if resp := open(3); resp.EventType != shmevent.EventError {
-		t.Fatal("channel_open from a sender with a revoked permit and no cluster membership unexpectedly succeeded")
+		t.Fatal("channel_open from a sender with revoked channel-group membership and no cluster membership unexpectedly succeeded")
 	}
 
-	memberKey := shmevent.ClusterMemberKey([]byte(aPeerID.String()))
-	memberPayload := shmevent.EncodeClusterMemberPayload(a.ed25519Pub, shmevent.RoleVoter)
-	if err := b.store.Set(memberKey, memberPayload); err != nil {
-		t.Fatalf("record cluster member: %v", err)
+	clusterGroupKey, err := shmevent.PeerGroupKey([]byte(aPeerID.String()), []byte(shmevent.ReservedGroupCluster))
+	if err != nil {
+		t.Fatalf("build cluster PeerGroup key: %v", err)
+	}
+	if err := b.store.Set(clusterGroupKey, nil); err != nil {
+		t.Fatalf("grant cluster group membership: %v", err)
 	}
 	if resp := open(4); resp.EventType == shmevent.EventError {
-		t.Fatalf("channel_open from a cluster member rejected: %s", resp.Value)
+		t.Fatalf("channel_open from a cluster-group member rejected: %s", resp.Value)
+	}
+}
+
+// TestChannelPersonalGroupGate proves the pairwise-grant mechanism
+// isPeerIdentityGroupID's doc comment describes: two standalone nodes with
+// no cluster relationship to each other at all (neither ever joins the
+// other's raft group) can still open a channel in one direction once the
+// receiver's own personal group (id == its own peer id) lists the sender
+// -- and that grant is one-directional, not implied by its reverse: b
+// trusting a doesn't mean a trusts b back, exactly the "peer A should
+// have B in its own peer group, and vice versa" requirement a truly
+// bidirectional connection needs.
+func TestChannelPersonalGroupGate(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmpDir := t.TempDir()
+	a := startExecuteTestNode(t, filepath.Join(tmpDir, "a"))
+	b := startExecuteTestNode(t, filepath.Join(tmpDir, "b"))
+	connectPeers(t, ctx, a, b)
+
+	openAtoB := func(id uint16) shmevent.Msg {
+		t.Helper()
+		return callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(b.peerID), ID: id}, a.ed25519Priv)
+	}
+	openBtoA := func(id uint16) shmevent.Msg {
+		t.Helper()
+		return callLocal(t, ctx, b, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(a.peerID), ID: id}, b.ed25519Priv)
+	}
+
+	// Neither side has granted the other anything yet: both directions
+	// are rejected.
+	if resp := openAtoB(1); resp.EventType != shmevent.EventError {
+		t.Fatal("a -> b channel_open with no grant either way unexpectedly succeeded")
+	}
+	if resp := openBtoA(2); resp.EventType != shmevent.EventError {
+		t.Fatal("b -> a channel_open with no grant either way unexpectedly succeeded")
+	}
+
+	aPeerID, err := peer.Decode(a.peerID)
+	if err != nil {
+		t.Fatalf("decode a peer id: %v", err)
+	}
+
+	// b grants a access to itself, via b's own personal group -- b's
+	// PeerGroupKey(a, b.peerID) record. This must permit a -> b, but must
+	// NOT (on its own) permit the reverse b -> a: b hasn't been granted
+	// anything in a's own personal group.
+	bPersonalGroupKey, err := shmevent.PeerGroupKey([]byte(aPeerID.String()), []byte(b.peerID))
+	if err != nil {
+		t.Fatalf("build b's personal PeerGroup key: %v", err)
+	}
+	if err := b.store.Set(bPersonalGroupKey, nil); err != nil {
+		t.Fatalf("grant a access to b's personal group: %v", err)
+	}
+	if resp := openAtoB(3); resp.EventType == shmevent.EventError {
+		t.Fatalf("a -> b channel_open after b granted a access rejected: %s", resp.Value)
+	}
+	if resp := openBtoA(4); resp.EventType != shmevent.EventError {
+		t.Fatal("b -> a channel_open unexpectedly succeeded from b's one-directional grant of a alone")
+	}
+
+	// a now also grants b access to itself, via a's own personal group --
+	// the connection is genuinely bidirectional only once both sides have
+	// granted each other.
+	bPeerID, err := peer.Decode(b.peerID)
+	if err != nil {
+		t.Fatalf("decode b peer id: %v", err)
+	}
+	aPersonalGroupKey, err := shmevent.PeerGroupKey([]byte(bPeerID.String()), []byte(a.peerID))
+	if err != nil {
+		t.Fatalf("build a's personal PeerGroup key: %v", err)
+	}
+	if err := a.store.Set(aPersonalGroupKey, nil); err != nil {
+		t.Fatalf("grant b access to a's personal group: %v", err)
+	}
+	if resp := openBtoA(5); resp.EventType == shmevent.EventError {
+		t.Fatalf("b -> a channel_open after a granted b access rejected: %s", resp.Value)
+	}
+
+	// Revoking b's grant of a leaves a's grant of b (the reverse
+	// direction) untouched.
+	if err := b.store.Delete(bPersonalGroupKey); err != nil {
+		t.Fatalf("revoke a's access to b's personal group: %v", err)
+	}
+	if resp := openAtoB(6); resp.EventType != shmevent.EventError {
+		t.Fatal("a -> b channel_open after b revoked a's grant unexpectedly succeeded")
+	}
+	if resp := openBtoA(7); resp.EventType == shmevent.EventError {
+		t.Fatalf("b -> a channel_open rejected after only a -> b's grant was revoked: %s", resp.Value)
 	}
 }
 
@@ -638,6 +767,7 @@ func TestChannelReapEvictsUnclaimedPendingChannel(t *testing.T) {
 	a := startExecuteTestNode(t, filepath.Join(tmpDir, "a"))
 	b := startExecuteTestNode(t, filepath.Join(tmpDir, "b"))
 	connectPeers(t, ctx, a, b)
+	grantChannelAccess(t, a, b)
 
 	openResp := callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(b.peerID), ID: 1}, a.ed25519Priv)
 	if openResp.EventType == shmevent.EventError {
@@ -679,7 +809,7 @@ func mustEncodeChannelSend(t *testing.T, channelID string, purpose byte, chunk [
 // corresponds to exactly one popChunk call (see channelMaxChunkSize's doc
 // comment for why there's nothing left to split).
 func TestChannelSessionPushPopPreservesPurposeAndOrder(t *testing.T) {
-	sess := newChannelSession("test-channel", nil, "remote-peer", nil, nil)
+	sess := newChannelSession("test-channel", nil, "remote-peer", nil, nil, newQuotaTracker(0, 0, 0, 0), "")
 
 	pushed := []struct {
 		purpose byte
@@ -729,6 +859,7 @@ func TestChannelBurstSendStaysUnderPollResponseLimit(t *testing.T) {
 	a := startExecuteTestNode(t, filepath.Join(tmpDir, "a"))
 	b := startExecuteTestNode(t, filepath.Join(tmpDir, "b"))
 	connectPeers(t, ctx, a, b)
+	grantChannelAccess(t, a, b)
 
 	openResp := callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(b.peerID), ID: 1}, a.ed25519Priv)
 	if openResp.EventType == shmevent.EventError {
@@ -783,6 +914,84 @@ func TestChannelBurstSendStaysUnderPollResponseLimit(t *testing.T) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("byte %d mismatch: got %x, want %x", i, got[i], want[i])
+		}
+	}
+}
+
+// TestChannelQuotaExhaustionClosesSession confirms pumpChannelReads closes
+// a channelSession once the receiving node's channelQuota denies an
+// inbound chunk -- the group-ACL gate (grantChannelAccess) still passes,
+// but a's chunk exceeds b's tiny configured per-peer burst budget, so it
+// must still be rejected and the session torn down, exactly like an
+// oversized or forged frame already is.
+func TestChannelQuotaExhaustionClosesSession(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tmpDir := t.TempDir()
+	a := startExecuteTestNode(t, filepath.Join(tmpDir, "a"))
+
+	bDir := filepath.Join(tmpDir, "b")
+	if err := os.MkdirAll(bDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", bDir, err)
+	}
+	bKeyPath := filepath.Join(bDir, "identity.key")
+	if _, err := p2praft.LoadOrGenerateKey(bKeyPath); err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	b, err := start(Config{
+		DataDir: bDir, KeyPath: bKeyPath,
+		// A burst well under the chunk size sent below -- AllowN denies
+		// outright when cost exceeds the bucket's total capacity,
+		// regardless of refill rate, so this trips on the very first
+		// oversized chunk with no need to wait out a refill window.
+		QuotaChannelBytesPerPeerPerSec: 1,
+		QuotaChannelBurstPerPeer:       5,
+	})
+	if err != nil {
+		t.Fatalf("start b: %v", err)
+	}
+	t.Cleanup(b.shutdown)
+
+	connectPeers(t, ctx, a, b)
+	grantChannelAccess(t, a, b)
+
+	openResp := callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(b.peerID), ID: 1}, a.ed25519Priv)
+	if openResp.EventType == shmevent.EventError {
+		t.Fatalf("channel_open rejected: %s", openResp.Value)
+	}
+	aChannelID := string(openResp.Value)
+
+	bChannelID, _ := listenChannelUntilClaimed(t, ctx, b)
+
+	// Well over b's 5-byte burst budget -- denied on arrival regardless of
+	// a's own (unlimited) outbound quota, which only gates a's own send.
+	sendResp := callLocal(t, ctx, a, shmevent.Msg{
+		EventType: shmevent.EventChannelSend,
+		Value:     mustEncodeChannelSend(t, aChannelID, shmevent.ChannelPurposeData, []byte("this chunk is over budget")),
+		ID:        2,
+	}, a.ed25519Priv)
+	if sendResp.EventType == shmevent.EventError {
+		t.Fatalf("channel_send rejected on a's own side: %s", sendResp.Value)
+	}
+
+	deadline := time.After(10 * time.Second)
+	for {
+		sess, ok := b.channels.get(bChannelID)
+		if !ok {
+			t.Fatal("b's channel session vanished instead of being marked closed")
+		}
+		if closed, reason := sess.status(); closed {
+			if !strings.Contains(reason, "quota") {
+				t.Fatalf("session closed for %q, want a reason mentioning quota", reason)
+			}
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("b's channel session was never closed by the quota gate")
+		case <-time.After(20 * time.Millisecond):
 		}
 	}
 }

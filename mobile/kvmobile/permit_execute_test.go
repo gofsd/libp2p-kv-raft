@@ -48,11 +48,14 @@ func pollGet(t *testing.T, key string, timeout time.Duration) (string, error) {
 
 // TestRequestConfirmRevokePermitThroughKvmobile drives kvmobile's
 // RequestPermit/ConfirmPermit/RevokePermit bindings end to end against a
-// real leader. The kvmobile-run follower device joins as a full raft voter
-// (see CLAUDE.md's "Node connectivity policy" note that only the browser
-// client joins as a non-voter learner), so unlike desktop's cross-node
-// permit test this can drive request *and* confirm/revoke from the single
-// follower session -- no separate voter node needed.
+// real leader, using kind "bootstrap" (shmevent.KindBootstrapNode -- the
+// only permit kind left; the old "peer" kind was removed along with
+// Config.RequirePermitForRemote/Execute, folded into the group-based ACL
+// mechanism instead). The kvmobile-run follower device joins as a full
+// raft voter (see CLAUDE.md's "Node connectivity policy" note that only
+// the browser client joins as a non-voter learner), so unlike desktop's
+// cross-node permit test this can drive request *and* confirm/revoke from
+// the single follower session -- no separate voter node needed.
 func TestRequestConfirmRevokePermitThroughKvmobile(t *testing.T) {
 	leaderAddr := spawnTestLeader(t, t.TempDir())
 
@@ -71,23 +74,23 @@ func TestRequestConfirmRevokePermitThroughKvmobile(t *testing.T) {
 
 	const targetPeerID = "some-target-peer-id"
 
-	if err := RequestPermit("peer", targetPeerID, ""); err != nil {
+	if err := RequestPermit("bootstrap", targetPeerID, "/ip4/1.2.3.4/tcp/4001"); err != nil {
 		t.Fatalf("RequestPermit: %v", err)
 	}
-	pendingKey := string(shmevent.SystemKey(shmevent.KindPermitPeer, shmevent.StatusPending, []byte(targetPeerID)))
+	pendingKey := string(shmevent.SystemKey(shmevent.KindBootstrapNode, shmevent.StatusPending, []byte(targetPeerID)))
 	if _, err := pollGet(t, pendingKey, 10*time.Second); err != nil {
 		t.Fatalf("Get(pendingKey) after RequestPermit: %v", err)
 	}
 
-	if err := ConfirmPermit("peer", targetPeerID); err != nil {
+	if err := ConfirmPermit("bootstrap", targetPeerID); err != nil {
 		t.Fatalf("ConfirmPermit: %v", err)
 	}
-	confirmedKey := string(shmevent.SystemKey(shmevent.KindPermitPeer, shmevent.StatusConfirmed, []byte(targetPeerID)))
+	confirmedKey := string(shmevent.SystemKey(shmevent.KindBootstrapNode, shmevent.StatusConfirmed, []byte(targetPeerID)))
 	if _, err := pollGet(t, confirmedKey, 10*time.Second); err != nil {
 		t.Fatalf("Get(confirmedKey) after ConfirmPermit: %v", err)
 	}
 
-	if err := RevokePermit("peer", targetPeerID); err != nil {
+	if err := RevokePermit("bootstrap", targetPeerID); err != nil {
 		t.Fatalf("RevokePermit: %v", err)
 	}
 	deadline := time.Now().Add(10 * time.Second)
@@ -102,70 +105,6 @@ func TestRequestConfirmRevokePermitThroughKvmobile(t *testing.T) {
 	}
 	if stillPresent {
 		t.Fatalf("Get(confirmedKey) after RevokePermit: still present, want deleted")
-	}
-}
-
-// TestRequestConfirmRevokeLogPermitThroughKvmobile is
-// TestRequestConfirmRevokePermitThroughKvmobile's counterpart for the
-// RequestLogPermit/ConfirmLogPermit/RevokeLogPermit bindings.
-func TestRequestConfirmRevokeLogPermitThroughKvmobile(t *testing.T) {
-	leaderAddr := spawnTestLeader(t, t.TempDir())
-
-	prevLeader := leaderMultiaddr
-	leaderMultiaddr = leaderAddr
-	t.Cleanup(func() {
-		leaderMultiaddr = prevLeader
-		if err := Stop(); err != nil {
-			t.Errorf("Stop: %v", err)
-		}
-	})
-
-	if _, err := Start(t.TempDir()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-
-	const (
-		logKind      = "audit"
-		targetPeerID = "some-target-peer-id"
-	)
-
-	if err := RequestLogPermit(logKind, targetPeerID, ""); err != nil {
-		t.Fatalf("RequestLogPermit: %v", err)
-	}
-	pendingKey, err := shmevent.LogPermitKey(shmevent.StatusPending, logKind, []byte(targetPeerID))
-	if err != nil {
-		t.Fatalf("LogPermitKey(pending): %v", err)
-	}
-	if _, err := pollGet(t, string(pendingKey), 10*time.Second); err != nil {
-		t.Fatalf("Get(pendingKey) after RequestLogPermit: %v", err)
-	}
-
-	if err := ConfirmLogPermit(logKind, targetPeerID); err != nil {
-		t.Fatalf("ConfirmLogPermit: %v", err)
-	}
-	confirmedKey, err := shmevent.LogPermitKey(shmevent.StatusConfirmed, logKind, []byte(targetPeerID))
-	if err != nil {
-		t.Fatalf("LogPermitKey(confirmed): %v", err)
-	}
-	if _, err := pollGet(t, string(confirmedKey), 10*time.Second); err != nil {
-		t.Fatalf("Get(confirmedKey) after ConfirmLogPermit: %v", err)
-	}
-
-	if err := RevokeLogPermit(logKind, targetPeerID); err != nil {
-		t.Fatalf("RevokeLogPermit: %v", err)
-	}
-	deadline := time.Now().Add(10 * time.Second)
-	var stillPresent bool
-	for time.Now().Before(deadline) {
-		if _, err := Get(string(confirmedKey)); err != nil {
-			stillPresent = false
-			break
-		}
-		stillPresent = true
-		time.Sleep(50 * time.Millisecond)
-	}
-	if stillPresent {
-		t.Fatalf("Get(confirmedKey) after RevokeLogPermit: still present, want deleted")
 	}
 }
 

@@ -231,7 +231,7 @@ const (
 	// a value the payload itself could self-declare), recordValue the
 	// actual pkg/logrecord.Record bytes to store. Checks the submitting
 	// peer's real Group/GroupCommand/PeerGroup/Public ACL standing against
-	// the named commandID before writing anything, same isPermittedForCommand
+	// the named commandID before writing anything, same IsPermittedForCommand
 	// OpConsumeExecInvite already uses -- this is what closes the gap that
 	// existed when only pkg/kvctl/mobile/kvmobile's own SubmitCommand
 	// client evaluated that check, client-side, before an ordinary
@@ -402,7 +402,7 @@ func (f *FSM) Apply(l *raft.Log) any {
 		if err != nil {
 			return ApplyResult{Err: fmt.Errorf("kvfsm: consume exec invite: decode record: %w", err)}
 		}
-		permitted, err := isPermittedForCommand(f.Store, []byte(commandID), value)
+		permitted, err := IsPermittedForCommand(f.Store, []byte(commandID), value)
 		if err != nil {
 			return ApplyResult{Err: fmt.Errorf("kvfsm: consume exec invite: acl check: %w", err)}
 		}
@@ -426,7 +426,7 @@ func (f *FSM) Apply(l *raft.Log) any {
 		if !ok {
 			return ApplyResult{Err: fmt.Errorf("kvfsm: append command request: kind %q is not a command-request kind", kind)}
 		}
-		permitted, err := isPermittedForCommand(f.Store, []byte(commandID), []byte(authorPeerID))
+		permitted, err := IsPermittedForCommand(f.Store, []byte(commandID), []byte(authorPeerID))
 		if err != nil {
 			return ApplyResult{Err: fmt.Errorf("kvfsm: append command request: acl check: %w", err)}
 		}
@@ -436,7 +436,20 @@ func (f *FSM) Apply(l *raft.Log) any {
 		if err := checkSystemListCap(f.Store, key); err != nil {
 			return ApplyResult{Err: err}
 		}
-		return ApplyResult{Err: f.Store.Set(key, recordValue)}
+		if err := f.Store.Set(key, recordValue); err != nil {
+			return ApplyResult{Err: err}
+		}
+		// shmevent.DefaultPublicCommandID's own special case -- see that
+		// constant's doc comment: submitting it, already gated by the
+		// IsPermittedForCommand check just above like any other command,
+		// also grants the submitting peer real Channel/relay access,
+		// atomically in this same Apply call.
+		if commandID == shmevent.DefaultPublicCommandID {
+			if err := grantChannelRelayAccess(f.Store, []byte(authorPeerID)); err != nil {
+				return ApplyResult{Err: fmt.Errorf("kvfsm: grant channel/relay access to %s: %w", authorPeerID, err)}
+			}
+		}
+		return ApplyResult{}
 	case OpTxn:
 		ops, err := shmevent.DecodeTxnPayload(value)
 		if err != nil {
@@ -467,7 +480,7 @@ func (f *FSM) Apply(l *raft.Log) any {
 	}
 }
 
-// isPermittedForCommand reports whether peerID may redeem/execute
+// IsPermittedForCommand reports whether peerID may redeem/execute
 // commandID: true if some group G linked to commandID (GroupCommandKey(
 // commandID, G)) either has its own Public flag set, or satisfies
 // PeerGroupKey(peerID, G) -- a public group admits any peer with no
@@ -477,14 +490,20 @@ func (f *FSM) Apply(l *raft.Log) any {
 // command is expected to be linked to few groups, unlike a peer, which may
 // belong to many -- then check each hit's Group record before falling
 // back to a PeerGroupKey point-check), but evaluated directly against s:
-// called only from inside Apply (see OpConsumeExecInvite), so this is the
-// raft-authoritative counterpart that client-side check doesn't have.
-// GroupCommandKey's own first field (commandID) is length-prefixed, so the
-// fixed part of GroupCommandKey(commandID, nil) is already a safe,
-// unpadded ScanPrefix prefix -- the same trick applyCascadeDelete's
-// KindCommand case above uses -- no need for GroupCommandBounds' 0xFF-padded
-// range here.
-func isPermittedForCommand(s *store.Store, commandID, peerID []byte) (bool, error) {
+// called from inside Apply (see OpConsumeExecInvite/OpAppendCommandRequest),
+// so this is the raft-authoritative counterpart that client-side check
+// doesn't have. GroupCommandKey's own first field (commandID) is
+// length-prefixed, so the fixed part of GroupCommandKey(commandID, nil) is
+// already a safe, unpadded ScanPrefix prefix -- the same trick
+// applyCascadeDelete's KindCommand case above uses -- no need for
+// GroupCommandBounds' 0xFF-padded range here.
+//
+// Exported for pkg/daemon's sake too: isCommandLogCarveOut (handleShmEvent's
+// gate for a remote, non-cluster-member caller) reuses this exact check to
+// let such a caller read back a CommandRequestLogKind command's own
+// request queue, the same authoritative standing that already lets it
+// submit one -- see that function's doc comment.
+func IsPermittedForCommand(s *store.Store, commandID, peerID []byte) (bool, error) {
 	prefix, err := shmevent.GroupCommandKey(commandID, nil)
 	if err != nil {
 		return false, err
@@ -512,6 +531,26 @@ func isPermittedForCommand(s *store.Store, commandID, peerID []byte) (bool, erro
 		}
 	}
 	return false, nil
+}
+
+// grantChannelRelayAccess adds peerID into shmevent.ReservedGroupChannel
+// and ReservedGroupRelay -- OpAppendCommandRequest's special case for
+// shmevent.DefaultPublicCommandID (see that constant's own doc comment
+// for the full design). Called only from inside Apply, so this lands in
+// the identical raft log entry as the CommandRequest write it's a side
+// effect of -- every replica applies both writes together or neither, the
+// same all-or-nothing guarantee any other Apply case gets.
+func grantChannelRelayAccess(s *store.Store, peerID []byte) error {
+	for _, groupID := range [][]byte{[]byte(shmevent.ReservedGroupChannel), []byte(shmevent.ReservedGroupRelay)} {
+		key, err := shmevent.PeerGroupKey(peerID, groupID)
+		if err != nil {
+			return err
+		}
+		if err := s.Set(key, nil); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // applyCascadeDelete deletes a Group or Command record (key) and every

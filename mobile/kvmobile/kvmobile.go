@@ -270,6 +270,22 @@ func startAgainst(dataDirRoot, leaderAddr, suffrage string, resolveIdentity func
 		return "", fmt.Errorf("kvmobile: start follower: %w", err)
 	}
 
+	// Best-effort: register id -> clusterDir in the local registry so
+	// pkg/ipc.Call/CallRaw's tokenForPeer (pkg/ipc/token.go) can resolve
+	// this node's local-IPC token when the desktop transport (ipc.go)
+	// handles the shmclient.Open call just below -- needed only when that
+	// transport is actually in play, which on a real device it never is:
+	// Android's own ipc_android.go transport hands request/response
+	// segments through an in-process Go channel with no token concept at
+	// all (see that file's doc comment), so registry.Open failing here
+	// (e.g. no usable $HOME in a real app sandbox) must never block a
+	// real device from starting -- this exists for this package's own
+	// test suite, which builds without the android tag and so exercises
+	// ipc.go as a stand-in.
+	if reg, regErr := registry.Open(); regErr == nil {
+		_ = reg.Put(registry.NodeInfo{PeerID: id, DataDir: clusterDir})
+	}
+
 	addCtx, addCancel := context.WithTimeout(ctx, callTimeout)
 	defer addCancel()
 	sess, err := shmclient.Open(addCtx, id)
@@ -599,24 +615,23 @@ func PeerID() string {
 	return peerID
 }
 
-// permitKindFromName converts kind ("peer" or "bootstrap") to
-// shmevent.KindPermitPeer/KindBootstrapNode -- the same mapping desktop's
+// permitKindFromName converts kind ("bootstrap", or "cluster-join" for
+// ConfirmPermit) to its shmevent.Kind* byte -- the same mapping desktop's
 // `mage requestpermit`/`confirmpermit`/`revokepermit` apply via
 // shmevent.KindFromName before reaching pkg/kvctl.
 func permitKindFromName(kind string) (byte, error) {
 	k, ok := shmevent.KindFromName(kind)
 	if !ok {
-		return 0, fmt.Errorf("kvmobile: unknown permit kind %q (want \"peer\" or \"bootstrap\")", kind)
+		return 0, fmt.Errorf("kvmobile: unknown permit kind %q (want \"bootstrap\" or \"cluster-join\")", kind)
 	}
 	return k, nil
 }
 
 // RequestPermit lodges a pending permit record for targetPeerID (kind is
-// "peer" or "bootstrap") on this device, forwarded to the leader like any
-// other Set -- see shmevent.EventPermitRequest's doc comment. Any raft
-// node may originate one, so this needs no special standing of its own.
-// metadata may be "" (only meaningful for kind "bootstrap": the dialable
-// multiaddr being vouched for).
+// "bootstrap") on this device, forwarded to the leader like any other Set
+// -- see shmevent.EventPermitRequest's doc comment. Any raft node may
+// originate one, so this needs no special standing of its own. metadata
+// may be "" (the dialable multiaddr being vouched for).
 func RequestPermit(kind, targetPeerID, metadata string) error {
 	sess, err := currentSession()
 	if err != nil {
@@ -673,58 +688,6 @@ func RevokePermit(kind, targetPeerID string) error {
 	defer cancel()
 	if err := sess.RevokePermit(ctx, k, []byte(targetPeerID)); err != nil {
 		return fmt.Errorf("kvmobile: revoke permit: %w", err)
-	}
-	return nil
-}
-
-// RequestLogPermit lodges a pending permission for targetPeerID to
-// append/query pkg/logrecord records of logKind, forwarded to the leader
-// like any other Set -- see shmevent.EventLogPermitRequest's doc comment.
-// metadata may be "".
-func RequestLogPermit(logKind, targetPeerID, metadata string) error {
-	sess, err := currentSession()
-	if err != nil {
-		return err
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
-	defer cancel()
-	if err := sess.RequestLogPermit(ctx, logKind, []byte(targetPeerID), []byte(metadata)); err != nil {
-		return fmt.Errorf("kvmobile: request log permit: %w", err)
-	}
-	return nil
-}
-
-// ConfirmLogPermit promotes a pending log-kind permit record for
-// targetPeerID to confirmed. Only takes effect if this device is itself a
-// raft voter -- see shmevent.EventLogPermitConfirm's doc comment.
-func ConfirmLogPermit(logKind, targetPeerID string) error {
-	sess, err := currentSession()
-	if err != nil {
-		return err
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
-	defer cancel()
-	if err := sess.ConfirmLogPermit(ctx, logKind, []byte(targetPeerID)); err != nil {
-		return fmt.Errorf("kvmobile: confirm log permit: %w", err)
-	}
-	return nil
-}
-
-// RevokeLogPermit deletes a confirmed log-kind permit record for
-// targetPeerID outright. Only takes effect if this device is itself a raft
-// voter -- see shmevent.EventLogPermitRevoke's doc comment.
-func RevokeLogPermit(logKind, targetPeerID string) error {
-	sess, err := currentSession()
-	if err != nil {
-		return err
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
-	defer cancel()
-	if err := sess.RevokeLogPermit(ctx, logKind, []byte(targetPeerID)); err != nil {
-		return fmt.Errorf("kvmobile: revoke log permit: %w", err)
 	}
 	return nil
 }

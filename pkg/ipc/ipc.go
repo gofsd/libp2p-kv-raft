@@ -71,8 +71,9 @@
 //
 // The daemon needs a well-known rendezvous point to discover a request it
 // hasn't seen yet, so the request channel name stays fixed per node
-// (derived from its peer id) and is re-created fresh by the client on
-// every round trip. A shmring.Reader always starts reading from offset 0
+// (derived from its peer id and its own local-IPC token, see token.go) and
+// is re-created fresh by the client on every round trip. A shmring.Reader
+// always starts reading from offset 0
 // of whatever segment it opens, with no memory of where a previous Reader
 // on the same name left off -- so if Serve looped straight back to
 // opening the request channel by name before the client had torn down the
@@ -161,12 +162,24 @@ const (
 	openRetryInterval = 20 * time.Millisecond
 )
 
-func reqChannel(peerID string) string { return "kvipc-" + peerID + "-req" }
+// reqChannel/respChannel fold token (see token.go's doc comment) into the
+// segment name itself, not just something checked after the fact: without
+// it, either name is derivable from peerID alone (public -- it's what
+// every remote address and registry.json entry already advertises), so
+// any co-resident process able to attach to a POSIX shared-memory segment
+// by name at all (shmring's backend grants owner+group rw -- see
+// loadOrGenerateToken) could open a legitimate node's request channel
+// itself, race the real client to create it, or read/forge a response.
+// Requiring the token to even *construct* the right name closes that: a
+// caller with no read access to the token file cannot address the
+// channel, cannot attach to it, and cannot observe its traffic, rather
+// than merely failing some check after having already done so.
+func reqChannel(peerID, token string) string { return "kvipc-" + peerID + "-" + token + "-req" }
 
 // respChannel is unique per round trip (see package doc comment): id is
 // the originating message's ID, which the daemon echoes into its response.
-func respChannel(peerID string, id uint16) string {
-	return fmt.Sprintf("kvipc-%s-resp-%d", peerID, id)
+func respChannel(peerID, token string, id uint16) string {
+	return fmt.Sprintf("kvipc-%s-%s-resp-%d", peerID, token, id)
 }
 
 // Call sends m (with m.ID already set by the caller -- see pkg/shmevent's
@@ -179,7 +192,12 @@ func Call(ctx context.Context, peerID string, m shmevent.Msg, priv shmevent.Priv
 	lock.Lock()
 	defer lock.Unlock()
 
-	rn := reqChannel(peerID)
+	token, err := tokenForPeer(peerID)
+	if err != nil {
+		return shmevent.Msg{}, err
+	}
+
+	rn := reqChannel(peerID, token)
 	w, err := shmring.CreateShm(rn, capacity, shmring.WithPollInterval(minPoll, maxPoll))
 	if err != nil {
 		return shmevent.Msg{}, fmt.Errorf("ipc: create request channel: %w", err)
@@ -199,7 +217,7 @@ func Call(ctx context.Context, peerID string, m shmevent.Msg, priv shmevent.Priv
 		return shmevent.Msg{}, fmt.Errorf("ipc: close request writer: %w", err)
 	}
 
-	r, err := openRespWithRetry(ctx, peerID, m.ID)
+	r, err := openRespWithRetry(ctx, peerID, token, m.ID)
 	if err != nil {
 		w.CloseStorage()
 		return shmevent.Msg{}, err
@@ -243,7 +261,12 @@ func CallRaw(ctx context.Context, peerID string, encoded []byte) (shmevent.Msg, 
 		return shmevent.Msg{}, fmt.Errorf("ipc: decode raw request: %w", err)
 	}
 
-	rn := reqChannel(peerID)
+	token, err := tokenForPeer(peerID)
+	if err != nil {
+		return shmevent.Msg{}, err
+	}
+
+	rn := reqChannel(peerID, token)
 	w, err := shmring.CreateShm(rn, capacity, shmring.WithPollInterval(minPoll, maxPoll))
 	if err != nil {
 		return shmevent.Msg{}, fmt.Errorf("ipc: create request channel: %w", err)
@@ -258,7 +281,7 @@ func CallRaw(ctx context.Context, peerID string, encoded []byte) (shmevent.Msg, 
 		return shmevent.Msg{}, fmt.Errorf("ipc: close request writer: %w", err)
 	}
 
-	r, err := openRespWithRetry(ctx, peerID, m.ID)
+	r, err := openRespWithRetry(ctx, peerID, token, m.ID)
 	if err != nil {
 		w.CloseStorage()
 		return shmevent.Msg{}, err
@@ -280,8 +303,8 @@ func CallRaw(ctx context.Context, peerID string, encoded []byte) (shmevent.Msg, 
 	return resp, nil
 }
 
-func openRespWithRetry(ctx context.Context, peerID string, id uint16) (*shmring.Reader, error) {
-	name := respChannel(peerID, id)
+func openRespWithRetry(ctx context.Context, peerID, token string, id uint16) (*shmring.Reader, error) {
+	name := respChannel(peerID, token, id)
 	for {
 		r, err := shmring.OpenShm(name, capacity, shmring.WithPollInterval(minPoll, maxPoll))
 		if err == nil {
@@ -322,9 +345,18 @@ type Handler func(ctx context.Context, m shmevent.Msg, crc uint32, sig []byte) s
 
 // Serve runs the daemon side of the protocol for peerID: it repeatedly waits
 // for a request, dispatches it to handle, and sends back the response,
-// signed with priv. It blocks until ctx is done.
-func Serve(ctx context.Context, peerID string, priv shmevent.PrivateKey, handle Handler) error {
-	name := reqChannel(peerID)
+// signed with priv. It blocks until ctx is done. dataDir is this node's own
+// data directory -- Serve loads (or, on a brand new node, generates) its
+// local-IPC token there (see token.go's doc comment) before it starts
+// listening; pkg/daemon.Run already writes ready.json from the same
+// directory only after this point, so a client's waitForReady is
+// guaranteed to see the token file already in place.
+func Serve(ctx context.Context, peerID, dataDir string, priv shmevent.PrivateKey, handle Handler) error {
+	token, err := loadOrGenerateToken(dataDir)
+	if err != nil {
+		return err
+	}
+	name := reqChannel(peerID, token)
 
 	var lastID uint16
 	var haveLastID bool
@@ -378,7 +410,7 @@ func Serve(ctx context.Context, peerID string, priv shmevent.PrivateKey, handle 
 
 		resp := handle(ctx, m, crc, sig)
 		resp.ID = m.ID
-		respWriter, err := sendResponse(ctx, peerID, resp, priv)
+		respWriter, err := sendResponse(ctx, peerID, token, resp, priv)
 		if err != nil {
 			return err
 		}
@@ -409,8 +441,8 @@ func openReqWithRetry(ctx context.Context, name string) (*shmring.Reader, error)
 // once it has independently confirmed the client has read the response
 // (Serve does this lazily, once it sees the next round's distinct request
 // ID).
-func sendResponse(ctx context.Context, peerID string, resp shmevent.Msg, priv shmevent.PrivateKey) (*shmring.Writer, error) {
-	w, err := shmring.CreateShm(respChannel(peerID, resp.ID), capacity, shmring.WithPollInterval(minPoll, maxPoll))
+func sendResponse(ctx context.Context, peerID, token string, resp shmevent.Msg, priv shmevent.PrivateKey) (*shmring.Writer, error) {
+	w, err := shmring.CreateShm(respChannel(peerID, token, resp.ID), capacity, shmring.WithPollInterval(minPoll, maxPoll))
 	if err != nil {
 		return nil, fmt.Errorf("ipc: create response channel: %w", err)
 	}

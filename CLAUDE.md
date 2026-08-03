@@ -210,8 +210,9 @@ very first join. `relayCandidates` (in `pkg/daemon/daemon.go`, called from `newH
 record already replicated into the node's own local store, sorted by ascending priority, and hands
 the whole ordered set to `libp2p.EnableAutoRelayWithStaticRelays` — which already fails over
 between more than one candidate on its own, so a node isn't stuck if its first-choice relay goes
-down. `KindBootstrapNode` reuses `KindPermitPeer`'s existing request/confirm/revoke lifecycle
-(`mage addrelaynode`/`confirmrelaynode`/`removerelaynode`/`listrelaynodes`/`getrelaynode`,
+down. `KindBootstrapNode` uses the generic `EventPermitRequest`/`EventPermitConfirm`/
+`EventPermitRevoke` request/confirm/revoke lifecycle (`mage addrelaynode`/`confirmrelaynode`/
+`removerelaynode`/`listrelaynodes`/`getrelaynode`,
 `mobile/kvmobile`'s identically-named bindings) — see README's "Relay list and failover" section
 for the full command set and design.
 

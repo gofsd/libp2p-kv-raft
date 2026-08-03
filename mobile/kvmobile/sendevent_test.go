@@ -10,6 +10,7 @@ import (
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/daemon"
 	"github.com/gofsd/libp2p-kv-raft/pkg/e2edata"
+	"github.com/gofsd/libp2p-kv-raft/pkg/registry"
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmclient"
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
@@ -56,6 +57,20 @@ func spawnTestLeader(t *testing.T, dataDir string) (multiaddr string) {
 	}
 	if ready.PeerID == "" {
 		t.Fatal("leader daemon never became ready")
+	}
+
+	// Register peerID -> dataDir in the test registry TestMain points
+	// registry.EnvHome at -- pkg/ipc.Call/CallRaw (what shmclient.Add
+	// below, and every other call this spawned leader ever receives,
+	// ultimately drives) now resolves a peer id to its own local-IPC
+	// token via that same registry lookup (see pkg/ipc/token.go's
+	// tokenForPeer).
+	reg, err := registry.Open()
+	if err != nil {
+		t.Fatalf("registry.Open: %v", err)
+	}
+	if err := reg.Put(registry.NodeInfo{PeerID: peerID, DataDir: dataDir}); err != nil {
+		t.Fatalf("registry.Put: %v", err)
 	}
 
 	bootstrapCtx, cancel := context.WithTimeout(ctx, 10*time.Second)

@@ -29,6 +29,7 @@ this file covers this repo's own architecture and `mage` workflow instead.
   `ipc_android.go` is the Android transport (`ASharedMemory`, no named rendezvous, so client and
   daemon must share a process — see that file's doc comment). `pkg/shmclient` implements the
   caller-side SetKey+SetField/GetField orchestration and the `GetPrivateKey` bootstrap on top of it.
+  See [Local IPC token](#local-ipc-token) for how the desktop transport authenticates a caller.
 - `pkg/kvctl` / `cmd/kvctl-cli` — client logic for spawning/bootstrapping nodes and issuing
   set/get requests. `kvctl-cli` is a no-Go-toolchain-required binary meant to run next to an
   already-built `kvnode` binary on a remote deployment target (e.g. a VPS reached over SSH).
@@ -68,51 +69,78 @@ itself as publicly reachable. `-listen-port` pins the port so it survives restar
 `~/.libp2p-kv-raft`); set it explicitly and pass it on every subsequent `kvctl-cli` call
 against that install.
 
-By default a `-relay-service` node lets *any* peer reserve a slot or open a relayed circuit
-through it. Add `-require-permit-for-relay` to restrict that to peers with a confirmed
-permit record: an operator (or any current raft voter) runs
+**Breaking change:** a `-relay-service` node used to let *any* peer reserve a slot or open a
+relayed circuit through it by default, with `-require-permit-for-relay` as an opt-in restriction;
+the generic remote (`ClientProtocolID`) `Set`/`Get`/etc. surface and `EventExecute` delivery had
+their own similar opt-in flags (`-require-permit-for-remote`/`-require-permit-for-execute`), each
+gated on a confirmed `KindPermitPeer` record. None of that exists anymore. There is no longer an
+opt-out for any of the four: relay admission, Channel admission, the generic remote RPC surface,
+and Execute delivery are now all unconditionally gated by the same group-ACL mechanism —
+`pkg/daemon.relayACL`'s `AllowReserve`/`AllowConnect`, `handleChannelStream`,
+`handleShmEvent`'s top-of-function gate, and `handleExecuteStream` each admit a peer only if it's a
+current raft cluster member, in the resource's own reserved group (`shmevent.ReservedGroupRelay`/
+`ReservedGroupChannel`/`ReservedGroupRemote`/`ReservedGroupExecute` respectively — see
+[Reserved cluster/voter/learner/channel/relay/remote/execute groups](#reserved-clustervoterlearnerchannelrelayremoteexecute-groups)
+below), or individually granted access via this node's own personal group (`isAuthorizedForGatedAccess`).
+`KindPermitPeer` itself is gone — it served exactly those three purposes (relay/remote/execute),
+all replaced by groups — along with `mage requestpermit peer`/`confirmpermit peer`/`revokepermit peer`.
+`KindBootstrapNode` (below, relay/bootstrap-node registration) still uses the same underlying
+`EventPermitRequest`/`EventPermitConfirm`/`EventPermitRevoke` machinery under kind `"bootstrap"` — that
+part is unaffected.
+
+The **one deliberate exception** to the generic remote gate (besides Join/Recruit, which are their own
+separate, already-gated protocols) is submitting a command linked to a public `Group`
+(`SubmitCommand`'s actual write, `EventLogAppend` targeting a `shmevent.CommandRequestLogKind` key)
+and reading back that same dispatch's own `CommandRequest`/execution-index/execution-log records
+(`pkg/daemon.isCommandLogCarveOut`) — this is the *only* door a peer with no other standing has
+into an otherwise closed cluster. See
+[One-time execution invites](#one-time-execution-invites) and
+[Group/command ACL](#groupcommand-acl) for how a public command is set up; a public command's own
+execution logic can widen that peer's access further from there (e.g.
+`mage addpeertogroup <peerID> remote`), but nothing does so automatically.
+
+Upgrading a node that relied on the old open-by-default relay, or that never set any of the
+`-require-permit-for-*` flags (today's actual default in every existing deployment), means every
+peer that needs generic remote/execute/relay/channel access must now be explicitly admitted:
 
 ```bash
-mage requestpermit peer <peerID> ""
-mage confirmpermit peer <peerID>
+mage addpeertogroup <peerID> relay          # (on a current raft voter of this cluster) grant it
+mage addpeertogroup <peerID> remote         # generic Set/Get/etc. over ClientProtocolID
+mage addpeertogroup <peerID> execute        # EventExecute delivery
+mage removepeerfromgroup <peerID> <group>   # revoke any of the above again
 ```
 
-(`ConfirmPermit` only takes effect if run against a node that is itself a current raft
-voter) before that peer can reserve a relay slot or dial through this node's relay. This is
-independent of `-require-permit-for-remote`, which instead gates remote `Set`/`Get`/etc. requests
-over `ClientProtocolID` — a node can require a permit for one without the other.
-
-A `-relay-service` node's resource limits (per-peer circuit/reservation caps, not gated by
-`-require-permit-for-relay` — these apply to every peer using the relay, allow-listed or not)
-are also flag-configurable: `-relay-max-circuits-per-peer` (default 1) bounds concurrent open
-relayed circuits a single peer may hold; `-relay-limit-data-bytes` (default 1GB) and
+A `-relay-service` node's resource limits (per-peer circuit/reservation caps) are still
+flag-configurable exactly as before: `-relay-max-circuits-per-peer` (default 1) bounds concurrent
+open relayed circuits a single peer may hold; `-relay-limit-data-bytes` (default 1GB) and
 `-relay-limit-duration` (default 720h/30 days) bound a circuit's data/lifetime before it's
 reset; `-relay-max-reservations-per-ip`/`-relay-max-reservations-per-peer` (defaults 5/1) bound
 active relay-slot reservations from one IP/peer. All five default to
 `pkg/shmevent`'s `DefaultRelay*` constants when left at 0. go-libp2p's circuit-relay v2 applies
 these as one uniform `v2relay.Resources` value to every peer alike — there's no way to give one
-peer a bigger allotment than another without forking that package. `mage requestpermit peer
-<peerID>` stamps this node's *current* values onto the resulting `KindPermitPeer` record
-regardless of what metadata the caller passed (`shmevent.RelayLimits`, carried through
-`ConfirmPermit` unchanged) — a peer is registered under a node's standard allotment by the act
-of requesting a permit, not something the requester gets to choose for itself. Since
-enforcement is still the uniform `Resources` value above, this is currently a record of what a
-peer was promised (inspectable via `mage rangescan` over the `KindPermitPeer` record, or a
-future differentiated-limits feature) rather than a separate enforcement path.
+peer a bigger allotment than another without forking that package.
 
-The same confirmed permit record also doubles as the allow-list for `EventExecute`
-(`mage execute <destPeerID> <value>` / `mage pollexecute`, a direct unreplicated
-peer-to-peer notification between two node processes — see `pkg/shmevent`'s
-`EventExecute` doc comment) when a node is started with `-require-permit-for-execute`:
-a raft cluster member (voter or learner) can always send one, but any other peer needs
-the same `requestpermit`/`confirmpermit` grant as above before its Execute notifications
-are delivered rather than silently dropped.
+**Usage quotas** are the separate, cumulative counterpart to those static per-circuit/
+per-reservation caps above: `-quota-relay-events-per-peer-per-sec`/`-quota-relay-burst-per-peer`
+and `-quota-relay-events-per-ip-per-sec`/`-quota-relay-burst-per-ip` bound a sustained *rate* of
+reservation/connect events from one peer id or one IP address (a token bucket,
+`pkg/daemon.quotaTracker`), independent of whether that peer clears the group-ACL check above —
+both gates must pass. Relay quota is metered in events, not bytes: go-libp2p's circuit-relay v2
+never reports actual per-circuit byte usage back to `relayACL`, only reservation/connect calls
+happen at a point this node can see. The identical mechanism also gates
+[Raw Channel](#raw-channel) traffic, there metered in real bytes instead:
+`-quota-channel-bytes-per-peer-per-sec`/`-quota-channel-burst-per-peer` and
+`-quota-channel-bytes-per-ip-per-sec`/`-quota-channel-burst-per-ip`. All eight flags default to 0
+(unlimited) — a peer/IP that exceeds its quota has an in-progress `channelSession` closed, or a
+relay reservation/connect simply denied, same as failing the group-ACL check.
 
-A permit granted this way can be taken back with `mage revokepermit peer <peerID>` (also
-voter-only, same as confirm) — it deletes the confirmed record outright, immediately
-revoking both relay and Execute access on every node. There's no way to cancel a still
--*pending*, not-yet-confirmed request; it can only be confirmed or overwritten by a
-fresh `requestpermit`.
+`EventExecute` (`mage execute <destPeerID> <value>` / `mage pollexecute`, a direct unreplicated
+peer-to-peer notification between two node processes — see `pkg/shmevent`'s `EventExecute` doc
+comment) is now gated by `shmevent.ReservedGroupExecute` exactly the way relay/Channel are: a raft
+cluster member (voter or learner) can always send one, any other peer needs
+`mage addpeertogroup <peerID> execute` (or a pairwise personal-group grant) first, and
+`mage removepeerfromgroup <peerID> execute` revokes it again, immediately, on whichever node's
+store the removal replicates to.
 
 Print the leader's multiaddr for followers to join against:
 
@@ -437,9 +465,12 @@ results (`0` = unlimited) — the same generic complement to `Submit`/`Get` desk
 
 `Kvmobile` also binds the permit and direct-notification desktop commands, against whichever
 device is currently running (Start's session, same as Submit/Get): `RequestPermit`/`ConfirmPermit`/
-`RevokePermit(kind, targetPeerID[, metadata])` (`kind` is `"peer"` or `"bootstrap"`, mirroring
-`mage requestpermit`/`confirmpermit`/`revokepermit`) and their `*LogPermit` counterparts for
-`pkg/logrecord` access (`mage requestlogpermit`/`confirmlogpermit`/`revokelogpermit`); `Execute`/
+`RevokePermit(kind, targetPeerID[, metadata])` (`kind` is `"bootstrap"`, or `"cluster-join"` for
+`ConfirmPermit`, mirroring `mage requestpermit`/`confirmpermit`/`revokepermit` — the old `"peer"`
+kind and its `*LogPermit` counterparts were removed along with `KindPermitPeer`/`KindLogPermit`,
+folded into the group-based ACL mechanism instead, see
+[Reserved cluster/voter/learner/channel/relay/remote/execute groups](#reserved-clustervoterlearnerchannelrelayremoteexecute-groups));
+`Execute`/
 `PollExecute` for the raft-bypassing peer-to-peer `EventExecute` notification (`mage execute`/
 `pollexecute`) — `PollExecute` returns a JSON envelope (`{"pending":true,"sender_peer_id":"...",
 "value":"..."}` or `{"pending":false}`) since gomobile bindings only support one non-error return
@@ -586,9 +617,10 @@ every currently-*confirmed* `shmevent.KindBootstrapNode` record already in the n
 store, sorted by ascending priority (lower tried first), and hands the whole ordered set to
 `libp2p.EnableAutoRelayWithStaticRelays` — which already accepts, and fails over between, more than
 one candidate, so a node isn't stuck if its first-choice relay goes down. `KindBootstrapNode`
-reuses the same request/confirm/revoke lifecycle `KindPermitPeer` already has (`mage
-requestpermit`/`confirmpermit`/`revokepermit`, above -- any node may request, only a current raft
-voter's confirm actually activates one), extended with a priority byte and a proper read side:
+uses the generic `EventPermitRequest`/`EventPermitConfirm`/`EventPermitRevoke` request/confirm/revoke
+lifecycle (`mage requestpermit`/`confirmpermit`/`revokepermit bootstrap`, above -- any node may
+request, only a current raft voter's confirm actually activates one), extended with a priority
+byte and a proper read side:
 
 ```bash
 mage addrelaynode "<multiaddr>" 0       # request (pending) -- multiaddr's own /p2p/<peerID> is the key
@@ -698,6 +730,52 @@ Still meant for a trusted localhost network path, not a substitute for TLS/real 
 access control if exposed beyond that — token comparison is constant-time, but request bodies and
 tokens themselves travel in the clear otherwise.
 
+### Local IPC token
+
+Every local caller reaching a node over `pkg/ipc` (`mage`/`kvctl-cli`/`kvctl`/`kvmobile` — not
+`kvhttp`'s own Bearer token above; the two are unrelated) is now also gated by a second, different
+secret: a random per-node token, persisted alongside `identity.key` in the node's own data
+directory as `ipc.token` (`0600`, same permission discipline as that file). Unlike
+`AccessTokenForKeyFile`'s token above — deterministic, re-derivable from `identity.key` at any
+time — this one is generated once, the first time either side asks for it via `pkg/ipc`'s
+`loadOrGenerateToken`: whichever side gets there first (the daemon starting up, or the first
+client to dial in) writes it, and every other caller, on either side, just reads the same bytes
+back off disk afterward. That makes ordering harmless: `pkg/kvctl`'s `bootUp` already has the
+daemon write `ready.json` before any client's `waitForReady` returns and issues its first call, so
+in practice the daemon always wins the race, but nothing depends on that.
+
+This closes a real gap the shmring transport otherwise had: `pkg/ipc`'s request/response segment
+names used to be derived from a node's peer id alone — public, printed to stdout the moment a node
+starts, and readable by anyone with access to `registry.json` — and shmring's POSIX backend
+creates its shared-memory segments with owner **and group** read/write
+([`github.com/hidez8891/shm`](https://github.com/hidez8891/shm)), not owner-only. Any process
+running as the same user, or merely the same group, could attach to a node's channel just by
+knowing (or guessing) its public peer id: race the real client to create the segment, or read/
+forge a request or response on it. Folding the token into the segment name itself
+(`kvipc-<peerID>-<token>-req`/`-resp-<id>`, not just checked after the fact once already attached)
+closes that outright: a process with no read access to `ipc.token` cannot even construct the right
+name to attach to the channel, let alone forge traffic on it — the same "tight file, loose
+directory" split `identity.key` already relies on (`0600` inside an otherwise-listable, `0755`
+data directory).
+
+A client resolves a target peer's token the same way it resolves everything else about a node it
+didn't spawn itself: through the local registry (`registry.json`'s `DataDir` entry for that peer
+id, `pkg/ipc`'s `tokenForPeer`) — so, like every other `pkg/ipc` caller, this only ever works
+against a peer id already known to this machine's own registry, and fails closed (a hard error,
+never a silent fallback to the old tokenless name) for one that isn't. There is no way to reach a
+node's local IPC channel without also having filesystem access to read its `ipc.token`.
+
+This only protects `pkg/ipc`'s desktop transport (`ipc.go`) — Android's (`ipc_android.go`) has no
+separate process to protect against in the first place: client and daemon already share one
+process there (see that file's doc comment), rendezvousing through an in-process Go channel with
+no OS-level name lookup at all, so it takes an unused `dataDir` parameter purely so its `Serve`
+call site compiles identically on both platforms, not because it performs a real check.
+`mobile/kvmobile`'s own `Start`/`StartSolo` still best-effort register themselves in the local
+registry after spawning their in-process follower — harmless, and needed only because this
+package's own test suite (built without the `android` tag) exercises the desktop transport as a
+stand-in for Android's; a real device's `registry.Open` call failing (no usable `$HOME` in an app
+sandbox) is silently ignored rather than blocking startup.
+
 ## Log records
 
 `pkg/logrecord` is a generic, replicated structured-record store built on top of the
@@ -735,36 +813,37 @@ no entry cap or rotation policy, since silently dropping old journal entries onc
 count limit is hit would be actively wrong for a logbook. Both are left for a future pass
 if they turn out to matter in practice.
 
-### Per-kind log access control
+### Log access control
 
-By default any caller that already clears `-require-permit-for-remote` (or any local
-`mage`/`kvctl-cli` caller, which that flag never gates) may `logappend`/`logquery` records
-of *any* kind. Add `-require-permit-for-log` to restrict that further, per (peer, kind)
-pair — e.g. a peer permitted for `"sitrep"` still can't touch `"casrep"` unless separately
-granted:
+A current raft cluster member (voter or learner) may `logappend`/`logquery` records of *any*
+kind unconditionally, same as every other event this project unconditionally gates by cluster
+membership — see [Leader on a remote machine](#leader-on-a-remote-machine-over-ssh) above.
+There is no per-kind permit system anymore (`KindLogPermit`/`-require-permit-for-log`/`mage
+requestlogpermit`/`confirmlogpermit`/`revokelogpermit` were removed entirely): a non-member
+remote caller gets no log access at all, *except* the narrow command-log carve-out below, which
+is scoped to one specific dispatch's own records, not an arbitrary kind such as `"sitrep"`. A
+local `mage`/`kvctl-cli` caller is, as always, trusted unconditionally as this node's own
+operator regardless of raft membership.
 
-```bash
-mage requestlogpermit sitrep <peerID> ""
-mage confirmlogpermit sitrep <peerID>
-```
+The one door a non-member remote peer has into the log namespace at all is
+`pkg/daemon.isCommandLogCarveOut`, the same exception described under
+[Leader on a remote machine](#leader-on-a-remote-machine-over-ssh): submitting a command linked
+to a public `Group` (`EventLogAppend` targeting `shmevent.CommandRequestLogKind(commandID)`,
+still raft-authoritatively enforced by `kvfsm.OpAppendCommandRequest`'s `IsPermittedForCommand`
+regardless of this carve-out) and reading back that exact dispatch's own records: the same
+`CommandRequestLogKind(commandID)` queue for a command the caller is permitted for, its own
+`shmevent.CommandExecIndexKind(peerID)` execution index (self-scoped by peer id — another peer's
+index is never readable this way), and `shmevent.CommandExecLogKind` itself for any instance id
+at all (unrelated to command/group standing — "possessing the instance id is the credential",
+the same design `GetCommandRequest`'s own doc comment already described before this carve-out
+existed). Nothing else in the log namespace is reachable by a non-member remote caller.
 
-(`confirmlogpermit`, like `confirmpermit`, only takes effect if run against a node that
-is itself a current raft voter.) `mage revokelogpermit sitrep <peerID>` takes a grant back
-outright, same rules as `revokepermit`. This is a separate, independent grant from the
-plain `requestpermit`/`confirmpermit peer` permission — being permitted for
-`-require-permit-for-relay`/`-require-permit-for-remote`/`-require-permit-for-execute`
-does not by itself grant any log-kind access, and vice versa. As with
-`-require-permit-for-remote`, this only ever restricts a *remote* caller (over
-`ClientProtocolID`) — a local caller is always trusted as this node's own operator and is
-never gated by it, regardless of raft membership.
-
-The gate covers the *entire* scanned range, not just where it starts: `EventListRange`
-checks whether `[start, end]` overlaps the logrecord namespace at all (any key beginning
-with `logrecord.LogKeyPrefix`), not only whether `start` itself happens to land inside it.
-`pkg/store.Store.ScanRange` is a raw byte range with no concept of namespaces on its own,
-so a `start` chosen from entirely outside the namespace (even the empty string) paired
-with an `end` reaching past it would otherwise still return real logrecord data — bypassing
-the per-kind permit check completely rather than just returning nothing.
+The read-side check covers the *entire* scanned range, not just where it starts: a `ListRange`
+query is only admitted if both `start` and `end` resolve to the identical, allowed kind
+(`pkg/daemon.logKindOfBound`) — `pkg/store.Store.ScanRange` is a raw byte range with no concept
+of namespaces on its own, so a `start` chosen from inside an allowed kind paired with an `end`
+reaching into an unrelated one would otherwise still return data outside what the carve-out
+means to admit.
 
 ## Group/command ACL
 
@@ -792,7 +871,7 @@ CRUD (`creategroup`/`updategroup`/`deletegroup`, `createcommand`/`updatecommand`
 `addcommandtogroup`/`removecommandfromgroup`, `addpeertogroup`/`removepeerfromgroup`) is
 single-step and voter-gated — any one current raft voter may write any of these four kinds
 unilaterally, no second-voter confirmation, reusing the same voter-gated forwarding path
-`confirmpermit`/`confirmlogpermit` use (`handleForwardConfirmStream`, widened to also accept a
+`confirmpermit` uses (`handleForwardConfirmStream`, widened to also accept a
 plain `kvfsm.OpSet`) rather than a separate pending→confirmed dance — except `creategroup`/
 `updategroup`, which additionally fail outright if `name` is already used by a *different* `id`
 (re-Putting a group under its own `id`, unchanged or renamed to something not otherwise taken, is
@@ -812,6 +891,48 @@ Deleting a `Group` or `Command` cascades in the same raft `Apply` (`pkg/kvfsm.Op
 never leaves a dangling relation behind. `Group` and `Command` records each have their own list cap
 — 200 groups, 2000 commands (`pkg/kvfsm`'s `systemListLimits`) — tighter than the 65000-entry
 default every other `SystemKeyPrefix` kind (including `GroupCommand`/`PeerGroup` themselves) gets.
+
+### Reserved cluster/voter/learner/channel/relay/remote/execute groups
+
+Every cluster auto-creates seven reserved `Group` records the moment it's bootstrapped
+(`pkg/daemon.ensureReservedGroups`, run once inside the bootstrapping node's own `handleAdd`, right
+after its self-election completes): `cluster`, `voter`, `learner`, `channel`, `relay`, `remote`,
+and `execute` (`shmevent.ReservedGroupCluster`/`ReservedGroupVoter`/`ReservedGroupLearner`/
+`ReservedGroupChannel`/`ReservedGroupRelay`/`ReservedGroupRemote`/`ReservedGroupExecute`). Their
+own `Group` records are protected outright — `creategroup`/`updategroup`/`deletegroup` against any
+of the seven ids is rejected (`EventGroupPut`/`EventGroupDelete`, `shmevent.IsReservedGroupID`),
+the same way every other reserved-namespace write in this project is refused at the daemon
+boundary rather than left to convention.
+
+`cluster` and `voter`/`learner` additionally keep their *membership* in lockstep with the raft
+cluster's actual live composition, automatically, with no operator action at all
+(`pkg/daemon.syncMemberGroups`/`clearMemberGroups`, called alongside every place that already
+maintains a `KindClusterMember` record — `addServerLine` on join, `watchLeadership` on this node's
+own leadership/suffrage transitions, `removeServerLine` on leave/kick): every current voter or
+learner is a member of `cluster`, and of exactly one of `voter`/`learner` matching its current
+suffrage (a raft leader counts as a voter for this purpose, since a leader is itself always one of
+the voters); a peer that leaves or is kicked is removed from all three. Because membership is
+daemon-derived, not an operator grant, `addpeertogroup`/`removepeerfromgroup` against `cluster`,
+`voter`, or `learner` is rejected too (`shmevent.IsAutoManagedGroupID`) — there is no way to manually
+add or remove a peer from these three; only actual raft membership changes them, and only ever to
+the set of peers *currently* in the cluster (unlike `KindClusterMember` itself, whose own doc comment
+notes nothing used to delete it — `removeServerLine` deletes both records together now).
+
+`channel`, `relay`, `remote`, and `execute` are the deliberate exception: their `Group` records are
+equally protected, but their *membership* remains an ordinary, operator-editable grant via the same
+`addpeertogroup`/`removepeerfromgroup` already used for every non-reserved group — the mechanism
+for letting a peer that isn't a cluster member (e.g. a short-lived tool on someone's laptop) open a
+[Raw Channel](#raw-channel) to this cluster's peers, reserve/use this node's relay service, issue
+generic `Set`/`Get`/etc. requests over `ClientProtocolID`, or send `EventExecute` notifications,
+anyway. `handleChannelStream`'s incoming-channel gate, `relayACL`'s `AllowReserve`/`AllowConnect`,
+`handleShmEvent`'s top-of-function gate, and `handleExecuteStream` (see
+[Leader on a remote machine](#leader-on-a-remote-machine-over-ssh) above) all call the identical
+`pkg/daemon.isAuthorizedForGatedAccess` check, just against their own respective group — `cluster`
+plus `channel`/`relay`/`remote`/`execute` respectively — or a pairwise personal grant into the
+gating node's own peer-id group either way. None of the four has a separate `Config` opt-out flag;
+all four are always gated, unconditionally, on the sender belonging to one of those (`remote` also
+has the narrow command-log carve-out described above and under
+[Leader on a remote machine](#leader-on-a-remote-machine-over-ssh)).
 
 ### One-time execution invites
 
@@ -969,10 +1090,16 @@ per-chunk design had for free.
 
 Like Execute, a channel is local-only to operate (`EventChannelOpen/Send/Poll/Listen/Close/
 CloseWrite/DataReady` all reject a remote/`ClientProtocolID` caller — only this node's own operator
-drives its own sessions) but gated on the *receiving* side by `-require-permit-for-channel`
-(`Config.RequirePermitForChannel`, default off): with it set, `handleChannelStream` only accepts
-an incoming channel from a current raft voter/learner or a peer holding the same confirmed
-`KindPermitPeer` record `-require-permit-for-execute`/relay reuse — no new permit kind. An idle
+drives its own sessions) but gated on the *receiving* side, unconditionally, by the sender belonging
+to the reserved `cluster` or `channel` group (see
+[Reserved cluster/voter/learner/channel/relay/remote/execute groups](#reserved-clustervoterlearnerchannelrelayremoteexecute-groups)
+above): `handleChannelStream` only accepts an incoming channel from a current raft voter/learner
+(`cluster` group membership) or a peer an operator has explicitly granted `channel` group membership
+(`mage addpeertogroup <peerID> channel`) — no off switch, no permit record, same as every other
+gate in this package now; a channel is always authorization-checked. Every chunk in either
+direction is also metered against this node's
+`-quota-channel-*` flags (see "Leader on a remote machine" above) — a peer/IP over its configured
+byte-rate budget has the session closed outright, independent of the group-ACL check. An idle
 established channel and an accepted-but-unclaimed incoming one are both reaped opportunistically
 after a timeout (`channelIdleTimeout`/`channelPendingTimeout` in `pkg/daemon`) rather than by a
 dedicated background goroutine, the same "simplest thing that could work" reasoning

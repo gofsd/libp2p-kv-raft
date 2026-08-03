@@ -1,7 +1,6 @@
 package shmevent
 
 import (
-	"encoding/binary"
 	"fmt"
 	"time"
 )
@@ -14,11 +13,17 @@ import (
 // namespace for SystemKey's own use.
 const SystemKeyPrefix = 0x00
 
-// Kind bytes -- what a system record (see SystemKey) is about. Values
-// 0x0B and above are still unassigned, reserved for future system
-// operations.
+// Kind bytes -- what a system record (see SystemKey) is about. 0x01 and
+// 0x04 were formerly KindPermitPeer/KindLogPermit -- permission records
+// for a peer to use the generic remote RPC surface, Execute, relay, or a
+// specific pkg/logrecord kind -- now unassigned again: that whole family
+// of gates was folded into the unconditional group-ACL mechanism
+// pkg/daemon's Channel/relay gates already used (see
+// shmevent.ReservedGroupRemote/ReservedGroupExecute/ReservedGroupRelay/
+// ReservedGroupChannel and pkg/daemon's isAuthorizedForGatedAccess/
+// isCommandLogCarveOut), which needs no permit record at all. Values 0x0B
+// and above are still unassigned, reserved for future system operations.
 const (
-	KindPermitPeer byte = 0x01 // permission for a peer to join/use the cluster's relay
 	// KindBootstrapNode registers a stable relay/bootstrap point: a known
 	// circuit-relay v2 server's multiaddr, plus a failover priority (see
 	// EncodeBootstrapNodeMetadata/DecodeBootstrapNodeMetadata in
@@ -26,35 +31,25 @@ const (
 	// candidate list from (relayCandidates) alongside any -relay-peer/
 	// Config.RelayPeers seed values -- so a node picks up newly
 	// registered relays without a restart, and EnableAutoRelayWithStaticRelays
-	// can fail over between candidates if one goes down. Same
-	// two-stage request/confirm/revoke lifecycle as KindPermitPeer
-	// (create/activate/delete); BootstrapNodeKeyBounds is this kind's
-	// read side, for a ListRange scan of every currently-confirmed entry.
+	// can fail over between candidates if one goes down. Two-stage
+	// request/confirm/revoke lifecycle (create/activate/delete), the same
+	// EventPermitRequest/EventPermitConfirm/EventPermitRevoke machinery
+	// KindClusterJoin below also reuses; BootstrapNodeKeyBounds is this
+	// kind's read side, for a ListRange scan of every currently-confirmed
+	// entry.
 	KindBootstrapNode byte = 0x02
 	// KindClusterMember records a raft member's public key and current
 	// role (RoleVoter/RoleLearner/RoleLeader) -- see ClusterMemberKey/
-	// EncodeClusterMemberPayload. Unlike KindPermitPeer/KindBootstrapNode
-	// it has no pending/confirmed two-stage lifecycle: it's a live status
-	// mirror, always written directly under a fixed status placeholder
-	// (see ClusterMemberKey), kept current by pkg/daemon whenever a peer
-	// joins or this node's own raft leadership status changes.
+	// EncodeClusterMemberPayload. Unlike KindBootstrapNode it has no
+	// pending/confirmed two-stage lifecycle: it's a live status mirror,
+	// always written directly under a fixed status placeholder (see
+	// ClusterMemberKey), kept current by pkg/daemon whenever a peer joins
+	// or this node's own raft leadership status changes.
 	KindClusterMember byte = 0x03
-	// KindLogPermit consumes the 0x04 slot this block used to leave
-	// unassigned: permission for a peer to append/query pkg/logrecord
-	// records of one specific log kind. Unlike KindPermitPeer -- which
-	// keys purely on peerID -- a log-kind permit record needs a second
-	// variable-length dimension (which log kind string), which
-	// SystemKey's fixed 3-field shape (prefix, kind, status, then just
-	// peerID) can't express; see LogPermitKey, this package's own key
-	// builder for that shape, kept here since checkSystemListCap
-	// (pkg/kvfsm) and the voter-gated confirm/revoke machinery
-	// (pkg/daemon's handleConfirmForward et al.) both key off
-	// SystemKeyPrefix, and this record needs both.
-	KindLogPermit byte = 0x04
 	// KindClusterJoin consumes the 0x05 slot this block's own doc comment
 	// reserved for exactly this: a raft voter/learner add, built on the
 	// same EventPermitRequest/EventPermitConfirm/EventPermitRevoke
-	// pending->confirmed lifecycle as KindPermitPeer, rather than a new
+	// pending->confirmed lifecycle as KindBootstrapNode, rather than a new
 	// wire protocol. metadata (see EncodeClusterJoinMetadata) carries the
 	// joining peer's dialable multiaddr and requested suffrage; a
 	// confirm promotes the pending record to confirmed exactly like any
@@ -70,11 +65,11 @@ const (
 	// (GroupKey/CommandKey, one variable ID field, same shape as
 	// ClusterMemberKey); KindGroupCommand/KindPeerGroup are many-to-many
 	// relation records with no pending/confirmed lifecycle of their own
-	// (GroupCommandKey/PeerGroupKey, two variable fields, same shape as
-	// LogPermitKey). Unlike KindPermitPeer/KindClusterJoin, every one of
-	// these four is written directly (kvfsm.OpSet/OpDel) by any single
-	// current raft voter -- no separate confirmation step -- reusing the
-	// existing EventPermitConfirm/EventPermitRevoke voter-gated forwarding
+	// (GroupCommandKey/PeerGroupKey, two variable fields). Unlike
+	// KindBootstrapNode/KindClusterJoin, every one of these four is
+	// written directly (kvfsm.OpSet/OpDel) by any single current raft
+	// voter -- no separate confirmation step -- reusing the existing
+	// EventPermitConfirm/EventPermitRevoke voter-gated forwarding
 	// machinery (see pkg/daemon's handleConfirmForward) widened to also
 	// accept OpSet, rather than the two-stage pending->confirmed pattern
 	// every other client-facing kind above uses.
@@ -86,8 +81,7 @@ const (
 	// (always addressed to a peer id the cluster already knows about
 	// before it's redeemed -- either because a live voter is confirming a
 	// request that already landed, or a ticket was pre-signed for that
-	// specific known peer id, see EncodePermitPeerPayload's doc comment on
-	// last session's work), a KindJoinInvite record is keyed by a random
+	// specific known peer id), a KindJoinInvite record is keyed by a random
 	// token instead of any peer id at all, because the whole point is
 	// admitting a device the cluster has never seen before -- there is no
 	// peer id to address it to until the moment it shows up and presents
@@ -122,8 +116,6 @@ const (
 // anything not defined above. Mirrors EventName/EventFromName.
 func KindName(k byte) string {
 	switch k {
-	case KindPermitPeer:
-		return "peer"
 	case KindBootstrapNode:
 		return "bootstrap"
 	case KindClusterMember:
@@ -148,12 +140,10 @@ func KindName(k byte) string {
 }
 
 // KindFromName is the inverse of KindName: it returns the kind byte for
-// one of the names KindName produces ("peer", "bootstrap",
-// "cluster-member", "cluster-join"), and false if name isn't recognized.
+// one of the names KindName produces ("bootstrap", "cluster-member",
+// "cluster-join"), and false if name isn't recognized.
 func KindFromName(name string) (byte, bool) {
 	switch name {
-	case "peer":
-		return KindPermitPeer, true
 	case "bootstrap":
 		return KindBootstrapNode, true
 	case "cluster-member":
@@ -309,7 +299,7 @@ func DecodeClusterMemberPayload(payload []byte) (pub PublicKey, role byte, err e
 // length prefix for peerID, then peerID, then metadata verbatim (the
 // rest of the buffer, needing no length prefix of its own). metadata is
 // opaque to this package -- e.g. a dialable multiaddr for
-// KindBootstrapNode, or empty for KindPermitPeer.
+// KindBootstrapNode.
 func EncodePermitRequestPayload(kind byte, peerID, metadata []byte) ([]byte, error) {
 	if len(peerID) > 0xFFFF {
 		return nil, fmt.Errorf("shmevent: permit request peerID too long: %d bytes", len(peerID))
@@ -336,20 +326,14 @@ func DecodePermitRequestPayload(payload []byte) (kind byte, peerID, metadata []b
 	return kind, payload[3 : 3+idLen], payload[3+idLen:], nil
 }
 
-// RelayLimits is the per-peer circuit-relay v2 resource allotment a
-// KindPermitPeer record's payload carries (see EncodePermitPeerPayload):
-// what pkg/daemon's newHost hands go-libp2p as v2relay.Resources.MaxCircuits/
-// Limit.Data/Limit.Duration/MaxReservationsPerIP/MaxReservationsPerPeer,
-// stamped onto every permit at request time (see pkg/daemon's
-// handleShmEvent EventPermitRequest case) so a confirmed permit records what
-// allotment its peer was registered under -- not a per-peer override:
-// go-libp2p's circuitv2 relay applies a single Resources value to every
-// ACL-approved peer alike (there is no hook to give one peer a bigger
-// allotment than another without forking that package), so every peer
-// currently gets the same node-configured values here. Kept as an explicit
-// record anyway rather than left implicit, so a later differentiated-limits
-// feature (or just `rangescan`-based audit of who was promised what) has
-// something to read without a wire-format change.
+// RelayLimits is the per-peer circuit-relay v2 resource allotment
+// pkg/daemon's newHost hands go-libp2p as v2relay.Resources.MaxCircuits/
+// Limit.Data/Limit.Duration/MaxReservationsPerIP/MaxReservationsPerPeer --
+// not a per-peer override: go-libp2p's circuitv2 relay applies a single
+// Resources value to every ACL-approved peer alike (there is no hook to
+// give one peer a bigger allotment than another without forking that
+// package), so every peer currently gets the same node-configured values
+// here.
 type RelayLimits struct {
 	MaxCircuitsPerPeer     int32         // concurrent open relayed circuits this peer may hold
 	LimitData              int64         // bytes relayed (each direction) before a circuit is reset
@@ -360,13 +344,12 @@ type RelayLimits struct {
 
 // Default relay resource values -- pkg/daemon's Config fields fall back to
 // these when left at their zero value (see Config.RelayMaxCircuitsPerPeer
-// et al.'s doc comments), and EventPermitRequest stamps them onto every new
-// KindPermitPeer record unless the requesting node's own Config overrides
-// them. One concurrent circuit and one reservation per peer/IP is
-// deliberately tight (a single-purpose kv-raft client has no legitimate
-// need for more); the 1GB/30-day circuit ceiling is loose enough not to
-// interrupt a long-lived, low-traffic follower's relayed connection under
-// normal operation while still forcing an eventual reset.
+// et al.'s doc comments). One concurrent circuit and one reservation per
+// peer/IP is deliberately tight (a single-purpose kv-raft client has no
+// legitimate need for more); the 1GB/30-day circuit ceiling is loose
+// enough not to interrupt a long-lived, low-traffic follower's relayed
+// connection under normal operation while still forcing an eventual
+// reset.
 const (
 	DefaultRelayMaxCircuitsPerPeer     int32         = 1
 	DefaultRelayLimitData              int64         = 1 << 30 // 1 GB
@@ -385,48 +368,6 @@ func DefaultRelayLimits() RelayLimits {
 		MaxReservationsPerIP:   DefaultRelayMaxReservationsPerIP,
 		MaxReservationsPerPeer: DefaultRelayMaxReservationsPerPeer,
 	}
-}
-
-// relayLimitsEncodedSize is RelayLimits' fixed on-wire size: 4 (int32) + 8
-// (int64) + 8 (int64, LimitDuration in nanoseconds) + 4 (int32) + 4 (int32),
-// all big-endian.
-const relayLimitsEncodedSize = 4 + 8 + 8 + 4 + 4
-
-// EncodePermitPeerPayload packs peerID and its registered RelayLimits into
-// a KindPermitPeer record's value -- limits first, fixed-size, so peerID
-// (variable-length, already the record's own key -- see SystemKey) can
-// trail with no length prefix of its own, mirroring
-// EncodePermitConfirmPayload's fixed-then-variable layout. Previously this
-// record's value only ever held peerID with no limits at all, since
-// isPermittedPeer used to check just key existence -- see DecodePermitPeerPayload.
-func EncodePermitPeerPayload(peerID []byte, limits RelayLimits) []byte {
-	buf := make([]byte, relayLimitsEncodedSize+len(peerID))
-	binary.BigEndian.PutUint32(buf[0:4], uint32(limits.MaxCircuitsPerPeer))
-	binary.BigEndian.PutUint64(buf[4:12], uint64(limits.LimitData))
-	binary.BigEndian.PutUint64(buf[12:20], uint64(limits.LimitDuration))
-	binary.BigEndian.PutUint32(buf[20:24], uint32(limits.MaxReservationsPerIP))
-	binary.BigEndian.PutUint32(buf[24:28], uint32(limits.MaxReservationsPerPeer))
-	copy(buf[relayLimitsEncodedSize:], peerID)
-	return buf
-}
-
-// DecodePermitPeerPayload is the inverse of EncodePermitPeerPayload.
-func DecodePermitPeerPayload(payload []byte) (peerID []byte, limits RelayLimits, err error) {
-	if len(payload) < relayLimitsEncodedSize {
-		return nil, RelayLimits{}, fmt.Errorf("shmevent: permit peer payload too short: %d bytes", len(payload))
-	}
-	limits = RelayLimits{
-		MaxCircuitsPerPeer:     int32(binary.BigEndian.Uint32(payload[0:4])),
-		LimitData:              int64(binary.BigEndian.Uint64(payload[4:12])),
-		LimitDuration:          time.Duration(binary.BigEndian.Uint64(payload[12:20])),
-		MaxReservationsPerIP:   int32(binary.BigEndian.Uint32(payload[20:24])),
-		MaxReservationsPerPeer: int32(binary.BigEndian.Uint32(payload[24:28])),
-	}
-	peerID = payload[relayLimitsEncodedSize:]
-	if len(peerID) == 0 {
-		return nil, RelayLimits{}, fmt.Errorf("shmevent: permit peer payload missing peerID")
-	}
-	return peerID, limits, nil
 }
 
 // EncodePermitConfirmPayload packs kind and peerID (the rest of the

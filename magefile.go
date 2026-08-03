@@ -403,11 +403,16 @@ func (E2E) BootstrapAll() error {
 }
 
 // Current runs only the rows recorded since the last published version --
-// what should run before every push (see the pre-push hook in
+// what should run before every routine push (see the pre-push hook in
 // scripts/git-hooks/pre-push). On full success it advances
 // PublishedVersion, so the next e2e:current only covers whatever's new
-// again -- this is the "version increment based on new tests" behavior.
-// Set E2E_TYPES (comma-separated: desktop, web, android, androidui) to run
+// again -- this is the "version increment based on new tests" behavior. In
+// particular, running e2e:current a second time with nothing new since the
+// last success is a true no-op (prints "no rows to run" and returns
+// immediately) -- unlike All/Release below, it does *not* still walk the
+// android UI catalog/pair scenario every time, since the whole point of
+// "current" is "is there anything new to confirm", and there isn't. Set
+// E2E_TYPES (comma-separated: desktop, web, android, androidui) to run
 // only some test types instead of everything -- see
 // pkg/e2erun.ParseTypes's doc comment; unset/empty runs everything, same
 // as before this existed.
@@ -415,17 +420,53 @@ func (E2E) BootstrapAll() error {
 // Usage: mage e2e:current
 // Usage: E2E_TYPES=web,androidui mage e2e:current
 func (E2E) Current() error {
-	return runE2ERows(func(f *e2edata.File) []int { return f.PendingRows() }, true)
+	return runE2ERows(func(f *e2edata.File) []int { return f.PendingRows() }, e2eRunOptions{
+		markPublishedOnSuccess: true,
+	})
 }
 
 // All runs every recorded test row across every version, regardless of
-// what's already published -- a full regression pass. Set E2E_TYPES the
-// same way Current does to narrow which test types actually run.
+// what's already published -- a full regression pass, always including the
+// android UI catalog/pair scenario walk (unlike Current) even on a run that
+// finds zero rows to (re)execute. Never advances PublishedVersion and never
+// tears down existing nodes first (unlike Release below), so running it
+// manually for a spot check neither changes what the next e2e:current
+// considers "new" nor destroys whatever nodes are already sitting around
+// from prior runs. Set E2E_TYPES the same way Current does to narrow which
+// test types actually run.
 //
 // Usage: mage e2e:all
 // Usage: E2E_TYPES=androidui mage e2e:all
 func (E2E) All() error {
-	return runE2ERows(func(f *e2edata.File) []int { return f.AllRowIndices() }, false)
+	return runE2ERows(func(f *e2edata.File) []int { return f.AllRowIndices() }, e2eRunOptions{
+		alwaysRunAndroidUI: true,
+	})
+}
+
+// Release runs the same full regression pass as All -- every recorded row
+// plus the android UI catalog/pair walk -- but first destroys every
+// existing e2e node (the same real teardown `mage e2e:destroyall` does),
+// and advances PublishedVersion on success. This is the gate the pre-push
+// hook (see scripts/git-hooks/pre-push) runs instead of e2e:current
+// whenever the push includes a version tag (`mage
+// patch`/`minor`/`major`/`alpha`/`beta`/`rc` followed by `git push
+// --tags`): a version bump is exactly the point where the whole suite
+// should be reconfirmed from a genuinely clean slate, not just replayed
+// against whatever nodes happened to survive routine e2e:current runs
+// during development. Every row's node is transparently reprovisioned
+// under a fresh identity before it runs (see e2erun.Run's reprovision
+// step, the same recovery path `mage e2e:deletenode`/`destroyall` already
+// rely on) -- there is no separate `mage e2e:destroyall` step to run by
+// hand first. Set E2E_TYPES the same way Current/All do.
+//
+// Usage: mage e2e:release
+// Usage: E2E_TYPES=androidui mage e2e:release
+func (E2E) Release() error {
+	return runE2ERows(func(f *e2edata.File) []int { return f.AllRowIndices() }, e2eRunOptions{
+		markPublishedOnSuccess: true,
+		alwaysRunAndroidUI:     true,
+		destroyAllFirst:        true,
+	})
 }
 
 // ChannelFileTransfer drives a real, large, bidirectional Raw Channel file
@@ -462,7 +503,26 @@ func (E2E) ChannelFileTransfer(sizeBytes int) error {
 	return e2erun.RunChannelFileTransferScenario(root, int64(sizeBytes))
 }
 
-func runE2ERows(selectRows func(*e2edata.File) []int, markPublishedOnSuccess bool) error {
+// e2eRunOptions is runE2ERows' behavior switch set -- see Current/All/
+// Release's own doc comments for what each combination means in practice.
+type e2eRunOptions struct {
+	// markPublishedOnSuccess advances PublishedVersion to CurrentVersion
+	// once every selected row passes.
+	markPublishedOnSuccess bool
+	// alwaysRunAndroidUI, when true, still walks the android UI catalog/
+	// pair scenario (when types.AndroidUI is selected) even if selectRows
+	// returned zero rows -- a full regression pass (All/Release) always
+	// wants that walk exercised; Current wants a true no-op instead, since
+	// "nothing new to confirm" should mean exactly that.
+	alwaysRunAndroidUI bool
+	// destroyAllFirst tears down every existing e2e node (the same real
+	// teardown e2e:destroyall does) before running -- see Release's doc
+	// comment on why a version-bump gate wants a genuinely clean slate
+	// rather than reusing whatever nodes survived prior runs.
+	destroyAllFirst bool
+}
+
+func runE2ERows(selectRows func(*e2edata.File) []int, opts e2eRunOptions) error {
 	types, err := e2erun.SelectedTypes()
 	if err != nil {
 		return err
@@ -479,13 +539,25 @@ func runE2ERows(selectRows func(*e2edata.File) []int, markPublishedOnSuccess boo
 	if err != nil {
 		return err
 	}
+
+	if opts.destroyAllFirst && len(f.Nodes) > 0 {
+		fmt.Println("e2e: destroying all existing nodes for a clean run...")
+		destroyErr := e2erun.DeleteAllNodes(f)
+		if err := f.Save(path); err != nil {
+			return err
+		}
+		if destroyErr != nil {
+			return destroyErr
+		}
+	}
+
 	rows := selectRows(f)
-	if len(rows) == 0 && !types.AndroidUI {
+	if len(rows) == 0 && (!opts.alwaysRunAndroidUI || !types.AndroidUI) {
 		fmt.Println("✅ no rows to run")
 		return nil
 	}
 	runErr := e2erun.Run(root, path, f, rows, types)
-	if runErr == nil && markPublishedOnSuccess {
+	if runErr == nil && opts.markPublishedOnSuccess {
 		f.MarkPublished()
 		if err := f.Save(path); err != nil {
 			return err
@@ -552,9 +624,10 @@ func (TLS) GenSelfSigned(hosts string) error {
 type Githooks mg.Namespace
 
 // Install points this repo's core.hooksPath at scripts/git-hooks, so the
-// pre-push hook there (which runs `mage e2e:current`, blocking a push if
-// it fails) actually runs -- see that file's own doc comment for the
-// SKIP_E2E escape hatch. Idempotent and safe to re-run.
+// pre-push hook there (which runs `mage e2e:current` for a routine push,
+// or the full `mage e2e:release` whenever the push includes a version tag,
+// blocking the push if it fails) actually runs -- see that file's own doc
+// comment for the SKIP_E2E escape hatch. Idempotent and safe to re-run.
 //
 // Usage: mage githooks:install
 func (Githooks) Install() error {
@@ -573,7 +646,7 @@ func (Githooks) Install() error {
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("githooks: set core.hooksPath: %w", err)
 	}
-	fmt.Println("✅ core.hooksPath set to scripts/git-hooks -- `mage e2e:current` now runs before every push")
+	fmt.Println("✅ core.hooksPath set to scripts/git-hooks -- `mage e2e:current` (or `mage e2e:release` for a version-tag push) now runs before every push")
 	return nil
 }
 
@@ -1412,13 +1485,13 @@ func Kvhttp(addr string) error {
 
 // RequestPermit lodges a pending permit record for peerID on the current
 // node, forwarded to the leader like any other Set. metadata may be "" (a
-// dialable multiaddr for kind "bootstrap", unused for kind "peer" -- see
+// dialable multiaddr for kind "bootstrap" -- see
 // shmevent.EncodePermitRequestPayload).
-// Usage: mage requestpermit <kind: peer|bootstrap> <peerID> <metadata>
+// Usage: mage requestpermit <kind: bootstrap> <peerID> <metadata>
 func RequestPermit(kind, peerID, metadata string) error {
 	k, ok := shmevent.KindFromName(kind)
 	if !ok {
-		return fmt.Errorf("unknown permit kind %q (want \"peer\" or \"bootstrap\")", kind)
+		return fmt.Errorf("unknown permit kind %q (want \"bootstrap\")", kind)
 	}
 	if err := kvctl.RequestPermit(k, []byte(peerID), []byte(metadata)); err != nil {
 		return err
@@ -1429,11 +1502,11 @@ func RequestPermit(kind, peerID, metadata string) error {
 
 // ConfirmPermit promotes a pending permit record for peerID to confirmed.
 // Only takes effect if the current node is itself a raft voter.
-// Usage: mage confirmpermit <kind: peer|bootstrap> <peerID>
+// Usage: mage confirmpermit <kind: bootstrap|cluster-join> <peerID>
 func ConfirmPermit(kind, peerID string) error {
 	k, ok := shmevent.KindFromName(kind)
 	if !ok {
-		return fmt.Errorf("unknown permit kind %q (want \"peer\" or \"bootstrap\")", kind)
+		return fmt.Errorf("unknown permit kind %q (want \"bootstrap\" or \"cluster-join\")", kind)
 	}
 	if err := kvctl.ConfirmPermit(k, []byte(peerID)); err != nil {
 		return err
@@ -1444,11 +1517,11 @@ func ConfirmPermit(kind, peerID string) error {
 
 // RevokePermit deletes a confirmed permit record for peerID outright.
 // Only takes effect if the current node is itself a raft voter.
-// Usage: mage revokepermit <kind: peer|bootstrap> <peerID>
+// Usage: mage revokepermit <kind: bootstrap> <peerID>
 func RevokePermit(kind, peerID string) error {
 	k, ok := shmevent.KindFromName(kind)
 	if !ok {
-		return fmt.Errorf("unknown permit kind %q (want \"peer\" or \"bootstrap\")", kind)
+		return fmt.Errorf("unknown permit kind %q (want \"bootstrap\")", kind)
 	}
 	if err := kvctl.RevokePermit(k, []byte(peerID)); err != nil {
 		return err
@@ -1716,42 +1789,6 @@ func GetOwnAddr() error {
 		return err
 	}
 	fmt.Println(addr)
-	return nil
-}
-
-// RequestLogPermit lodges a pending permission for peerID to
-// append/query pkg/logrecord records of logKind, forwarded to the leader
-// like any other Set. metadata may be "".
-// Usage: mage requestlogpermit <logKind> <peerID> <metadata>
-func RequestLogPermit(logKind, peerID, metadata string) error {
-	if err := kvctl.RequestLogPermit(logKind, []byte(peerID), []byte(metadata)); err != nil {
-		return err
-	}
-	fmt.Println("✅ log permit requested")
-	return nil
-}
-
-// ConfirmLogPermit promotes a pending log-kind permit record for peerID
-// to confirmed. Only takes effect if the current node is itself a raft
-// voter.
-// Usage: mage confirmlogpermit <logKind> <peerID>
-func ConfirmLogPermit(logKind, peerID string) error {
-	if err := kvctl.ConfirmLogPermit(logKind, []byte(peerID)); err != nil {
-		return err
-	}
-	fmt.Println("✅ log permit confirmed")
-	return nil
-}
-
-// RevokeLogPermit deletes a confirmed log-kind permit record for peerID
-// outright. Only takes effect if the current node is itself a raft
-// voter.
-// Usage: mage revokelogpermit <logKind> <peerID>
-func RevokeLogPermit(logKind, peerID string) error {
-	if err := kvctl.RevokeLogPermit(logKind, []byte(peerID)); err != nil {
-		return err
-	}
-	fmt.Println("✅ log permit revoked")
 	return nil
 }
 

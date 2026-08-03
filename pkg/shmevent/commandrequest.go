@@ -30,6 +30,49 @@ func ParseCommandRequestLogKind(kind string) (commandID string, ok bool) {
 	return strings.TrimPrefix(kind, CommandRequestLogKindPrefix), true
 }
 
+// CommandExecIndexKindPrefix marks a pkg/logrecord Kind as
+// SubmitCommand's per-peer execution index -- every dispatch a given
+// peerID plays requester or target in gets one entry here, letting
+// ListExecutionsByPeer(peerID) enumerate them with a single prefix scan
+// instead of walking every command's own CommandRequestLogKind. Promoted
+// here for the identical reason CommandRequestLogKindPrefix was: it used
+// to be a private literal duplicated in pkg/kvctl and mobile/kvmobile,
+// invisible to pkg/daemon, which needs to recognize one to let a remote,
+// non-cluster-member caller read back its own index (and only its own --
+// see pkg/daemon's isCommandLogCarveOut) as part of the public-command
+// carve-out, the one door a peer with no other standing has into an
+// otherwise closed cluster.
+const CommandExecIndexKindPrefix = "cmdexec:"
+
+// CommandExecIndexKind returns the pkg/logrecord Kind peerID's execution
+// index is stored under.
+func CommandExecIndexKind(peerID string) string {
+	return CommandExecIndexKindPrefix + peerID
+}
+
+// ParseCommandExecIndexKind extracts peerID back out of a Kind built by
+// CommandExecIndexKind, reporting ok=false for any other kind.
+func ParseCommandExecIndexKind(kind string) (peerID string, ok bool) {
+	if !strings.HasPrefix(kind, CommandExecIndexKindPrefix) {
+		return "", false
+	}
+	return strings.TrimPrefix(kind, CommandExecIndexKindPrefix), true
+}
+
+// CommandExecLogKind is the fixed pkg/logrecord Kind every
+// AppendCommandLog entry (a command's actual execution output, as the
+// target reports it) is stored under, keyed by instance id rather than a
+// per-command Kind -- an instance id is already globally unique and a
+// caller tracking one dispatch already knows exactly which one it wants.
+// Promoted from pkg/kvctl/mobile/kvmobile's own identical private literal
+// for the same reason CommandExecIndexKindPrefix was: pkg/daemon's
+// isCommandLogCarveOut needs to recognize it too, to let a non-member
+// remote caller read back a dispatch's own execution log -- "possessing
+// the instance id is the credential" was already this kind's design (see
+// pkg/kvctl's GetCommandRequest doc comment), so no further ACL check is
+// layered on top of recognizing the kind itself.
+const CommandExecLogKind = "cmdlog"
+
 // EncodeCommandRequestApplyPayload packs the authenticated submitting
 // peer id and the actual pkg/logrecord.Record value into a single
 // kvfsm.OpAppendCommandRequest Apply payload: a 2-byte big-endian length

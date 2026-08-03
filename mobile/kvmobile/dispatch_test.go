@@ -35,7 +35,7 @@ func grantCommandAccess(t *testing.T, commandID, groupID, peerID string) {
 		if err := json.Unmarshal([]byte(out), &groupIDs); err != nil {
 			return false, err
 		}
-		return len(groupIDs) == 1, nil
+		return len(filterReservedGroupIDs(groupIDs)) == 1, nil
 	})
 }
 

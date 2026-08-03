@@ -56,6 +56,7 @@ func TestChannelDataplaneDesktopThroughputBenchmark(t *testing.T) {
 	a := startChannelDataplaneTestNode(t, filepath.Join(tmpDir, "a"))
 	b := startChannelDataplaneTestNode(t, filepath.Join(tmpDir, "b"))
 	connectPeers(t, ctx, a, b)
+	grantChannelAccess(t, a, b)
 
 	sessA, err := shmclient.Open(ctx, a.peerID)
 	if err != nil {

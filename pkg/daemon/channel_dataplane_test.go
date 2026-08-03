@@ -8,6 +8,7 @@ import (
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/chandata"
 	"github.com/gofsd/libp2p-kv-raft/pkg/ipc"
+	"github.com/gofsd/libp2p-kv-raft/pkg/registry"
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmclient"
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
@@ -17,13 +18,26 @@ import (
 // package), pkg/shmclient.Session's channel methods go over real
 // pkg/chandata shared-memory rings and real pkg/ipc named shmring
 // segments, so exercising them for real needs an actual Serve loop
-// running, not just a direct handleShmEvent call.
+// running, not just a direct handleShmEvent call. Registers n's peer id
+// against dir in the test registry TestMain points registry.EnvHome at --
+// pkg/ipc.Call/CallRaw (what shmclient.Open(ctx, n.peerID) ultimately
+// drives) now resolves a peer id to its own local-IPC token via that same
+// registry lookup (see pkg/ipc/token.go's tokenForPeer), the same way a
+// real daemon spawned through pkg/kvctl.AddNodeWithArgs would already be
+// registered by the time anything calls it.
 func startChannelDataplaneTestNode(t *testing.T, dir string) *Node {
 	t.Helper()
 	n := startExecuteTestNode(t, dir)
+	reg, err := registry.Open()
+	if err != nil {
+		t.Fatalf("registry.Open: %v", err)
+	}
+	if err := reg.Put(registry.NodeInfo{PeerID: n.peerID, DataDir: dir}); err != nil {
+		t.Fatalf("registry.Put: %v", err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	go ipc.Serve(ctx, n.peerID, n.ed25519Priv, func(ctx context.Context, m shmevent.Msg, crc uint32, sig []byte) shmevent.Msg {
+	go ipc.Serve(ctx, n.peerID, dir, n.ed25519Priv, func(ctx context.Context, m shmevent.Msg, crc uint32, sig []byte) shmevent.Msg {
 		return n.handleShmEvent(ctx, m, crc, sig, n.localCaller())
 	})
 	return n
@@ -73,6 +87,7 @@ func TestChannelDataplaneRingBulkTransferAndDrain(t *testing.T) {
 	a := startChannelDataplaneTestNode(t, filepath.Join(tmpDir, "a"))
 	b := startChannelDataplaneTestNode(t, filepath.Join(tmpDir, "b"))
 	connectPeers(t, ctx, a, b)
+	grantChannelAccess(t, a, b)
 
 	sessA, err := shmclient.Open(ctx, a.peerID)
 	if err != nil {

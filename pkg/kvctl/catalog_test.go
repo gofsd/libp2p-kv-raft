@@ -1,12 +1,72 @@
 package kvctl_test
 
 import (
+	"sort"
 	"testing"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/peer"
+
 	"github.com/gofsd/libp2p-kv-raft/pkg/kvctl"
 	"github.com/gofsd/libp2p-kv-raft/pkg/registry"
+	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
+
+// isReservedGroupID/filterReservedGroupIDs/filterReservedGroups let every
+// test below that predates pkg/daemon's reserved-group feature (see
+// shmevent.ReservedGroupCluster's doc comment) keep asserting on just its
+// own explicitly-created fixtures: every fresh cluster now auto-creates
+// seven daemon-managed groups (cluster/voter/learner/channel/relay/remote/
+// execute, see shmevent.IsReservedGroupID) plus shmevent.DefaultPublicGroupID
+// (not daemon-managed/reserved, just a bootstrapped default -- see that
+// constant's doc comment -- but equally not something these tests asked
+// for), a solo bootstrap leader is itself automatically a member of
+// "cluster" and "voter" the moment AddNodeWithArgs returns, and every peer
+// that ever joins/bootstraps also gets its own personal group (id == its
+// own peer id, see pkg/daemon's isPeerIdentityGroupID doc comment) -- all
+// of that would otherwise show up unexpectedly in a plain ListGroups/
+// ListGroupsForPeer call these tests didn't ask for.
+func isReservedGroupID(id string) bool {
+	if shmevent.IsReservedGroupID(id) || id == shmevent.DefaultPublicGroupID {
+		return true
+	}
+	_, err := peer.Decode(id)
+	return err == nil
+}
+
+func filterReservedGroupIDs(ids []string) []string {
+	var out []string
+	for _, id := range ids {
+		if !isReservedGroupID(id) {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+func filterReservedGroups(groups []kvctl.Group) []kvctl.Group {
+	var out []kvctl.Group
+	for _, g := range groups {
+		if !isReservedGroupID(g.ID) {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
+// filterDefaultCommands drops shmevent.DefaultPublicCommandID -- the
+// Command ensureDefaultPublicCommand bootstraps alongside
+// DefaultPublicGroupID -- from a ListCommands result, the Command-side
+// counterpart to filterReservedGroups above.
+func filterDefaultCommands(commands []kvctl.Command) []kvctl.Command {
+	var out []kvctl.Command
+	for _, c := range commands {
+		if c.ID != shmevent.DefaultPublicCommandID {
+			out = append(out, c)
+		}
+	}
+	return out
+}
 
 // fastRaftArgs shortens hashicorp/raft's WAN-appropriate default timeouts
 // for a same-machine test -- see TestAddSetGetAcrossNodes's identical
@@ -184,7 +244,7 @@ func TestCommandCRUD(t *testing.T) {
 		if err != nil {
 			return false, err
 		}
-		return len(commands) == 0, nil
+		return len(filterDefaultCommands(commands)) == 0, nil
 	})
 }
 
@@ -249,6 +309,7 @@ func TestGroupCommandAndPeerGroupLinkingGatesSubmitCommand(t *testing.T) {
 		if err != nil {
 			return false, err
 		}
+		groupIDs = filterReservedGroupIDs(groupIDs)
 		return len(groupIDs) == 1 && groupIDs[0] == "grp-1", nil
 	})
 
@@ -335,8 +396,9 @@ func TestPublicGroupExemptsPeerGroupMembership(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListGroupsForPeer: %v", err)
 	}
+	groupIDs = filterReservedGroupIDs(groupIDs)
 	if len(groupIDs) != 0 {
-		t.Fatalf("leaderID unexpectedly has PeerGroup membership: %v", groupIDs)
+		t.Fatalf("leaderID unexpectedly has non-reserved PeerGroup membership: %v", groupIDs)
 	}
 }
 
@@ -397,7 +459,7 @@ func TestDeleteGroupCascadesToRelations(t *testing.T) {
 		if err != nil {
 			return false, err
 		}
-		return len(groupIDs) == 0, nil
+		return len(filterReservedGroupIDs(groupIDs)) == 0, nil
 	})
 	if _, err := kvctl.SubmitCommand("cmd-cascade", ""); err == nil {
 		t.Fatalf("SubmitCommand after group cascade-deleted: want error, got none")
@@ -456,7 +518,12 @@ func TestDeleteCommandCascadesToGroupCommand(t *testing.T) {
 }
 
 // TestCatalogEmptyListsAreEmptyArrays checks ListGroups/ListCommands
-// return a zero-length (nil) slice, not an error, when nothing matches.
+// return a zero-length (nil) slice, not an error, when nothing matches --
+// after filtering out the seven reserved groups plus the default public
+// group/command ensureReservedGroups/ensureDefaultPublicCommand
+// auto-create at bootstrap (see shmevent.ReservedGroupCluster's/
+// DefaultPublicGroupID's doc comments), which
+// TestReservedGroupsCreatedAndProtected below checks directly.
 func TestCatalogEmptyListsAreEmptyArrays(t *testing.T) {
 	root := repoRoot(t)
 	home := t.TempDir()
@@ -476,6 +543,7 @@ func TestCatalogEmptyListsAreEmptyArrays(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListGroups: %v", err)
 	}
+	groups = filterReservedGroups(groups)
 	if len(groups) != 0 {
 		t.Fatalf("ListGroups (empty) = %+v, want none", groups)
 	}
@@ -484,6 +552,7 @@ func TestCatalogEmptyListsAreEmptyArrays(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListCommands: %v", err)
 	}
+	commands = filterDefaultCommands(commands)
 	if len(commands) != 0 {
 		t.Fatalf("ListCommands (empty) = %+v, want none", commands)
 	}
@@ -515,5 +584,132 @@ func TestCatalogIDValidation(t *testing.T) {
 	}
 	if err := kvctl.PutGroup(string(oversized), "x", false); err == nil {
 		t.Fatalf("PutGroup with oversized id: want error, got none")
+	}
+}
+
+// TestReservedGroupsCreatedAndProtected proves pkg/daemon's
+// ensureReservedGroups/syncMemberGroups feature end to end through
+// pkg/kvctl: a fresh bootstrap auto-creates the seven fixed reserved
+// groups (shmevent.ReservedGroupCluster/Voter/Learner/Channel/Relay/
+// Remote/Execute), the default public group (shmevent.DefaultPublicGroupID,
+// see that constant's doc comment -- the only one of these that's
+// actually Public), and the bootstrap leader's own personal group (id ==
+// its own peer id, see pkg/daemon's isPeerIdentityGroupID doc comment).
+// The leader is automatically a member of "cluster" and "voter" (never
+// "learner"), and every *reserved* group is protected the way its own doc
+// comment describes -- PutGroup/DeleteGroup against any of the eight is
+// rejected, and AddPeerToGroup/RemovePeerFromGroup against
+// cluster/voter/learner specifically is rejected too, while the same
+// calls against "channel"/"relay"/"remote"/"execute" and the personal
+// group all succeed (ordinary operator grants, not daemon-managed
+// membership).
+func TestReservedGroupsCreatedAndProtected(t *testing.T) {
+	root := repoRoot(t)
+	home := t.TempDir()
+	t.Setenv(registry.EnvHome, home)
+
+	reg, err := registry.Open()
+	if err != nil {
+		t.Fatalf("registry.Open: %v", err)
+	}
+	t.Cleanup(func() { killAllRegistered(t, reg) })
+
+	leaderID, err := kvctl.AddNodeWithArgs(root, fastRaftArgs)
+	if err != nil {
+		t.Fatalf("AddNode: %v", err)
+	}
+
+	reservedIDs := []string{
+		shmevent.ReservedGroupChannel, shmevent.ReservedGroupCluster, shmevent.ReservedGroupLearner,
+		shmevent.ReservedGroupRelay, shmevent.ReservedGroupVoter, shmevent.ReservedGroupRemote, shmevent.ReservedGroupExecute,
+	}
+	fixedIDs := append(append([]string{}, reservedIDs...), shmevent.DefaultPublicGroupID)
+	wantIDs := append(append([]string{}, fixedIDs...), leaderID)
+	sort.Strings(wantIDs)
+
+	var groups []kvctl.Group
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		var err error
+		groups, err = kvctl.ListGroups()
+		return len(groups) == len(wantIDs), err
+	})
+	gotIDs := make([]string, len(groups))
+	for i, g := range groups {
+		gotIDs[i] = g.ID
+		wantPublic := g.ID == shmevent.DefaultPublicGroupID
+		if g.Public != wantPublic {
+			t.Fatalf("group %q public = %v, want %v", g.ID, g.Public, wantPublic)
+		}
+	}
+	sort.Strings(gotIDs)
+	for i := range wantIDs {
+		if gotIDs[i] != wantIDs[i] {
+			t.Fatalf("ListGroups = %v, want %v", gotIDs, wantIDs)
+		}
+	}
+
+	// The solo bootstrap leader is a voter, never a learner.
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		groupIDs, err := kvctl.ListGroupsForPeer(leaderID)
+		if err != nil {
+			return false, err
+		}
+		sort.Strings(groupIDs)
+		return len(groupIDs) == 2 && groupIDs[0] == shmevent.ReservedGroupCluster && groupIDs[1] == shmevent.ReservedGroupVoter, nil
+	})
+
+	// Every *reserved* group's own record is protected, regardless of
+	// which one it is -- the seven fixed names or the dynamic
+	// peer-identity-shaped one. DefaultPublicGroupID is deliberately
+	// excluded: unlike the reserved seven, it's just a mutable starting
+	// default (see that constant's doc comment), not daemon-protected.
+	protectedIDs := append(append([]string{}, reservedIDs...), leaderID)
+	for _, id := range protectedIDs {
+		if err := kvctl.PutGroup(id, "renamed", false); err == nil {
+			t.Fatalf("PutGroup against reserved group %q: want error, got none", id)
+		}
+		if err := kvctl.DeleteGroup(id); err == nil {
+			t.Fatalf("DeleteGroup against reserved group %q: want error, got none", id)
+		}
+	}
+	if err := kvctl.PutGroup(shmevent.DefaultPublicGroupID, "renamed", false); err != nil {
+		t.Fatalf("PutGroup against the default public group: %v", err)
+	}
+	if err := kvctl.PutGroup(shmevent.DefaultPublicGroupID, shmevent.DefaultPublicGroupID, true); err != nil {
+		t.Fatalf("restore the default public group's original name/public flag: %v", err)
+	}
+
+	// cluster/voter/learner membership is daemon-managed only.
+	for _, id := range []string{shmevent.ReservedGroupCluster, shmevent.ReservedGroupVoter, shmevent.ReservedGroupLearner} {
+		if err := kvctl.AddPeerToGroup(leaderID, id); err == nil {
+			t.Fatalf("AddPeerToGroup against reserved group %q: want error, got none", id)
+		}
+		if err := kvctl.RemovePeerFromGroup(leaderID, id); err == nil {
+			t.Fatalf("RemovePeerFromGroup against reserved group %q: want error, got none", id)
+		}
+	}
+
+	// "channel"/"relay"/"remote"/"execute" and the leader's own personal
+	// group are all the deliberate exception: their membership is an
+	// ordinary operator grant, not tied to actual cluster membership.
+	for _, id := range []string{shmevent.ReservedGroupChannel, shmevent.ReservedGroupRelay, shmevent.ReservedGroupRemote, shmevent.ReservedGroupExecute, leaderID} {
+		if err := kvctl.AddPeerToGroup(leaderID, id); err != nil {
+			t.Fatalf("AddPeerToGroup against group %q: %v", id, err)
+		}
+		pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+			groupIDs, err := kvctl.ListGroupsForPeer(leaderID)
+			if err != nil {
+				return false, err
+			}
+			for _, g := range groupIDs {
+				if g == id {
+					return true, nil
+				}
+			}
+			return false, nil
+		})
+		if err := kvctl.RemovePeerFromGroup(leaderID, id); err != nil {
+			t.Fatalf("RemovePeerFromGroup against group %q: %v", id, err)
+		}
 	}
 }

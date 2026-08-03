@@ -176,117 +176,74 @@ func TestClientProtocolRejectsRemoteKeyFetch(t *testing.T) {
 	}
 }
 
-// TestRequirePermitForRemoteGate exercises Config.RequirePermitForRemote:
-// off (the default) leaves an unconfirmed remote caller's Set succeeding
-// unchanged; on, the same caller is rejected until a raft voter confirms
-// its permit request.
-func TestRequirePermitForRemoteGate(t *testing.T) {
+// TestRemoteGateUnconditional exercises handleShmEvent's always-on
+// isAuthorizedForGatedAccess(shmevent.ReservedGroupRemote) gate for the
+// generic ClientProtocolID surface: a non-member remote caller with no
+// "remote" group grant is rejected outright (no opt-out flag), and
+// granting it shmevent.ReservedGroupRemote membership (the same record
+// `mage addpeertogroup <peerID> remote` would write, on a real cluster
+// voter) admits it.
+func TestRemoteGateUnconditional(t *testing.T) {
 	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	leader := startTestLeader(t, ctx, Config{})
+	remote, remotePriv, leaderPeerID := newTestRemoteHost(t, ctx, leader)
 
-	// Each subtest gets its own context/cancel rather than sharing one
-	// from the parent: subtests marked t.Parallel() keep running after
-	// the parent function body returns, so a parent-scoped defer cancel()
-	// would fire -- and cancel every subtest's context -- immediately,
-	// before any of them actually ran.
-	t.Run("default off: unconfirmed caller succeeds", func(t *testing.T) {
-		t.Parallel()
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		leader := startTestLeader(t, ctx, Config{})
-		remote, remotePriv, leaderPeerID := newTestRemoteHost(t, ctx, leader)
+	setPayload, err := shmevent.EncodeSetPayload([]byte("hello"), []byte("world"))
+	if err != nil {
+		t.Fatalf("EncodeSetPayload: %v", err)
+	}
+	resp, err := callClientProtocol(ctx, remote, leaderPeerID, shmevent.Msg{
+		EventType: shmevent.EventSet,
+		Value:     setPayload,
+		ID:        1,
+	}, remotePriv)
+	if err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if resp.EventType != shmevent.EventError {
+		t.Fatal("set from a non-member, non-granted remote caller unexpectedly succeeded")
+	}
+	if !strings.Contains(string(resp.Value), "not permitted") {
+		t.Fatalf("set rejection = %q, want it to mention not being permitted", resp.Value)
+	}
 
-		setPayload, err := shmevent.EncodeSetPayload([]byte("hello"), []byte("world"))
-		if err != nil {
-			t.Fatalf("EncodeSetPayload: %v", err)
-		}
-		resp, err := callClientProtocol(ctx, remote, leaderPeerID, shmevent.Msg{
-			EventType: shmevent.EventSet,
-			Value:     setPayload,
-			ID:        1,
-		}, remotePriv)
-		if err != nil {
-			t.Fatalf("set: %v", err)
-		}
-		if resp.EventType == shmevent.EventError {
-			t.Fatalf("set rejected with RequirePermitForRemote unset: %s", resp.Value)
-		}
-	})
+	// Grant the remote caller shmevent.ReservedGroupRemote membership --
+	// leader is itself the sole raft voter, so it can apply this locally
+	// (mirrors permit_test.go's "call" helper pattern); the true
+	// CLI-facing addpeertogroup round trip is covered separately by
+	// pkg/kvctl's own catalog tests.
+	groupPayload, err := shmevent.EncodePeerGroupPayload([]byte(remote.ID().String()), []byte(shmevent.ReservedGroupRemote))
+	if err != nil {
+		t.Fatalf("EncodePeerGroupPayload: %v", err)
+	}
+	groupBuf, err := shmevent.Encode(shmevent.Msg{
+		EventType: shmevent.EventPeerGroupPut,
+		Value:     groupPayload,
+		ID:        2,
+	}, leader.ed25519Priv)
+	if err != nil {
+		t.Fatalf("encode peer_group_put: %v", err)
+	}
+	decodedGroup, crc, sig, err := shmevent.Decode(groupBuf)
+	if err != nil {
+		t.Fatalf("decode peer_group_put: %v", err)
+	}
+	groupResp := leader.handleShmEvent(ctx, decodedGroup, crc, sig, leader.localCaller())
+	if groupResp.EventType == shmevent.EventError {
+		t.Fatalf("peer_group_put rejected: %s", groupResp.Value)
+	}
 
-	t.Run("on: rejected until confirmed", func(t *testing.T) {
-		t.Parallel()
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		leader := startTestLeader(t, ctx, Config{RequirePermitForRemote: true})
-		remote, remotePriv, leaderPeerID := newTestRemoteHost(t, ctx, leader)
-
-		setPayload, err := shmevent.EncodeSetPayload([]byte("hello"), []byte("world"))
-		if err != nil {
-			t.Fatalf("EncodeSetPayload: %v", err)
-		}
-		resp, err := callClientProtocol(ctx, remote, leaderPeerID, shmevent.Msg{
-			EventType: shmevent.EventSet,
-			Value:     setPayload,
-			ID:        1,
-		}, remotePriv)
-		if err != nil {
-			t.Fatalf("set: %v", err)
-		}
-		if resp.EventType != shmevent.EventError {
-			t.Fatal("set succeeded before any permit was requested/confirmed, want rejection")
-		}
-		if !strings.Contains(string(resp.Value), "not permitted") {
-			t.Fatalf("set rejection = %q, want it to mention not being permitted", resp.Value)
-		}
-
-		reqPayload, err := shmevent.EncodePermitRequestPayload(shmevent.KindPermitPeer, []byte(remote.ID().String()), nil)
-		if err != nil {
-			t.Fatalf("EncodePermitRequestPayload: %v", err)
-		}
-		reqResp, err := callClientProtocol(ctx, remote, leaderPeerID, shmevent.Msg{
-			EventType: shmevent.EventPermitRequest,
-			Value:     reqPayload,
-			ID:        2,
-		}, remotePriv)
-		if err != nil {
-			t.Fatalf("permit_request: %v", err)
-		}
-		if reqResp.EventType == shmevent.EventError {
-			t.Fatalf("permit_request rejected: %s", reqResp.Value)
-		}
-
-		// leader is itself the sole raft voter, so it can confirm its own
-		// pending record locally -- mirrors permit_test.go's "call"
-		// helper for a local caller; the true CLI-facing
-		// RequestPermit/ConfirmPermit round trip is covered separately by
-		// pkg/kvctl's own test.
-		confirmPayload := shmevent.EncodePermitConfirmPayload(shmevent.KindPermitPeer, []byte(remote.ID().String()))
-		confirmBuf, err := shmevent.Encode(shmevent.Msg{
-			EventType: shmevent.EventPermitConfirm,
-			Value:     confirmPayload,
-			ID:        3,
-		}, leader.ed25519Priv)
-		if err != nil {
-			t.Fatalf("encode confirm: %v", err)
-		}
-		decodedConfirm, crc, sig, err := shmevent.Decode(confirmBuf)
-		if err != nil {
-			t.Fatalf("decode confirm: %v", err)
-		}
-		confirmResp := leader.handleShmEvent(ctx, decodedConfirm, crc, sig, leader.localCaller())
-		if confirmResp.EventType == shmevent.EventError {
-			t.Fatalf("permit_confirm rejected: %s", confirmResp.Value)
-		}
-
-		resp2, err := callClientProtocol(ctx, remote, leaderPeerID, shmevent.Msg{
-			EventType: shmevent.EventSet,
-			Value:     setPayload,
-			ID:        4,
-		}, remotePriv)
-		if err != nil {
-			t.Fatalf("set (after confirm): %v", err)
-		}
-		if resp2.EventType == shmevent.EventError {
-			t.Fatalf("set rejected after permit confirmed: %s", resp2.Value)
-		}
-	})
+	resp2, err := callClientProtocol(ctx, remote, leaderPeerID, shmevent.Msg{
+		EventType: shmevent.EventSet,
+		Value:     setPayload,
+		ID:        3,
+	}, remotePriv)
+	if err != nil {
+		t.Fatalf("set (after group grant): %v", err)
+	}
+	if resp2.EventType == shmevent.EventError {
+		t.Fatalf("set rejected after remote group granted: %s", resp2.Value)
+	}
 }

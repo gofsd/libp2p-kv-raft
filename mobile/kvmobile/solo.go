@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/daemon"
+	"github.com/gofsd/libp2p-kv-raft/pkg/registry"
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmclient"
 )
 
@@ -118,6 +119,15 @@ func startSolo(dataDirRoot string, port int, resolveIdentity func(dataDir string
 	if err := waitForReady(soloDir, errC, callTimeout); err != nil {
 		cancel()
 		return "", fmt.Errorf("kvmobile: start solo: %w", err)
+	}
+
+	// Best-effort registration -- see startAgainst's identical call for
+	// the full reasoning: only pkg/ipc's own tokenForPeer (pkg/ipc/token.go),
+	// consulted when the desktop transport stands in for a real device's
+	// ipc_android.go one, needs this; a real device must never fail to
+	// start solo just because registry.Open found no usable $HOME.
+	if reg, regErr := registry.Open(); regErr == nil {
+		_ = reg.Put(registry.NodeInfo{PeerID: id, DataDir: soloDir})
 	}
 
 	addCtx, addCancel := context.WithTimeout(ctx, callTimeout)

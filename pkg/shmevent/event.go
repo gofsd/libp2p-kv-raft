@@ -68,10 +68,9 @@ const (
 	// their own -- SetKey+SetField remains the only option for a
 	// combined key+value beyond that.
 	EventSet uint8 = 8
-	// EventPermitRequest lodges a pending system record -- a request for a
-	// peer to be permitted onto the cluster's relay (KindPermitPeer) or
-	// for a bootstrap/relay node to be registered (KindBootstrapNode) --
-	// under a reserved key (see SystemKey) so every raft member ends up
+	// EventPermitRequest lodges a pending system record -- today, only a
+	// request for a bootstrap/relay node to be registered (KindBootstrapNode)
+	// -- under a reserved key (see SystemKey) so every raft member ends up
 	// knowing about it purely through ordinary FSM replication, the same
 	// as any other Set. Value is EncodePermitRequestPayload(kind, peerID,
 	// metadata). Any raft node may receive and relay one (it's applied
@@ -126,8 +125,8 @@ const (
 	// Execute notifications addressed to this node.
 	EventPollExecute uint8 = 12
 	// EventPermitRevoke demotes a confirmed pkg/shmevent system record
-	// (KindPermitPeer or KindBootstrapNode) straight back out of existence
-	// -- unlike EventPermitRequest/EventPermitConfirm's pending->confirmed
+	// (today, only KindBootstrapNode) straight back out of existence --
+	// unlike EventPermitRequest/EventPermitConfirm's pending->confirmed
 	// two-stage lifecycle, there's no intermediate status to pass through,
 	// it just deletes the confirmed record. Value is
 	// EncodePermitConfirmPayload(kind, peerID) -- the same payload shape
@@ -135,11 +134,7 @@ const (
 	// kind+peerID, no metadata. Same restriction as EventPermitConfirm:
 	// only a peer that is currently a raft *voter* may revoke, enforced
 	// the identical way (see EventPermitConfirm's doc comment and
-	// pkg/daemon's handleForwardConfirmStream, which now handles both).
-	// Once revoked, a peer previously permitted via this record --
-	// e.g. for -require-permit-for-relay or -require-permit-for-execute --
-	// immediately loses that permission on every node, exactly as
-	// promptly as a confirm grants it.
+	// pkg/daemon's handleForwardConfirmStream, which handles both).
 	EventPermitRevoke uint8 = 13
 	// EventListRange answers a bounded key range scan against the local
 	// store directly -- pkg/store.Store.ScanRange -- unlike every Set/Get
@@ -175,36 +170,6 @@ const (
 	// doesn't actually start with LogKeyPrefix -- this event isn't a
 	// general-purpose Set bypass, only a log-record one.
 	EventLogAppend uint8 = 15
-	// EventLogPermitRequest lodges a pending KindLogPermit record -- a
-	// request for peerID to be permitted to append/query pkg/logrecord
-	// records of one specific log kind (Config.RequirePermitForLog's
-	// enforcement point). Value is EncodeLogPermitRequestPayload(logKind,
-	// peerID, metadata). Any raft node may receive and relay one (applied
-	// exactly like EventPermitRequest, via handleSetForward's existing
-	// one-hop forward-to-leader path) -- see EventLogPermitConfirm's doc
-	// comment for the second stage, which is restricted. This is the same
-	// two-stage workflow EventPermitRequest/EventPermitConfirm already
-	// implement, just scoped by an additional logKind dimension that
-	// SystemKey's fixed 3-field shape can't express -- see
-	// shmevent.LogPermitKey.
-	EventLogPermitRequest uint8 = 16
-	// EventLogPermitConfirm promotes a pending EventLogPermitRequest
-	// record from pending to confirmed. Value is
-	// EncodeLogPermitConfirmPayload(logKind, peerID) -- no metadata, same
-	// reasoning as EventPermitConfirm. Only a peer that is currently a
-	// raft *voter* may confirm, enforced the identical way
-	// EventPermitConfirm's is (see that event's doc comment and
-	// pkg/daemon's handleForwardConfirmStream, which handles this event
-	// too -- it operates on opaque keys, not caring which permit kind
-	// they belong to).
-	EventLogPermitConfirm uint8 = 17
-	// EventLogPermitRevoke deletes a confirmed KindLogPermit record
-	// outright -- EventPermitRevoke's counterpart for this permit kind,
-	// same restriction (raft voter only) and same payload shape as
-	// EventLogPermitConfirm (EncodeLogPermitConfirmPayload once again,
-	// reused as-is). Once revoked, peerID immediately loses access to
-	// logKind under Config.RequirePermitForLog on every node.
-	EventLogPermitRevoke uint8 = 18
 	// EventLeave asks the raft cluster this node currently belongs to to
 	// remove it (raft.RemoveServer) -- the graceful counterpart to
 	// EventAdd's join: unlike EventAdd, which can name any leader/cluster
@@ -544,12 +509,6 @@ func EventName(e uint8) string {
 		return "list_range"
 	case EventLogAppend:
 		return "log_append"
-	case EventLogPermitRequest:
-		return "log_permit_request"
-	case EventLogPermitConfirm:
-		return "log_permit_confirm"
-	case EventLogPermitRevoke:
-		return "log_permit_revoke"
 	case EventLeave:
 		return "leave"
 	case EventGroupPut:
@@ -648,12 +607,6 @@ func EventFromName(name string) (uint8, bool) {
 		return EventListRange, true
 	case "log_append":
 		return EventLogAppend, true
-	case "log_permit_request":
-		return EventLogPermitRequest, true
-	case "log_permit_confirm":
-		return EventLogPermitConfirm, true
-	case "log_permit_revoke":
-		return EventLogPermitRevoke, true
 	case "leave":
 		return EventLeave, true
 	case "group_put":

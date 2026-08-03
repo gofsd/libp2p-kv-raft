@@ -279,7 +279,11 @@ type Config struct {
 	// record for this node (see shmevent.RelayLimits) -- go-libp2p applies
 	// one Resources value to every ACL-approved peer alike, so today every
 	// permitted peer gets this same node-wide allotment; there is no
-	// per-individual-peer override.
+	// per-individual-peer override. These are per-circuit/per-reservation
+	// static caps, a separate concern from the cumulative Quota* fields
+	// below: a peer can be well under RelayMaxCircuitsPerPeer/
+	// RelayMaxReservationsPerIP and still be rejected by QuotaRelay*'s
+	// rolling event-rate budget, or vice versa.
 	//
 	// RelayMaxCircuitsPerPeer bounds concurrent open relayed circuits for
 	// a single peer (v2relay.Resources.MaxCircuits -- misleadingly named
@@ -298,6 +302,32 @@ type Config struct {
 	// RelayMaxReservationsPerPeer bounds active relay-slot reservations
 	// from one peer (v2relay.Resources.MaxReservationsPerPeer).
 	RelayMaxReservationsPerPeer int
+
+	// Quota* fields configure the two quotaTracker instances every node
+	// builds regardless of RelayService/Config -- (*Node).channelQuota and
+	// relayQuota -- one independent token bucket per peer id and one per
+	// remote IP address (see quotaTracker's own doc comment), applied
+	// uniformly to every peer/IP rather than differentiated per specific
+	// peer. Zero substitutes this package's Default* constants (see
+	// quota.go) -- the same zero-means-default pattern relayLimits already
+	// uses for RelayLimits, not "unlimited": there is no way to configure
+	// an actually-unlimited bucket once past that substitution, matching
+	// every other Default*-backed field in this Config. Channel quota is
+	// metered in real bytes (every chunk pumpChannelReads/
+	// channelSession.write actually moves); relay quota is metered in
+	// events -- one debit per AllowReserve/AllowConnect call -- because
+	// go-libp2p's circuitv2 relay never reports actual per-circuit byte
+	// usage back to relayACL (RelayLimitData above is a static per-circuit
+	// cap enforced entirely inside go-libp2p, not a value this quota can
+	// see or accumulate against).
+	QuotaChannelBytesPerPeerPerSec float64
+	QuotaChannelBurstPerPeer       int
+	QuotaChannelBytesPerIPPerSec   float64
+	QuotaChannelBurstPerIP         int
+	QuotaRelayEventsPerPeerPerSec  float64
+	QuotaRelayBurstPerPeer         int
+	QuotaRelayEventsPerIPPerSec    float64
+	QuotaRelayBurstPerIP           int
 
 	// Raft timing knobs. Zero means "use hashicorp/raft's own default"
 	// (1s heartbeat/election, 50ms commit, 500ms leader lease) -- values
@@ -342,77 +372,33 @@ type Config struct {
 	// shrink what a new join has to replay.
 	TrailingLogs uint64
 
-	// RequirePermitForRemote gates every remote (ClientProtocolID) request
-	// other than EventPermitRequest/EventPermitConfirm on the caller
-	// having a confirmed KindPermitPeer record (see pkg/shmevent's
-	// SystemKey/EventPermitRequest doc comments) for its own
-	// libp2p-authenticated peer id. Defaults to false: today's behavior,
-	// where any remote caller that signs with its own key (see
-	// callerIdentity) is honored with no separate allow-listing. Turning
-	// this on requires an operator to RequestPermit+ConfirmPermit every
-	// remote peer first -- including test/e2e/web-app callers -- via
-	// pkg/kvctl's RequestPermit/ConfirmPermit (mage requestpermit/
-	// confirmpermit, kvctl-cli requestpermit/confirmpermit).
-	RequirePermitForRemote bool
-
-	// RequirePermitForRelay gates this node's circuit-relay v2 service
-	// (only meaningful alongside RelayService) on the reserving/connecting
-	// peer having a confirmed KindPermitPeer record -- see that kind's doc
-	// comment ("permission for a peer to join/use the cluster's relay").
-	// Defaults to false: today's behavior, where any peer can reserve a
-	// relay slot or open a relayed circuit through this node with no
-	// allow-listing at all. Independent of RequirePermitForRemote, which
-	// gates the unrelated shmevent/ClientProtocolID RPC layer -- a node
-	// can restrict one without the other. Turning this on requires an
-	// operator to RequestPermit+ConfirmPermit every peer that needs relay
-	// access first, same as RequirePermitForRemote.
-	RequirePermitForRelay bool
-
-	// RequirePermitForExecute gates EventExecute delivery
-	// (handleExecuteStream) on the signature-verified sender being either
-	// a recorded KindClusterMember (a current raft voter or learner --
-	// see isClusterMember) or a confirmed KindPermitPeer (see
-	// isPermittedPeer): a cluster member is trusted implicitly, the same
-	// way it already is for every raft-replicated write, so it never
-	// needs a separate permit just to use Execute; any other peer does.
-	// Defaults to false: today's behavior, where handleExecuteStream
-	// queues a notification from any peer whose self-contained signature
-	// checks out, regardless of standing. Independent of
-	// RequirePermitForRelay/RequirePermitForRemote. Turning this on
-	// requires RequestPermit+ConfirmPermit (kind "peer") for every
-	// non-member peer that needs to send Execute notifications.
-	RequirePermitForExecute bool
-
-	// RequirePermitForLog gates EventLogAppend and EventListRange, for a
-	// remote caller only (never a local one -- see handleShmEvent's doc
-	// comment on why a local caller is always trusted as this node's own
-	// operator), on that peer holding a confirmed KindLogPermit record
-	// for the specific pkg/logrecord kind being appended/queried (see
-	// isPermittedForLogKind). Unlike RequirePermitForExecute, cluster
-	// membership is NOT an automatic exemption here -- matches
-	// RequirePermitForRemote's existing behavior, which doesn't exempt
-	// cluster members either. Defaults to false: today's behavior, where
-	// any caller that already clears RequirePermitForRemote (or any local
-	// caller, unconditionally) may append/query log records of any kind.
-	// Independent of RequirePermitForRelay/RequirePermitForRemote/
-	// RequirePermitForExecute. Turning this on requires
-	// RequestLogPermit+ConfirmLogPermit for every (peer, kind) pair a
-	// remote caller needs.
-	RequirePermitForLog bool
-
-	// RequirePermitForChannel gates an *incoming* EventChannelOpen
-	// (handleChannelStream) exactly the same way RequirePermitForExecute
-	// gates handleExecuteStream -- same signature-verified-sender check,
-	// same isClusterMember/isPermittedPeer exemption (a cluster member
-	// never needs a separate permit), same confirmed KindPermitPeer
-	// record reused as-is, no new permit kind. Defaults to false:
-	// today's behavior, where handleChannelStream accepts a channel from
-	// any peer whose self-contained handshake signature checks out,
-	// regardless of standing. Independent of every other RequirePermitFor*
-	// flag. Turning this on requires RequestPermit+ConfirmPermit (kind
-	// "peer") for every non-member peer that needs to open a channel to
-	// this node.
-	RequirePermitForChannel bool
+	// The generic remote (ClientProtocolID) RPC surface, EventExecute
+	// delivery (handleExecuteStream), and EventLogAppend/EventListRange are
+	// all, like relay/Channel admission below, always gated -- there is no
+	// opt-out flag for any of them. A current cluster member (voter or
+	// learner -- see isClusterMember) is trusted implicitly for all three,
+	// the same way it already is for every raft-replicated write; a
+	// non-member remote caller is rejected for everything except the one
+	// deliberate carve-out described on isCommandLogCarveOut: submitting a
+	// command linked to a public shmevent Group (SubmitCommand,
+	// raft-authoritatively enforced by kvfsm.OpAppendCommandRequest's
+	// IsPermittedForCommand) and reading back that same dispatch's own
+	// CommandRequest/execution-index/execution-log records. That carve-out
+	// -- together with Join/Recruit, which are their own separate,
+	// already-gated protocols entirely outside handleShmEvent's remote
+	// surface -- is deliberately the *only* door a peer with no other
+	// standing has into an otherwise closed cluster; a public command's own
+	// execution logic can widen that peer's access further from there (e.g.
+	// mage addpeertogroup <peerID> remote/execute/channel/relay), but
+	// nothing does so automatically. See handleShmEvent's top-of-function
+	// gate, handleExecuteStream, and isAuthorizedForGatedAccess/
+	// shmevent.ReservedGroupRemote/ReservedGroupExecute.
+	//
+	// Relay/Channel admission (reserving a relay slot or opening a relayed
+	// circuit, only meaningful alongside RelayService; opening an inbound
+	// Channel) are gated the identical unconditional way, against
+	// shmevent.ReservedGroupRelay/ReservedGroupChannel respectively -- see
+	// relayACL.allow/handleChannelStream/isAuthorizedForGatedAccessSt.
 
 	// RequireConfirmForJoin gates JoinProtocolID/ForwardJoinProtocolID
 	// (handleJoinStream/handleForwardJoinStream) on a two-stage
@@ -428,8 +414,7 @@ type Config struct {
 	// operator on some other already-confirmed voter to run
 	// ConfirmPermit(kind="cluster-join", peerID) -- mage
 	// confirmpermit/kvctl-cli confirmpermit -- for every new node that
-	// wants to join, the same way RequirePermitForRemote/RequirePermitForRelay
-	// require RequestPermit+ConfirmPermit for their own respective kinds.
+	// wants to join.
 	RequireConfirmForJoin bool
 }
 
@@ -475,6 +460,18 @@ type Node struct {
 	// that event's doc comment) -- the persistent-session counterpart to
 	// executeInbox, same "purely in-memory, never persisted" trade-off.
 	channels *channelTable
+
+	// channelQuota meters real per-chunk bytes flowing through every
+	// channelSession this node is party to (see pumpChannelReads/
+	// channelSession.write), one token bucket per remote peer id and one
+	// per remote IP -- see Config.QuotaChannel*/quotaTracker's own doc
+	// comments. relayQuota is its relay-side counterpart, metering
+	// reservation/connect events rather than bytes -- built alongside
+	// channelQuota in start (before newHost, which also hands the same
+	// instance to relayACL directly, since relayACL is constructed inside
+	// newHost before this Node exists yet).
+	channelQuota *quotaTracker
+	relayQuota   *quotaTracker
 
 	// joinRequestMu/joinRequestToken hold this node's own single
 	// outstanding join-request ticket (see EventJoinRequestCreate) --
@@ -650,6 +647,17 @@ type channelSession struct {
 	remotePub    shmevent.PublicKey
 	writeMu      sync.Mutex
 
+	// remoteIP is the remote peer's IP address at the time this session's
+	// stream was opened (extractRemoteIP(s.Conn().RemoteMultiaddr())),
+	// "" if unresolvable -- quota's IP-bucket key for both directions of
+	// this session's traffic. quota is n.channelQuota, threaded through at
+	// construction rather than read off a *Node here, since a
+	// channelSession outlives any single dispatch call and the receiving/
+	// initiating call sites (handleChannelStream/dispatchChannelOpen) both
+	// already have n in hand.
+	remoteIP string
+	quota    *quotaTracker
+
 	// channelID duplicates channelTable's own map key on the session
 	// itself, purely so pumpChannelReads/pumpChannelUpload/
 	// dispatchChannelDataReady (all of which already have a *channelSession
@@ -692,13 +700,15 @@ type channelSession struct {
 	uploadDrained chan struct{}
 }
 
-func newChannelSession(channelID string, stream network.Stream, remotePeerID string, remotePub shmevent.PublicKey, down *chandata.ChunkWriter) *channelSession {
+func newChannelSession(channelID string, stream network.Stream, remotePeerID string, remotePub shmevent.PublicKey, down *chandata.ChunkWriter, quota *quotaTracker, remoteIP string) *channelSession {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &channelSession{
 		channelID:     channelID,
 		stream:        stream,
 		remotePeerID:  remotePeerID,
 		remotePub:     remotePub,
+		remoteIP:      remoteIP,
+		quota:         quota,
 		lastActivity:  time.Now(),
 		closeCtx:      ctx,
 		closeCancel:   cancel,
@@ -794,6 +804,9 @@ func (s *channelSession) status() (closed bool, reason string) {
 // signing scheme rather than the fixed-width Msg one every other event
 // type (including the legacy EventChannelSend/Poll IPC path) uses.
 func (s *channelSession) write(priv shmevent.PrivateKey, purpose byte, chunk []byte) error {
+	if !s.quota.allow(s.remotePeerID, s.remoteIP, len(chunk)) {
+		return fmt.Errorf("channel: quota exceeded for %s", s.remotePeerID)
+	}
 	crc, sig, err := shmevent.SignChannelChunk(priv, purpose, chunk)
 	if err != nil {
 		return fmt.Errorf("channel: sign frame: %w", err)
@@ -999,7 +1012,7 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("daemon: write ready file: %w", err)
 	}
 
-	return ipc.Serve(ctx, n.peerID, n.ed25519Priv, func(ctx context.Context, m shmevent.Msg, crc uint32, sig []byte) shmevent.Msg {
+	return ipc.Serve(ctx, n.peerID, cfg.DataDir, n.ed25519Priv, func(ctx context.Context, m shmevent.Msg, crc uint32, sig []byte) shmevent.Msg {
 		return n.handleShmEvent(ctx, m, crc, sig, n.localCaller())
 	})
 }
@@ -1024,7 +1037,10 @@ func start(cfg Config) (*Node, error) {
 		return nil, fmt.Errorf("daemon: open store: %w", err)
 	}
 
-	h, err := newHost(priv, cfg, st)
+	relayQuota := newQuotaTracker(relayQuotaLimits(cfg))
+	channelQuota := newQuotaTracker(channelQuotaLimits(cfg))
+
+	h, err := newHost(priv, cfg, st, peerID.String(), relayQuota)
 	if err != nil {
 		st.Close()
 		return nil, fmt.Errorf("daemon: create libp2p host: %w", err)
@@ -1080,6 +1096,8 @@ func start(cfg Config) (*Node, error) {
 		registry:     shmevent.NewRegistry(),
 		executeInbox: newExecuteInbox(),
 		channels:     newChannelTable(),
+		channelQuota: channelQuota,
+		relayQuota:   relayQuota,
 		logStore:     logStore,
 		snapStore:    snapStore,
 	}
@@ -1150,11 +1168,11 @@ func withStreamRequestDeadline(handler network.StreamHandler) network.StreamHand
 // as a relay *for others* (RelayService) and forces public reachability
 // when the caller knows it actually has one, e.g. the leader on a public
 // VPS; the resource limits mirror the standalone relay in
-// pkg/raft/node.go's StartRelayNode. st is only consulted when
-// cfg.RequirePermitForRelay is set (see relayACL); it's threaded in here,
-// ahead of any *Node existing, because the ACL closure needs to read
-// confirmed KindPermitPeer records live -- one already-open *store.Store,
-// not a snapshot taken at host-construction time.
+// pkg/raft/node.go's StartRelayNode. st is consulted unconditionally
+// whenever RelayService is on (see relayACL); it's threaded in here, ahead
+// of any *Node existing, because the ACL closure needs to read confirmed
+// PeerGroup records live -- one already-open *store.Store, not a snapshot
+// taken at host-construction time.
 // relayLimits resolves cfg's relay resource fields, substituting
 // shmevent.DefaultRelay* for whichever were left at their zero value --
 // mirrors the same zero-means-default pattern this Config already uses for
@@ -1162,6 +1180,46 @@ func withStreamRequestDeadline(handler network.StreamHandler) network.StreamHand
 // actually enforces) and handleShmEvent's EventPermitRequest case (what
 // gets stamped onto a new KindPermitPeer record), so both always agree on
 // what "this node's default relay allotment" currently is.
+// relayQuotaLimits/channelQuotaLimits resolve cfg's Quota* fields exactly
+// the way relayLimits resolves RelayLimits just below: substituting this
+// package's Default* constants (quota.go) for whichever field was left at
+// its zero value. Returned in newQuotaTracker's own (peerPerSec,
+// peerBurst, ipPerSec, ipBurst) parameter order so callers can pass the
+// result straight through (newQuotaTracker(relayQuotaLimits(cfg))).
+func relayQuotaLimits(cfg Config) (peerPerSec float64, peerBurst int, ipPerSec float64, ipBurst int) {
+	peerPerSec, peerBurst, ipPerSec, ipBurst = cfg.QuotaRelayEventsPerPeerPerSec, cfg.QuotaRelayBurstPerPeer, cfg.QuotaRelayEventsPerIPPerSec, cfg.QuotaRelayBurstPerIP
+	if peerPerSec == 0 {
+		peerPerSec = DefaultQuotaRelayEventsPerPeerPerSec
+	}
+	if peerBurst == 0 {
+		peerBurst = DefaultQuotaRelayBurstPerPeer
+	}
+	if ipPerSec == 0 {
+		ipPerSec = DefaultQuotaRelayEventsPerIPPerSec
+	}
+	if ipBurst == 0 {
+		ipBurst = DefaultQuotaRelayBurstPerIP
+	}
+	return peerPerSec, peerBurst, ipPerSec, ipBurst
+}
+
+func channelQuotaLimits(cfg Config) (peerPerSec float64, peerBurst int, ipPerSec float64, ipBurst int) {
+	peerPerSec, peerBurst, ipPerSec, ipBurst = cfg.QuotaChannelBytesPerPeerPerSec, cfg.QuotaChannelBurstPerPeer, cfg.QuotaChannelBytesPerIPPerSec, cfg.QuotaChannelBurstPerIP
+	if peerPerSec == 0 {
+		peerPerSec = DefaultQuotaChannelBytesPerPeerPerSec
+	}
+	if peerBurst == 0 {
+		peerBurst = DefaultQuotaChannelBurstPerPeer
+	}
+	if ipPerSec == 0 {
+		ipPerSec = DefaultQuotaChannelBytesPerIPPerSec
+	}
+	if ipBurst == 0 {
+		ipBurst = DefaultQuotaChannelBurstPerIP
+	}
+	return peerPerSec, peerBurst, ipPerSec, ipBurst
+}
+
 func relayLimits(cfg Config) shmevent.RelayLimits {
 	limits := shmevent.DefaultRelayLimits()
 	if cfg.RelayMaxCircuitsPerPeer != 0 {
@@ -1200,7 +1258,7 @@ const (
 	connManagerGracePeriod = 30 * time.Second
 )
 
-func newHost(priv crypto.PrivKey, cfg Config, st *store.Store) (lp2phost.Host, error) {
+func newHost(priv crypto.PrivKey, cfg Config, st *store.Store, selfPeerID string, relayQuota *quotaTracker) (lp2phost.Host, error) {
 	cm, err := connmgr.NewConnManager(connManagerLowWater, connManagerHighWater, connmgr.WithGracePeriod(connManagerGracePeriod))
 	if err != nil {
 		return nil, fmt.Errorf("daemon: create connection manager: %w", err)
@@ -1245,9 +1303,9 @@ func newHost(priv crypto.PrivKey, cfg Config, st *store.Store) (lp2phost.Host, e
 		rc.MaxReservationsPerIP = int(limits.MaxReservationsPerIP)
 		rc.MaxReservationsPerPeer = int(limits.MaxReservationsPerPeer)
 
-		relayOpts := []v2relay.Option{v2relay.WithResources(rc)}
-		if cfg.RequirePermitForRelay {
-			relayOpts = append(relayOpts, v2relay.WithACL(relayACL{store: st}))
+		relayOpts := []v2relay.Option{
+			v2relay.WithResources(rc),
+			v2relay.WithACL(relayACL{store: st, selfPeerID: selfPeerID, quota: relayQuota}),
 		}
 		opts = append(opts,
 			libp2p.EnableRelayService(relayOpts...),
@@ -1426,6 +1484,9 @@ func (n *Node) watchLeadership(rf *raft.Raft, ch chan raft.Observation) {
 		}
 		if err := n.recordClusterMember(context.Background(), n.peerID, role); err != nil {
 			fmt.Fprintf(os.Stderr, "daemon: record own cluster member status: %v\n", err)
+		}
+		if err := n.syncMemberGroups(context.Background(), n.peerID, role); err != nil {
+			fmt.Fprintf(os.Stderr, "daemon: sync own reserved groups: %v\n", err)
 		}
 	}
 }
@@ -1662,22 +1723,6 @@ func remoteCaller(s network.Stream) (callerIdentity, error) {
 	return callerIdentity{verifyPub: raw, remotePeer: s.Conn().RemotePeer()}, nil
 }
 
-// isPermittedPeer reports whether id has a confirmed KindPermitPeer
-// record. Only consulted when Config.RequirePermitForRemote or
-// Config.RequirePermitForExecute is true -- see those fields' doc
-// comments.
-func (n *Node) isPermittedPeer(id peer.ID) bool {
-	return isPermittedPeer(n.store, id)
-}
-
-// isPermittedPeer is the package-level form of the check above, taking a
-// *store.Store directly rather than a *Node -- needed by relayACL, which
-// is constructed inside newHost before a *Node exists yet (see start).
-func isPermittedPeer(st *store.Store, id peer.ID) bool {
-	_, err := st.Get(shmevent.SystemKey(shmevent.KindPermitPeer, shmevent.StatusConfirmed, []byte(id.String())))
-	return err == nil
-}
-
 // forgetTransientPeer removes id's peerstore entry (addresses, public key,
 // supported-protocol bookkeeping) once every connection to it has closed,
 // unless id is a *current* raft voter/learner (checked live against
@@ -1716,32 +1761,70 @@ func (n *Node) forgetTransientPeer(id peer.ID) {
 	n.host.Peerstore().RemovePeer(id)
 }
 
-// isClusterMember reports whether id has a KindClusterMember record --
-// i.e. is currently (or was, since nothing ever deletes this record) a
-// raft voter or learner, per recordClusterMember. Only consulted when
-// Config.RequirePermitForExecute is true, to let a cluster member send
-// Execute notifications without also needing a separate KindPermitPeer
-// permit -- membership already implies stronger standing than a relay
-// permit.
-func (n *Node) isClusterMember(id peer.ID) bool {
-	_, err := n.store.Get(shmevent.ClusterMemberKey([]byte(id.String())))
-	return err == nil
-}
-
-// isPermittedForLogKind reports whether id has a confirmed KindLogPermit
-// record for logKind -- see that kind's doc comment. Only consulted when
-// Config.RequirePermitForLog is true. Unlike isClusterMember's role in
-// Config.RequirePermitForExecute, cluster membership is deliberately NOT
-// checked here as an alternative: this gate matches
-// Config.RequirePermitForRemote's existing behavior, which doesn't exempt
-// cluster members either -- every peer, member or not, needs its own
-// explicit per-kind grant.
-func (n *Node) isPermittedForLogKind(logKind string, id peer.ID) bool {
-	key, err := shmevent.LogPermitKey(shmevent.StatusConfirmed, logKind, []byte(id.String()))
+// isInGroupSt is isInGroup's *store.Store-only twin, usable from relayACL
+// (constructed inside newHost, before a *Node exists -- see start) as
+// well as from (*Node).isInGroup itself, so the two checks never drift.
+// A malformed groupID (longer than PeerGroupKey allows) simply reports
+// false rather than erroring.
+func isInGroupSt(st *store.Store, id peer.ID, groupID string) bool {
+	key, err := shmevent.PeerGroupKey([]byte(id.String()), []byte(groupID))
 	if err != nil {
 		return false
 	}
-	_, err = n.store.Get(key)
+	_, err = st.Get(key)
+	return err == nil
+}
+
+// isInGroup reports whether id has a PeerGroup record linking it to
+// groupID -- see shmevent.PeerGroupKey. Used by isAuthorizedForGatedAccess
+// to gate on membership in shmevent.ReservedGroupCluster/
+// ReservedGroupChannel/ReservedGroupRelay, or in the receiving node's own
+// personal group (see isPeerIdentityGroupID's doc comment), rather than a
+// permit record.
+func (n *Node) isInGroup(id peer.ID, groupID string) bool {
+	return isInGroupSt(n.store, id, groupID)
+}
+
+// isAuthorizedForGatedAccessSt is isAuthorizedForGatedAccess's
+// *store.Store-only twin, usable from relayACL the same way isInGroupSt
+// is -- see that function's doc comment for why. selfPeerID is the
+// gating node's own peer id string (relayACL's own identity, standing in
+// for (*Node).peerID).
+func isAuthorizedForGatedAccessSt(st *store.Store, selfPeerID string, id peer.ID, groupID string) bool {
+	return isInGroupSt(st, id, shmevent.ReservedGroupCluster) ||
+		isInGroupSt(st, id, groupID) ||
+		isInGroupSt(st, id, selfPeerID)
+}
+
+// isAuthorizedForGatedAccess reports whether id may use a resource gated
+// the way channel and relay both are: current cluster membership
+// (ReservedGroupCluster), operator-granted membership in groupID (e.g.
+// ReservedGroupChannel/ReservedGroupRelay), or a pairwise personal grant
+// into this node's own peer-id group (see isPeerIdentityGroupID's doc
+// comment on the pairwise-grant mechanism this last check enables).
+func (n *Node) isAuthorizedForGatedAccess(id peer.ID, groupID string) bool {
+	return isAuthorizedForGatedAccessSt(n.store, n.peerID, id, groupID)
+}
+
+// isPeerIdentityGroupID reports whether id parses as a valid libp2p peer
+// id -- pkg/daemon's own personal-group naming convention (see
+// ensurePersonalGroup): every peer that ever becomes a raft member, or
+// solo-bootstraps its own one-node cluster, gets its own reserved Group
+// record whose id is that peer's own peer id string, auto-created the
+// same way shmevent.ReservedGroupCluster/Voter/Learner/Channel are. Its
+// own Group record is equally protected -- EventGroupPut/EventGroupDelete
+// reject any id shaped like a peer id, the same as the seven fixed
+// reserved names -- but unlike cluster/voter/learner (and like channel),
+// its PeerGroup *membership* stays an ordinary operator grant: the
+// mechanism for one specific peer to let one specific other peer open a
+// channel to it, independent of cluster/channel-group standing entirely.
+// To make a bidirectional channel between peer A and peer B: A (or any
+// voter in A's own cluster) runs `addpeertogroup B A`, and B (or any
+// voter in B's own cluster) runs `addpeertogroup A B` -- each grant lives
+// in the granting peer's own store, so this works between any two peers
+// regardless of whether they share a raft cluster at all.
+func isPeerIdentityGroupID(id string) bool {
+	_, err := peer.Decode(id)
 	return err == nil
 }
 
@@ -1767,35 +1850,57 @@ func rejectReservedKey(key []byte) error {
 	}
 }
 
-// relayACL is the v2relay.ACLFilter wired into newHost via
-// v2relay.WithACL when Config.RequirePermitForRelay is set -- it's what
-// actually makes a confirmed KindPermitPeer record mean "permission for a
-// peer to join/use the cluster's relay" (that kind's doc comment) rather
-// than just gating the unrelated shmevent RPC layer. Both reservation
-// (AllowReserve) and outgoing-connect (AllowConnect) check the peer
-// that's trying to use *this* node's relay service -- the destination in
-// AllowConnect is who src is dialing through the relay, not itself
-// requesting anything, so it's never checked here.
+// relayACL is the v2relay.ACLFilter unconditionally wired into newHost
+// (via v2relay.WithACL) whenever Config.RelayService is on -- the relay
+// counterpart to handleChannelStream's gate, using the identical
+// group-ACL mechanism (isAuthorizedForGatedAccessSt against
+// shmevent.ReservedGroupRelay) instead of the confirmed-KindPermitPeer
+// check this used to be. Both reservation (AllowReserve) and
+// outgoing-connect (AllowConnect) check the peer that's trying to use
+// *this* node's relay service -- the destination in AllowConnect is who
+// src is dialing through the relay, not itself requesting anything, so
+// it's never checked here.
 //
-// Every peer this gate admits is registered under the same
+// relayACL holds *store.Store rather than *Node because it's constructed
+// inside newHost, before any *Node exists yet (see that function's own
+// doc comment) -- selfPeerID/quota stand in for the two Node fields
+// (peerID, relayQuota) the group-ACL and quota checks would otherwise
+// read off n directly.
+//
+// Every peer this gate admits still shares the same node-wide
 // shmevent.RelayLimits (EventPermitRequest stamps this node's current
-// defaults onto the record at request time -- see relayLimits/
-// EncodePermitPeerPayload): go-libp2p's circuitv2 relay hands one
-// v2relay.Resources value to every ACL-approved peer alike (see newHost),
-// with no hook for a per-individual-peer override, so the gate here is
-// binary admission (has this peer been registered at all?), not a
-// per-peer quota check -- the actual circuit/data/reservation ceilings
-// are enforced uniformly, for every admitted peer, by go-libp2p itself.
+// defaults onto a KindPermitPeer record purely for legacy/informational
+// purposes at request time -- see relayLimits/EncodePermitPeerPayload):
+// go-libp2p's circuitv2 relay hands one v2relay.Resources value to every
+// admitted peer alike (see newHost), with no hook for a per-individual-
+// peer override of those static per-circuit/per-reservation caps -- quota
+// (below) is this package's own answer to that gap, a cumulative
+// event-rate budget go-libp2p has no equivalent of.
 type relayACL struct {
-	store *store.Store
+	store      *store.Store
+	selfPeerID string
+	quota      *quotaTracker
 }
 
-func (a relayACL) AllowReserve(p peer.ID, _ multiaddr.Multiaddr) bool {
-	return isPermittedPeer(a.store, p)
+func (a relayACL) AllowReserve(p peer.ID, ra multiaddr.Multiaddr) bool {
+	return a.allow(p, ra)
 }
 
-func (a relayACL) AllowConnect(src peer.ID, _ multiaddr.Multiaddr, _ peer.ID) bool {
-	return isPermittedPeer(a.store, src)
+func (a relayACL) AllowConnect(src peer.ID, ra multiaddr.Multiaddr, _ peer.ID) bool {
+	return a.allow(src, ra)
+}
+
+// allow is AllowReserve/AllowConnect's shared gate: group-ACL admission
+// first (cheap, no allocation), then a 1-event debit against both the
+// peer- and IP-keyed relay quota bucket. ra is go-libp2p's own multiaddr
+// for the candidate peer's connection -- extractRemoteIP turns it into
+// quotaTracker's IP-bucket key, degrading to peer-only quota (IP bucket
+// skipped) if ra is nil or carries no resolvable IP.
+func (a relayACL) allow(p peer.ID, ra multiaddr.Multiaddr) bool {
+	if !isAuthorizedForGatedAccessSt(a.store, a.selfPeerID, p, shmevent.ReservedGroupRelay) {
+		return false
+	}
+	return a.quota.allow(p.String(), extractRemoteIP(ra), 1)
 }
 
 // raft/store/registry operation and returns the Msg to send back -- the
@@ -1805,44 +1910,118 @@ func (a relayACL) AllowConnect(src peer.ID, _ multiaddr.Multiaddr, _ peer.ID) bo
 // overall protocol design and api/shmevent.capnp for the wire struct.
 //
 // caller identifies who's asking (see callerIdentity) -- a remote caller
-// gets two restrictions a local one doesn't: EventGetPrivateKey/
+// gets several restrictions a local one doesn't: EventGetPrivateKey/
 // EventGetPublicKey are refused outright (a remote caller always has its
 // own key already -- see web-app's do_connect -- so the bootstrap
 // exception that exists for a same-machine caller with no key yet has no
 // legitimate remote use, and serving it remotely would just hand out this
-// node's own private key to anyone able to dial it), and, if
-// Config.RequirePermitForRemote is set, every event but
-// EventPermitRequest/EventPermitConfirm/EventLogPermitRequest/
-// EventLogPermitConfirm additionally requires a confirmed KindPermitPeer
-// record for the caller's own authenticated peer id. EventLogAppend and
-// EventListRange are separately, additionally gated per log kind by
-// Config.RequirePermitForLog -- see those cases below.
+// node's own private key to anyone able to dial it), and every event but
+// EventPermitRequest/EventPermitConfirm/EventSetKey/EventGetKey/EventAdd
+// additionally requires either isAuthorizedForGatedAccess(caller,
+// shmevent.ReservedGroupRemote) (a current cluster member, an explicit
+// "remote" group grant, or a pairwise personal grant) or
+// isCommandLogCarveOut's narrow exception -- see that function's doc
+// comment. EventSetKey/EventGetKey are exempt because they never touch
+// the store (just a per-connection relay of a value the caller itself
+// supplied); EventAdd is exempt because it's the actual join door for a
+// brand-new peer with no standing at all (a browser learner's first-ever
+// call on this exact surface) -- handleAddDispatch self-authenticates
+// that case against the stream's own libp2p identity instead.
 
-// logNamespaceLo and logNamespaceHi bound the half-open interval [lo, hi)
-// containing exactly every possible key that begins with
-// logrecord.LogKeyPrefix, regardless of what follows it or how long it
-// is: any such key compares >= []byte{LogKeyPrefix} and <
-// []byte{LogKeyPrefix+1} under bytes.Compare (a shared first byte makes
-// length/suffix irrelevant to that particular comparison), and no key
-// that doesn't start with LogKeyPrefix can fall in that interval either
-// way -- see overlapsLogNamespace.
-var (
-	logNamespaceLo = []byte{logrecord.LogKeyPrefix}
-	logNamespaceHi = []byte{logrecord.LogKeyPrefix + 1}
-)
+// logKindOfBound extracts the fixed-format kind field directly out of a
+// raw logrecord-namespaced key or ListRange bound, tolerating both a bound
+// that ends right after the kind field (logrecord.KindPrefix's own shape,
+// which appends no unitID/timestamp -- see e.g. kvctl's kindPrefixBounds,
+// used by ListCommandRequests/ListExecutionsByPeer) and a fully-formed
+// key/ScanBounds bound that continues past it (logrecord.BuildKey's own
+// shape, used by scanRevisions) -- isCommandLogCarveOut needs to recognize
+// both real wire shapes a legitimate caller sends, not just one.
+func logKindOfBound(key []byte) (kind string, ok bool) {
+	if len(key) < 3 || key[0] != logrecord.LogKeyPrefix {
+		return "", false
+	}
+	kindLen := int(key[1])<<8 | int(key[2])
+	if 3+kindLen > len(key) {
+		return "", false
+	}
+	return string(key[3 : 3+kindLen]), true
+}
 
-// overlapsLogNamespace reports whether the inclusive byte range [start,
-// end] could return any pkg/logrecord-prefixed key, for
-// EventListRange's Config.RequirePermitForLog gate -- not just whether
-// start itself happens to begin there. pkg/store.Store.ScanRange has no
-// concept of namespaces: a caller could pick a start from outside the
-// logrecord namespace entirely (the empty string, or a key under
-// shmevent.SystemKeyPrefix) paired with an end chosen past it, and still
-// have logrecord data caught inside that wider range -- a check that only
-// inspected start[0] would never trigger for that case, even though the
-// scan itself would still return the data.
-func overlapsLogNamespace(start, end []byte) bool {
-	return bytes.Compare(start, logNamespaceHi) < 0 && bytes.Compare(end, logNamespaceLo) >= 0
+// isCommandLogCarveOut is handleShmEvent's sole exception to the
+// ReservedGroupRemote gate for a caller that isn't a cluster member and
+// holds no "remote" group grant: it lets such a peer submit a command
+// linked to a public shmevent Group (EventLogAppend targeting a
+// shmevent.CommandRequestLogKind key -- the actual write this admits
+// structurally here is still separately, raft-authoritatively enforced by
+// kvfsm.OpAppendCommandRequest's IsPermittedForCommand, unchanged by this
+// function) and read back that same dispatch's own records: its
+// CommandRequestLogKind request queue (gated by the identical
+// IsPermittedForCommand check, evaluated here too since a read has no
+// Apply step of its own to enforce it otherwise), its own
+// CommandExecIndexKind execution index (self only -- the peer id embedded
+// in the kind must match the caller's own), and shmevent.CommandExecLogKind
+// itself (any instance id -- "possessing the instance id is the
+// credential" was already this kind's design, see pkg/kvctl's
+// GetCommandRequest doc comment, so no further check is layered on top of
+// recognizing the kind). This -- together with Join/Recruit, which are
+// their own separate, already-gated protocols entirely outside this
+// function's remote surface -- is deliberately the only door a peer with
+// no other standing has into an otherwise closed cluster.
+func (n *Node) isCommandLogCarveOut(m shmevent.Msg, callerID peer.ID) bool {
+	switch m.EventType {
+	case shmevent.EventLogAppend:
+		key, _, err := shmevent.DecodeSetPayload(m.Value)
+		if err != nil {
+			return false
+		}
+		kind, ok := logKindOfBound(key)
+		if !ok {
+			return false
+		}
+		_, ok = shmevent.ParseCommandRequestLogKind(kind)
+		return ok
+	case shmevent.EventGetField:
+		if m.SourceID != 0 {
+			return false
+		}
+		kind, ok := logKindOfBound(m.Value)
+		if !ok {
+			return false
+		}
+		return n.isCommandLogReadableKind(kind, callerID)
+	case shmevent.EventListRange:
+		start, end, err := shmevent.DecodeListRangeQuery(m.Value)
+		if err != nil {
+			return false
+		}
+		startKind, ok := logKindOfBound(start)
+		if !ok {
+			return false
+		}
+		endKind, ok := logKindOfBound(end)
+		if !ok || startKind != endKind {
+			return false
+		}
+		return n.isCommandLogReadableKind(startKind, callerID)
+	default:
+		return false
+	}
+}
+
+// isCommandLogReadableKind is isCommandLogCarveOut's read-side kind check
+// -- see that function's doc comment for what each case admits and why.
+func (n *Node) isCommandLogReadableKind(kind string, callerID peer.ID) bool {
+	if kind == shmevent.CommandExecLogKind {
+		return true
+	}
+	if commandID, ok := shmevent.ParseCommandRequestLogKind(kind); ok {
+		permitted, err := kvfsm.IsPermittedForCommand(n.store, []byte(commandID), []byte(callerID.String()))
+		return err == nil && permitted
+	}
+	if peerID, ok := shmevent.ParseCommandExecIndexKind(kind); ok {
+		return peerID == callerID.String()
+	}
+	return false
 }
 
 func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, sig []byte, caller callerIdentity) shmevent.Msg {
@@ -1871,12 +2050,22 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 			return errorMsg(m.ID, err)
 		}
 	}
-	if caller.remotePeer != "" && n.cfg.RequirePermitForRemote &&
+	if caller.remotePeer != "" &&
 		m.EventType != shmevent.EventPermitRequest && m.EventType != shmevent.EventPermitConfirm &&
-		m.EventType != shmevent.EventLogPermitRequest && m.EventType != shmevent.EventLogPermitConfirm {
-		if !n.isPermittedPeer(caller.remotePeer) {
-			return errorMsg(m.ID, fmt.Errorf("%s not permitted -- send permit_request and have a raft voter confirm it first", caller.remotePeer))
-		}
+		// EventSetKey/EventGetKey never touch the store or any privileged
+		// state -- just a per-connection numeric-id relay of a value the
+		// caller itself already supplied (see EventSet's own doc comment on
+		// why this exists at all) -- and EventAdd is the actual join door
+		// for a brand-new peer that owns no standing yet at all (a web-app
+		// browser learner's first-ever call over this exact ClientProtocolID
+		// surface): handleAddDispatch already self-authenticates that
+		// remote case against the stream's own libp2p identity (see its own
+		// doc comment), so gating EventAdd here too would make joining
+		// impossible for the one caller class it exists to admit.
+		m.EventType != shmevent.EventSetKey && m.EventType != shmevent.EventGetKey && m.EventType != shmevent.EventAdd &&
+		!n.isAuthorizedForGatedAccess(caller.remotePeer, shmevent.ReservedGroupRemote) &&
+		!n.isCommandLogCarveOut(m, caller.remotePeer) {
+		return errorMsg(m.ID, fmt.Errorf("%s: not permitted -- not a cluster member, in the remote group, or granted access to %s, and not a recognized public-command submission or its own log readback", caller.remotePeer, n.peerID))
 	}
 
 	switch m.EventType {
@@ -1937,15 +2126,6 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		if err != nil {
 			return errorMsg(m.ID, err)
 		}
-		// A KindPermitPeer request registers peerID with this node's
-		// current default relay allotment (see relayLimits/
-		// shmevent.RelayLimits) rather than trusting whatever metadata
-		// the caller sent -- the whole point is that a peer ends up
-		// bound to a standard, node-decided allotment on request, not
-		// one it gets to name for itself.
-		if kind == shmevent.KindPermitPeer {
-			metadata = shmevent.EncodePermitPeerPayload(peerID, relayLimits(n.cfg))
-		}
 		key := shmevent.SystemKey(kind, shmevent.StatusPending, peerID)
 		if err := n.handleSetForward(ctx, key, metadata, true); err != nil {
 			return errorMsg(m.ID, err)
@@ -2004,69 +2184,6 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		}
 		return shmevent.Msg{EventType: shmevent.EventPermitRevoke, ID: m.ID}
 
-	case shmevent.EventLogPermitRequest:
-		logKind, peerID, metadata, err := shmevent.DecodeLogPermitRequestPayload(m.Value)
-		if err != nil {
-			return errorMsg(m.ID, err)
-		}
-		key, err := shmevent.LogPermitKey(shmevent.StatusPending, logKind, peerID)
-		if err != nil {
-			return errorMsg(m.ID, err)
-		}
-		if err := n.handleSetForward(ctx, key, metadata, true); err != nil {
-			return errorMsg(m.ID, err)
-		}
-		return shmevent.Msg{EventType: shmevent.EventLogPermitRequest, ID: m.ID}
-
-	case shmevent.EventLogPermitConfirm:
-		// Same "only a raft voter may act" enforcement as EventPermitConfirm
-		// (see that case's comment) -- checked once here against the
-		// original caller's own identity.
-		if caller.remotePeer != "" {
-			rf := n.getRaft()
-			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
-				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
-			}
-		}
-		logKind, peerID, err := shmevent.DecodeLogPermitConfirmPayload(m.Value)
-		if err != nil {
-			return errorMsg(m.ID, err)
-		}
-		pendingKey, err := shmevent.LogPermitKey(shmevent.StatusPending, logKind, peerID)
-		if err != nil {
-			return errorMsg(m.ID, err)
-		}
-		confirmedKey, err := shmevent.LogPermitKey(shmevent.StatusConfirmed, logKind, peerID)
-		if err != nil {
-			return errorMsg(m.ID, err)
-		}
-		if err := n.handleConfirmForward(ctx, kvfsm.OpConfirm, pendingKey, confirmedKey, true); err != nil {
-			return errorMsg(m.ID, err)
-		}
-		return shmevent.Msg{EventType: shmevent.EventLogPermitConfirm, ID: m.ID}
-
-	case shmevent.EventLogPermitRevoke:
-		// Same "only a raft voter may act" enforcement as EventPermitConfirm
-		// above.
-		if caller.remotePeer != "" {
-			rf := n.getRaft()
-			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
-				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
-			}
-		}
-		logKind, peerID, err := shmevent.DecodeLogPermitConfirmPayload(m.Value)
-		if err != nil {
-			return errorMsg(m.ID, err)
-		}
-		confirmedKey, err := shmevent.LogPermitKey(shmevent.StatusConfirmed, logKind, peerID)
-		if err != nil {
-			return errorMsg(m.ID, err)
-		}
-		if err := n.handleConfirmForward(ctx, kvfsm.OpDel, confirmedKey, nil, true); err != nil {
-			return errorMsg(m.ID, err)
-		}
-		return shmevent.Msg{EventType: shmevent.EventLogPermitRevoke, ID: m.ID}
-
 	case shmevent.EventLeave:
 		if err := n.leaveCluster(ctx); err != nil {
 			return errorMsg(m.ID, err)
@@ -2095,8 +2212,8 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 	// EventGroupCommandPut/Delete, and EventPeerGroupPut/Delete implement
 	// the group-based ACL catalog's single-step CRUD (see
 	// shmevent.KindGroup's doc comment): each does the identical inline
-	// "only a raft voter may act" early-reject EventPermitRevoke/
-	// EventLogPermitConfirm above already do for a directly-reached remote
+	// "only a raft voter may act" early-reject EventPermitConfirm/
+	// EventPermitRevoke above already do for a directly-reached remote
 	// caller (correctness for every other path -- local, or remote hitting
 	// a non-leader node -- still comes from handleConfirmForward's
 	// forward-to-leader hop, whose handleForwardConfirmStream re-checks
@@ -2119,6 +2236,9 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		if err != nil {
 			return errorMsg(m.ID, err)
 		}
+		if shmevent.IsReservedGroupID(id) || isPeerIdentityGroupID(id) {
+			return errorMsg(m.ID, fmt.Errorf("group id %q is reserved and managed automatically", id))
+		}
 		key := shmevent.GroupKey([]byte(id))
 		if err := n.handleConfirmForward(ctx, kvfsm.OpSet, key, shmevent.EncodeGroupPayload(name, public), true); err != nil {
 			return errorMsg(m.ID, err)
@@ -2131,6 +2251,9 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
 				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
 			}
+		}
+		if shmevent.IsReservedGroupID(string(m.Value)) || isPeerIdentityGroupID(string(m.Value)) {
+			return errorMsg(m.ID, fmt.Errorf("group id %q is reserved and cannot be deleted", m.Value))
 		}
 		key := shmevent.GroupKey(m.Value)
 		if err := n.handleConfirmForward(ctx, kvfsm.OpCascadeDelete, key, nil, true); err != nil {
@@ -2223,6 +2346,9 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		if err != nil {
 			return errorMsg(m.ID, err)
 		}
+		if shmevent.IsAutoManagedGroupID(string(groupID)) {
+			return errorMsg(m.ID, fmt.Errorf("group %q membership is managed automatically", groupID))
+		}
 		key, err := shmevent.PeerGroupKey(peerID, groupID)
 		if err != nil {
 			return errorMsg(m.ID, err)
@@ -2242,6 +2368,9 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		peerID, groupID, err := shmevent.DecodePeerGroupPayload(m.Value)
 		if err != nil {
 			return errorMsg(m.ID, err)
+		}
+		if shmevent.IsAutoManagedGroupID(string(groupID)) {
+			return errorMsg(m.ID, fmt.Errorf("group %q membership is managed automatically", groupID))
 		}
 		key, err := shmevent.PeerGroupKey(peerID, groupID)
 		if err != nil {
@@ -2472,32 +2601,12 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		if err != nil {
 			return errorMsg(m.ID, err)
 		}
-		// Config.RequirePermitForLog only applies to a range that could
-		// actually return something inside pkg/logrecord's namespace --
-		// anything else (ordinary data, shmevent.SystemKeyPrefix data)
-		// falls through unchanged, governed only by the generic
-		// RequirePermitForRemote gate above, same as today. This checks
-		// for any overlap with that namespace (see overlapsLogNamespace),
-		// not just whether start itself begins there: pkg/store.ScanRange
-		// is a raw byte range with no concept of namespaces, so a start
-		// chosen from outside the namespace (even the empty string) paired
-		// with an end chosen past it would still return logrecord data --
-		// checking only start[0] would let that through ungated. Both
-		// start and end must parse to the same kind once the gate is
-		// triggered: checking only start would let a permitted start
-		// smuggle in an end that overruns into an unpermitted kind's
-		// range.
-		if caller.remotePeer != "" && n.cfg.RequirePermitForLog &&
-			overlapsLogNamespace(start, end) {
-			kindStart, _, _, errStart := logrecord.ParseKey(start)
-			kindEnd, _, _, errEnd := logrecord.ParseKey(end)
-			if errStart != nil || errEnd != nil || kindStart != kindEnd {
-				return errorMsg(m.ID, fmt.Errorf("list_range: range must be scoped to a single well-formed logrecord kind under RequirePermitForLog"))
-			}
-			if !n.isPermittedForLogKind(kindStart, caller.remotePeer) {
-				return errorMsg(m.ID, fmt.Errorf("%s not permitted for log kind %q", caller.remotePeer, kindStart))
-			}
-		}
+		// A non-cluster-member remote caller already had to clear
+		// isCommandLogCarveOut above (the top-of-function gate) to reach
+		// here at all -- that check re-derives and re-validates the exact
+		// same kind-scoping this case would otherwise need to repeat, so
+		// there's nothing further to check here; a cluster member or a
+		// "remote"-group grantee needs no additional per-kind restriction.
 		matches, err := n.store.ScanRange(start, end, 1)
 		if err != nil {
 			return errorMsg(m.ID, err)
@@ -2523,11 +2632,12 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		if err != nil {
 			return errorMsg(m.ID, err)
 		}
-		if caller.remotePeer != "" && n.cfg.RequirePermitForLog {
-			if !n.isPermittedForLogKind(kind, caller.remotePeer) {
-				return errorMsg(m.ID, fmt.Errorf("%s not permitted for log kind %q", caller.remotePeer, kind))
-			}
-		}
+		// Same reasoning as EventListRange above: a non-cluster-member
+		// remote caller already had to clear isCommandLogCarveOut to reach
+		// here, which only ever admits a CommandRequestLogKind append --
+		// nothing further to check for any other kind, since only a
+		// cluster member or a "remote"-group grantee can reach this case
+		// with one.
 		// A CommandRequest append (SubmitCommand's actual write) gets its
 		// own op, OpAppendCommandRequest, instead of the plain OpSet every
 		// other log kind uses below -- it's what makes the submitting
@@ -2689,6 +2799,12 @@ func (n *Node) handleAdd(ctx context.Context, leaderPeerID string) (string, erro
 		// comfortable margin instead of being raced against a hardcoded window.
 		if _, err := n.awaitLeader(10 * n.electionTimeout); err != nil {
 			return "", fmt.Errorf("await self-election: %w", err)
+		}
+		if err := n.ensureReservedGroups(ctx); err != nil {
+			return "", fmt.Errorf("bootstrap reserved groups: %w", err)
+		}
+		if err := n.ensureDefaultPublicCommand(ctx); err != nil {
+			return "", fmt.Errorf("bootstrap default public command: %w", err)
 		}
 		return n.peerID, nil
 	}
@@ -3617,6 +3733,9 @@ func (n *Node) addServerLine(ctx context.Context, rf *raft.Raft, joinPeerID, joi
 		// response back to the caller.
 		fmt.Fprintf(os.Stderr, "daemon: record cluster member %s: %v\n", joinPeerID, err)
 	}
+	if err := n.syncMemberGroups(ctx, joinPeerID, role); err != nil {
+		fmt.Fprintf(os.Stderr, "daemon: sync reserved groups for %s: %v\n", joinPeerID, err)
+	}
 	return "OK"
 }
 
@@ -3640,6 +3759,186 @@ func (n *Node) recordClusterMember(ctx context.Context, peerIDStr string, role b
 	key := shmevent.ClusterMemberKey([]byte(peerIDStr))
 	value := shmevent.EncodeClusterMemberPayload(raw, role)
 	return n.handleSetForward(ctx, key, value, true)
+}
+
+// syncMemberGroups reconciles peerIDStr's PeerGroup membership in the
+// three raft-derived reserved groups (see shmevent.ReservedGroupCluster's
+// own doc comment) to match role: always a member of
+// ReservedGroupCluster, and of exactly one of ReservedGroupVoter/
+// ReservedGroupLearner -- RoleLeader counts as a voter for this purpose,
+// since a raft leader is itself always one of the voters. Also ensures
+// peerIDStr's own personal Group record exists (ensurePersonalGroup) --
+// unrelated to cluster/voter/learner PeerGroup membership, but the same
+// call sites (addServerLine, watchLeadership) are exactly when a peer
+// first has a writable raft store to create it in, whether by joining an
+// existing cluster or solo-bootstrapping its own. Called alongside every
+// recordClusterMember write so the two stay in lockstep; deliberately
+// stateless/idempotent like recordClusterMember itself -- a redundant
+// write is harmless, a missed one self-corrects on the next leadership
+// transition.
+func (n *Node) syncMemberGroups(ctx context.Context, peerIDStr string, role byte) error {
+	if err := n.ensurePersonalGroup(ctx, peerIDStr); err != nil {
+		return err
+	}
+	peerID := []byte(peerIDStr)
+	if err := n.setPeerGroup(ctx, peerID, []byte(shmevent.ReservedGroupCluster)); err != nil {
+		return err
+	}
+	voter := []byte(shmevent.ReservedGroupVoter)
+	learner := []byte(shmevent.ReservedGroupLearner)
+	if role == shmevent.RoleLearner {
+		if err := n.setPeerGroup(ctx, peerID, learner); err != nil {
+			return err
+		}
+		return n.deletePeerGroup(ctx, peerID, voter)
+	}
+	if err := n.setPeerGroup(ctx, peerID, voter); err != nil {
+		return err
+	}
+	return n.deletePeerGroup(ctx, peerID, learner)
+}
+
+// clearMemberGroups removes peerIDStr from every raft-derived reserved
+// group (ReservedGroupCluster/Voter/Learner) once it's no longer a raft
+// member -- called from removeServerLine, alongside its KindClusterMember
+// deletion. ReservedGroupChannel/ReservedGroupRelay are deliberately left
+// untouched: those grants are independent of cluster membership -- see
+// their own doc comment.
+func (n *Node) clearMemberGroups(ctx context.Context, peerIDStr string) error {
+	peerID := []byte(peerIDStr)
+	for _, groupID := range [][]byte{
+		[]byte(shmevent.ReservedGroupCluster),
+		[]byte(shmevent.ReservedGroupVoter),
+		[]byte(shmevent.ReservedGroupLearner),
+	} {
+		if err := n.deletePeerGroup(ctx, peerID, groupID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// setPeerGroup/deletePeerGroup are syncMemberGroups/clearMemberGroups'
+// shared PeerGroupKey Put/Del primitives -- routed through
+// handleSetForward/handleOpForward exactly like recordClusterMember,
+// rather than handleConfirmForward, since a watchLeadership callback can
+// fire on a node that's a voter/learner but not the leader, and this
+// write must still succeed by forwarding to whoever currently is.
+func (n *Node) setPeerGroup(ctx context.Context, peerID, groupID []byte) error {
+	key, err := shmevent.PeerGroupKey(peerID, groupID)
+	if err != nil {
+		return err
+	}
+	return n.handleSetForward(ctx, key, nil, true)
+}
+
+func (n *Node) deletePeerGroup(ctx context.Context, peerID, groupID []byte) error {
+	key, err := shmevent.PeerGroupKey(peerID, groupID)
+	if err != nil {
+		return err
+	}
+	_, err = n.handleOpForward(ctx, kvfsm.OpDel, key, nil, true)
+	return err
+}
+
+// ensurePersonalGroup creates peerIDStr's own personal Group record (see
+// isPeerIdentityGroupID's doc comment) -- id and name both peerIDStr,
+// public false. Called from syncMemberGroups, so unlike
+// ensureReservedGroups' one-time call this runs on every leadership
+// transition/join; harmless, since it's a deterministic overwrite of a
+// record no one else can rename (EventGroupPut rejects any
+// peer-identity-shaped id). Calls handleConfirmForward directly rather
+// than going through EventGroupPut, bypassing that event's own
+// reserved-id rejection -- the same way ensureReservedGroups does for the
+// seven fixed reserved groups.
+func (n *Node) ensurePersonalGroup(ctx context.Context, peerIDStr string) error {
+	key := shmevent.GroupKey([]byte(peerIDStr))
+	value := shmevent.EncodeGroupPayload(peerIDStr, false)
+	if err := n.handleConfirmForward(ctx, kvfsm.OpSet, key, value, true); err != nil {
+		return fmt.Errorf("create personal group %q: %w", peerIDStr, err)
+	}
+	return nil
+}
+
+// ensureReservedGroups creates the seven reserved Group records
+// (ReservedGroupCluster/Voter/Learner/Channel/Relay/Remote/Execute)
+// exactly once, at the moment a brand new cluster is first bootstrapped
+// (handleAdd's
+// leaderPeerID=="" branch, right after this node's own self-election
+// completes) -- a node that instead *joins* an existing cluster
+// replicates these same records ordinarily, the same way it replicates
+// every other Group a longer-lived cluster already has. Calls
+// handleConfirmForward directly rather than going through EventGroupPut,
+// bypassing that event's own reserved-id rejection -- the same way
+// recordClusterMember bypasses the ordinary client-facing Set path for
+// KindClusterMember.
+func (n *Node) ensureReservedGroups(ctx context.Context) error {
+	for _, id := range []string{
+		shmevent.ReservedGroupCluster,
+		shmevent.ReservedGroupVoter,
+		shmevent.ReservedGroupLearner,
+		shmevent.ReservedGroupChannel,
+		shmevent.ReservedGroupRelay,
+		shmevent.ReservedGroupRemote,
+		shmevent.ReservedGroupExecute,
+	} {
+		key := shmevent.GroupKey([]byte(id))
+		value := shmevent.EncodeGroupPayload(id, false)
+		if err := n.handleConfirmForward(ctx, kvfsm.OpSet, key, value, true); err != nil {
+			return fmt.Errorf("create reserved group %q: %w", id, err)
+		}
+	}
+	return nil
+}
+
+// ensureDefaultPublicCommand creates shmevent.DefaultPublicGroupID (a
+// Public Group), shmevent.DefaultPublicCommandID (a Command with no
+// execution target -- see below), and the GroupCommand link between them
+// -- exactly once, at the same moment and call site ensureReservedGroups
+// runs (handleAdd's bootstrap branch, right after self-election
+// completes). See DefaultPublicCommandID's own doc comment for what
+// submitting it actually does (kvfsm.Apply's OpAppendCommandRequest
+// special case). Unlike ensureReservedGroups, these three records are
+// ordinary, mutable Group/Command/GroupCommand writes from here on --
+// ordinary EventGroupPut/EventCommandPut/EventGroupCommandPut semantics
+// apply (catalog.go's IsReservedGroupID deliberately excludes
+// DefaultPublicGroupID) -- this only seeds sensible starting values, the
+// same way a node that instead *joins* an existing cluster just
+// replicates whatever it finds here already, unchanged.
+//
+// The Command's own peerID field (who executes it -- see
+// EncodeCommandPayload) is deliberately left empty rather than pointing
+// at this bootstrapping node's own peer id: kvfsm's checkCommandPeerIDUnique
+// enforces a global "at most one Command per peerID" constraint, and
+// occupying the leader's own slot with this synthetic, natively-handled
+// command (its whole point is the FSM side effect, not a real dispatched
+// executor -- SubmitCommand's best-effort Execute poke to an empty target
+// is simply a harmless no-op) would leave that peer unable to ever be
+// assigned a real, meaningfully-executed command of its own.
+func (n *Node) ensureDefaultPublicCommand(ctx context.Context) error {
+	groupKey := shmevent.GroupKey([]byte(shmevent.DefaultPublicGroupID))
+	groupValue := shmevent.EncodeGroupPayload(shmevent.DefaultPublicGroupID, true)
+	if err := n.handleConfirmForward(ctx, kvfsm.OpSet, groupKey, groupValue, true); err != nil {
+		return fmt.Errorf("create default public group: %w", err)
+	}
+
+	commandKey := shmevent.CommandKey([]byte(shmevent.DefaultPublicCommandID))
+	commandValue, err := shmevent.EncodeCommandPayload(shmevent.DefaultPublicCommandID, nil)
+	if err != nil {
+		return fmt.Errorf("encode default public command: %w", err)
+	}
+	if err := n.handleConfirmForward(ctx, kvfsm.OpSet, commandKey, commandValue, true); err != nil {
+		return fmt.Errorf("create default public command: %w", err)
+	}
+
+	linkKey, err := shmevent.GroupCommandKey([]byte(shmevent.DefaultPublicCommandID), []byte(shmevent.DefaultPublicGroupID))
+	if err != nil {
+		return fmt.Errorf("build default public group-command link key: %w", err)
+	}
+	if err := n.handleConfirmForward(ctx, kvfsm.OpSet, linkKey, nil, true); err != nil {
+		return fmt.Errorf("link default public command to its group: %w", err)
+	}
+	return nil
 }
 
 // forwardJoin relays a join request (joinPeerID, joinAddr, suffrage,
@@ -4169,6 +4468,9 @@ func (n *Node) removeServerLine(ctx context.Context, rf *raft.Raft, peerID strin
 	if err := n.applyConfirm(ctx, rf, kvfsm.OpDel, shmevent.ClusterMemberKey([]byte(peerID)), nil); err != nil {
 		fmt.Fprintf(os.Stderr, "daemon: remove cluster member record %s: %v\n", peerID, err)
 	}
+	if err := n.clearMemberGroups(ctx, peerID); err != nil {
+		fmt.Fprintf(os.Stderr, "daemon: clear reserved groups for %s: %v\n", peerID, err)
+	}
 	return "OK"
 }
 
@@ -4418,11 +4720,11 @@ func (n *Node) sendExecute(ctx context.Context, dest peer.ID, payload []byte) er
 // (matches EventExecute's doc comment: authenticity doesn't depend on the
 // stream's own connection identity), unlike handleForwardConfirmStream's
 // check, which deliberately does the opposite for a different reason (see
-// its own doc comment). Once the signature checks out, applies
-// Config.RequirePermitForExecute's gate (a read-only n.store lookup, if
-// enabled) against that same verified sender peer id, then queues the
-// notification for EventPollExecute. Never writes to n.store or raft
-// either way.
+// its own doc comment). Once the signature checks out, applies the
+// unconditional isAuthorizedForGatedAccess gate (shmevent.ReservedGroupExecute
+// -- same mechanism as Channel/relay, no opt-out) against that same
+// verified sender peer id, then queues the notification for
+// EventPollExecute. Never writes to n.store or raft either way.
 func (n *Node) handleExecuteStream(s network.Stream) {
 	defer s.Close()
 
@@ -4466,10 +4768,9 @@ func (n *Node) handleExecuteStream(s network.Stream) {
 	}
 	// Authorization, checked only now that senderPeer is proven authentic
 	// (see this function's doc comment on why that's the peer id this
-	// gate must check, never s.Conn().RemotePeer()) -- see
-	// Config.RequirePermitForExecute's doc comment.
-	if n.cfg.RequirePermitForExecute && !n.isClusterMember(senderPeer) && !n.isPermittedPeer(senderPeer) {
-		fmt.Fprintf(s, "execute: %s is not a raft cluster member or a permitted peer", senderPeer)
+	// gate must check, never s.Conn().RemotePeer()).
+	if !n.isAuthorizedForGatedAccess(senderPeer, shmevent.ReservedGroupExecute) {
+		fmt.Fprintf(s, "execute: %s is not a cluster member, in the execute group, or granted access to %s", senderPeer, n.peerID)
 		return
 	}
 	n.executeInbox.push(senderPeerID, payload)
@@ -4649,7 +4950,7 @@ func (n *Node) dispatchChannelOpen(ctx context.Context, destPeerIDStr string) (s
 		return "", fmt.Errorf("channel: create data-plane ring: %w", err)
 	}
 	_ = s.SetDeadline(time.Time{}) // handshake done -- see the SetDeadline call above
-	sess := newChannelSession(channelID, s, dest.String(), shmevent.PublicKey(rawDestPub), down)
+	sess := newChannelSession(channelID, s, dest.String(), shmevent.PublicKey(rawDestPub), down, n.channelQuota, extractRemoteIP(s.Conn().RemoteMultiaddr()))
 	n.channels.register(channelID, sess)
 	go n.pumpChannelReads(sess)
 	return channelID, nil
@@ -4659,8 +4960,10 @@ func (n *Node) dispatchChannelOpen(ctx context.Context, destPeerIDStr string) (s
 // the framed handshake (readFramed), verifies its self-contained
 // signature against the claimed sender peer id exactly the way
 // handleExecuteStream does (never s.Conn().RemotePeer() -- see that
-// function's doc comment for why), applies Config.RequirePermitForChannel's
-// gate, writes back a one-byte accept/reject (writeChannelAccept), and on
+// function's doc comment for why), gates on the sender belonging to
+// shmevent.ReservedGroupCluster or ReservedGroupChannel (see those
+// constants' doc comment), writes back a one-byte accept/reject
+// (writeChannelAccept), and on
 // acceptance registers a new channelSession, pushes it onto the pending
 // queue for EventChannelListen to claim, and starts its read-pump
 // goroutine. Unlike every other stream handler in this file, it does NOT
@@ -4708,13 +5011,26 @@ func (n *Node) handleChannelStream(s network.Stream) {
 	}
 	// Authorization, checked only now that senderPeer is proven authentic
 	// -- see handleExecuteStream's identically-shaped comment for why
-	// this must be the verified senderPeer, never s.Conn().RemotePeer(),
-	// and Config.RequirePermitForChannel's own doc comment.
-	if n.cfg.RequirePermitForChannel && !n.isClusterMember(senderPeer) && !n.isPermittedPeer(senderPeer) {
-		writeChannelAccept(s, false, fmt.Sprintf("%s is not a raft cluster member or a permitted peer", senderPeer))
+	// this must be the verified senderPeer, never s.Conn().RemotePeer().
+	// Not behind a Config opt-out flag, same as every other gate in this
+	// package: a channel is only ever usable by a current cluster member,
+	// a peer an operator has explicitly added to shmevent.ReservedGroupChannel
+	// (mage addpeertogroup <peerID> channel), or a peer this node has
+	// individually granted access to via its own personal group (mage
+	// addpeertogroup <peerID> <n.peerID> -- see isPeerIdentityGroupID's doc
+	// comment for the pairwise-grant mechanism this enables between any two
+	// peers, cluster members or not). relayACL's AllowReserve/AllowConnect,
+	// handleShmEvent's top-of-function gate, and handleExecuteStream gate
+	// the relay service, the generic remote RPC surface, and Execute the
+	// identical way, via isAuthorizedForGatedAccess(St) against
+	// shmevent.ReservedGroupRelay/ReservedGroupRemote/ReservedGroupExecute
+	// respectively.
+	if !n.isAuthorizedForGatedAccess(senderPeer, shmevent.ReservedGroupChannel) {
+		writeChannelAccept(s, false, fmt.Sprintf("%s is not a cluster member, in the channel group, or granted access to %s", senderPeer, n.peerID))
 		s.Close()
 		return
 	}
+	remoteIP := extractRemoteIP(s.Conn().RemoteMultiaddr())
 
 	n.channels.reap()
 	channelID, err := newChannelID()
@@ -4742,7 +5058,7 @@ func (n *Node) handleChannelStream(s network.Stream) {
 	// pumpChannelReads' intentionally long-lived read loop below. See
 	// streamRequestTimeout's doc comment.
 	_ = s.SetDeadline(time.Time{})
-	sess := newChannelSession(channelID, s, senderPeer.String(), shmevent.PublicKey(rawSenderPub), down)
+	sess := newChannelSession(channelID, s, senderPeer.String(), shmevent.PublicKey(rawSenderPub), down, n.channelQuota, remoteIP)
 	n.channels.register(channelID, sess)
 	n.channels.pushPending(channelID)
 	go n.pumpChannelReads(sess)
@@ -4804,6 +5120,10 @@ func (n *Node) pumpChannelReads(sess *channelSession) {
 		}
 		if len(chunk) > channelMaxChunkSize {
 			sess.markClosed(fmt.Sprintf("peer sent an oversized channel chunk: %d bytes", len(chunk)))
+			return
+		}
+		if !sess.quota.allow(sess.remotePeerID, sess.remoteIP, len(chunk)) {
+			sess.markClosed("channel quota exceeded")
 			return
 		}
 		sess.pushChunk(purpose, chunk)

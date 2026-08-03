@@ -4,12 +4,11 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"testing"
-	"time"
 )
 
 func TestSystemKeyLayout(t *testing.T) {
-	key := SystemKey(KindPermitPeer, StatusPending, []byte("peer-123"))
-	want := append([]byte{SystemKeyPrefix, KindPermitPeer, StatusPending}, []byte("peer-123")...)
+	key := SystemKey(KindBootstrapNode, StatusPending, []byte("peer-123"))
+	want := append([]byte{SystemKeyPrefix, KindBootstrapNode, StatusPending}, []byte("peer-123")...)
 	if !bytes.Equal(key, want) {
 		t.Fatalf("got key %x, want %x", key, want)
 	}
@@ -31,8 +30,9 @@ func TestPermitRequestPayloadRoundTrip(t *testing.T) {
 		t.Fatalf("got kind=%d peerID=%q metadata=%q", kind, peerID, metadata)
 	}
 
-	// Empty metadata must round-trip too (the KindPermitPeer common case).
-	payload, err = EncodePermitRequestPayload(KindPermitPeer, []byte("peer-456"), nil)
+	// Empty metadata must round-trip too (the common case for a kind with
+	// no metadata of its own).
+	payload, err = EncodePermitRequestPayload(KindBootstrapNode, []byte("peer-456"), nil)
 	if err != nil {
 		t.Fatalf("EncodePermitRequestPayload with empty metadata: %v", err)
 	}
@@ -40,54 +40,15 @@ func TestPermitRequestPayloadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodePermitRequestPayload with empty metadata: %v", err)
 	}
-	if kind != KindPermitPeer || string(peerID) != "peer-456" || len(metadata) != 0 {
+	if kind != KindBootstrapNode || string(peerID) != "peer-456" || len(metadata) != 0 {
 		t.Fatalf("got kind=%d peerID=%q metadata=%q, want empty metadata", kind, peerID, metadata)
 	}
 
 	if _, _, _, err := DecodePermitRequestPayload([]byte{0, 0}); err == nil {
 		t.Fatal("DecodePermitRequestPayload unexpectedly accepted a payload shorter than the header")
 	}
-	if _, _, _, err := DecodePermitRequestPayload([]byte{KindPermitPeer, 0, 10}); err == nil {
+	if _, _, _, err := DecodePermitRequestPayload([]byte{KindBootstrapNode, 0, 10}); err == nil {
 		t.Fatal("DecodePermitRequestPayload unexpectedly accepted a peerID length exceeding the payload size")
-	}
-}
-
-func TestPermitPeerPayloadRoundTrip(t *testing.T) {
-	limits := RelayLimits{
-		MaxCircuitsPerPeer:     3,
-		LimitData:              5 << 20,
-		LimitDuration:          17 * time.Minute,
-		MaxReservationsPerIP:   9,
-		MaxReservationsPerPeer: 2,
-	}
-	payload := EncodePermitPeerPayload([]byte("peer-123"), limits)
-	peerID, gotLimits, err := DecodePermitPeerPayload(payload)
-	if err != nil {
-		t.Fatalf("DecodePermitPeerPayload: %v", err)
-	}
-	if string(peerID) != "peer-123" {
-		t.Fatalf("got peerID %q, want %q", peerID, "peer-123")
-	}
-	if gotLimits != limits {
-		t.Fatalf("got limits %+v, want %+v", gotLimits, limits)
-	}
-
-	// The defaults round-trip too, since EventPermitRequest stamps these
-	// onto every KindPermitPeer record unless Config overrides them.
-	payload = EncodePermitPeerPayload([]byte("peer-456"), DefaultRelayLimits())
-	peerID, gotLimits, err = DecodePermitPeerPayload(payload)
-	if err != nil {
-		t.Fatalf("DecodePermitPeerPayload with defaults: %v", err)
-	}
-	if string(peerID) != "peer-456" || gotLimits != DefaultRelayLimits() {
-		t.Fatalf("got peerID=%q limits=%+v, want peerID=peer-456 limits=%+v", peerID, gotLimits, DefaultRelayLimits())
-	}
-
-	if _, _, err := DecodePermitPeerPayload(nil); err == nil {
-		t.Fatal("DecodePermitPeerPayload unexpectedly accepted an empty payload")
-	}
-	if _, _, err := DecodePermitPeerPayload(make([]byte, relayLimitsEncodedSize)); err == nil {
-		t.Fatal("DecodePermitPeerPayload unexpectedly accepted a payload with no peerID")
 	}
 }
 
@@ -131,12 +92,12 @@ func TestClusterMemberPayloadRoundTrip(t *testing.T) {
 }
 
 func TestPermitConfirmPayloadRoundTrip(t *testing.T) {
-	payload := EncodePermitConfirmPayload(KindPermitPeer, []byte("peer-123"))
+	payload := EncodePermitConfirmPayload(KindBootstrapNode, []byte("peer-123"))
 	kind, peerID, err := DecodePermitConfirmPayload(payload)
 	if err != nil {
 		t.Fatalf("DecodePermitConfirmPayload: %v", err)
 	}
-	if kind != KindPermitPeer || string(peerID) != "peer-123" {
+	if kind != KindBootstrapNode || string(peerID) != "peer-123" {
 		t.Fatalf("got kind=%d peerID=%q", kind, peerID)
 	}
 
@@ -151,7 +112,7 @@ func TestEventPermitRequestConfirmEncodeDecodeRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reqPayload, err := EncodePermitRequestPayload(KindPermitPeer, []byte("peer-123"), nil)
+	reqPayload, err := EncodePermitRequestPayload(KindBootstrapNode, []byte("peer-123"), nil)
 	if err != nil {
 		t.Fatalf("EncodePermitRequestPayload: %v", err)
 	}
@@ -167,11 +128,11 @@ func TestEventPermitRequestConfirmEncodeDecodeRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodePermitRequestPayload: %v", err)
 	}
-	if kind != KindPermitPeer || string(peerID) != "peer-123" {
+	if kind != KindBootstrapNode || string(peerID) != "peer-123" {
 		t.Fatalf("got kind=%d peerID=%q", kind, peerID)
 	}
 
-	confirmPayload := EncodePermitConfirmPayload(KindPermitPeer, []byte("peer-123"))
+	confirmPayload := EncodePermitConfirmPayload(KindBootstrapNode, []byte("peer-123"))
 	buf, err = Encode(Msg{EventType: EventPermitConfirm, Value: confirmPayload, ID: 12}, priv)
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
@@ -184,7 +145,7 @@ func TestEventPermitRequestConfirmEncodeDecodeRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodePermitConfirmPayload: %v", err)
 	}
-	if kind != KindPermitPeer || string(peerID) != "peer-123" {
+	if kind != KindBootstrapNode || string(peerID) != "peer-123" {
 		t.Fatalf("got kind=%d peerID=%q", kind, peerID)
 	}
 }

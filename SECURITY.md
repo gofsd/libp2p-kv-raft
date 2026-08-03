@@ -29,9 +29,14 @@ see the threat model below for what that does and doesn't cover.
   check runs (never `stream.Conn().RemotePeer()` -- see
   `handleExecuteStream`/`handleChannelStream`'s own doc comments for why
   that distinction matters). Raft cluster membership (voter/learner) and
-  the permit system (`KindPermitPeer`, `KindLogPermit`, etc.) gate which
-  signed requests actually take effect; an unsigned or forged-signature
-  request is rejected before reaching any of that logic.
+  group-based ACL grants (the reserved `remote`/`execute`/`channel`/`relay`
+  groups, `mage addpeertogroup`) gate which signed requests actually take
+  effect -- unconditionally, with no opt-out flag; the sole exception is a
+  narrow carve-out that lets any peer submit a command linked to a public
+  `Group` and read back that dispatch's own log entries (see README's
+  "Reserved cluster/voter/learner/channel/relay/remote/execute groups"
+  section). An unsigned or forged-signature request is rejected before
+  reaching any of that logic.
 
 - **kvhttp (`cmd/kvhttp`)**: bridges a local daemon's shmring-only
   interface onto HTTPS for callers that can only do a `fetch()` (e.g. a

@@ -488,11 +488,11 @@ func TestRequestConfirmPermitAcrossNodes(t *testing.T) {
 	if err := kvctl.Use(followerID); err != nil {
 		t.Fatalf("Use(follower): %v", err)
 	}
-	if err := kvctl.RequestPermit(shmevent.KindPermitPeer, []byte(targetPeerID), nil); err != nil {
+	if err := kvctl.RequestPermit(shmevent.KindBootstrapNode, []byte(targetPeerID), nil); err != nil {
 		t.Fatalf("RequestPermit: %v", err)
 	}
 
-	pendingKey := string(shmevent.SystemKey(shmevent.KindPermitPeer, shmevent.StatusPending, []byte(targetPeerID)))
+	pendingKey := string(shmevent.SystemKey(shmevent.KindBootstrapNode, shmevent.StatusPending, []byte(targetPeerID)))
 	deadline := time.Now().Add(10 * time.Second)
 	var (
 		got     string
@@ -508,16 +508,16 @@ func TestRequestConfirmPermitAcrossNodes(t *testing.T) {
 	if lastErr != nil {
 		t.Fatalf("GetFrom(leader, pendingKey) after RequestPermit: %v", lastErr)
 	}
-	_ = got // metadata is empty for KindPermitPeer; just needs to exist
+	_ = got // metadata is empty for this request; just needs to exist
 
 	if err := kvctl.Use(leaderID); err != nil {
 		t.Fatalf("Use(leader): %v", err)
 	}
-	if err := kvctl.ConfirmPermit(shmevent.KindPermitPeer, []byte(targetPeerID)); err != nil {
+	if err := kvctl.ConfirmPermit(shmevent.KindBootstrapNode, []byte(targetPeerID)); err != nil {
 		t.Fatalf("ConfirmPermit: %v", err)
 	}
 
-	confirmedKey := string(shmevent.SystemKey(shmevent.KindPermitPeer, shmevent.StatusConfirmed, []byte(targetPeerID)))
+	confirmedKey := string(shmevent.SystemKey(shmevent.KindBootstrapNode, shmevent.StatusConfirmed, []byte(targetPeerID)))
 	deadline = time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		_, lastErr = kvctl.GetFrom(followerID, confirmedKey)

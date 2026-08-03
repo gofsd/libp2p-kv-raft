@@ -43,14 +43,17 @@ import (
 // per-group Kind the way Command/CommandRequest are, since a caller
 // tracking one dispatch already knows exactly which instance id it
 // wants, with no need to enumerate "every log entry in group G".
-const logCommandExecKind = "cmdlog"
+// Delegates to shmevent.CommandExecLogKind, shared with pkg/daemon, which
+// needs to recognize this same kind for its own carve-out (see
+// isCommandLogCarveOut).
+const logCommandExecKind = shmevent.CommandExecLogKind
 
 // commandRequestLogKind returns the pkg/logrecord Kind every
 // SubmitCommand dispatch (CommandRequest) of commandID is stored under,
 // so ListCommandRequests can enumerate a command's pending requests with
 // one prefix scan. Delegates to shmevent.CommandRequestLogKind, shared
 // with pkg/daemon/pkg/kvfsm, which need to recognize this same kind to
-// enforce isPermittedForCommand raft-authoritatively on the actual write
+// enforce IsPermittedForCommand raft-authoritatively on the actual write
 // (see kvfsm.OpAppendCommandRequest).
 func commandRequestLogKind(commandID string) string {
 	return shmevent.CommandRequestLogKind(commandID)
@@ -60,9 +63,11 @@ func commandRequestLogKind(commandID string) string {
 // indexes a dispatch under for peerID's sake, once per role (requester,
 // target) peerID plays in it -- see ListExecutionsByPeer, which this
 // makes a single per-peer prefix scan instead of iterating every group's
-// ListCommandRequests looking for peerID's dispatches.
+// ListCommandRequests looking for peerID's dispatches. Delegates to
+// shmevent.CommandExecIndexKind, shared with pkg/daemon for the same
+// reason as logCommandExecKind above.
 func commandExecIndexKind(peerID string) string {
-	return "cmdexec:" + peerID
+	return shmevent.CommandExecIndexKind(peerID)
 }
 
 // execIndexRoleRequester/execIndexRoleTarget are commandExecIndexKind

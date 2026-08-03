@@ -117,8 +117,9 @@ func TestPermitRequestConfirmWorkflow(t *testing.T) {
 	}
 
 	targetPeerID := []byte("some-new-node-peer-id")
+	metadata := []byte("/ip4/127.0.0.1/tcp/4001")
 
-	reqPayload, err := shmevent.EncodePermitRequestPayload(shmevent.KindPermitPeer, targetPeerID, nil)
+	reqPayload, err := shmevent.EncodePermitRequestPayload(shmevent.KindBootstrapNode, targetPeerID, metadata)
 	if err != nil {
 		t.Fatalf("EncodePermitRequestPayload: %v", err)
 	}
@@ -127,7 +128,7 @@ func TestPermitRequestConfirmWorkflow(t *testing.T) {
 		t.Fatalf("permit_request rejected: %s", resp.Value)
 	}
 
-	confirmPayload := shmevent.EncodePermitConfirmPayload(shmevent.KindPermitPeer, targetPeerID)
+	confirmPayload := shmevent.EncodePermitConfirmPayload(shmevent.KindBootstrapNode, targetPeerID)
 
 	// A learner (nonvoter) confirming must be rejected, and specifically
 	// for the voter-only reason -- not because e.g. it couldn't find a
@@ -142,7 +143,7 @@ func TestPermitRequestConfirmWorkflow(t *testing.T) {
 
 	// The pending record must still be there -- the rejected confirm must
 	// not have consumed or altered it.
-	pendingKey := shmevent.SystemKey(shmevent.KindPermitPeer, shmevent.StatusPending, targetPeerID)
+	pendingKey := shmevent.SystemKey(shmevent.KindBootstrapNode, shmevent.StatusPending, targetPeerID)
 	getResp := call(leader, shmevent.Msg{EventType: shmevent.EventGetField, Value: pendingKey, ID: 3})
 	if getResp.EventType == shmevent.EventError {
 		t.Fatalf("pending record missing after rejected learner confirm: %s", getResp.Value)
@@ -154,25 +155,18 @@ func TestPermitRequestConfirmWorkflow(t *testing.T) {
 		t.Fatalf("voter permit_confirm rejected: %s", resp.Value)
 	}
 
-	confirmedKey := shmevent.SystemKey(shmevent.KindPermitPeer, shmevent.StatusConfirmed, targetPeerID)
+	confirmedKey := shmevent.SystemKey(shmevent.KindBootstrapNode, shmevent.StatusConfirmed, targetPeerID)
 	getResp = call(leader, shmevent.Msg{EventType: shmevent.EventGetField, Value: confirmedKey, ID: 5})
 	if getResp.EventType == shmevent.EventError {
 		t.Fatalf("confirmed record missing after voter confirm: %s", getResp.Value)
 	}
 
-	// EventPermitRequest must have stamped the leader's own default relay
-	// allotment onto the record (see relayLimits/EncodePermitPeerPayload),
-	// not the empty metadata this test's request actually sent -- proving
-	// registration, not just the caller, decides a peer's limits.
-	gotPeerID, gotLimits, err := shmevent.DecodePermitPeerPayload(getResp.Value)
-	if err != nil {
-		t.Fatalf("DecodePermitPeerPayload: %v", err)
-	}
-	if string(gotPeerID) != string(targetPeerID) {
-		t.Fatalf("got stamped peerID %q, want %q", gotPeerID, targetPeerID)
-	}
-	if gotLimits != shmevent.DefaultRelayLimits() {
-		t.Fatalf("got stamped limits %+v, want defaults %+v", gotLimits, shmevent.DefaultRelayLimits())
+	// The confirmed record's metadata must be exactly what the original
+	// request carried (this codebase no longer stamps anything onto it
+	// server-side -- that special case existed only for the now-removed
+	// KindPermitPeer's relay allotment).
+	if string(getResp.Value) != string(metadata) {
+		t.Fatalf("confirmed record metadata = %q, want %q", getResp.Value, metadata)
 	}
 
 	getResp = call(leader, shmevent.Msg{EventType: shmevent.EventGetField, Value: pendingKey, ID: 6})
@@ -255,7 +249,7 @@ func TestPermitRevokeWorkflow(t *testing.T) {
 
 	targetPeerID := []byte("some-revoked-node-peer-id")
 
-	reqPayload, err := shmevent.EncodePermitRequestPayload(shmevent.KindPermitPeer, targetPeerID, nil)
+	reqPayload, err := shmevent.EncodePermitRequestPayload(shmevent.KindBootstrapNode, targetPeerID, nil)
 	if err != nil {
 		t.Fatalf("EncodePermitRequestPayload: %v", err)
 	}
@@ -264,19 +258,19 @@ func TestPermitRevokeWorkflow(t *testing.T) {
 		t.Fatalf("permit_request rejected: %s", resp.Value)
 	}
 
-	confirmPayload := shmevent.EncodePermitConfirmPayload(shmevent.KindPermitPeer, targetPeerID)
+	confirmPayload := shmevent.EncodePermitConfirmPayload(shmevent.KindBootstrapNode, targetPeerID)
 	resp = call(voter, shmevent.Msg{EventType: shmevent.EventPermitConfirm, Value: confirmPayload, ID: 2})
 	if resp.EventType == shmevent.EventError {
 		t.Fatalf("voter permit_confirm rejected: %s", resp.Value)
 	}
 
-	confirmedKey := shmevent.SystemKey(shmevent.KindPermitPeer, shmevent.StatusConfirmed, targetPeerID)
+	confirmedKey := shmevent.SystemKey(shmevent.KindBootstrapNode, shmevent.StatusConfirmed, targetPeerID)
 	getResp := call(leader, shmevent.Msg{EventType: shmevent.EventGetField, Value: confirmedKey, ID: 3})
 	if getResp.EventType == shmevent.EventError {
 		t.Fatalf("confirmed record missing after voter confirm: %s", getResp.Value)
 	}
 
-	revokePayload := shmevent.EncodePermitConfirmPayload(shmevent.KindPermitPeer, targetPeerID)
+	revokePayload := shmevent.EncodePermitConfirmPayload(shmevent.KindBootstrapNode, targetPeerID)
 
 	// A learner (nonvoter) revoking must be rejected, for the same
 	// voter-only reason confirm is, and must not touch the confirmed

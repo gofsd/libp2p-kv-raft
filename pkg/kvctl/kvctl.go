@@ -561,10 +561,10 @@ func Txn(ops string) error {
 
 // RequestPermit implements `mage requestpermit <kind> <peerID> [metadata]`:
 // lodges a pending permit record for targetPeerID (of the given kind --
-// shmevent.KindPermitPeer or KindBootstrapNode) on the current node,
-// forwarded to the leader like any other Set -- see
-// shmevent.EventPermitRequest's doc comment. Any raft node may originate
-// one, so this needs no special standing of its own.
+// today, only shmevent.KindBootstrapNode) on the current node, forwarded
+// to the leader like any other Set -- see shmevent.EventPermitRequest's
+// doc comment. Any raft node may originate one, so this needs no special
+// standing of its own.
 func RequestPermit(kind byte, targetPeerID, metadata []byte) error {
 	reg, err := registry.Open()
 	if err != nil {
@@ -633,72 +633,6 @@ func RevokePermit(kind byte, targetPeerID []byte) error {
 	defer cancel()
 	if err := shmclient.RevokePermit(ctx, peerID, kind, targetPeerID); err != nil {
 		return fmt.Errorf("revoke permit: %w", err)
-	}
-	return nil
-}
-
-// RequestLogPermit implements `mage requestlogpermit <logKind> <peerID>
-// <metadata>`: lodges a pending permission for targetPeerID to
-// append/query pkg/logrecord records of logKind, forwarded to the leader
-// like any other Set -- see shmevent.EventLogPermitRequest's doc comment.
-func RequestLogPermit(logKind string, targetPeerID, metadata []byte) error {
-	reg, err := registry.Open()
-	if err != nil {
-		return err
-	}
-	peerID, err := reg.Current()
-	if err != nil {
-		return err
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
-	defer cancel()
-	if err := shmclient.RequestLogPermit(ctx, peerID, logKind, targetPeerID, metadata); err != nil {
-		return fmt.Errorf("request log permit: %w", err)
-	}
-	return nil
-}
-
-// ConfirmLogPermit implements `mage confirmlogpermit <logKind> <peerID>`:
-// promotes a pending log-kind permit record for targetPeerID to
-// confirmed. Only takes effect if the current node is itself a raft
-// voter -- see shmevent.EventLogPermitConfirm's doc comment.
-func ConfirmLogPermit(logKind string, targetPeerID []byte) error {
-	reg, err := registry.Open()
-	if err != nil {
-		return err
-	}
-	peerID, err := reg.Current()
-	if err != nil {
-		return err
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
-	defer cancel()
-	if err := shmclient.ConfirmLogPermit(ctx, peerID, logKind, targetPeerID); err != nil {
-		return fmt.Errorf("confirm log permit: %w", err)
-	}
-	return nil
-}
-
-// RevokeLogPermit implements `mage revokelogpermit <logKind> <peerID>`:
-// deletes a confirmed log-kind permit record for targetPeerID outright.
-// Only takes effect if the current node is itself a raft voter -- see
-// shmevent.EventLogPermitRevoke's doc comment.
-func RevokeLogPermit(logKind string, targetPeerID []byte) error {
-	reg, err := registry.Open()
-	if err != nil {
-		return err
-	}
-	peerID, err := reg.Current()
-	if err != nil {
-		return err
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
-	defer cancel()
-	if err := shmclient.RevokeLogPermit(ctx, peerID, logKind, targetPeerID); err != nil {
-		return fmt.Errorf("revoke log permit: %w", err)
 	}
 	return nil
 }

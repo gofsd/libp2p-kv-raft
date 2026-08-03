@@ -157,8 +157,7 @@ Other `pkg/kvctl` functions worth knowing (all operate on the registry's
 | `LogQuery(kind, unitID string, start, end time.Time, limit int) ([]logrecord.Record, error)` | Scan records in a time window, oldest first. |
 | `Execute(destPeerID, value string) error` | Send a raw peer-to-peer notification, bypassing raft entirely. |
 | `PollExecute() (senderPeerID, value string, ok bool, err error)` | Drain one queued `Execute` notification. |
-| `RequestPermit`/`ConfirmPermit`/`RevokePermit(kind byte, targetPeerID, metadata []byte)` | Manage relay/remote-access/cluster-join permits — see `README.md`'s permit sections for when these are needed. `kind` is `shmevent.KindPermitPeer`/`KindBootstrapNode`/`KindClusterJoin`. |
-| `RequestLogPermit`/`ConfirmLogPermit`/`RevokeLogPermit(logKind string, targetPeerID, metadata []byte)` | Same, scoped per `pkg/logrecord` kind. |
+| `RequestPermit`/`ConfirmPermit`/`RevokePermit(kind byte, targetPeerID, metadata []byte)` | Manage bootstrap-node/cluster-join permits — see `README.md`'s permit sections for when these are needed. `kind` is `shmevent.KindBootstrapNode`/`KindClusterJoin` (relay/remote/execute/Channel access is granted via `AddPeerToGroup`/`RemovePeerFromGroup` against the `relay`/`remote`/`execute`/`channel` reserved groups instead — see README's "Reserved cluster/voter/learner/channel/relay/remote/execute groups" section). |
 | `Join(repoRoot, targetPeerID string) (string, error)` | Switch the current identity onto targetPeerID's cluster (see above). |
 | `Leave(repoRoot, ownPeerID string) error` | Gracefully leave ownPeerID's current cluster; resumes its solo db. |
 | `Rm(repoRoot, ownPeerID string) error` | `Leave` plus revoke standing and delete the composite cluster dir. |

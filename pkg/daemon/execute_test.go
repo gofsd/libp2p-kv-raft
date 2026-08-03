@@ -89,6 +89,18 @@ func TestExecuteEventDeliversAcrossNodes(t *testing.T) {
 	b := startExecuteTestNode(t, filepath.Join(tmpDir, "b"))
 	connectPeers(t, ctx, a, b)
 
+	// Grant a into b's "execute" reserved group -- see
+	// TestExecuteGateUnconditional's identical setup. Neither bare test
+	// node ever bootstraps raft, so there's no cluster membership to rely
+	// on instead; this test is about delivery, not the ACL gate itself.
+	executeGroupKey, err := shmevent.PeerGroupKey([]byte(a.peerID), []byte(shmevent.ReservedGroupExecute))
+	if err != nil {
+		t.Fatalf("PeerGroupKey: %v", err)
+	}
+	if err := b.store.Set(executeGroupKey, nil); err != nil {
+		t.Fatalf("grant execute group: %v", err)
+	}
+
 	const sourceID, destID = 1, 2
 	a.registry.Register(sourceID, []byte(a.peerID))
 	a.registry.Register(destID, []byte(b.peerID))
@@ -242,18 +254,17 @@ func TestExecuteStreamRejectsForgedSignature(t *testing.T) {
 	}
 }
 
-// TestRequirePermitForExecuteGate exercises Config.RequirePermitForExecute
-// against a real two-node topology (mirroring
-// TestExecuteEventDeliversAcrossNodes): with the gate enabled on the
-// receiver, a sender with neither a confirmed KindPermitPeer record nor a
-// KindClusterMember record must be rejected, while either one on its own
-// must be accepted. Since these bare test nodes never bootstrap raft (see
-// startExecuteTestNode), the permit/membership records are written
-// directly into the receiver's store rather than via the real
-// request/confirm or join workflows -- those are already covered by
-// TestPermitRequestConfirmWorkflow and TestPermitRevokeWorkflow; this test
-// is only about handleExecuteStream's gate itself.
-func TestRequirePermitForExecuteGate(t *testing.T) {
+// TestExecuteGateUnconditional exercises handleExecuteStream's always-on
+// isAuthorizedForGatedAccess(shmevent.ReservedGroupExecute) gate against a
+// real two-node topology (mirroring TestExecuteEventDeliversAcrossNodes):
+// a sender with neither an "execute" group grant nor "cluster" group
+// membership must be rejected, while either one on its own must be
+// accepted. Since these bare test nodes never bootstrap raft (see
+// startExecuteTestNode), the group records are written directly into the
+// receiver's store rather than via the real addpeertogroup/join workflows
+// -- those are already covered elsewhere; this test is only about
+// handleExecuteStream's gate itself.
+func TestExecuteGateUnconditional(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -269,7 +280,7 @@ func TestRequirePermitForExecuteGate(t *testing.T) {
 	if _, err := p2praft.LoadOrGenerateKey(bKeyPath); err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
-	b, err := start(Config{DataDir: bDir, KeyPath: bKeyPath, RequirePermitForExecute: true})
+	b, err := start(Config{DataDir: bDir, KeyPath: bKeyPath})
 	if err != nil {
 		t.Fatalf("start b: %v", err)
 	}
@@ -297,56 +308,64 @@ func TestRequirePermitForExecuteGate(t *testing.T) {
 		return len(resp.Value) == 0
 	}
 
-	// Neither permitted nor a cluster member: sendExecute reads b's
-	// response synchronously (see that function's doc comment), so the
-	// gate's rejection on b surfaces straight back as a local
-	// dispatchExecute error on a, not a silent drop.
-	if resp := send(1); resp.EventType != shmevent.EventError {
-		t.Fatal("execute from an unpermitted, non-member sender unexpectedly succeeded")
-	}
-	if !pollEmpty() {
-		t.Fatal("unpermitted, non-member sender's notification was queued despite RequirePermitForExecute")
-	}
-
-	// Grant a a confirmed KindPermitPeer record directly in b's store.
 	aPeerID, err := peer.Decode(a.peerID)
 	if err != nil {
 		t.Fatalf("decode a peer id: %v", err)
 	}
-	permitKey := shmevent.SystemKey(shmevent.KindPermitPeer, shmevent.StatusConfirmed, []byte(aPeerID.String()))
-	if err := b.store.Set(permitKey, nil); err != nil {
-		t.Fatalf("grant permit: %v", err)
-	}
-	if resp := send(2); resp.EventType == shmevent.EventError {
-		t.Fatalf("execute from a permitted sender rejected: %s", resp.Value)
-	}
-	if pollEmpty() {
-		t.Fatal("permitted sender's notification was not queued")
-	}
 
-	// Revoke it again and confirm a KindClusterMember record alone is
-	// sufficient (the cluster-member exemption), independent of the
-	// permit.
-	if err := b.store.Delete(permitKey); err != nil {
-		t.Fatalf("revoke permit: %v", err)
-	}
-	if resp := send(3); resp.EventType != shmevent.EventError {
-		t.Fatal("execute from a sender with a revoked permit and no cluster membership unexpectedly succeeded")
+	// Neither granted nor a cluster member: sendExecute reads b's response
+	// synchronously (see that function's doc comment), so the gate's
+	// rejection on b surfaces straight back as a local dispatchExecute
+	// error on a, not a silent drop.
+	if resp := send(1); resp.EventType != shmevent.EventError {
+		t.Fatal("execute from an unauthorized, non-member sender unexpectedly succeeded")
 	}
 	if !pollEmpty() {
-		t.Fatal("sender's notification was queued after its permit was revoked and it's not a cluster member")
+		t.Fatal("unauthorized, non-member sender's notification was queued")
 	}
 
-	memberKey := shmevent.ClusterMemberKey([]byte(aPeerID.String()))
-	memberPayload := shmevent.EncodeClusterMemberPayload(a.ed25519Pub, shmevent.RoleVoter)
-	if err := b.store.Set(memberKey, memberPayload); err != nil {
-		t.Fatalf("record cluster member: %v", err)
+	// Grant a into b's "execute" reserved group directly (PeerGroup(a,
+	// execute)) -- the same record `mage addpeertogroup <peerID> execute`
+	// would write.
+	executeGroupKey, err := shmevent.PeerGroupKey([]byte(aPeerID.String()), []byte(shmevent.ReservedGroupExecute))
+	if err != nil {
+		t.Fatalf("PeerGroupKey: %v", err)
+	}
+	if err := b.store.Set(executeGroupKey, nil); err != nil {
+		t.Fatalf("grant execute group: %v", err)
+	}
+	if resp := send(2); resp.EventType == shmevent.EventError {
+		t.Fatalf("execute from an execute-group-granted sender rejected: %s", resp.Value)
+	}
+	if pollEmpty() {
+		t.Fatal("execute-group-granted sender's notification was not queued")
+	}
+
+	// Revoke it again and confirm "cluster" group membership alone is
+	// sufficient (the cluster-member exemption), independent of the
+	// execute-group grant.
+	if err := b.store.Delete(executeGroupKey); err != nil {
+		t.Fatalf("revoke execute group: %v", err)
+	}
+	if resp := send(3); resp.EventType != shmevent.EventError {
+		t.Fatal("execute from a sender with a revoked execute grant and no cluster membership unexpectedly succeeded")
+	}
+	if !pollEmpty() {
+		t.Fatal("sender's notification was queued after its execute grant was revoked and it's not a cluster member")
+	}
+
+	clusterGroupKey, err := shmevent.PeerGroupKey([]byte(aPeerID.String()), []byte(shmevent.ReservedGroupCluster))
+	if err != nil {
+		t.Fatalf("PeerGroupKey: %v", err)
+	}
+	if err := b.store.Set(clusterGroupKey, nil); err != nil {
+		t.Fatalf("record cluster group membership: %v", err)
 	}
 	if resp := send(4); resp.EventType == shmevent.EventError {
 		t.Fatalf("execute from a cluster member rejected: %s", resp.Value)
 	}
 	if pollEmpty() {
-		t.Fatal("cluster member's notification was not queued despite having no separate permit")
+		t.Fatal("cluster member's notification was not queued despite having no separate execute grant")
 	}
 }
 

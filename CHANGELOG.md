@@ -8,6 +8,79 @@ tracks *changes*, not a full feature description).
 
 ## [Unreleased]
 
+### Security
+- Removed the opt-in permit-based ACL for the generic remote
+  (`ClientProtocolID`) RPC surface, `EventExecute` delivery, and per-log-kind
+  access (`Config.RequirePermitForRemote`/`RequirePermitForExecute`/
+  `RequirePermitForLog`, `KindPermitPeer`, `KindLogPermit`, `mage
+  requestlogpermit`/`confirmlogpermit`/`revokelogpermit`, the `"peer"` kind
+  on `requestpermit`/`confirmpermit`/`revokepermit`) -- all three previously
+  defaulted to *open* (any signed caller allowed) unless an operator
+  explicitly turned them on. Replaced with the same unconditional group-ACL
+  mechanism Channel/relay already used: two new reserved groups, `remote`
+  and `execute` (`shmevent.ReservedGroupRemote`/`ReservedGroupExecute`),
+  gate the generic RPC surface and `EventExecute` respectively, with no
+  opt-out -- a current raft cluster member always passes, anyone else needs
+  an explicit `mage addpeertogroup <peerID> remote`/`execute` grant (or a
+  pairwise personal-group grant). `KindBootstrapNode`'s own request/
+  confirm/revoke lifecycle (`mage addrelaynode`/etc.) is unaffected -- it
+  never used `KindPermitPeer`.
+- The one deliberate exception for a peer with no other standing at all:
+  `pkg/daemon.isCommandLogCarveOut` lets any peer submit a command linked
+  to a *public* `Group` (`SubmitCommand`, still raft-authoritatively
+  enforced by `kvfsm.OpAppendCommandRequest`'s `IsPermittedForCommand`) and
+  read back that exact dispatch's own `CommandRequest`/execution-index/
+  execution-log records -- nothing else in the log namespace or generic RPC
+  surface is reachable this way. See README's "Log access control"/
+  "Reserved cluster/voter/learner/channel/relay/remote/execute groups"
+  sections.
+- A new per-instance local-IPC token (`pkg/ipc/token.go`,
+  `<dataDir>/ipc.token`, `0600`) closes a real gap in the desktop shmring
+  transport: request/response segment names used to be derived from a
+  node's public peer id alone, and shmring's POSIX backend grants owner
+  **and group** read/write on its shared-memory segments -- any co-resident
+  process in the same user or group could attach to a node's channel just
+  by knowing its peer id. The token is now folded directly into the
+  segment name itself, so a process with no read access to `ipc.token`
+  can't even construct the right name to attach. See README's new "Local
+  IPC token" section.
+- Per-peer/per-IP quota (`pkg/daemon/quota.go`, a token-bucket rate
+  limiter) now gates Channel byte throughput and relay-service reservation/
+  connect events, independent of the group-ACL check above -- both gates
+  must pass. `-quota-channel-*`/`-quota-relay-*` flags configure it; left
+  at 0, each now substitutes a real non-zero default (`DefaultQuotaChannel*`/
+  `DefaultQuotaRelay*`) instead of silently disabling enforcement,
+  mirroring how `RelayLimits` already substitutes defaults for
+  `-relay-max-*`. Channel defaults are deliberately generous (sized well
+  above this project's own ~300+ MiB/s desktop channel-throughput
+  benchmark) since bulk transfer is a first-class use case; relay defaults
+  are tight, since a reservation event is inherently rare regardless of
+  workload.
+
+### Added
+- A default bootstrapped public `Group`/`Command` pair
+  (`shmevent.DefaultPublicGroupID`/`DefaultPublicCommandID`,
+  `pkg/daemon.ensureDefaultPublicCommand`, created once at cluster
+  bootstrap): the concrete self-service escalation path for a peer with no
+  standing at all -- submitting this specific command (already reachable
+  via the public-command carve-out above) atomically also grants the
+  submitting peer real Channel and relay access, in the same
+  raft-committed write (`kvfsm`'s new `grantChannelRelayAccess`, special-
+  cased inside `OpAppendCommandRequest`). Not reserved/protected like the
+  seven groups above -- an operator can `deletegroup`/`updategroup
+  public=false` it to close open enrollment, the same way they control
+  every other ACL decision in this catalog.
+
+### Removed
+- `KindPermitPeer`/`KindLogPermit` and everything built only for them:
+  `EventLogPermitRequest`/`Confirm`/`Revoke`, `shmevent.LogPermitKey`,
+  `EncodePermitPeerPayload`/`DecodePermitPeerPayload`, `mage
+  requestlogpermit`/`confirmlogpermit`/`revokelogpermit`, and the `"peer"`
+  kind on `requestpermit`/`confirmpermit`/`revokepermit`/
+  `kvmobile.RequestPermit` et al. `EventPermitRequest`/`Confirm`/`Revoke`
+  themselves are unaffected -- `KindBootstrapNode` still uses that same
+  generic lifecycle under kind `"bootstrap"`.
+
 ### Fixed
 - `pkg/e2erun/android.go`'s `runUICommandTest` (the harness behind `mage
   e2e:all`'s "android UI command test" check, walking all 73 live
@@ -40,9 +113,6 @@ tracks *changes*, not a full feature description).
 ### Added
 - `LICENSE` (Apache-2.0), `NOTICE`, `CONTRIBUTING.md`, `SECURITY.md` --
   first steps toward a publishable, production-ready release.
-- `-require-permit-for-remote` CLI flag on `kvnode`, exposing
-  `daemon.Config.RequirePermitForRemote` (which already existed and was
-  fully wired into the daemon, just unreachable from the CLI).
 - `mage buildLinux`/`buildWindows` now actually cross-compile
   `kvnode`/`kvctl-cli`/`kvhttp`/`kvrecover` into `dist/<goos>_<goarch>/`
   (previously no-op stubs -- `mage build` silently built nothing). Windows

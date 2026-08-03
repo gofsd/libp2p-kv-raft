@@ -174,8 +174,17 @@ type Handler func(ctx context.Context, m shmevent.Msg, crc uint32, sig []byte) s
 // Serve runs the in-process daemon side of the protocol for peerID: it
 // repeatedly waits for a Call on the peer's mailbox, dispatches it to
 // handle, and hands the response segment's fd back. Responses are signed
-// with priv. It blocks until ctx is done.
-func Serve(ctx context.Context, peerID string, priv shmevent.PrivateKey, handle Handler) error {
+// with priv. It blocks until ctx is done. dataDir is accepted (unused)
+// purely so pkg/daemon.Run's single call site compiles unchanged on both
+// platforms -- desktop's Serve (ipc.go) needs it to load/generate a
+// local-IPC token guarding its named shared-memory rendezvous, but that
+// whole problem doesn't exist here: Call and Serve already only ever
+// rendezvous through an in-process Go channel (mailboxFor), sharing
+// memory space in the same Go runtime by construction (see package doc
+// comment), so there is no separate, potentially-untrusted process this
+// transport could ever need to gate out.
+func Serve(ctx context.Context, peerID, dataDir string, priv shmevent.PrivateKey, handle Handler) error {
+	_ = dataDir
 	ch := mailboxFor(peerID)
 	for {
 		var c call

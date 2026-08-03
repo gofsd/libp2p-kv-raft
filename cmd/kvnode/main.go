@@ -26,12 +26,15 @@ func main() {
 	relayLimitDuration := flag.Duration("relay-limit-duration", 0, "only used alongside -relay-service: wall-clock lifetime of a relayed circuit before it's reset (0 = shmevent.DefaultRelayLimitDuration, 720h/30 days)")
 	relayMaxReservationsPerIP := flag.Int("relay-max-reservations-per-ip", 0, "only used alongside -relay-service: active relay-slot reservations allowed from one IP address (0 = shmevent.DefaultRelayMaxReservationsPerIP, 5)")
 	relayMaxReservationsPerPeer := flag.Int("relay-max-reservations-per-peer", 0, "only used alongside -relay-service: active relay-slot reservations allowed from one peer (0 = shmevent.DefaultRelayMaxReservationsPerPeer, 1)")
-	requirePermitForRemote := flag.Bool("require-permit-for-remote", false, "only accept a remote (ClientProtocolID) Set/Get/etc. request from a peer with a confirmed permit (mage requestpermit/confirmpermit, kind \"peer\") -- independent of -require-permit-for-relay, which gates the unrelated relay service instead")
-	requirePermitForRelay := flag.Bool("require-permit-for-relay", false, "only used alongside -relay-service: only let peers with a confirmed permit (mage requestpermit/confirmpermit, kind \"peer\") reserve a relay slot or open a relayed circuit through this node")
-	requirePermitForExecute := flag.Bool("require-permit-for-execute", false, "only deliver EventExecute notifications (mage execute/pollexecute) from a current raft voter/learner or a peer with a confirmed permit (mage requestpermit/confirmpermit, kind \"peer\")")
-	requirePermitForLog := flag.Bool("require-permit-for-log", false, "only let a remote peer logappend/logquery a given pkg/logrecord kind if it holds a confirmed per-kind permit for it (mage requestlogpermit/confirmlogpermit)")
-	requirePermitForChannel := flag.Bool("require-permit-for-channel", false, "only accept an incoming raw channel (mage openchannel/listenchannel) from a current raft voter/learner or a peer with a confirmed permit (mage requestpermit/confirmpermit, kind \"peer\")")
 	requireConfirmForJoin := flag.Bool("require-confirm-for-join", false, "gate join requests (mage addfollower/rejoinnode/join) on a separate confirmation from a current raft voter (mage confirmpermit cluster-join <peerID>) instead of admitting them immediately")
+	quotaChannelBytesPerPeerPerSec := flag.Float64("quota-channel-bytes-per-peer-per-sec", 0, "sustained channel byte-rate allowed from one remote peer id (0 = daemon.DefaultQuotaChannelBytesPerPeerPerSec, 512 MiB/s); a peer over budget has its channelSession closed")
+	quotaChannelBurstPerPeer := flag.Int("quota-channel-burst-per-peer", 0, "instantaneous byte burst allowed on top of -quota-channel-bytes-per-peer-per-sec (0 = daemon.DefaultQuotaChannelBurstPerPeer, 64 MiB)")
+	quotaChannelBytesPerIPPerSec := flag.Float64("quota-channel-bytes-per-ip-per-sec", 0, "sustained channel byte-rate allowed from one remote IP address (0 = daemon.DefaultQuotaChannelBytesPerIPPerSec, 1 GiB/s)")
+	quotaChannelBurstPerIP := flag.Int("quota-channel-burst-per-ip", 0, "instantaneous byte burst allowed on top of -quota-channel-bytes-per-ip-per-sec (0 = daemon.DefaultQuotaChannelBurstPerIP, 128 MiB)")
+	quotaRelayEventsPerPeerPerSec := flag.Float64("quota-relay-events-per-peer-per-sec", 0, "sustained rate of relay-slot reservations/connects allowed from one remote peer id (0 = daemon.DefaultQuotaRelayEventsPerPeerPerSec, 1/sec); over budget is denied at the same point as failing the relay group-ACL")
+	quotaRelayBurstPerPeer := flag.Int("quota-relay-burst-per-peer", 0, "instantaneous event burst allowed on top of -quota-relay-events-per-peer-per-sec (0 = daemon.DefaultQuotaRelayBurstPerPeer, 5)")
+	quotaRelayEventsPerIPPerSec := flag.Float64("quota-relay-events-per-ip-per-sec", 0, "sustained rate of relay-slot reservations/connects allowed from one remote IP address (0 = daemon.DefaultQuotaRelayEventsPerIPPerSec, 5/sec)")
+	quotaRelayBurstPerIP := flag.Int("quota-relay-burst-per-ip", 0, "instantaneous event burst allowed on top of -quota-relay-events-per-ip-per-sec (0 = daemon.DefaultQuotaRelayBurstPerIP, 10)")
 	heartbeatTimeout := flag.Duration("raft-heartbeat-timeout", 0, "raft heartbeat timeout (0 = hashicorp/raft's own default, 1s -- safe for real networks)")
 	electionTimeout := flag.Duration("raft-election-timeout", 0, "raft election timeout (0 = default, 1s)")
 	commitTimeout := flag.Duration("raft-commit-timeout", 0, "raft commit timeout (0 = default, 50ms)")
@@ -62,29 +65,32 @@ func main() {
 	}
 
 	err := daemon.Run(ctx, daemon.Config{
-		DataDir:                     *dataDir,
-		KeyPath:                     *keyPath,
-		ListenPort:                  *listenPort,
-		RelayService:                *relayService,
-		RelayPeers:                  relayPeers,
-		RelayMaxCircuitsPerPeer:     *relayMaxCircuitsPerPeer,
-		RelayLimitData:              *relayLimitDataBytes,
-		RelayLimitDuration:          *relayLimitDuration,
-		RelayMaxReservationsPerIP:   *relayMaxReservationsPerIP,
-		RelayMaxReservationsPerPeer: *relayMaxReservationsPerPeer,
-		RequirePermitForRemote:      *requirePermitForRemote,
-		RequirePermitForRelay:       *requirePermitForRelay,
-		RequirePermitForExecute:     *requirePermitForExecute,
-		RequirePermitForLog:         *requirePermitForLog,
-		RequirePermitForChannel:     *requirePermitForChannel,
-		RequireConfirmForJoin:       *requireConfirmForJoin,
-		HeartbeatTimeout:            *heartbeatTimeout,
-		ElectionTimeout:             *electionTimeout,
-		CommitTimeout:               *commitTimeout,
-		LeaderLeaseTimeout:          *leaderLeaseTimeout,
-		SnapshotThreshold:           *snapshotThreshold,
-		SnapshotInterval:            *snapshotInterval,
-		TrailingLogs:                *trailingLogs,
+		DataDir:                        *dataDir,
+		KeyPath:                        *keyPath,
+		ListenPort:                     *listenPort,
+		RelayService:                   *relayService,
+		RelayPeers:                     relayPeers,
+		RelayMaxCircuitsPerPeer:        *relayMaxCircuitsPerPeer,
+		RelayLimitData:                 *relayLimitDataBytes,
+		RelayLimitDuration:             *relayLimitDuration,
+		RelayMaxReservationsPerIP:      *relayMaxReservationsPerIP,
+		RelayMaxReservationsPerPeer:    *relayMaxReservationsPerPeer,
+		RequireConfirmForJoin:          *requireConfirmForJoin,
+		QuotaChannelBytesPerPeerPerSec: *quotaChannelBytesPerPeerPerSec,
+		QuotaChannelBurstPerPeer:       *quotaChannelBurstPerPeer,
+		QuotaChannelBytesPerIPPerSec:   *quotaChannelBytesPerIPPerSec,
+		QuotaChannelBurstPerIP:         *quotaChannelBurstPerIP,
+		QuotaRelayEventsPerPeerPerSec:  *quotaRelayEventsPerPeerPerSec,
+		QuotaRelayBurstPerPeer:         *quotaRelayBurstPerPeer,
+		QuotaRelayEventsPerIPPerSec:    *quotaRelayEventsPerIPPerSec,
+		QuotaRelayBurstPerIP:           *quotaRelayBurstPerIP,
+		HeartbeatTimeout:               *heartbeatTimeout,
+		ElectionTimeout:                *electionTimeout,
+		CommitTimeout:                  *commitTimeout,
+		LeaderLeaseTimeout:             *leaderLeaseTimeout,
+		SnapshotThreshold:              *snapshotThreshold,
+		SnapshotInterval:               *snapshotInterval,
+		TrailingLogs:                   *trailingLogs,
 	})
 	if err != nil && ctx.Err() == nil {
 		fmt.Fprintf(os.Stderr, "kvnode: %v\n", err)
