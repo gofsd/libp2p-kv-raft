@@ -467,6 +467,27 @@ const (
 	// pkg/shmclient.Session always sends it immediately after
 	// OpenChannel/ListenChannel resolves a channelID. Local-only.
 	EventChannelDataReady uint8 = 45
+	// EventGetVersion returns this node's own build/version info (Value:
+	// EncodeVersionInfo(VersionInfo) -- git commit, dirty flag, build time,
+	// Go version, and the pinned github.com/libp2p/go-libp2p dependency
+	// version, gathered live from runtime/debug.ReadBuildInfo each call, see
+	// pkg/daemon's currentBuildInfo). Answered locally by whichever node
+	// receives it, no store/raft access at all -- same "queried live, never
+	// cached" reasoning as EventGetOwnAddr, and the same always-open
+	// treatment as EventGetPublicKey/EventGetPrivateKey's "Accepted
+	// unsigned" bootstrap carve-out, except here there's no secret being
+	// handed out, so unlike those two this is deliberately left reachable
+	// for a *remote* (ClientProtocolID) caller too, including one with no
+	// standing whatsoever: build/version info is exactly the kind of thing
+	// shmevent.DefaultPublicGroupID's "public" group already exists to make
+	// available to a total stranger with no other door into a cluster (see
+	// that constant's doc comment), but unlike shmevent.DefaultPublicCommandID
+	// this needs no SubmitCommand/CommandRequest round trip through raft --
+	// it's a plain, side-effect-free read of this one node's own local
+	// process state, not a cluster fact anything needs to agree on -- so it
+	// is answered directly, the same way EventGetOwnAddr already is, rather
+	// than added to the Group/Command catalog.
+	EventGetVersion uint8 = 46
 	// EventError is response-only: Value carries a UTF-8 error message,
 	// ID echoes the failed request's ID. Not part of the fields the
 	// protocol was specified with -- added because the struct has no
@@ -563,6 +584,8 @@ func EventName(e uint8) string {
 		return "txn"
 	case EventChannelDataReady:
 		return "channel_data_ready"
+	case EventGetVersion:
+		return "get_version"
 	case EventError:
 		return "error"
 	default:
@@ -661,6 +684,8 @@ func EventFromName(name string) (uint8, bool) {
 		return EventTxn, true
 	case "channel_data_ready":
 		return EventChannelDataReady, true
+	case "get_version":
+		return EventGetVersion, true
 	case "error":
 		return EventError, true
 	default:

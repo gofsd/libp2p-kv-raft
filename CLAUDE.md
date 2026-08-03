@@ -44,6 +44,7 @@ mage listnodes <peerID>                          # query a running node for its 
 mage set <key> <value>
 mage get <key>
 mage rangescan <start> <end> [limit|""]           # list every key/value pair in [start, end] on the current node
+mage version                                      # current node's own build/version info (git commit, dirty, go-libp2p version, ...)
 ```
 
 `listclusters` is a pure local registry read (grouped by whichever peer id originally bootstrapped each

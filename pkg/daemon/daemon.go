@@ -2062,7 +2062,13 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		// remote case against the stream's own libp2p identity (see its own
 		// doc comment), so gating EventAdd here too would make joining
 		// impossible for the one caller class it exists to admit.
+		// EventGetVersion is likewise always open, remote or not -- see its
+		// own doc comment: build/version info carries no secret and no
+		// side effect, so it gets the same always-answered treatment as
+		// EventGetOwnAddr rather than gating it behind cluster/remote-group
+		// standing.
 		m.EventType != shmevent.EventSetKey && m.EventType != shmevent.EventGetKey && m.EventType != shmevent.EventAdd &&
+		m.EventType != shmevent.EventGetVersion &&
 		!n.isAuthorizedForGatedAccess(caller.remotePeer, shmevent.ReservedGroupRemote) &&
 		!n.isCommandLogCarveOut(m, caller.remotePeer) {
 		return errorMsg(m.ID, fmt.Errorf("%s: not permitted -- not a cluster member, in the remote group, or granted access to %s, and not a recognized public-command submission or its own log readback", caller.remotePeer, n.peerID))
@@ -2684,6 +2690,9 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 
 	case shmevent.EventGetOwnAddr:
 		return shmevent.Msg{EventType: shmevent.EventGetOwnAddr, ID: m.ID, Value: []byte(n.advertisedAddrs()[0])}
+
+	case shmevent.EventGetVersion:
+		return shmevent.Msg{EventType: shmevent.EventGetVersion, ID: m.ID, Value: shmevent.EncodeVersionInfo(currentBuildInfo())}
 
 	case shmevent.EventAdd:
 		peerID, err := n.handleAddDispatch(ctx, m, caller.remotePeer)

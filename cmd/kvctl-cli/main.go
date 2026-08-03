@@ -80,6 +80,8 @@ func main() {
 		cmdRecruitPeer(os.Args[2:])
 	case "getownaddr":
 		cmdGetOwnAddr(os.Args[2:])
+	case "version":
+		cmdVersion(os.Args[2:])
 	case "createexecinvite":
 		cmdCreateExecInvite(os.Args[2:])
 	case "revokeexecinvite":
@@ -131,6 +133,7 @@ func usage() {
   kvctl-cli printjoinrequestdatamatrix <ownMultiaddr> <tokenHex> <outFile.png>
   kvctl-cli recruitpeer <ticket> <voter|learner>
   kvctl-cli getownaddr
+  kvctl-cli version
   kvctl-cli createexecinvite <commandID> <inputsJSON>
   kvctl-cli revokeexecinvite <tokenHex>
   kvctl-cli redeemexecinvite <sourceAddr#tokenHex>
@@ -224,6 +227,11 @@ with -relay-peer only gets its actual circuit-relay reservation
 asynchronously in the background after startup, so re-run this a moment
 later if an earlier call returned a private/loopback address instead of
 the relayed one.
+
+version prints this node's own build/version info as one JSON object --
+git commit, dirty flag, build time, Go version, and the go-libp2p version
+it was built against (see shmevent.EventGetVersion's doc comment). Queried
+live against the running daemon, never cached.
 
 createexecinvite/revokeexecinvite/redeemexecinvite/printexecinvitedatamatrix
 are join-invite's counterpart for triggering a specific command execution
@@ -719,6 +727,26 @@ func cmdGetOwnAddr(args []string) {
 		os.Exit(1)
 	}
 	fmt.Println(addr)
+}
+
+// cmdVersion implements `kvctl-cli version` -- see kvctl.Version's doc
+// comment.
+func cmdVersion(args []string) {
+	if len(args) != 0 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli version")
+		os.Exit(2)
+	}
+	info, err := kvctl.Version()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "version: %v\n", err)
+		os.Exit(1)
+	}
+	out, err := json.Marshal(info)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "version: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(out))
 }
 
 func cmdCreateExecInvite(args []string) {

@@ -892,6 +892,23 @@ never leaves a dangling relation behind. `Group` and `Command` records each have
 — 200 groups, 2000 commands (`pkg/kvfsm`'s `systemListLimits`) — tighter than the 65000-entry
 default every other `SystemKeyPrefix` kind (including `GroupCommand`/`PeerGroup` themselves) gets.
 
+### Build/version info: `getversion`
+
+`getversion` (`shmevent.EventGetVersion`, `mage version` / `kvctl-cli version`) answers exactly the
+kind of question a public group's own `public` flag exists to make available to any peer regardless
+of standing — "what are you actually running" — but it deliberately skips this catalog entirely
+rather than being a `Command` some group links to. Build/version info (git commit, dirty flag,
+build time, Go version, and the pinned `github.com/libp2p/go-libp2p` version, gathered live each
+call from the Go toolchain's own VCS build stamping — `runtime/debug.ReadBuildInfo`, see
+`pkg/daemon`'s `currentBuildInfo`, no `-ldflags -X` or other build-system change needed) is a plain,
+side-effect-free read of the answering process's own local state, not a cluster fact anything needs
+to agree on — so unlike `submitcommand`, it needs no `CommandRequest`/raft round trip at all, and is
+just answered on the spot, the same way `getownaddr` already is. It's reachable locally *and* from a
+totally unauthorized remote caller over `ClientProtocolID` unconditionally — the same always-open
+treatment `EventGetPublicKey`/`EventGetPrivateKey` give an as-yet-unidentified caller, except here
+there's no secret being handed out, so the remote door stays open too (see that event's own doc
+comment in `pkg/shmevent/event.go`).
+
 ### Reserved cluster/voter/learner/channel/relay/remote/execute groups
 
 Every cluster auto-creates seven reserved `Group` records the moment it's bootstrapped

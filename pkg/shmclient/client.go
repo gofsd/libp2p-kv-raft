@@ -202,6 +202,22 @@ func (s *Session) GetOwnAddr(ctx context.Context) (string, error) {
 	return string(resp.Value), nil
 }
 
+// GetVersion returns the session's node's own build/version info -- see
+// shmevent.EventGetVersion's doc comment. Queried live, never cached.
+func (s *Session) GetVersion(ctx context.Context) (shmevent.VersionInfo, error) {
+	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
+		EventType: shmevent.EventGetVersion,
+		ID:        newID(),
+	}, s.priv)
+	if err != nil {
+		return shmevent.VersionInfo{}, fmt.Errorf("shmclient: get_version: %w", err)
+	}
+	if resp.EventType == shmevent.EventError {
+		return shmevent.VersionInfo{}, fmt.Errorf("shmclient: get_version: %s", resp.Value)
+	}
+	return shmevent.DecodeVersionInfo(resp.Value)
+}
+
 // Leave asks the raft cluster the session's node currently belongs to to
 // remove it (raft.RemoveServer) -- see shmevent.EventLeave's doc comment.
 // Unlike Add, it takes no target: there's only ever one cluster this

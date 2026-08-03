@@ -1792,6 +1792,27 @@ func GetOwnAddr() error {
 	return nil
 }
 
+// Version prints the current node's own build/version info as one JSON
+// object -- git commit, dirty flag, build time, Go version, and the
+// go-libp2p version it was built against (see shmevent.EventGetVersion's
+// doc comment). Queried live against the running daemon, never cached, so
+// it always reflects whichever binary is actually running right now, not
+// whatever's currently checked out in this source tree.
+//
+// Usage: mage version
+func Version() error {
+	info, err := kvctl.Version()
+	if err != nil {
+		return err
+	}
+	out, err := json.Marshal(info)
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(out))
+	return nil
+}
+
 // Execute sends value as a direct peer-to-peer EventExecute notification
 // from the current node to destPeerID -- bypassing raft and the store
 // entirely, see shmevent.EventExecute's doc comment.
