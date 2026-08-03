@@ -9,9 +9,9 @@
   "nodes": {
     "4": {
       "platform": "remote",
-      "peer_id": "12D3KooWRPxvKk3DSS7FSLLU83PcibkV639dJ2udEAHG4zgUfuoo",
-      "public_key": "e77ac39bba8814b86e363071bf7c96b7552b0e62b2d2e620c83aca256ec822aa",
-      "private_key": "888d9e160ad5d76081f6536056d59933699cf791a61fe921ad29d1d63a5d4aace77ac39bba8814b86e363071bf7c96b7552b0e62b2d2e620c83aca256ec822aa"
+      "peer_id": "12D3KooWAiEMSr45kgSF3aX3NkVcCKtbr8b1dDsdNKSxqRNnLPkg",
+      "public_key": "0d495d75b082e1f2fb3070e000af304dbc3567aa4cd4a6e672c6df5cd057ece5",
+      "private_key": "976e79904190e8ac4764bc8535db851d93ff853c2292b9651242fb5e2e36e9d00d495d75b082e1f2fb3070e000af304dbc3567aa4cd4a6e672c6df5cd057ece5"
     }
   },
   "rows": [
