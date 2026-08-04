@@ -203,3 +203,196 @@ func TestRunCommandDispatcherRecoversHandlerPanic(t *testing.T) {
 		return rec.Fields["status"] == "ok", nil
 	})
 }
+
+// logEntry is QueryCommandLog's per-record JSON shape, decoded locally so
+// these tests don't need pkg/logrecord as a direct import.
+type logEntry struct {
+	Fields    map[string]string `json:"fields"`
+	Narrative string            `json:"narrative"`
+}
+
+func queryCommandLogEntries(t *testing.T, instanceID string) []logEntry {
+	t.Helper()
+	out, err := QueryCommandLog(instanceID, "", "", "")
+	if err != nil {
+		return nil
+	}
+	var entries []logEntry
+	if err := json.Unmarshal([]byte(out), &entries); err != nil {
+		t.Fatalf("decode QueryCommandLog result: %v", err)
+	}
+	return entries
+}
+
+// TestRunCommandDispatcherHandlerReportsProgress drives a handler that
+// calls ReportProgress once before returning its real result, and checks
+// that QueryCommandLog surfaces both entries in order (the progress update
+// first, the terminal result second) -- the live-progress pattern
+// ReportProgress exists for -- while the handler is still only invoked
+// exactly once for the instance.
+func TestRunCommandDispatcherHandlerReportsProgress(t *testing.T) {
+	leaderAddr := spawnTestLeader(t, t.TempDir())
+
+	prevLeader := leaderMultiaddr
+	leaderMultiaddr = leaderAddr
+	t.Cleanup(func() {
+		leaderMultiaddr = prevLeader
+		if err := Stop(); err != nil {
+			t.Errorf("Stop: %v", err)
+		}
+	})
+	if _, err := Start(t.TempDir()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	selfPeerID := PeerID()
+
+	const commandID = "cmd-dispatcher-progress"
+	const groupID = "grp-dispatcher-progress"
+	if err := CreateCommand(commandID, "LongRunning", selfPeerID); err != nil {
+		t.Fatalf("CreateCommand: %v", err)
+	}
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		_, err := GetCommand(commandID)
+		return err == nil, nil
+	})
+	grantCommandAccess(t, commandID, groupID, selfPeerID)
+
+	handler := &recordingDispatchHandler{
+		resultFor: func(instanceID, gotCommandID, requestedBy, inputs string) string {
+			if err := ReportProgress(requestedBy, instanceID, `{"step":"1/2"}`, "started"); err != nil {
+				t.Errorf("ReportProgress: %v", err)
+			}
+			out, _ := json.Marshal(map[string]any{
+				"fields":    map[string]string{"status": CommandStatusSuccess},
+				"narrative": "done",
+			})
+			return string(out)
+		},
+	}
+	if err := RunCommandDispatcher(commandID, handler); err != nil {
+		t.Fatalf("RunCommandDispatcher: %v", err)
+	}
+	t.Cleanup(func() { StopCommandDispatcher(commandID) })
+
+	var instanceID string
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		var err error
+		instanceID, err = SubmitCommand(commandID, "")
+		return err == nil, err
+	})
+
+	var entries []logEntry
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		entries = queryCommandLogEntries(t, instanceID)
+		return len(entries) == 2, nil
+	})
+	if len(entries) != 2 {
+		t.Fatalf("got %d command log entries for instance %s, want 2 (one progress, one terminal)", len(entries), instanceID)
+	}
+	if entries[0].Fields["status"] != CommandStatusRunning || entries[0].Narrative != "started" {
+		t.Fatalf("first entry = %+v, want the ReportProgress update", entries[0])
+	}
+	if entries[1].Fields["status"] != CommandStatusSuccess || entries[1].Narrative != "done" {
+		t.Fatalf("second entry = %+v, want the handler's terminal result", entries[1])
+	}
+
+	time.Sleep(2 * dispatcherPollInterval)
+	if got := atomic.LoadInt32(&handler.calls); got != 1 {
+		t.Fatalf("handler invoked %d times for one instance id, want exactly 1", got)
+	}
+}
+
+// TestReportProgressLeavesInstancePendingForAFreshDispatcher simulates a
+// dispatcher that reported progress and then died before ever writing a
+// terminal result (ReportProgress called directly, no RunCommandDispatcher
+// loop involved), then starts a real RunCommandDispatcher with a normal
+// handler and checks it still picks the instance up -- proving
+// commandRequestAlreadyHandled's dedup check treats a latest
+// CommandStatusRunning entry as not yet handled.
+func TestReportProgressLeavesInstancePendingForAFreshDispatcher(t *testing.T) {
+	leaderAddr := spawnTestLeader(t, t.TempDir())
+
+	prevLeader := leaderMultiaddr
+	leaderMultiaddr = leaderAddr
+	t.Cleanup(func() {
+		leaderMultiaddr = prevLeader
+		if err := Stop(); err != nil {
+			t.Errorf("Stop: %v", err)
+		}
+	})
+	if _, err := Start(t.TempDir()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	selfPeerID := PeerID()
+
+	const commandID = "cmd-dispatcher-resume"
+	const groupID = "grp-dispatcher-resume"
+	if err := CreateCommand(commandID, "Resumable", selfPeerID); err != nil {
+		t.Fatalf("CreateCommand: %v", err)
+	}
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		_, err := GetCommand(commandID)
+		return err == nil, nil
+	})
+	grantCommandAccess(t, commandID, groupID, selfPeerID)
+
+	var instanceID string
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		var err error
+		instanceID, err = SubmitCommand(commandID, "")
+		return err == nil, err
+	})
+
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		err := ReportProgress(selfPeerID, instanceID, `{"step":"1/2"}`, "started, then died")
+		return err == nil, err
+	})
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		out, err := LatestCommandLog(instanceID)
+		if err != nil {
+			return false, nil
+		}
+		var rec logEntry
+		if err := json.Unmarshal([]byte(out), &rec); err != nil {
+			return false, nil
+		}
+		return rec.Fields["status"] == CommandStatusRunning, nil
+	})
+
+	handler := &recordingDispatchHandler{
+		resultFor: func(instanceID, gotCommandID, requestedBy, inputs string) string {
+			out, _ := json.Marshal(map[string]any{
+				"fields":    map[string]string{"status": CommandStatusSuccess},
+				"narrative": "resumed",
+			})
+			return string(out)
+		},
+	}
+	if err := RunCommandDispatcher(commandID, handler); err != nil {
+		t.Fatalf("RunCommandDispatcher: %v", err)
+	}
+	t.Cleanup(func() { StopCommandDispatcher(commandID) })
+
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		out, err := LatestCommandLog(instanceID)
+		if err != nil {
+			return false, nil
+		}
+		var rec logEntry
+		if err := json.Unmarshal([]byte(out), &rec); err != nil {
+			return false, nil
+		}
+		return rec.Fields["status"] == CommandStatusSuccess && rec.Narrative == "resumed", nil
+	})
+	if got := atomic.LoadInt32(&handler.calls); got != 1 {
+		t.Fatalf("handler invoked %d times, want exactly 1", got)
+	}
+
+	entries := queryCommandLogEntries(t, instanceID)
+	if len(entries) != 2 {
+		t.Fatalf("got %d command log entries, want 2 (the earlier progress entry preserved, plus the new terminal one)", len(entries))
+	}
+	if entries[0].Fields["status"] != CommandStatusRunning {
+		t.Fatalf("first entry = %+v, want the earlier progress update, untouched", entries[0])
+	}
+}

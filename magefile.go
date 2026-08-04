@@ -2253,6 +2253,29 @@ func AppendCommandLog(requesterPeerID, instanceID, fieldsJSON, narrative string)
 	return nil
 }
 
+// ReportProgress implements `mage reportprogress <requesterPeerID>
+// <instanceID> <fieldsJSON> <narrative>`: like appendcommandlog, but
+// stamps fields["status"] = "running" first -- see
+// pkg/kvctl.ReportProgress's doc comment on why that's what keeps
+// RunCommandDispatcher's dedup check from treating instanceID as already
+// handled. Mainly for a CommandHandler's own Go code to call directly;
+// this mage target exists as the same manual escape hatch
+// appendcommandlog already is.
+// Usage: mage reportprogress <requesterPeerID> <instanceID> <fieldsJSON> <narrative>
+func ReportProgress(requesterPeerID, instanceID, fieldsJSON, narrative string) error {
+	var fields map[string]string
+	if fieldsJSON != "" {
+		if err := json.Unmarshal([]byte(fieldsJSON), &fields); err != nil {
+			return fmt.Errorf("decode fieldsJSON: %w", err)
+		}
+	}
+	if err := kvctl.ReportProgress(requesterPeerID, instanceID, fields, narrative); err != nil {
+		return err
+	}
+	fmt.Println("✅ progress reported")
+	return nil
+}
+
 // QueryCommandLog implements `mage querycommandlog <instanceID> <since>
 // <until> <limit>`: lists every AppendCommandLog entry for instanceID
 // whose timestamp falls in [since, until], oldest first, one JSON object

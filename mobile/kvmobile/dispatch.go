@@ -445,6 +445,43 @@ func AppendCommandLog(requesterPeerID, instanceID, fieldsJSON, narrative string)
 	return nil
 }
 
+// CommandStatusRunning/CommandStatusSuccess/CommandStatusError mirror
+// desktop's pkg/kvctl constants of the same name -- see ReportProgress and
+// that package's doc comment for the full design. CommandStatusRunning is
+// the one value with real behavioral meaning here: commandRequestAlreadyHandled
+// treats an instance whose latest entry carries it as not yet handled.
+const (
+	CommandStatusRunning = "running"
+	CommandStatusSuccess = "success"
+	CommandStatusError   = "error"
+)
+
+// ReportProgress is kvmobile's port of desktop's pkg/kvctl.ReportProgress:
+// records a non-final status update for an in-flight command dispatch,
+// stamped CommandStatusRunning (overwriting any "status" key already in
+// fieldsJSON) so RunCommandDispatcher's dedup check keeps retrying this
+// instance if the process dies before a terminal result is ever written.
+// Call it as many times as useful from inside a CommandDispatchHandler's
+// Handle while it's still working -- QueryCommandLog returns every call in
+// order. fieldsJSON may be "".
+func ReportProgress(requesterPeerID, instanceID, fieldsJSON, narrative string) error {
+	var fields map[string]string
+	if fieldsJSON != "" {
+		if err := json.Unmarshal([]byte(fieldsJSON), &fields); err != nil {
+			return fmt.Errorf("kvmobile: report progress: decode fieldsJSON: %w", err)
+		}
+	}
+	if fields == nil {
+		fields = make(map[string]string, 1)
+	}
+	fields["status"] = CommandStatusRunning
+	merged, err := json.Marshal(fields)
+	if err != nil {
+		return fmt.Errorf("kvmobile: report progress: encode fields: %w", err)
+	}
+	return AppendCommandLog(requesterPeerID, instanceID, string(merged), narrative)
+}
+
 // QueryCommandLog lists every AppendCommandLog entry for instanceID with
 // a timestamp in [since, until], oldest first, up to limit records -- a
 // thin wrapper over LogQuery(logCommandExecKind, instanceID, ...) so
@@ -690,11 +727,13 @@ var (
 // "replace, don't stack" / "independent per key" shape WatchCommandLog
 // already uses, keyed by commandID here instead of instanceID.
 //
-// "Already handled" is decided by QueryCommandLog: if any log entry
-// already exists for an instance id, RunCommandDispatcher assumes some
-// call to handler.Handle (this run or an earlier one's) already ran for
-// it and skips it -- which is also why Handle's return value is always
-// recorded via AppendCommandLog even when it represents a caller-visible
+// "Already handled" is decided by commandRequestAlreadyHandled: an
+// instance id with no log entry, or whose latest entry is still
+// CommandStatusRunning (see ReportProgress -- call it from inside Handle
+// to report progress before returning a final result, without making the
+// instance look done early), is not yet handled; anything else is, which
+// is also why Handle's return value is always recorded via
+// AppendCommandLog even when it represents a caller-visible
 // failure (encode that into the returned JSON's fields/narrative
 // yourself): an instance nothing ever wrote a result for would be
 // retried forever, and one that legitimately failed generally shouldn't
@@ -799,12 +838,18 @@ func dispatchPendingCommandRequests(commandID string, handler CommandDispatchHan
 	}
 }
 
-// commandRequestAlreadyHandled reports whether instanceID already has at
-// least one AppendCommandLog entry -- RunCommandDispatcher's dedup check,
+// commandRequestAlreadyHandled reports whether instanceID already has a
+// terminal AppendCommandLog entry -- RunCommandDispatcher's dedup check,
 // see that function's own doc comment on why this, not a separate
-// claim/lock, is what "already handled" means here.
+// claim/lock, is what "already handled" means here. "No entries at all"
+// and "latest entry is still CommandStatusRunning" (see ReportProgress)
+// both count as not yet handled; every other latest status, including no
+// status field at all, is terminal. Fetches every entry (not just the
+// first) so it can inspect the latest one's status -- see desktop's
+// pkg/kvctl.commandRequestAlreadyHandled's identical doc comment on why
+// this only costs more for an instance that actually used ReportProgress.
 func commandRequestAlreadyHandled(instanceID string) (bool, error) {
-	out, err := QueryCommandLog(instanceID, "", "", "1")
+	out, err := QueryCommandLog(instanceID, "", "", "")
 	if err != nil {
 		return false, err
 	}
@@ -812,7 +857,10 @@ func commandRequestAlreadyHandled(instanceID string) (bool, error) {
 	if err := json.Unmarshal([]byte(out), &records); err != nil {
 		return false, err
 	}
-	return len(records) > 0, nil
+	if len(records) == 0 {
+		return false, nil
+	}
+	return records[len(records)-1].Fields["status"] != CommandStatusRunning, nil
 }
 
 // dispatchHandlerResult is the JSON shape CommandDispatchHandler.Handle

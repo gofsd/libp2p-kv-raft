@@ -544,11 +544,28 @@ above, evaluated client-side in `kvmobile` itself — writes a durable `CommandR
 per-command log kind and sends the command's `TargetPeerID` a best-effort `Execute` poke, returning
 an `instanceID` the caller tracks the dispatch by; `GetCommandRequest(commandID,
 instanceID)`/`ListCommandRequests(commandID)` read it back (the latter is a target device's
-catch-up path for a poke it might have missed). The target reports progress with
+catch-up path for a poke it might have missed). The target reports its result with
 `AppendCommandLog(requesterPeerID, instanceID, fieldsJSON, narrative)`, read back via
 `QueryCommandLog`/`WatchCommandLog` (a 1.5s poll, accelerated but not replaced by
 `AppendCommandLog`'s own poke back to the requester) or `LatestCommandLog(instanceID)` for just the
 newest entry.
+
+There's no dedicated pending/running/success/failure status type anywhere in this stack — an
+instance's state is inferred purely from whether it has any `AppendCommandLog` entries yet, and, if
+so, what the latest one's `fields["status"]` says, a convention rather than an enforced schema.
+`ReportProgress(requesterPeerID, instanceID, fields, narrative)` is `AppendCommandLog` stamped with
+`CommandStatusRunning` — the one status value with real behavioral meaning: a target's own
+`CommandHandler`/`CommandDispatchHandler` can call it any number of times while still working (each
+call sends its own `Execute` poke too, so a requester polling sees near-live updates, not just an
+end state), and `RunCommandDispatcher`'s own dedup check (`commandRequestAlreadyHandled`) treats an
+instance whose *latest* entry is still `CommandStatusRunning` as not yet handled — so a dispatcher
+process that dies mid-command, after reporting progress but before writing a real result, still gets
+retried on restart, exactly like an instance with no entries at all always has. `CommandStatusSuccess`/
+`CommandStatusError` name the terminal case as a shared convention (`CommandStatusError` already
+matches the panic-recovery `fields["status"]` a `CommandHandler` panic/malformed `Handle` result
+produces automatically) but aren't enforced — any status other than `CommandStatusRunning` is
+terminal, including a handler's own final result that sets no status field at all, exactly like
+every handler written before `ReportProgress` existed.
 
 `ListExecutionsByPeer(peerID)` answers "every command execution touching this peer" without
 iterating `ListCommandRequests` per command: `SubmitCommand` writes a small per-peer index entry

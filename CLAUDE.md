@@ -117,7 +117,7 @@ mage addcommandtogroup/removecommandfromgroup <commandID> <groupID>
 mage listgroupsforcommand <commandID>
 mage submitcommand/getcommandrequest/listcommandrequests <args>
 mage listexecutions <peerID>
-mage appendcommandlog/querycommandlog/latestcommandlog <args>
+mage appendcommandlog/reportprogress/querycommandlog/latestcommandlog <args>
 ```
 
 `mage -l` prints every target's full usage/argument list. Deliberately not ported: kvmobile's

@@ -419,6 +419,14 @@ func ListExecutionsByPeer(peerID string) ([]CommandExecution, error) {
 // call) -- requesterPeerID normally comes from
 // GetCommandRequest(...).RequestedBy. Pass "" for requesterPeerID to
 // skip the poke.
+//
+// Nothing stops calling this more than once for the same instanceID --
+// QueryCommandLog returns every call in order -- but RunCommandDispatcher's
+// own dedup check (commandRequestAlreadyHandled) treats any entry whose
+// fields["status"] isn't CommandStatusRunning as terminal, so a
+// CommandHandler that wants to report progress before its real result
+// should call ReportProgress, not this function directly, for every entry
+// except the final one.
 func AppendCommandLog(requesterPeerID, instanceID string, fields map[string]string, narrative string) error {
 	if instanceID == "" {
 		return fmt.Errorf("kvctl: instance id must not be empty")
@@ -433,6 +441,46 @@ func AppendCommandLog(requesterPeerID, instanceID string, fields map[string]stri
 		}
 	}
 	return nil
+}
+
+// CommandStatusRunning marks an AppendCommandLog entry as a non-terminal
+// progress update rather than a command's final result -- see
+// ReportProgress. It's the one status value commandRequestAlreadyHandled
+// treats specially: an instance whose latest entry is still
+// CommandStatusRunning is not yet "handled," so a dispatcher process that
+// died after reporting progress but before writing a real result still
+// gets retried on restart, the same as an instance with no entry at all
+// always has.
+//
+// CommandStatusSuccess/CommandStatusError are a shared convention for the
+// terminal case -- CommandStatusError already matches
+// runCommandHandlerSafely's own panic-recovery fields["status"] value --
+// but neither is enforced anywhere: any status other than
+// CommandStatusRunning is terminal, including a handler's own final
+// result that sets no status field at all, exactly like every handler
+// written before ReportProgress existed.
+const (
+	CommandStatusRunning = "running"
+	CommandStatusSuccess = "success"
+	CommandStatusError   = "error"
+)
+
+// ReportProgress records a non-final status update for an in-flight
+// command dispatch -- the same durable, pokeable AppendCommandLog write a
+// CommandHandler's own return value produces, just stamped
+// CommandStatusRunning (overwriting any "status" key already in fields)
+// so RunCommandDispatcher's dedup check knows this instance isn't
+// finished and keeps retrying it if the process dies before a terminal
+// result is ever written. Call it as many times as useful while a
+// CommandHandler is still working -- QueryCommandLog returns every call
+// in order, so a requester watching instanceID sees the whole sequence,
+// not just the end state. fields may be nil.
+func ReportProgress(requesterPeerID, instanceID string, fields map[string]string, narrative string) error {
+	if fields == nil {
+		fields = make(map[string]string, 1)
+	}
+	fields["status"] = CommandStatusRunning
+	return AppendCommandLog(requesterPeerID, instanceID, fields, narrative)
 }
 
 // QueryCommandLog implements `mage querycommandlog <instanceID> <since>
@@ -539,13 +587,15 @@ const (
 // pending when this function is first called aren't held up for a full
 // rescan interval.
 //
-// "Already handled" is decided by QueryCommandLog: if any log entry
-// already exists for an instance id, RunCommandDispatcher assumes some
-// call to handler (this one or an earlier process's) already ran for it
-// and skips it -- which is also why handler's return value is always
-// recorded via AppendCommandLog even when it represents a caller-visible
-// failure (set fields/narrative to reflect that yourself): an instance
-// nothing ever wrote a result for would be retried forever, and one that
+// "Already handled" is decided by commandRequestAlreadyHandled: an
+// instance id with no log entry, or whose latest entry is still
+// CommandStatusRunning (see ReportProgress -- call it from inside handler
+// to report progress before returning a final result, without making the
+// instance look done early), is not yet handled; anything else is, which
+// is also why handler's return value is always recorded via
+// AppendCommandLog even when it represents a caller-visible failure (set
+// fields/narrative to reflect that yourself): an instance nothing ever
+// wrote a terminal result for would be retried forever, and one that
 // legitimately failed generally shouldn't be silently retried and re-run
 // its side effects. This dedup check is a plain read, not a claim/lock --
 // running more than one RunCommandDispatcher process against the same
@@ -623,16 +673,32 @@ func dispatchPendingCommandRequests(commandID string, handler CommandHandler, re
 	}
 }
 
-// commandRequestAlreadyHandled reports whether instanceID already has at
-// least one AppendCommandLog entry -- RunCommandDispatcher's dedup check,
+// commandRequestAlreadyHandled reports whether instanceID already has a
+// terminal AppendCommandLog entry -- RunCommandDispatcher's dedup check,
 // see that function's doc comment on why this, not a separate claim/lock,
-// is what "already handled" means here.
+// is what "already handled" means here. "No entries at all" and "latest
+// entry is still CommandStatusRunning" (see ReportProgress) both count as
+// not yet handled, so an instance a dispatcher only ever reported progress
+// for before dying gets retried identically to one it never touched at
+// all; every other latest status -- including no status field at all,
+// exactly what every handler written before ReportProgress existed
+// produces -- is terminal.
+//
+// Fetches every entry (not just the first) so it can inspect the latest
+// one's status: cheap for the common single-result case (unchanged from
+// before), and only costs more, proportionally, for an instance that
+// actually used ReportProgress -- the same "no reverse-scan primitive, pay
+// for a full walk when you need the tail" tradeoff LatestCommandLog's own
+// doc comment already accepts.
 func commandRequestAlreadyHandled(instanceID string) (bool, error) {
-	entries, err := QueryCommandLog(instanceID, time.Unix(0, 0), time.Now(), 1)
+	entries, err := QueryCommandLog(instanceID, time.Unix(0, 0), time.Now(), 0)
 	if err != nil {
 		return false, err
 	}
-	return len(entries) > 0, nil
+	if len(entries) == 0 {
+		return false, nil
+	}
+	return entries[len(entries)-1].Fields["status"] != CommandStatusRunning, nil
 }
 
 // runCommandHandlerSafely calls handler, recovering a panic into an error
