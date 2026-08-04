@@ -11,6 +11,7 @@ import (
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/daemon"
 	"github.com/gofsd/libp2p-kv-raft/pkg/e2edata"
+	"github.com/gofsd/libp2p-kv-raft/pkg/registry"
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
 
@@ -118,6 +119,10 @@ func EnsureBootstrap(repoRoot, path string, f *e2edata.File) (multiaddr, webTran
 		return "", "", "", fmt.Errorf("e2erun: bootstrap reported no listen addresses")
 	}
 
+	if err := deployRegistryEntry(node, ready.ListenAddrs); err != nil {
+		return "", "", "", fmt.Errorf("e2erun: deploy bootstrap registry entry: %w", err)
+	}
+
 	if justStarted && !alreadyBootstrapped {
 		// A genuinely first-ever-started kvnode has no raft configuration
 		// at all -- EventAdd with SourceID 0 and an empty Value is what
@@ -142,6 +147,41 @@ func EnsureBootstrap(repoRoot, path string, f *e2edata.File) (multiaddr, webTran
 
 	wt := findWebTransportAddr(ready.ListenAddrs)
 	return ready.ListenAddrs[0], wt, node.PeerID, nil
+}
+
+// GrantRelayAccess grants targetPeerID standing in
+// shmevent.ReservedGroupRelay on the bootstrap cluster, submitted as
+// bootstrapPeerID itself over the same sendEventRemote path
+// EnsureBootstrap's own self-leader EventAdd already uses -- the bootstrap
+// is always the sole voter of its own cluster, so it's always authorized to
+// author this PeerGroup record for anyone.
+//
+// This exists because a web/browser row can only ever reach the bootstrap
+// through a real circuit-relay v2 reservation (see p2p.rs's do_reserve --
+// unlike desktop/Android, a browser sandbox can't dial the bootstrap's raw
+// TCP/QUIC address directly), and relayACL unconditionally gates that
+// reservation on this exact group (see pkg/daemon.relayACL's doc comment).
+// A brand-new bootstrap identity (freshly provisioned after `mage
+// e2e:destroyall`/`e2e:release` wiped the previous one's whole store, group
+// memberships included) starts with none of that standing granted to
+// anyone, so a web row's very first "add" would otherwise hang for the
+// full RELAY_RESERVATION_TIMEOUT_MS and fail -- caught by exactly that
+// happening against a freshly redeployed bootstrap. Called unconditionally
+// for every known web node identity on every Run, not just after a fresh
+// bootstrap: PutPeerGroup is a plain idempotent set-membership write, so
+// re-granting standing that's already there is harmless, and this also
+// naturally covers a web node identity that itself got reprovisioned (new
+// peer id) against an *existing* bootstrap.
+func GrantRelayAccess(bootstrapPeerID, targetPeerID string) error {
+	payload, err := shmevent.EncodePeerGroupPayload([]byte(targetPeerID), []byte(shmevent.ReservedGroupRelay))
+	if err != nil {
+		return fmt.Errorf("e2erun: encode peer-group payload: %w", err)
+	}
+	status, errMsg := sendEventRemote(bootstrapPeerID, e2edata.NewEvent(shmevent.EventPeerGroupPut, 0, 0, payload, 0))
+	if status != e2edata.StatusPass {
+		return fmt.Errorf("e2erun: grant %s relay access: %s", targetPeerID, errMsg)
+	}
+	return nil
 }
 
 // findWebTransportAddr returns the first /webtransport/ address in addrs,
@@ -295,6 +335,55 @@ func deployKeyIfMissing(node e2edata.Node) (alreadyDeployed bool, err error) {
 		return false, err
 	}
 	return false, scp(tmp.Name(), BootstrapHost, remoteKey)
+}
+
+// deployRegistryEntry writes (or refreshes) node's pkg/registry entry at
+// BootstrapRemoteDir/registry.json -- built locally via that package's own
+// Registry.Put (so this can never drift out of sync with whatever shape
+// registry.json actually needs, the same reasoning deployKeyIfMissing's use
+// of e2edata.WriteDesktopKeyFile already follows for identity.key) into a
+// throwaway local temp directory, then scp'd into place the same way
+// identity.key already is.
+//
+// This exists because pkg/ipc.tokenForPeer (added by the local IPC token
+// work) refuses to hand out an auth token for any peer id with no
+// pkg/registry entry -- and EnsureBootstrap's own deploy path never had
+// one, since it starts kvnode directly over ssh (mkdir/scp/setsid) rather
+// than through pkg/kvctl.AddNodeWithBinary, the only other code path that
+// already calls Registry.Put. Without this, every sendEventRemote call
+// (starting with EnsureBootstrap's own self-leader EventAdd immediately
+// below) fails outright against a freshly deployed bootstrap with "ipc: no
+// registered node for peer id ..." -- caught by an actual `mage e2e:all`
+// run against a brand new BootstrapRemoteDir, not by inspection.
+//
+// Always overwrites (Registry.Put upserts) rather than skipping when
+// already present, unlike deployKeyIfMissing: unlike key material, a
+// refreshed ListenAddrs is exactly what should happen on every call, and
+// re-writing DataDir/KeyPath/PID to the same values they already hold is
+// harmless. sendEventRemote reads this same file back by setting
+// KVSTORE_HOME=BootstrapRemoteDir on the remote kvctl-cli invocation --
+// deliberately not the ssh user's shared default (~/.libp2p-kv-raft),
+// consistent with BootstrapRemoteDir's own doc comment on keeping this
+// pipeline's state fully isolated from anything else on the host.
+func deployRegistryEntry(node e2edata.Node, listenAddrs []string) error {
+	tmpDir, err := os.MkdirTemp("", "kvstore-e2e-bootstrap-registry-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	reg := &registry.Registry{Dir: tmpDir}
+	if err := reg.Put(registry.NodeInfo{
+		PeerID:      node.PeerID,
+		Role:        registry.RoleLeader,
+		DataDir:     BootstrapRemoteDir + "/data",
+		KeyPath:     BootstrapRemoteDir + "/data/identity.key",
+		ListenAddrs: listenAddrs,
+	}); err != nil {
+		return fmt.Errorf("e2erun: build local registry.json: %w", err)
+	}
+
+	return scp(filepath.Join(tmpDir, "registry.json"), BootstrapHost, BootstrapRemoteDir+"/registry.json")
 }
 
 // bootstrapPidFile is where startIfNotRunning records the daemon's pid, so

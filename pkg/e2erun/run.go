@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/e2edata"
+	"github.com/gofsd/libp2p-kv-raft/pkg/registry"
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
 
@@ -145,6 +146,22 @@ func Run(repoRoot, path string, f *e2edata.File, rowIndices []int, types Types) 
 	}
 	if reprovisioned {
 		if err := f.Save(path); err != nil {
+			return err
+		}
+	}
+
+	// Every known web node identity needs relay standing on the bootstrap
+	// before any of its rows can ever reach it -- see GrantRelayAccess's
+	// doc comment on why a browser's very first "add" otherwise hangs out
+	// the full relay-reservation timeout against a freshly (re)provisioned
+	// bootstrap. Granted unconditionally here (not gated on "did the
+	// bootstrap just get reprovisioned") since it's a cheap, idempotent
+	// no-op against a bootstrap that already has this standing recorded.
+	for _, node := range f.Nodes {
+		if node.Platform != e2edata.PlatformWeb {
+			continue
+		}
+		if err := GrantRelayAccess(bootstrapPeerID, node.PeerID); err != nil {
 			return err
 		}
 	}
@@ -445,6 +462,14 @@ func sendEventLocal(kvctlBin, peerID string, ev e2edata.Event) (int, string) {
 		return e2edata.StatusFail, err.Error()
 	}
 	cmd := exec.Command(kvctlBin, "sendevent", peerID, string(argJSON))
+	// KVSTORE_HOME points kvctl-cli's own registry.Open() at the same
+	// e2e-isolated registry EnsureLocalDesktopNode writes peerID's entry
+	// into (localE2EHome, not this process's own KVSTORE_HOME/default) --
+	// see EnsureLocalDesktopNode's doc comment on why sendevent needs a
+	// registry entry to exist at all now.
+	if e2eHome, err := localE2EHome(); err == nil {
+		cmd.Env = append(os.Environ(), registry.EnvHome+"="+e2eHome)
+	}
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -464,7 +489,11 @@ func sendEventRemote(peerID string, ev e2edata.Event) (int, string) {
 	if err != nil {
 		return e2edata.StatusFail, err.Error()
 	}
-	remoteCmd := fmt.Sprintf("%s/bin/kvctl-cli sendevent %s %s", BootstrapRemoteDir, peerID, shellQuote(string(argJSON)))
+	// KVSTORE_HOME points kvctl-cli at BootstrapRemoteDir/registry.json --
+	// deployRegistryEntry's own doc comment on why that file (not the ssh
+	// user's shared default) is what this needs to resolve peerID's IPC
+	// token through.
+	remoteCmd := fmt.Sprintf("KVSTORE_HOME=%s %s/bin/kvctl-cli sendevent %s %s", BootstrapRemoteDir, BootstrapRemoteDir, peerID, shellQuote(string(argJSON)))
 	stdout, stderr, runErr := sshOutputAnyExit(BootstrapHost, remoteCmd)
 	return interpretSendEventResult(stdout, stderr, runErr)
 }

@@ -7,11 +7,29 @@
   },
   "published_version": 4,
   "nodes": {
+    "1": {
+      "platform": "desktop",
+      "peer_id": "12D3KooWQGFcvMhvziPQi6eBoBCekHSWm458YfehBXghFDeuLCna",
+      "public_key": "d6a55039ef92a1a850208ca2e80c42c4b3676fba020eb7f21a2b829497cf5737",
+      "private_key": "6474328bfc861ffb72c0ee2495ee597ef8e5dc6c91197305ecc5f15cd5e01c94d6a55039ef92a1a850208ca2e80c42c4b3676fba020eb7f21a2b829497cf5737"
+    },
+    "2": {
+      "platform": "android",
+      "peer_id": "12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ",
+      "public_key": "e0379675fd5c73fd31c330ea8db67a3a94db7b57bc675dad2e1de39fe9eb77cd",
+      "private_key": "7aff16b4a910512c6d83298201571cc5fcdf9a2b03e1942e9bc94ae66d353fc4e0379675fd5c73fd31c330ea8db67a3a94db7b57bc675dad2e1de39fe9eb77cd"
+    },
+    "3": {
+      "platform": "web",
+      "peer_id": "12D3KooWBC1Huw9mrzn5cZmKpnECdHsxr8UToZvYQCtkaJBqtBtb",
+      "public_key": "1466dc15ebab0f6bc24e3e12646920d85d247b2ea17153d1f409fb360bcd8210",
+      "private_key": "88ea8ff670694847c54e6c906ed6729787b015b35c3f6b9f11c7411913cbbdbc1466dc15ebab0f6bc24e3e12646920d85d247b2ea17153d1f409fb360bcd8210"
+    },
     "4": {
       "platform": "remote",
-      "peer_id": "12D3KooWAiEMSr45kgSF3aX3NkVcCKtbr8b1dDsdNKSxqRNnLPkg",
-      "public_key": "0d495d75b082e1f2fb3070e000af304dbc3567aa4cd4a6e672c6df5cd057ece5",
-      "private_key": "976e79904190e8ac4764bc8535db851d93ff853c2292b9651242fb5e2e36e9d00d495d75b082e1f2fb3070e000af304dbc3567aa4cd4a6e672c6df5cd057ece5"
+      "peer_id": "12D3KooWHeYLTStgX8dwYUCJoEzmHMuq2AGr4vkqY78sJ4NkFbdP",
+      "public_key": "74592f06c5f6e1a285bb9be105267a9c2f458a1fa1535dfeb655b9f4d5d6ca46",
+      "private_key": "859abe02d8bfd600587b87236be2a1fdde90104421edfe4e5f442e626ee7917174592f06c5f6e1a285bb9be105267a9c2f458a1fa1535dfeb655b9f4d5d6ca46"
     }
   },
   "rows": [
@@ -749,7 +767,7 @@
     },
     "Permits: RequestPermit": {
       "inputs": [
-        "peer",
+        "bootstrap",
         "{{selfPeerID}}",
         ""
       ],
@@ -781,7 +799,372 @@
     }
   },
   "android_ui_result": {
-    "ran_at": "2026-08-02T14:42:59.403896166+03:00",
-    "status": 0
+    "ran_at": "2026-08-05T01:22:01.685916228+03:00",
+    "status": 0,
+    "cases": [
+      {
+        "command": "Cluster: Start",
+        "pass": true,
+        "output": "12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ"
+      },
+      {
+        "command": "Cluster: StartWithKey",
+        "pass": true,
+        "output": "12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ"
+      },
+      {
+        "command": "Cluster: Join",
+        "pass": true
+      },
+      {
+        "command": "Cluster: JoinWithKey",
+        "pass": true
+      },
+      {
+        "command": "Cluster: StartSolo",
+        "pass": true
+      },
+      {
+        "command": "Cluster: StartSoloWithKey",
+        "pass": true
+      },
+      {
+        "command": "Cluster: StartSoloWithKeyAndPort",
+        "pass": true
+      },
+      {
+        "command": "Cluster: StartPending",
+        "pass": true
+      },
+      {
+        "command": "Cluster: StartPendingWithKey",
+        "pass": true
+      },
+      {
+        "command": "Cluster: StartPendingWithKeyAndPort",
+        "pass": true
+      },
+      {
+        "command": "Cluster: GetOwnAddr",
+        "pass": true,
+        "output": "/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWHeYLTStgX8dwYUCJoEzmHMuq2AGr4vkqY78sJ4NkFbdP/p2p-circuit/p2p/12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ"
+      },
+      {
+        "command": "Cluster: CreateJoinRequest",
+        "pass": true,
+        "output": "7c286944bfcdab557f823f6766a08e3c"
+      },
+      {
+        "command": "Cluster: CancelJoinRequest",
+        "pass": true
+      },
+      {
+        "command": "Cluster: RecruitPeer",
+        "pass": true
+      },
+      {
+        "command": "Cluster: CreateJoinRequestTicket",
+        "pass": true
+      },
+      {
+        "command": "Cluster: RedeemJoinRequestTicket",
+        "pass": true
+      },
+      {
+        "command": "Cluster: CreateJoinInvite",
+        "pass": true
+      },
+      {
+        "command": "Cluster: RevokeJoinInvite",
+        "pass": true
+      },
+      {
+        "command": "Cluster: CreateJoinInviteTicket",
+        "pass": true
+      },
+      {
+        "command": "Cluster: VerifyJoinInviteTicket",
+        "pass": true
+      },
+      {
+        "command": "Cluster: Stop",
+        "pass": true
+      },
+      {
+        "command": "Cluster: Delete",
+        "pass": true
+      },
+      {
+        "command": "Cluster: Leave",
+        "pass": true
+      },
+      {
+        "command": "Cluster: Rm",
+        "pass": true
+      },
+      {
+        "command": "Cluster: Kick",
+        "pass": true
+      },
+      {
+        "command": "Cluster: ListClusters",
+        "pass": true,
+        "output": "[{\"cluster_id\":\"12D3KooWHeYLTStgX8dwYUCJoEzmHMuq2AGr4vkqY78sJ4NkFbdP\",\"peer_id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\"}]"
+      },
+      {
+        "command": "Cluster: ListClusterMembers",
+        "pass": true,
+        "output": "[{\"peer_id\":\"12D3KooWBC1Huw9mrzn5cZmKpnECdHsxr8UToZvYQCtkaJBqtBtb\",\"role\":\"learner\"},{\"peer_id\":\"12D3KooWHeYLTStgX8dwYUCJoEzmHMuq2AGr4vkqY78sJ4NkFbdP\",\"role\":\"leader\"},{\"peer_id\":\"12D3KooWQGFcvMhvziPQi6eBoBCekHSWm458YfehBXghFDeuLCna\",\"role\":\"voter\"},{\"peer_id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"role\":\"learner\"}]"
+      },
+      {
+        "command": "Cluster: PeerID",
+        "pass": true,
+        "output": "12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ"
+      },
+      {
+        "command": "Cluster: AccessToken",
+        "pass": true,
+        "output": "dd78168b830eae132ab394564ae7d02fe18926f945210d5dc0159576e4262801"
+      },
+      {
+        "command": "KV: Submit",
+        "pass": true,
+        "output": "OK"
+      },
+      {
+        "command": "KV: Get",
+        "pass": true,
+        "output": "e2e-ui-test-value-1785881664953"
+      },
+      {
+        "command": "KV: RangeScan",
+        "pass": true,
+        "output": "[{\"key\":\"e2e-ui-test-key\",\"value\":\"e2e-ui-test-value-1785881664953\"}]"
+      },
+      {
+        "command": "Permits: RequestPermit",
+        "pass": true,
+        "output": "OK"
+      },
+      {
+        "command": "Permits: ConfirmPermit",
+        "pass": true
+      },
+      {
+        "command": "Permits: RevokePermit",
+        "pass": true
+      },
+      {
+        "command": "Execute: Execute",
+        "pass": true,
+        "output": "OK"
+      },
+      {
+        "command": "Execute: PollExecute",
+        "pass": true,
+        "output": "{\"pending\":false}"
+      },
+      {
+        "command": "Execute: WatchExecute",
+        "pass": true,
+        "output": "Watching -- notifications appear below as they arrive"
+      },
+      {
+        "command": "Execute: StopWatchExecute",
+        "pass": true,
+        "output": "OK"
+      },
+      {
+        "command": "Channel: OpenChannel",
+        "pass": true,
+        "output": "Opened c3052191b0fe20ed -- incoming data appears below as it arrives"
+      },
+      {
+        "command": "Channel: ListenChannel",
+        "pass": true
+      },
+      {
+        "command": "Channel: StopListenChannel",
+        "pass": true,
+        "output": "OK"
+      },
+      {
+        "command": "Channel: SendChannelData",
+        "pass": true
+      },
+      {
+        "command": "Channel: CloseChannelWrite",
+        "pass": true,
+        "output": "OK"
+      },
+      {
+        "command": "Channel: CloseChannel",
+        "pass": true,
+        "output": "OK"
+      },
+      {
+        "command": "Channel: StopChannel",
+        "pass": true,
+        "output": "OK"
+      },
+      {
+        "command": "Log records: LogAppend",
+        "pass": true
+      },
+      {
+        "command": "Log records: LogQuery",
+        "pass": true,
+        "output": "[{\"kind\":\"e2e-ui-test\",\"unit_id\":\"ui-test-unit\",\"timestamp\":\"2026-08-04T20:10:11.108309659Z\",\"author_peer_id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"narrative\":\"ui e2e test\"},{\"kind\":\"e2e-ui-test\",\"unit_id\":\"ui-test-unit\",\"timestamp\":\"2026-08-04T20:25:53.092202257Z\",\"author_peer_id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"narrative\":\"ui e2e test\"},{\"kind\":\"e2e-ui-test\",\"unit_id\":\"ui-test-unit\",\"timestamp\":\"2026-08-04T21:20:53.506046597Z\",\"author_peer_id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"narrative\":\"ui e2e test\"}]"
+      },
+      {
+        "command": "Group: CreateGroup",
+        "pass": true
+      },
+      {
+        "command": "Group: UpdateGroup",
+        "pass": true
+      },
+      {
+        "command": "Group: DeleteGroup",
+        "pass": true
+      },
+      {
+        "command": "Group: GetGroup",
+        "pass": true
+      },
+      {
+        "command": "Group: ListGroups",
+        "pass": true,
+        "output": "[{\"id\":\"12D3KooWBC1Huw9mrzn5cZmKpnECdHsxr8UToZvYQCtkaJBqtBtb\",\"name\":\"12D3KooWBC1Huw9mrzn5cZmKpnECdHsxr8UToZvYQCtkaJBqtBtb\",\"public\":false},{\"id\":\"12D3KooWHeYLTStgX8dwYUCJoEzmHMuq2AGr4vkqY78sJ4NkFbdP\",\"name\":\"12D3KooWHeYLTStgX8dwYUCJoEzmHMuq2AGr4vkqY78sJ4NkFbdP\",\"public\":false},{\"id\":\"12D3KooWQGFcvMhvziPQi6eBoBCekHSWm458YfehBXghFDeuLCna\",\"name\":\"12D3KooWQGFcvMhvziPQi6eBoBCekHSWm458YfehBXghFDeuLCna\",\"public\":false},{\"id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"name\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"public\":false},{\"id\":\"channel\",\"name\":\"channel\",\"public\":false},{\"id\":\"cluster\",\"name\":\"cluster\",\"public\":false},{\"id\":\"execute\",\"name\":\"execute\",\"public\":false},{\"id\":\"learner\",\"name\":\"learner\",\"public\":false},{\"id\":\"public\",\"name\":\"public\",\"public\":true},{\"id\":\"relay\",\"name\":\"relay\",\"public\":false},{\"id\":\"remote\",\"name\":\"remote\",\"public\":false},{\"id\":\"voter\",\"name\":\"voter\",\"public\":false}]"
+      },
+      {
+        "command": "Command: CreateCommand",
+        "pass": true
+      },
+      {
+        "command": "Command: UpdateCommand",
+        "pass": true
+      },
+      {
+        "command": "Command: DeleteCommand",
+        "pass": true
+      },
+      {
+        "command": "Command: GetCommand",
+        "pass": true
+      },
+      {
+        "command": "Command: ListCommands",
+        "pass": true,
+        "output": "[{\"id\":\"public-access\",\"name\":\"public-access\",\"target_peer_id\":\"\"}]"
+      },
+      {
+        "command": "Links: AddCommandToGroup",
+        "pass": true
+      },
+      {
+        "command": "Links: RemoveCommandFromGroup",
+        "pass": true
+      },
+      {
+        "command": "Links: ListGroupsForCommand",
+        "pass": true,
+        "output": "[]"
+      },
+      {
+        "command": "Links: AddPeerToGroup",
+        "pass": true
+      },
+      {
+        "command": "Links: RemovePeerFromGroup",
+        "pass": true
+      },
+      {
+        "command": "Links: ListGroupsForPeer",
+        "pass": true,
+        "output": "[\"cluster\",\"learner\"]"
+      },
+      {
+        "command": "Dispatch: SubmitCommand",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: GetCommandRequest",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: ListCommandRequests",
+        "pass": true,
+        "output": "[]"
+      },
+      {
+        "command": "Dispatch: ListExecutionsByPeer",
+        "pass": true,
+        "output": "[]"
+      },
+      {
+        "command": "Dispatch: AppendCommandLog",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: QueryCommandLog",
+        "pass": true,
+        "output": "[{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-04T20:10:44.384415392Z\",\"author_peer_id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"narrative\":\"ui e2e test\"}]"
+      },
+      {
+        "command": "Dispatch: LatestCommandLog",
+        "pass": true,
+        "output": "{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-04T20:10:44.384415392Z\",\"author_peer_id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"narrative\":\"ui e2e test\"}"
+      },
+      {
+        "command": "Dispatch: WatchCommandLog",
+        "pass": true,
+        "output": "Watching -- new records appear below as they arrive"
+      },
+      {
+        "command": "Dispatch: StopWatchCommandLog",
+        "pass": true,
+        "output": "OK"
+      },
+      {
+        "command": "Dispatch: RunCommandDispatcher",
+        "pass": true,
+        "output": "Dispatching -- requests for no-such-command are handled as they arrive, logged below"
+      },
+      {
+        "command": "Dispatch: StopCommandDispatcher",
+        "pass": true,
+        "output": "OK"
+      },
+      {
+        "command": "ExecInvite: CreateExecInvite",
+        "pass": true
+      },
+      {
+        "command": "ExecInvite: RevokeExecInvite",
+        "pass": true
+      },
+      {
+        "command": "ExecInvite: RedeemExecInvite",
+        "pass": true
+      },
+      {
+        "command": "ExecInvite: CreateExecInviteTicket",
+        "pass": true
+      },
+      {
+        "command": "ExecInvite: RedeemExecInviteTicket",
+        "pass": true
+      },
+      {
+        "command": "Raw: SendEvent",
+        "pass": true,
+        "output": "{\"event\":\"get_public_key\",\"value\":\"0xe0379675fd5c73fd31c330ea8db67a3a94db7b57bc675dad2e1de39fe9eb77cd\",\"id\":6562}"
+      },
+      {
+        "command": "Test: SleepMillis",
+        "pass": true
+      }
+    ]
   }
 }
