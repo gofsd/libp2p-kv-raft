@@ -158,20 +158,26 @@ func EnsureBootstrap(repoRoot, path string, f *e2edata.File) (multiaddr, webTran
 //
 // This exists because a web/browser row can only ever reach the bootstrap
 // through a real circuit-relay v2 reservation (see p2p.rs's do_reserve --
-// unlike desktop/Android, a browser sandbox can't dial the bootstrap's raw
+// unlike desktop/remote, a browser sandbox can't dial the bootstrap's raw
 // TCP/QUIC address directly), and relayACL unconditionally gates that
 // reservation on this exact group (see pkg/daemon.relayACL's doc comment).
-// A brand-new bootstrap identity (freshly provisioned after `mage
-// e2e:destroyall`/`e2e:release` wiped the previous one's whole store, group
-// memberships included) starts with none of that standing granted to
-// anyone, so a web row's very first "add" would otherwise hang for the
-// full RELAY_RESERVATION_TIMEOUT_MS and fail -- caught by exactly that
-// happening against a freshly redeployed bootstrap. Called unconditionally
-// for every known web node identity on every Run, not just after a fresh
+// Android needs the identical grant for the identical reason -- an emulator
+// with no port forwarding is just as unreachable-without-relay as a browser
+// tab, and buildAndroidAAR bakes the live bootstrapMultiaddr in as both
+// leaderMultiaddr *and* relayMultiaddr. A brand-new bootstrap identity
+// (freshly provisioned after `mage e2e:destroyall`/`e2e:release` wiped the
+// previous one's whole store, group memberships included) starts with none
+// of that standing granted to anyone, so a web/Android row's very first
+// "add" would otherwise hang for the full RELAY_RESERVATION_TIMEOUT_MS (web)
+// or its own AutoRelay reservation retry loop (Android) and fail -- caught
+// by exactly that happening against a freshly redeployed bootstrap (web
+// first, then Android again once e2e:release's real destroyAllFirst
+// actually exercised this path for it). Called unconditionally for every
+// known web/Android node identity on every Run, not just after a fresh
 // bootstrap: PutPeerGroup is a plain idempotent set-membership write, so
 // re-granting standing that's already there is harmless, and this also
-// naturally covers a web node identity that itself got reprovisioned (new
-// peer id) against an *existing* bootstrap.
+// naturally covers a node identity that itself got reprovisioned (new peer
+// id) against an *existing* bootstrap.
 func GrantRelayAccess(bootstrapPeerID, targetPeerID string) error {
 	payload, err := shmevent.EncodePeerGroupPayload([]byte(targetPeerID), []byte(shmevent.ReservedGroupRelay))
 	if err != nil {

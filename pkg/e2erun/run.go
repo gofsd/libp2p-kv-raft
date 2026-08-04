@@ -150,15 +150,25 @@ func Run(repoRoot, path string, f *e2edata.File, rowIndices []int, types Types) 
 		}
 	}
 
-	// Every known web node identity needs relay standing on the bootstrap
-	// before any of its rows can ever reach it -- see GrantRelayAccess's
-	// doc comment on why a browser's very first "add" otherwise hangs out
-	// the full relay-reservation timeout against a freshly (re)provisioned
-	// bootstrap. Granted unconditionally here (not gated on "did the
+	// Every known web *and* Android node identity needs relay standing on
+	// the bootstrap before any of its rows can ever reach it -- see
+	// GrantRelayAccess's doc comment on why a browser's very first "add"
+	// otherwise hangs out the full relay-reservation timeout against a
+	// freshly (re)provisioned bootstrap. Android needs the identical grant
+	// for the identical reason: buildAndroidAAR bakes this same live
+	// bootstrapMultiaddr in as *both* leaderMultiaddr and relayMultiaddr
+	// (see that function's own ldflags), and an emulator with no port
+	// forwarding is exactly as unreachable-without-a-relay-reservation as a
+	// browser tab -- caught by e2e:release's real destroyAllFirst wiping the
+	// bootstrap's group memberships and every Android row then failing with
+	// "context deadline exceeded" (the whole app stuck retrying its own
+	// AutoRelay reservation, never even answering local IPC calls) even
+	// though desktop/remote rows, which dial the bootstrap directly, kept
+	// passing. Granted unconditionally here (not gated on "did the
 	// bootstrap just get reprovisioned") since it's a cheap, idempotent
 	// no-op against a bootstrap that already has this standing recorded.
 	for _, node := range f.Nodes {
-		if node.Platform != e2edata.PlatformWeb {
+		if node.Platform != e2edata.PlatformWeb && node.Platform != e2edata.PlatformAndroid {
 			continue
 		}
 		if err := GrantRelayAccess(bootstrapPeerID, node.PeerID); err != nil {
