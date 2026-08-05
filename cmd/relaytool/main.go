@@ -2,11 +2,13 @@
 // doesn't fit a `mage` target: running an actual circuit-relay v2 service
 // node (the same daemon.Config.RelayService capability cmd/kvnode's own
 // -relay-service flag exposes) for real production use or local/offline
-// testing, and reproducing the join-ticket-over-relay bug fixed in
+// testing, reproducing the join-ticket-over-relay bug fixed in
 // pkg/registry.ExtractPeerID (see that function's doc comment) end to end
-// against a genuine relay circuit. -mode picks which of the three it runs;
-// -verbose controls how much step-by-step progress gets printed on top of
-// each mode's final result.
+// against a genuine relay circuit, and driving the full two-device pairing
+// flow (-mode=pair) the same way pkg/e2erun/android_pair.go drives it
+// across two phones, just with desktop daemons. -mode picks which of the
+// four it runs; -verbose controls how much step-by-step progress gets
+// printed on top of each mode's final result.
 package main
 
 import (
@@ -25,6 +27,7 @@ import (
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/daemon"
 	"github.com/gofsd/libp2p-kv-raft/pkg/e2edata"
+	"github.com/gofsd/libp2p-kv-raft/pkg/registry"
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmclient"
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
@@ -44,9 +47,9 @@ func vlogf(format string, args ...any) {
 }
 
 func main() {
-	mode := flag.String("mode", "debug", `"prod": run this process as a real, deployable circuit-relay-v2 service node (fixed port 4001 by default, identity persisted so restarts keep the same peer id); "local": the same relay-service capability tuned for local/offline testing (ephemeral port, throwaway identity each run); "debug": reproduce the join-ticket-over-relay flow (leader+follower daemons, a follower Join against a "<relayAddr>#<tokenHex>" ticket) through a relay named by -relay`)
+	mode := flag.String("mode", "debug", `"prod": run this process as a real, deployable circuit-relay-v2 service node (fixed port 4001 by default, identity persisted so restarts keep the same peer id); "local": the same relay-service capability tuned for local/offline testing (ephemeral port, throwaway identity each run); "debug": reproduce the join-ticket-over-relay flow (leader+follower daemons, a follower Join against a "<relayAddr>#<tokenHex>" ticket) through a relay named by -relay; "pair": the full two-device pairing flow (both devices self-service relay standing, then recruit/join each other over the relay)`)
 	verboseFlag := flag.Bool("verbose", false, "print step-by-step progress (relay reservation polling, daemon readiness waits, etc.) instead of just each mode's final result")
-	relayAddr := flag.String("relay", "", "mode=debug only: multiaddr of the circuit-relay-v2 node to join/reserve through (default: the real deployed production relay, "+prodRelayAddr+")")
+	relayAddr := flag.String("relay", "", "mode=debug/pair only: multiaddr of the circuit-relay-v2 node to join/reserve through (default: the real deployed production relay, "+prodRelayAddr+")")
 	port := flag.Int("port", 0, "mode=prod/local only: listen port for the relay-service daemon (0 = ephemeral; mode=prod defaults to 4001 when left unset)")
 	dataDir := flag.String("data-dir", "", "mode=prod/local only: identity/state directory for the relay-service daemon (default: a stable path under the OS temp dir for mode=prod so restarts keep the same peer id; a fresh temp dir each run for mode=local)")
 	flag.Parse()
@@ -67,8 +70,14 @@ func main() {
 			addr = prodRelayAddr
 		}
 		runDebugRepro(addr)
+	case "pair":
+		addr := *relayAddr
+		if addr == "" {
+			addr = prodRelayAddr
+		}
+		runPairRepro(addr)
 	default:
-		log.Fatalf("relaytool: unknown -mode %q (want prod, local, or debug)", *mode)
+		log.Fatalf("relaytool: unknown -mode %q (want prod, local, debug, or pair)", *mode)
 	}
 }
 
@@ -172,7 +181,29 @@ func runRelayService(port int, dataDir string, persistent bool) {
 	fmt.Println("stopping relay-service node...")
 }
 
-func spawnNode(name, dataDir, relayAddr string) (peerID string, listenAddrs []string) {
+// raftTiming is the subset of daemon.Config a spawned node's raft
+// behavior is tuned with. Two profiles exist because the two things this
+// tool spawns nodes for want opposite tradeoffs -- see fastLocalRaft and
+// deviceRaft.
+type raftTiming struct {
+	heartbeat, election, commit, leaderLease time.Duration
+}
+
+// fastLocalRaft makes a single-node bootstrap settle as fast as possible,
+// which is all -mode=debug needs of it (it never forms a multi-node
+// cluster whose members have to keep heartbeating each other).
+var fastLocalRaft = raftTiming{200 * time.Millisecond, 200 * time.Millisecond, 50 * time.Millisecond, 100 * time.Millisecond}
+
+// deviceRaft mirrors mobile/kvmobile's own raft timings exactly, and is
+// what any cluster whose members reach each other *through a relay* has
+// to use: a relayed round trip to a real VPS is comfortably longer than
+// fastLocalRaft's whole 200ms election timeout, so a leader would lose
+// leadership faster than it could ever replicate anything. Caught live --
+// -mode=pair's recruit succeeded and then every write failed with
+// "leadership lost while committing log" until these were widened.
+var deviceRaft = raftTiming{4 * time.Second, 4 * time.Second, 200 * time.Millisecond, 2500 * time.Millisecond}
+
+func spawnNode(name, dataDir, relayAddr string, timing raftTiming) (peerID string, listenAddrs []string) {
 	keyPath, err := ensureIdentityKeyFile(dataDir)
 	if err != nil {
 		log.Fatalf("%s: %v", name, err)
@@ -184,10 +215,10 @@ func spawnNode(name, dataDir, relayAddr string) (peerID string, listenAddrs []st
 			DataDir:            dataDir,
 			KeyPath:            keyPath,
 			RelayPeers:         []string{relayAddr},
-			HeartbeatTimeout:   200 * time.Millisecond,
-			ElectionTimeout:    200 * time.Millisecond,
-			CommitTimeout:      50 * time.Millisecond,
-			LeaderLeaseTimeout: 100 * time.Millisecond,
+			HeartbeatTimeout:   timing.heartbeat,
+			ElectionTimeout:    timing.election,
+			CommitTimeout:      timing.commit,
+			LeaderLeaseTimeout: timing.leaderLease,
 		})
 		vlogf("%s: daemon.Run exited: %v", name, err)
 	}()
@@ -203,6 +234,19 @@ func spawnNode(name, dataDir, relayAddr string) (peerID string, listenAddrs []st
 	}
 	if ready.PeerID == "" {
 		log.Fatalf("%s: daemon never became ready", name)
+	}
+	// shmclient.Open resolves a peer id to its data dir (and therefore its
+	// shmring token) through this machine's local registry -- the same
+	// bookkeeping pkg/kvctl does when it spawns a node. daemon.Run itself
+	// never writes it, so a node spawned in-process here has to be
+	// registered explicitly or every later session call fails with "no
+	// registered node for peer id".
+	reg, err := registry.Open()
+	if err != nil {
+		log.Fatalf("%s: registry.Open: %v", name, err)
+	}
+	if err := reg.Put(registry.NodeInfo{PeerID: ready.PeerID, DataDir: dataDir}); err != nil {
+		log.Fatalf("%s: registry.Put: %v", name, err)
 	}
 	vlogf("%s: ready, peerID=%s listenAddrs=%v", name, ready.PeerID, ready.ListenAddrs)
 	return ready.PeerID, ready.ListenAddrs
@@ -254,7 +298,7 @@ func runDebugRepro(relayAddr string) {
 	vlogf("followerDir: %s", followerDir)
 	vlogf("relay: %s", relayAddr)
 
-	leaderPeerID, _ := spawnNode("leader", leaderDir, relayAddr)
+	leaderPeerID, _ := spawnNode("leader", leaderDir, relayAddr, fastLocalRaft)
 	ctx := context.Background()
 	leaderSess, err := shmclient.Open(ctx, leaderPeerID)
 	if err != nil {
@@ -272,7 +316,7 @@ func runDebugRepro(relayAddr string) {
 	}
 
 	// follower node too (mirrors both real devices running the same relay config)
-	followerPeerID, _ := spawnNode("follower-daemon", followerDir, relayAddr)
+	followerPeerID, _ := spawnNode("follower-daemon", followerDir, relayAddr, fastLocalRaft)
 
 	token := make([]byte, shmevent.JoinInviteTokenSize)
 	if _, err := rand.Read(token); err != nil {
@@ -295,4 +339,125 @@ func runDebugRepro(relayAddr string) {
 	result, err := followerSess.Add(addCtx, ticket)
 	elapsed := time.Since(start)
 	fmt.Printf("follower Add(ticket) after %s: result=%q err=%v\n", elapsed, result, err)
+}
+
+// runPairRepro drives the whole two-device pairing flow against a real
+// relay -- the desktop equivalent of what pkg/e2erun/android_pair.go runs
+// across two phones, and the only way to exercise it end to end without
+// two emulators. Both devices are throwaway daemons that start out with
+// no standing anywhere at all, exactly like a fresh install:
+//
+//  1. each asks the relay's cluster for standing over the always-public
+//     command (shmevent.DefaultPublicCommandID, via Session.PublicAccess
+//     -- `mage requestpublicaccess` / kvmobile's RequestRelayAccess), the
+//     only thing that gets a stranger past relayACL;
+//  2. each then has to actually end up with a /p2p-circuit address, in
+//     this same process, with no restart -- see daemon.relayReserveBackoff
+//     for why that used to be impossible;
+//  3. a bootstraps its own solo cluster and b (still raft-less, exactly
+//     AddPending's state) mints a join-request ticket carrying its circuit
+//     address;
+//  4. a redeems that ticket (Session.Recruit), which dials b through the
+//     relay and hands it an invite, which b redeems by joining a back
+//     through the relay -- both hops over limited connections;
+//  5. a writes a key and b must observe it, proving raft replication runs
+//     over the same circuit afterwards.
+//
+// Every step prints its own elapsed time: which one stalls is the whole
+// diagnostic value of running this by hand.
+func runPairRepro(relayAddr string) {
+	ctx := context.Background()
+
+	aDir, err := os.MkdirTemp("", "relaytool-pair-a-*")
+	if err != nil {
+		log.Fatal(err)
+	}
+	bDir, err := os.MkdirTemp("", "relaytool-pair-b-*")
+	if err != nil {
+		log.Fatal(err)
+	}
+	vlogf("device a dir: %s", aDir)
+	vlogf("device b dir: %s", bDir)
+	fmt.Println("relay:", relayAddr)
+
+	aPeerID, _ := spawnNode("device-a", aDir, relayAddr, deviceRaft)
+	bPeerID, _ := spawnNode("device-b", bDir, relayAddr, deviceRaft)
+	aSess, err := shmclient.Open(ctx, aPeerID)
+	if err != nil {
+		log.Fatalf("shmclient.Open(a): %v", err)
+	}
+	bSess, err := shmclient.Open(ctx, bPeerID)
+	if err != nil {
+		log.Fatalf("shmclient.Open(b): %v", err)
+	}
+	fmt.Printf("device a: %s\ndevice b: %s\n", aPeerID, bPeerID)
+
+	// Step 1: standing. Without this the relay refuses both reservations
+	// outright and every later step has nothing dialable to work with.
+	for name, sess := range map[string]*shmclient.Session{"a": aSess, "b": bSess} {
+		start := time.Now()
+		accessCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		instanceID, err := sess.PublicAccess(accessCtx, relayAddr, "relaytool pair")
+		cancel()
+		if err != nil {
+			log.Fatalf("device %s: request public access: %v", name, err)
+		}
+		fmt.Printf("device %s: relay standing granted after %s (instance %s)\n", name, time.Since(start).Round(time.Millisecond), instanceID)
+	}
+
+	// Step 2: a real circuit address each, in this same process.
+	start := time.Now()
+	aCircuit := waitForCircuitAddr("device-a", aSess, 120*time.Second)
+	if aCircuit == "" {
+		log.Fatal("device a never obtained a relay reservation after being granted standing")
+	}
+	fmt.Printf("device a circuit addr after %s: %s\n", time.Since(start).Round(time.Millisecond), aCircuit)
+	start = time.Now()
+	bCircuit := waitForCircuitAddr("device-b", bSess, 120*time.Second)
+	if bCircuit == "" {
+		log.Fatal("device b never obtained a relay reservation after being granted standing")
+	}
+	fmt.Printf("device b circuit addr after %s: %s\n", time.Since(start).Round(time.Millisecond), bCircuit)
+
+	// Step 3: a is a cluster, b is a fresh device offering itself.
+	if _, err := aSess.Add(ctx, ""); err != nil {
+		log.Fatalf("device a: bootstrap solo cluster: %v", err)
+	}
+	token, err := bSess.CreateJoinRequest(ctx)
+	if err != nil {
+		log.Fatalf("device b: create join request: %v", err)
+	}
+	ticket := bCircuit + "#" + hex.EncodeToString(token)
+	fmt.Println("pairing ticket:", ticket)
+
+	// Step 4: the pairing itself -- a dials b over the relay, b joins a
+	// back over the relay.
+	start = time.Now()
+	recruitCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	result, err := aSess.Recruit(recruitCtx, ticket, shmevent.SuffrageVoter)
+	cancel()
+	if err != nil {
+		log.Fatalf("device a: recruit b after %s: %v", time.Since(start).Round(time.Millisecond), err)
+	}
+	fmt.Printf("recruit succeeded after %s: %s\n", time.Since(start).Round(time.Millisecond), result)
+
+	// Step 5: replication over the same circuit.
+	if err := aSess.Set(ctx, "relaytool-pair", "yes"); err != nil {
+		log.Fatalf("device a: set: %v", err)
+	}
+	start = time.Now()
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		value, err := bSess.Get(ctx, "relaytool-pair")
+		if err == nil && value == "yes" {
+			fmt.Printf("device b observed a's replicated write after %s\n", time.Since(start).Round(time.Millisecond))
+			break
+		}
+		if time.Now().After(deadline) {
+			log.Fatalf("device b never observed a's replicated write: value=%q err=%v", value, err)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	fmt.Println("PAIRED OK")
 }

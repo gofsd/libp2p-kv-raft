@@ -152,12 +152,17 @@ pub const VALUE_SIZE: usize = 512;
 
 /// The plain-KV data path's larger ceiling, mirroring
 /// `pkg/shmevent.KVValueSize`. **This must stay in lockstep with Go's
-/// `valueSizeFor`**: the ceiling is also the fixed width the signed payload
-/// is padded to, so if the two sides disagree about an event's width they
-/// compute different CRCs and different signatures over identical messages,
-/// and every such message is rejected as forged. That is not a theoretical
-/// risk -- it is what happened when Go gained this constant and this file
-/// still padded everything to VALUE_SIZE.
+/// `valueSizeFor`**: it feeds `canonical_width`, the padding width the
+/// signed payload uses, so if the two sides disagree about an event's
+/// width they compute different CRCs and different signatures over
+/// identical messages, and every such message is rejected as forged. That
+/// is not a theoretical risk -- it is what happened when Go gained this
+/// constant and this file still padded everything to VALUE_SIZE.
+///
+/// Note the ceiling alone does not decide the padding width: a value that
+/// fits `VALUE_SIZE` keeps being padded to `VALUE_SIZE`, so raising a
+/// ceiling never invalidates messages older peers can already verify. See
+/// `canonical_width`.
 pub const KV_VALUE_SIZE: usize = 4 * 1024;
 
 /// The maximum `Msg.value` length -- and the fixed padding width -- for
@@ -170,6 +175,23 @@ pub fn value_size_for(event: u8) -> usize {
         | EVENT_LOG_APPEND | EVENT_COMMAND_PUT | EVENT_STATION_PUT => KV_VALUE_SIZE,
         _ => VALUE_SIZE,
     }
+}
+
+/// The width `canonical_payload` zero-pads to -- mirrors
+/// `pkg/shmevent.canonicalWidth`, and deliberately is *not* just
+/// `value_size_for`. Peers do not upgrade together (a deployed relay, an
+/// installed Android build, this tab), so raising an event's ceiling must
+/// not change the signed bytes of a message that would have fit the old
+/// one: a value that fits `VALUE_SIZE` is always padded to `VALUE_SIZE`,
+/// the width every build has ever used for it, and only a value that
+/// genuinely needs the larger ceiling uses it (no older peer can have
+/// seen such a message at all). See Go's `canonicalWidth` doc comment for
+/// what going the other way cost.
+fn canonical_width(event: u8, value_len: usize) -> usize {
+    if value_len <= VALUE_SIZE {
+        return VALUE_SIZE;
+    }
+    value_size_for(event)
 }
 pub const SIGNATURE_SIZE: usize = 64;
 pub const PUBLIC_KEY_SIZE: usize = 32;
@@ -227,11 +249,11 @@ pub fn requires_signature(event_type: u8) -> bool {
 /// `api/shmevent.capnp`'s doc comment and `pkg/shmevent`'s
 /// `canonicalPayload`, which this matches byte-for-byte.
 fn canonical_payload(m: &Msg) -> Vec<u8> {
-    // Width is per event type (see value_size_for), exactly as Go's
-    // canonicalPayload does -- safe because the event type sits at byte 0,
-    // ahead of the value, so a verifier knows which width the signer used
-    // before it needs the value's own length.
-    let vs = value_size_for(m.event_type);
+    // Width is per event type *and* value length (see canonical_width),
+    // exactly as Go's canonicalPayload does -- safe because the event type
+    // sits at byte 0 and the value's own length is known from the decoded
+    // message, both before any padding has to be reproduced.
+    let vs = canonical_width(m.event_type, m.value.len());
     let mut buf = vec![0u8; 1 + 2 + 2 + vs + 2];
     buf[0] = m.event_type;
     buf[1..3].copy_from_slice(&m.source_id.to_be_bytes());
@@ -724,17 +746,28 @@ mod tests {
         assert!(encode(&m2, None).is_err());
     }
 
+    /// The ceiling `encode` enforces is per event (`value_size_for`), so
+    /// this checks both tiers: an event still on `VALUE_SIZE` rejects one
+    /// byte past it, and a KV-tier event rejects only one byte past
+    /// `KV_VALUE_SIZE` -- while `VALUE_SIZE + 1` is now perfectly legal
+    /// for it.
     #[test]
     fn value_too_long_rejected() {
         let signing_key = test_key();
-        let m = Msg {
-            event_type: EVENT_SET_KEY,
-            source_id: 0,
-            destination_id: 0,
-            value: vec![0u8; VALUE_SIZE + 1],
-            id: 1,
+        let too_long = |event: u8, len: usize| {
+            let m = Msg {
+                event_type: event,
+                source_id: 0,
+                destination_id: 0,
+                value: vec![0u8; len],
+                id: 1,
+            };
+            encode(&m, Some(&signing_key)).is_err()
         };
-        assert!(encode(&m, Some(&signing_key)).is_err());
+        assert!(too_long(EVENT_PERMIT_REQUEST, VALUE_SIZE + 1));
+        assert!(!too_long(EVENT_SET_KEY, VALUE_SIZE + 1));
+        assert!(!too_long(EVENT_SET_KEY, KV_VALUE_SIZE));
+        assert!(too_long(EVENT_SET_KEY, KV_VALUE_SIZE + 1));
     }
 
     #[test]
@@ -879,5 +912,53 @@ mod tests {
     #[test]
     fn execute_notification_too_short_rejected() {
         assert!(decode_execute_notification(&[0u8]).is_err());
+    }
+
+    /// Mirrors Go's TestCanonicalWidthKeepsHistoricalWidthForSmallValues.
+    /// Peers do not upgrade together, so raising an event's ceiling must
+    /// not change the signed bytes of a message that would have fit the
+    /// old one -- otherwise every peer still on an older build rejects it
+    /// as forged, silently (a message that fails to decode gets no reply
+    /// at all).
+    #[test]
+    fn canonical_width_keeps_historical_width_for_small_values() {
+        for event in [
+            EVENT_SET_KEY,
+            EVENT_SET_FIELD,
+            EVENT_SET,
+            EVENT_GET_FIELD,
+            EVENT_TXN,
+            EVENT_LOG_APPEND,
+            EVENT_COMMAND_PUT,
+            EVENT_STATION_PUT,
+        ] {
+            for len in [0, 1, 200, VALUE_SIZE] {
+                assert_eq!(canonical_width(event, len), VALUE_SIZE, "event {event}, len {len}");
+            }
+            assert_eq!(canonical_width(event, VALUE_SIZE + 1), KV_VALUE_SIZE, "event {event}");
+        }
+    }
+
+    /// The same property where a peer actually feels it: a small-value
+    /// message must be checksummed over the 512-wide payload every build
+    /// of this project has always used, whatever the event's current
+    /// ceiling is.
+    #[test]
+    fn small_value_crc_is_width_stable() {
+        let m = Msg {
+            event_type: EVENT_LOG_APPEND,
+            source_id: 0,
+            destination_id: 0,
+            value: b"a small journal record".to_vec(),
+            id: 7,
+        };
+        // Built by hand rather than via canonical_payload, so this still
+        // fails if that function starts agreeing with itself about a
+        // different width.
+        let mut historical = vec![0u8; 1 + 2 + 2 + VALUE_SIZE + 2];
+        historical[0] = m.event_type;
+        historical[5..5 + m.value.len()].copy_from_slice(&m.value);
+        historical[5 + VALUE_SIZE..].copy_from_slice(&m.id.to_be_bytes());
+        assert_eq!(crc32_of(&m), crc32fast::hash(&historical));
     }
 }

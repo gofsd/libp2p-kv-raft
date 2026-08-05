@@ -255,6 +255,19 @@ an already-open connection. It's still sensible to keep raft leadership on a nod
 stable address when one is available (`configs/bootstrap-nodes.json`) — direct dials are cheaper and
 faster than a relay hop — but a relay-only leader no longer breaks forwarded writes outright.
 
+**Same gap, the rest of the surface, found 2026-08-05 pairing two relayed devices:** `join`,
+`dialAndPushRecruit` and `dialAndRedeemExecInvite` dial an address a *ticket* names rather than one
+raft knows about, and had the identical bug — no `network.WithAllowLimitedConn`, so dialing a peer
+whose only address is a `/p2p-circuit` one hung until the context deadline (libp2p waits for a
+direct connection that a NATed peer never provides). All three pass it now. Two more things had to
+change for device-to-device pairing over a relay to work at all, both described in README's
+"Pairing two devices that are both behind a relay": `daemon.relayReserveBackoff` (AutoRelay's
+default backs a relay that refused a reservation off for an hour, so the standing a fresh device
+self-services right after startup only took effect after a restart), and `handleRecruitStream`
+extending its own stream deadline past `streamRequestTimeout` for the duration of the join it
+performs. `go run ./cmd/relaytool -mode=pair` walks the whole flow against the real deployed relay;
+`go test ./pkg/daemon/ -run TestPairThroughRelayCluster` is its hermetic equivalent.
+
 ## Testing conventions
 
 - `mage e2e:current` is the pre-push gate once `mage githooks:install` is run; it only re-runs rows

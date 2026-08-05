@@ -36,6 +36,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
+	"github.com/libp2p/go-libp2p/p2p/host/autorelay"
 	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
 	v2relay "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	"github.com/multiformats/go-multiaddr"
@@ -1258,6 +1259,16 @@ const (
 	connManagerGracePeriod = 30 * time.Second
 )
 
+// relayReserveBackoff is how long AutoRelay waits before re-attempting a
+// reservation with a relay that just refused it, and how often it re-reads
+// its candidate list -- see newHost's own comment on why both of
+// AutoRelay's defaults (1h and 30s) are wrong for a project whose relays
+// gate every reservation behind standing the device itself has to go ask
+// for after startup. Short enough that "request access, then pair" works
+// as one uninterrupted sequence, long enough that a device with no
+// standing at all isn't hammering a relay that keeps saying no.
+const relayReserveBackoff = 10 * time.Second
+
 func newHost(priv crypto.PrivKey, cfg Config, st *store.Store, selfPeerID string, relayQuota *quotaTracker) (lp2phost.Host, error) {
 	cm, err := connmgr.NewConnManager(connManagerLowWater, connManagerHighWater, connmgr.WithGracePeriod(connManagerGracePeriod))
 	if err != nil {
@@ -1326,9 +1337,30 @@ func newHost(priv crypto.PrivKey, cfg Config, st *store.Store, selfPeerID string
 		// of leaving the reservation -- and therefore the /p2p-circuit
 		// address join()'s awaitRelayAddr waits for -- contingent on
 		// AutoNAT.
+		//
+		// The two autorelay options are what make a *fresh* device able to
+		// get a reservation at all without being restarted. Every relay in
+		// this project gates reservations unconditionally (relayACL), and a
+		// device that has never asked for standing yet has none -- so
+		// AutoRelay's very first reservation attempt, fired within
+		// milliseconds of this host coming up, is refused with
+		// PERMISSION_DENIED, long before its owner can run the
+		// EventPublicAccess self-service escalation that would grant it
+		// (see dialAndSubmitPublicAccess). AutoRelay's own defaults then
+		// back that peer off for a full *hour* (autorelay's defaultConfig:
+		// backoff 1h, minInterval 30s), so the standing the device just
+		// obtained has no effect until the process is restarted -- which is
+		// why pkg/e2erun/android_pair.go had to restart the app between
+		// asking for access and reading its own address, and why a device
+		// that skipped that restart only ever advertised loopback. Shrinking
+		// both intervals makes the retry land ~10s after the grant instead,
+		// so requesting access and then pairing works in one session.
 		opts = append(opts,
 			libp2p.ForceReachabilityPrivate(),
-			libp2p.EnableAutoRelayWithStaticRelays(candidates),
+			libp2p.EnableAutoRelayWithStaticRelays(candidates,
+				autorelay.WithBackoff(relayReserveBackoff),
+				autorelay.WithMinInterval(relayReserveBackoff),
+			),
 		)
 	}
 
@@ -2985,11 +3017,22 @@ func (n *Node) join(ctx context.Context, leaderAddr string, suffrage raft.Server
 	if err != nil {
 		return "", fmt.Errorf("leader address %q missing peer id: %w", leaderAddr, err)
 	}
-	if err := n.host.Connect(ctx, *info); err != nil {
+	// A leader that is itself only reachable through a relay (a phone
+	// pairing with another phone, or any node whose advertised address is a
+	// /p2p-circuit one) can only ever be dialed over a limited connection,
+	// so both the connect and the stream have to say that's acceptable --
+	// exactly what dialForward already does for the forward-* protocols,
+	// and what rafttransport.Dial does for AppendEntries. Without it,
+	// libp2p answers a NewStream over a relayed connection by *waiting* for
+	// a direct connection that a NATed peer will never provide
+	// (swarm.waitForDirectConn), so the join dies on ctx's deadline with no
+	// hint that a relay was the problem.
+	relayCtx := network.WithAllowLimitedConn(ctx, "join")
+	if err := n.host.Connect(relayCtx, *info); err != nil {
 		return "", fmt.Errorf("connect to leader %s: %w", info.ID, err)
 	}
 
-	s, err := n.host.NewStream(ctx, info.ID, JoinProtocolID)
+	s, err := n.host.NewStream(relayCtx, info.ID, JoinProtocolID)
 	if err != nil {
 		return "", fmt.Errorf("open join stream to leader %s: %w", info.ID, err)
 	}
@@ -3216,7 +3259,11 @@ func (n *Node) dialAndRedeemExecInvite(ctx context.Context, sourceAddr string, t
 	if err != nil {
 		return "", err
 	}
-	if err := n.host.Connect(ctx, *info); err != nil {
+	// sourceAddr comes off a scanned ticket, which for any NATed issuer is
+	// a /p2p-circuit address -- see join's comment on why a relayed dial
+	// needs to be allowed explicitly on both the connect and the stream.
+	relayCtx := network.WithAllowLimitedConn(ctx, "exec_invite_redeem")
+	if err := n.host.Connect(relayCtx, *info); err != nil {
 		return "", fmt.Errorf("connect to %s: %w", info.ID, err)
 	}
 
@@ -3229,7 +3276,7 @@ func (n *Node) dialAndRedeemExecInvite(ctx context.Context, sourceAddr string, t
 		return "", fmt.Errorf("exec invite redeem: encode message: %w", err)
 	}
 
-	s, err := n.host.NewStream(ctx, info.ID, ExecInviteRedeemProtocolID)
+	s, err := n.host.NewStream(relayCtx, info.ID, ExecInviteRedeemProtocolID)
 	if err != nil {
 		return "", fmt.Errorf("open exec invite redeem stream to %s: %w", info.ID, err)
 	}
@@ -3495,15 +3542,27 @@ func (n *Node) dialAndPushRecruit(ctx context.Context, ticket string, suffrage b
 	if err != nil {
 		return "", fmt.Errorf("device address %q missing peer id: %w", addr, err)
 	}
-	if err := n.host.Connect(ctx, *info); err != nil {
+	// The device being recruited is, by construction, one that had to hand
+	// out an address for someone else to reach it -- on a phone or any
+	// other NATed device that address is a /p2p-circuit one, reachable only
+	// over a limited connection. See join's identical comment for why both
+	// calls have to allow it.
+	relayCtx := network.WithAllowLimitedConn(ctx, "recruit")
+	if err := n.host.Connect(relayCtx, *info); err != nil {
 		return "", fmt.Errorf("connect to %s: %w", info.ID, err)
 	}
 
-	s, err := n.host.NewStream(ctx, info.ID, RecruitProtocolID)
+	s, err := n.host.NewStream(relayCtx, info.ID, RecruitProtocolID)
 	if err != nil {
 		return "", fmt.Errorf("open recruit stream to %s: %w", info.ID, err)
 	}
 	defer s.Close()
+	// The read below blocks until the device finishes joining, which can
+	// legitimately take most of recruitJoinTimeout -- but a stream read
+	// doesn't observe ctx, so without a deadline of its own a device that
+	// dies mid-join leaves this waiting forever. Matches the budget the
+	// responder gives itself (handleRecruitStream), plus the same margin.
+	_ = s.SetDeadline(time.Now().Add(recruitJoinTimeout + streamRequestTimeout))
 
 	reqLine := fmt.Sprintf("%s %s %s", n.advertisedAddrs()[0], hex.EncodeToString(inviteToken), hex.EncodeToString(correlationToken))
 	if _, err := fmt.Fprintf(s, "%s\n", reqLine); err != nil {
@@ -3564,6 +3623,18 @@ func (n *Node) handleRecruitStream(s network.Stream) {
 		fmt.Fprintln(s, "ERR: unknown or already-used join request ticket")
 		return
 	}
+
+	// The join below is the one handler in this file that legitimately
+	// outlasts streamRequestTimeout: join() alone waits up to 45s for this
+	// device's relay reservation before it will send an address raft
+	// stores permanently (see its doc comment). withStreamRequestDeadline's
+	// 30s budget -- right for a handler that only parses a request and
+	// answers -- silently capped that, so a device that hadn't finished
+	// reserving yet lost the stream mid-join and the recruiter saw a bare
+	// "no response" with nothing to explain it. Extending it here to match
+	// recruitJoinTimeout, which was already chosen for exactly this wait,
+	// is what makes that timeout mean what its doc comment says.
+	_ = s.SetDeadline(time.Now().Add(recruitJoinTimeout + streamRequestTimeout))
 
 	ctx, cancel := context.WithTimeout(context.Background(), recruitJoinTimeout)
 	defer cancel()

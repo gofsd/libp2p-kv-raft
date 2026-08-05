@@ -204,15 +204,30 @@ this just exposes it conveniently instead of requiring a raw `sendevent` call. A
 
 | Ceiling | Events | Why |
 | --- | --- | --- |
-| `ValueSize`, 512B | everything else — permits, cluster membership, catalog records, `EventLogAppend` | These carry fields this project defines (a peer id, a permit record, a narration). Their size is known and small. |
-| `KVValueSize`, 4KB | `EventSetKey`/`EventSetField`/`EventSet`/`EventGetField`/`EventTxn` | These carry whatever a *caller* chose to store. Their size is the caller's decision, not this project's. |
+| `ValueSize`, 512B | everything else — permits, cluster membership, most catalog records | These carry fields this project defines (a peer id, a permit record, a narration). Their size is known and small. |
+| `KVValueSize`, 4KB | `EventSetKey`/`EventSetField`/`EventSet`/`EventGetField`/`EventTxn`/`EventLogAppend`/`EventCommandPut`/`EventStationPut` | These carry whatever a *caller* chose to store. Their size is the caller's decision, not this project's. |
 | `ChannelValueSize`, 16KB | `EventChannelSend`/`EventChannelPoll` | Bulk data (a file, a video frame). Superseded in practice by `pkg/chandata`'s rings for real throughput. |
 
-Kept as three constants rather than one large one because the ceiling is also the *fixed width*
-`canonicalPayload` zero-pads to before signing: a single 16KB ceiling would make every permit
-record and heartbeat pay CRC32 and Ed25519 cost over 16KB of mostly zeroes. That's safe as a fixed
-per-message width because the event type sits at byte 0 of `canonicalPayload`, ahead of `Value`, so
-a verifier always knows which width the signer used before it needs `Value`'s own length.
+Kept as three constants rather than one large one because the padding width used for signing is
+derived from them: a single 16KB ceiling would make every permit record and heartbeat pay CRC32 and
+Ed25519 cost over 16KB of mostly zeroes.
+
+That padding width is a **wire contract**, not an implementation detail, and it is deliberately
+*not* the ceiling itself — see `shmevent.canonicalWidth`. Peers don't upgrade together: a deployed
+relay, an installed Android build, an open browser tab and a dev laptop can all be running
+different builds of this repo at once. So a value that fits `ValueSize` is always padded to
+`ValueSize`, the width every build has ever used for it, and only a value that genuinely needs a
+larger ceiling uses one (no older peer can ever have seen such a message). Getting this wrong is
+invisible in the worst way: when the KV events were first raised to `KVValueSize` keyed straight
+off the new ceiling, every peer on an older build started computing a different CRC over identical
+messages and rejecting them — and since a message that fails to decode gets *no response at all*
+(`handleClientStream` returns silently), it presented as the deployed relay ignoring requests
+rather than as any kind of version mismatch. `web-app/src/shmevent/mod.rs`'s `canonical_width` has
+to implement the identical rule; both sides have tests pinning it.
+
+Within one width, the padding is safe because the event type sits at byte 0 of `canonicalPayload`,
+ahead of `Value`, and `Value`'s own length is known from the decoded message — so a verifier always
+knows which width the signer used.
 
 `KVValueSize` exists because 512 bytes turned out to bound things built *on top* of the KV store
 rather than the store itself: a `Set` replaces a value outright, so anything layering structure over
@@ -400,6 +415,54 @@ is exactly the "no other way to learn my own address" case this exists for. See 
 proving a barcode really came from who it claims](#signed-tickets-proving-a-barcode-really-came-from-who-it-claims)
 below for `CreateJoinRequestTicket`/`RedeemJoinRequestTicket`, the signed-ticket variant of this
 same flow.
+
+#### Pairing two devices that are both behind a relay
+
+The interesting case for `recruitpeer` is two phones, or a phone and a laptop — neither directly
+dialable, both reachable only through a relay (see [Node connectivity
+policy](#node-connectivity-policy)). Every hop is then a relayed one: the recruiter dials the
+device's `/p2p-circuit` address to hand over the invite, and the device dials the recruiter's
+`/p2p-circuit` address to join. Three things have to hold for that to work, and each was broken
+until it was fixed (see also **Relay list and failover** under [Follower on
+Android](#follower-on-android) for how a device picks which relays to try):
+
+1. **Both devices need standing on the relay's cluster first.** `relayACL` gates reservations
+   unconditionally, so a fresh install can't reserve anything: run `mage requestpublicaccess
+   <relayAddr>` (kvmobile's `RequestRelayAccess`) on each device first. That is the
+   [public-command escalation](#group-command-acl) — it's what turns a stranger into a peer the
+   relay will carry.
+2. **The reservation has to be retried after that grant lands.** AutoRelay fires its first
+   reservation attempt within milliseconds of the host starting, long before its owner can ask for
+   standing, and go-libp2p's default is to back a refused relay off for a full *hour*. A device
+   would therefore advertise only loopback until it was restarted — which is exactly why
+   `pkg/e2erun/android_pair.go` restarts the app between asking for access and reading its own
+   address. `daemon.relayReserveBackoff` shortens that to ~10s, so "request access, then pair"
+   works as one uninterrupted sequence.
+3. **Every dial in the flow has to accept a limited (relay) connection.** Opening a stream on one
+   requires `network.WithAllowLimitedConn`; without it libp2p quietly waits for a direct connection
+   a NATed peer will never provide, and the dial dies on its context deadline with nothing pointing
+   at the relay. `join`, `dialAndPushRecruit` and `dialAndRedeemExecInvite` all pass it now, the
+   same way `dialForward` and `rafttransport.Dial` already did.
+
+`handleRecruitStream` also extends its own stream deadline for the duration of the join it
+performs: that join can spend up to 45s waiting for this device's own relay reservation (see
+`join`'s doc comment on why that address must be right before raft stores it permanently), which
+is longer than the 30s `streamRequestTimeout` every other inbound handler gets — so the recruiter
+used to lose the stream mid-join and report a bare "no response".
+
+Two things exercise this end to end, both desktop-only (no emulator needed):
+
+```bash
+go run ./cmd/relaytool -mode=pair            # against the real deployed relay in configs/bootstrap-nodes.json
+go run ./cmd/relaytool -mode=pair -relay <addr>   # or any other relay, e.g. a -mode=local one
+go test ./pkg/daemon/ -run TestPairThroughRelayCluster   # hermetic: relay + two devices, all local
+```
+
+`-mode=pair` spawns two throwaway daemons with no standing anywhere, walks the whole sequence
+(request access → reservation → ticket → recruit → join → replicated write) and prints each step's
+elapsed time, which is what makes it useful when one of them stalls. It uses `mobile/kvmobile`'s own
+raft timings deliberately: a relayed round trip to a real VPS is longer than a fast local election
+timeout, so a leader tuned for a same-machine test loses leadership faster than it can replicate.
 
 ### Follower on Android
 

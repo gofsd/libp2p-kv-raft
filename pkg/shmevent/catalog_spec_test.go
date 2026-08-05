@@ -2,6 +2,9 @@ package shmevent
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"hash/crc32"
 	"testing"
 )
 
@@ -196,5 +199,82 @@ func TestValueSizeTiers(t *testing.T) {
 				"or cross-language CRC/signature verification breaks silently",
 				tc.name, got, tc.want)
 		}
+	}
+}
+
+// TestCanonicalWidthKeepsHistoricalWidthForSmallValues pins the property
+// that makes raising a value ceiling safe *across builds*, not just across
+// languages: peers do not upgrade together, so a message that would have
+// fit the old ceiling has to keep hashing and signing exactly as it always
+// did. Raising the KV events to KVValueSize without this made every one of
+// them unverifiable to any peer still on an older build -- and, because a
+// message that fails to decode gets no reply at all, it presented as a
+// deployed relay silently ignoring requests rather than as any kind of
+// version error.
+func TestCanonicalWidthKeepsHistoricalWidthForSmallValues(t *testing.T) {
+	for _, event := range []uint8{EventSetKey, EventSetField, EventSet, EventGetField, EventTxn, EventLogAppend, EventCommandPut, EventStationPut} {
+		for _, valueLen := range []int{0, 1, 200, ValueSize} {
+			if got := canonicalWidth(event, valueLen); got != ValueSize {
+				t.Errorf("canonicalWidth(%s, %d) = %d, want %d -- a value that fits the historical width must still be padded to it, or every peer on an older build rejects the message as forged",
+					EventName(event), valueLen, got, ValueSize)
+			}
+		}
+		// Past the historical width, only new builds can be involved at all,
+		// so the raised ceiling is what both ends use.
+		if got := canonicalWidth(event, ValueSize+1); got != KVValueSize {
+			t.Errorf("canonicalWidth(%s, %d) = %d, want %d", EventName(event), ValueSize+1, got, KVValueSize)
+		}
+	}
+
+	// Channel events have only ever had one width, at every value length.
+	for _, event := range []uint8{EventChannelSend, EventChannelPoll} {
+		for _, valueLen := range []int{0, 200, ValueSize, ValueSize + 1, ChannelValueSize} {
+			if got := canonicalWidth(event, valueLen); got != ChannelValueSize {
+				t.Errorf("canonicalWidth(%s, %d) = %d, want %d", EventName(event), valueLen, got, ChannelValueSize)
+			}
+		}
+	}
+}
+
+// TestSmallValueSignatureIsWidthStable is the end-to-end statement of the
+// same property, at the level a peer actually experiences it: a real signed
+// message with a small value must verify against a signature computed the
+// way every build of this project has always computed it -- 512-wide
+// padding -- regardless of the event's current ceiling.
+func TestSmallValueSignatureIsWidthStable(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	m := Msg{EventType: EventLogAppend, Value: []byte("a small journal record"), ID: 7}
+	buf, err := Encode(m, priv)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	decoded, crc, sig, err := Decode(buf)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+
+	// Rebuild the historical payload by hand rather than calling
+	// canonicalPayload, so this test still fails if that function starts
+	// agreeing with itself about a different width.
+	historical := make([]byte, 1+2+2+ValueSize+2)
+	historical[0] = m.EventType
+	copy(historical[5:], m.Value)
+	historical[5+ValueSize] = byte(m.ID >> 8)
+	historical[5+ValueSize+1] = byte(m.ID)
+	wantCRC := crc32.ChecksumIEEE(historical)
+	if crc != wantCRC {
+		t.Fatalf("crc = %#x, want %#x (the value fits ValueSize, so it must be checksummed over a %d-wide payload)", crc, wantCRC, ValueSize)
+	}
+
+	signed := append(append([]byte(nil), historical...), byte(wantCRC>>24), byte(wantCRC>>16), byte(wantCRC>>8), byte(wantCRC))
+	if !ed25519.Verify(pub, signed, sig) {
+		t.Fatal("signature does not verify against the historical fixed-width payload -- an older peer would reject this message as forged")
+	}
+	if err := Verify(pub, decoded, crc, sig); err != nil {
+		t.Fatalf("Verify: %v", err)
 	}
 }

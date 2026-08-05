@@ -19,19 +19,62 @@ type (
 	PublicKey  = ed25519.PublicKey
 )
 
+// canonicalWidth returns the width canonicalPayload zero-pads Value to.
+// It is deliberately *not* just valueSizeFor: this width is part of the
+// wire contract, so raising an event's ceiling must not change how a
+// message that would have fit the old ceiling gets checksummed and
+// signed.
+//
+// Every peer that ever signs or verifies has to agree on it byte for
+// byte, and peers do not upgrade together -- a deployed relay, an
+// installed Android build, an open browser tab and this process can all
+// be running different builds of this repo at once. When
+// EventSetKey/EventSetField/EventSet/EventGetField/EventTxn/
+// EventCommandPut/EventStationPut/EventLogAppend were raised from
+// ValueSize to KVValueSize, keying the width off the new ceiling silently
+// changed the signed bytes of every one of those events, and every peer
+// on an older build started rejecting them as CRC failures -- with no
+// error surfaced, since a message that fails to decode gets no response
+// at all (see pkg/daemon.handleClientStream). Found live against the
+// deployed relay in configs/bootstrap-nodes.json, which answered
+// zero-Value events normally and went silent on every raised one.
+//
+// So: a value that fits ValueSize is always padded to ValueSize, the
+// width every build of this project has ever used for it. Only a value
+// that genuinely needs the larger ceiling uses it -- such a message could
+// not have existed before the ceiling was raised, so there is no older
+// peer it could be incompatible with. Channel events keep
+// ChannelValueSize unconditionally, which is likewise the only width they
+// have ever used.
+//
+// web-app/src/shmevent/mod.rs's canonical_payload must implement this
+// identically -- nothing can enforce that from Go.
+func canonicalWidth(eventType uint8, valueLen int) int {
+	if eventType == EventChannelSend || eventType == EventChannelPoll {
+		return ChannelValueSize
+	}
+	if valueLen <= ValueSize {
+		return ValueSize
+	}
+	return valueSizeFor(eventType)
+}
+
 // canonicalPayload returns the fixed-width byte sequence CRC32 and the
 // Ed25519 signature are computed over: event(1) || sourceId_BE(2) ||
-// destinationId_BE(2) || value, zero-padded/truncated to valueSizeFor(
-// m.EventType) (ValueSize -- 512 -- for every event except
-// EventChannelSend/EventChannelPoll, which get ChannelValueSize instead;
-// see that function's doc comment for why a fixed width keyed by event
-// type is still unambiguous) || id_BE(2) -- see api/shmevent.capnp's doc
-// comment. This is the *logical* field values, deliberately not capnp's
-// own encoded bytes: signing the transport encoding directly would make
-// the signature fragile to encoding-level changes (segment layout,
-// padding) that don't change the message's meaning.
+// destinationId_BE(2) || value, zero-padded/truncated to
+// canonicalWidth(m.EventType, len(m.Value)) || id_BE(2) -- see
+// api/shmevent.capnp's doc comment. The width is unambiguous to a
+// verifier for the reason valueSizeFor's own doc comment gives (the event
+// type sits at byte 0, ahead of Value) plus one more: Value's real length
+// is known from the decoded message itself, which is what picks between
+// the historical width and a raised ceiling.
+//
+// This is the *logical* field values, deliberately not capnp's own
+// encoded bytes: signing the transport encoding directly would make the
+// signature fragile to encoding-level changes (segment layout, padding)
+// that don't change the message's meaning.
 func canonicalPayload(m Msg) []byte {
-	vs := valueSizeFor(m.EventType)
+	vs := canonicalWidth(m.EventType, len(m.Value))
 	buf := make([]byte, 1+2+2+vs+2)
 	buf[0] = m.EventType
 	binary.BigEndian.PutUint16(buf[1:3], m.SourceID)

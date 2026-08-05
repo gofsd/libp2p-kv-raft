@@ -866,28 +866,32 @@ const ChannelValueSize = 16 * 1024
 //     message; the Android transport's (ipc_android.go) is the tighter of
 //     the two and had to grow alongside this.
 //   - web-app/src/shmevent/mod.rs's own value_size_for must agree event for
-//     event. The ceiling is also the fixed width canonicalPayload pads to
-//     before CRC/signing, so a disagreement doesn't cause a size error --
-//     it makes both sides compute different CRCs and signatures over
-//     identical messages, and every affected message is rejected as forged.
-//     A test in this package (TestValueSizeTiers) lists the widths so a
-//     change here is at least visible; nothing can enforce the Rust side
-//     from Go, so it has to be updated by hand.
+//     event, since it feeds the padding width used for CRC/signing (see
+//     canonicalWidth): a disagreement doesn't cause a size error, it makes
+//     both sides compute different CRCs and signatures over identical
+//     messages, and every affected message is rejected as forged. A test
+//     in this package (TestValueSizeTiers) lists the widths so a change
+//     here is at least visible; nothing can enforce the Rust side from Go,
+//     so it has to be updated by hand.
+//
+// Raising a ceiling does *not* by itself change how an already-valid
+// message is signed -- canonicalWidth deliberately keeps the historical
+// width for any value that still fits it, so peers on older builds keep
+// verifying. See its doc comment; that separation was learned the hard
+// way when this constant was introduced.
 const KVValueSize = 4 * 1024
 
-// valueSizeFor returns the maximum Msg.Value length -- and the fixed
-// width canonicalPayload zero-pads/truncates Value to -- for e.
+// valueSizeFor returns the maximum Msg.Value length for e.
 // EventChannelSend/EventChannelPoll (the two event types whose Value
 // carries a channel chunk, in the request and response direction
 // respectively -- see those events' doc comments) get ChannelValueSize;
 // the plain-KV data events get KVValueSize; every other event type keeps
-// the original ValueSize. This is still safe as a *fixed* per-message
-// width, not a length-prefixed variable one: e (a message's EventType)
-// sits at a constant offset (byte 0) in canonicalPayload, ahead of Value,
-// so a verifier always knows which width the signer must have used before
-// it needs to know Value's own length -- exactly the same property
-// ValueSize's single fixed width already relied on, just keyed by event
-// type instead of being one constant for everything.
+// the original ValueSize.
+//
+// This is the ceiling only. The width canonicalPayload actually pads to is
+// canonicalWidth, which takes both e and the value's real length --
+// because raising a ceiling must not change the signed bytes of messages
+// that fit the old one.
 func valueSizeFor(e uint8) int {
 	if e == EventChannelSend || e == EventChannelPoll {
 		return ChannelValueSize
