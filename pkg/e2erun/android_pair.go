@@ -126,43 +126,61 @@ type pairHold struct {
 	resume uiOp
 }
 
-// runAndroidPairScenario drives a genuine two-device Join/RecruitPeer
+// runAndroidPairScenario drives a genuine two-device Join/RecruitPeer/Leave
 // round trip -- see this package's own design notes (README.md's e2e
 // section) for why this can't be expressed as ordinary android_ui_cases
 // entries (ordering + cross-device data threading, not a flat
 // independent-per-label sweep). Returns nil (log a message, don't fail
-// the run) if fewer than three devices/emulators are currently connected
-// -- this scenario is opt-in by device count, not part of every e2e run.
+// the run) if fewer than two devices/emulators are currently connected --
+// this scenario is opt-in by device count, not part of every e2e run.
 //
-// Deliberately three, not two: runAndroidRows' own existing single-device
-// flow (still unqualified-serial-free at every *other* call site, see
-// that function's own comment) always claims connectedAndroidSerials()'s
-// first entry for the long-lived shared android node -- the one whose
-// real, valuable persisted raft membership must never be touched. This
-// scenario's own pm clear step is destructive by design (see below), so
-// it skips index 0 unconditionally and only ever uses two *other*
-// devices, rather than risk wiping that shared node's data out from
-// under the very flow that depends on it surviving across runs.
+// Prefers three devices over two: runAndroidRows' own existing
+// single-device flow (still unqualified-serial-free at every *other* call
+// site, see that function's own comment) always claims
+// connectedAndroidSerials()'s first entry for the long-lived shared android
+// node -- the one whose real, valuable persisted raft membership should
+// never be touched if it can be helped. This scenario's own pm
+// clear/uninstall steps are destructive by design (see runAndroidPairScenarioOn),
+// so with three or more devices connected it skips index 0 unconditionally
+// and only ever uses two *other* devices, avoiding any risk to that shared
+// node's data. With exactly two devices connected -- this project's own e2e
+// environment among them -- there is no spare third device to isolate this
+// scenario onto, so it falls back to reusing index 0 anyway and accepts
+// that risk rather than never running this scenario at all: whatever the
+// shared android node had installed/persisted on that device is wiped by
+// this scenario's own uninstall step, and the next ordinary
+// e2e:current/e2e:all run reprovisions it from scratch there (the same
+// self-healing reprovision path a deleted node identity already goes
+// through, see run.go's own reprovision loop) rather than resuming prior
+// state.
 func runAndroidPairScenario(repoRoot string) *e2edata.AndroidPairResult {
 	serials, err := connectedAndroidSerials()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "e2erun: android pair scenario: skipped: %v\n", err)
 		return nil
 	}
-	if len(serials) < 3 {
-		fmt.Fprintf(os.Stderr, "e2erun: android pair scenario: skipped: needs 3 connected devices/emulators (1 reserved for the shared android node + 2 for this scenario), found %d\n", len(serials))
+	switch {
+	case len(serials) >= 3:
+		return runAndroidPairScenarioOn(repoRoot, serials[1], serials[2])
+	case len(serials) == 2:
+		fmt.Fprintln(os.Stderr, "e2erun: android pair scenario: only 2 device(s)/emulator(s) connected -- reusing device 0 (normally reserved for the shared android node); its installed app and persisted data will be wiped by this scenario's own uninstall step")
+		return runAndroidPairScenarioOn(repoRoot, serials[0], serials[1])
+	default:
+		fmt.Fprintf(os.Stderr, "e2erun: android pair scenario: skipped: needs at least 2 connected devices/emulators, found %d\n", len(serials))
 		return nil
 	}
-	return runAndroidPairScenarioOn(repoRoot, serials[1], serials[2])
 }
 
 // runAndroidPairScenarioOn is runAndroidPairScenario's actual mechanism,
 // against two explicitly named serials -- split out from the device-count/
-// reservation policy above so it can also be driven directly (e.g. by a
-// developer with only two spare devices/emulators available, accepting
-// the responsibility of picking two that aren't the shared android node
-// themselves) without needing a third device just to exercise the same
-// step sequence.
+// reservation policy above so it can also be driven directly against
+// whichever two serials the caller names, without needing a third device
+// just to exercise the same step sequence. runAndroidPairScenario's own
+// two-device fallback is exactly this: it accepts the responsibility of
+// picking device 0 (the shared android node) itself when no spare third
+// device exists, rather than never running this scenario at all -- a
+// developer with only two spare devices/emulators of their own can drive
+// this the same way, by naming them directly.
 func runAndroidPairScenarioOn(repoRoot string, serialA, serialB string) *e2edata.AndroidPairResult {
 	result := &e2edata.AndroidPairResult{RanAt: time.Now()}
 	fail := func(err error) *e2edata.AndroidPairResult {
@@ -303,6 +321,27 @@ func runAndroidPairScenarioOn(repoRoot string, serialA, serialB string) *e2edata
 		},
 	}
 
+	// Leave: B (the joiner) asks to be removed from A's cluster --
+	// kvmobile.Leave's own doc comment confirms this blocks on the
+	// forwarded raft.RemoveServer completing before returning, then stops
+	// B's daemon, so A's subsequent ListClusterMembers needs no retry/poll
+	// to see the shrink -- the same "synchronous, no extra wait needed"
+	// assumption stepsAfterRecruit's own post-Join check above already
+	// relies on. B has nothing further to do afterward (its daemon is
+	// already stopped), so unlike every other step here, this one needs no
+	// trailing resume for B.
+	stepsAfterLeave := []pairStep{
+		{
+			reportAs: "Cluster: Leave (B)", serial: serialB, resumeOp: resumeB,
+			action: func() uiOp { return uiOp{label: "Cluster: Leave"} },
+		},
+		{
+			reportAs: "Cluster: Leave (verify via A)", serial: serialA, resumeOp: resumeA,
+			action:   func() uiOp { return uiOp{label: "Cluster: ListClusterMembers"} },
+			validate: func(output string) error { return validateClusterMembers(output, 1, "", "") },
+		},
+	}
+
 	var cases []e2edata.AndroidPairCaseResult
 	overallErr := error(nil)
 	runStep := func(step pairStep) {
@@ -394,6 +433,9 @@ func runAndroidPairScenarioOn(repoRoot string, serialA, serialB string) *e2edata
 	}
 	runRecruitDance()
 	for _, step := range stepsAfterRecruit {
+		runStep(step)
+	}
+	for _, step := range stepsAfterLeave {
 		runStep(step)
 	}
 
