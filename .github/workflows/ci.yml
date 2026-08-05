@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   go:
-    name: Go build/vet/test
+    name: Go build/vet/lint/test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,6 +42,16 @@ jobs:
             echo "$out"
             exit 1
           fi
+
+      # Pinned to the same major/minor .golangci.yml was written against --
+      # v2's config schema is a breaking change from v1's, so an unpinned
+      # @latest here could silently start failing to load .golangci.yml
+      # (or worse, silently ignore it) on a future v3.
+      - name: install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+
+      - name: golangci-lint
+        run: golangci-lint run ./...
 
       - name: install mage
         run: go install github.com/magefile/mage@latest

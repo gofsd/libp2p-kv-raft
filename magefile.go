@@ -134,6 +134,22 @@ func bump(bumpFn func(*semver.Version) semver.Version, stage string) error {
 	return nil
 }
 
+// Lint runs golangci-lint (see .golangci.yml) the same way CI does. Needs
+// golangci-lint v2 on PATH already -- `go install
+// github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2`, pinned
+// to the version .golangci.yml's config schema was written against (see
+// ci.yml's own doc comment on that pin).
+func Lint() error {
+	if _, err := exec.LookPath("golangci-lint"); err != nil {
+		return fmt.Errorf("golangci-lint not found on PATH -- install with `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2`: %w", err)
+	}
+	fmt.Println("Running golangci-lint...")
+	cmd := exec.Command("golangci-lint", "run", "./...")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
 // Test runs only the fast unit tests (ignoring integration and e2e)
 func Test() error {
 	fmt.Println("Running Unit Tests...")

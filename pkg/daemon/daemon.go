@@ -1325,7 +1325,13 @@ func newHost(priv crypto.PrivKey, cfg Config, st *store.Store, selfPeerID string
 		rc.MaxCircuits = int(limits.MaxCircuitsPerPeer)
 		rc.BufferSize = 4096
 		rc.MaxReservationsPerIP = int(limits.MaxReservationsPerIP)
-		rc.MaxReservationsPerPeer = int(limits.MaxReservationsPerPeer)
+		// rc.MaxReservationsPerPeer is deliberately not set: go-libp2p
+		// v0.48.0 deprecated it ("we only need 1 reservation per peer")
+		// and its relay implementation no longer reads it at all, so
+		// cfg.RelayMaxReservationsPerPeer/-relay-max-reservations-per-peer
+		// (see that flag's own doc comment in cmd/kvnode) has been a
+		// no-op since that upgrade regardless of what value an operator
+		// passes.
 
 		relayOpts := []v2relay.Option{
 			v2relay.WithResources(rc),
@@ -1848,16 +1854,6 @@ func isInGroupSt(st *store.Store, id peer.ID, groupID string) bool {
 	}
 	_, err = st.Get(key)
 	return err == nil
-}
-
-// isInGroup reports whether id has a PeerGroup record linking it to
-// groupID -- see shmevent.PeerGroupKey. Used by isAuthorizedForGatedAccess
-// to gate on membership in shmevent.ReservedGroupCluster/
-// ReservedGroupChannel/ReservedGroupRelay, or in the receiving node's own
-// personal group (see isPeerIdentityGroupID's doc comment), rather than a
-// permit record.
-func (n *Node) isInGroup(id peer.ID, groupID string) bool {
-	return isInGroupSt(n.store, id, groupID)
 }
 
 // isAuthorizedForGatedAccessSt is isAuthorizedForGatedAccess's
@@ -5206,7 +5202,13 @@ func (n *Node) dispatchExecute(ctx context.Context, m shmevent.Msg) error {
 // with this node's own key. See handleExecuteStream for the receiving
 // side.
 func (n *Node) sendExecute(ctx context.Context, dest peer.ID, payload []byte) error {
-	s, err := n.host.NewStream(ctx, dest, ExecuteProtocolID)
+	// dest is resolved from this node's own registry (dispatchExecute), not
+	// necessarily a raft member -- same reasoning as join/recruit/
+	// exec-invite-redeem's own relayCtx: without this, a dest reachable only
+	// through a /p2p-circuit address hangs until ctx's deadline instead of
+	// using the relayed connection.
+	relayCtx := network.WithAllowLimitedConn(ctx, "execute")
+	s, err := n.host.NewStream(relayCtx, dest, ExecuteProtocolID)
 	if err != nil {
 		return fmt.Errorf("execute: open stream to %s: %w", dest, err)
 	}
@@ -5413,7 +5415,11 @@ func (n *Node) dispatchChannelOpen(ctx context.Context, destPeerIDStr string) (s
 	// to streamRequestTimeout, the same budget the handshake right below
 	// already gets.
 	dialCtx, dialCancel := context.WithTimeout(ctx, streamRequestTimeout)
-	s, err := n.host.NewStream(dialCtx, dest, ChannelProtocolID)
+	// dest is caller-supplied and not necessarily a raft member -- same
+	// reasoning as sendExecute's own relayCtx: without this, a dest
+	// reachable only through a /p2p-circuit address hangs until dialCtx's
+	// deadline instead of using the relayed connection.
+	s, err := n.host.NewStream(network.WithAllowLimitedConn(dialCtx, "channel"), dest, ChannelProtocolID)
 	dialCancel()
 	if err != nil {
 		return "", fmt.Errorf("channel: open stream to %s: %w", dest, err)

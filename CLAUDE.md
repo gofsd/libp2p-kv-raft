@@ -19,6 +19,7 @@ summarizes what's needed to get oriented and productive.
 Requires [mage](https://magefile.org/) on `PATH`.
 
 ```bash
+mage lint           # golangci-lint v2 (.golangci.yml) -- needs golangci-lint on PATH, see Lint's doc comment
 mage test          # unit tests: go test -v -short ./...
 mage integration    # go test -v -tags=integration ./...
 mage testall        # test + integration + every e2e:all row
@@ -160,7 +161,9 @@ mage e2e:destroyall
 mage githooks:install   # points core.hooksPath at scripts/git-hooks/pre-push (runs e2e:current)
 ```
 
-There is no configured linter (no `.golangci.yml`); `go vet`/`gofmt` are the baseline.
+`mage lint` runs golangci-lint v2 (`.golangci.yml`; needs `golangci-lint` on PATH -- see `Lint`'s
+own doc comment in magefile.go for the pinned install command) alongside `go vet`/`gofmt`, and CI
+runs the identical `golangci-lint run ./...` on every push/PR.
 
 ## Architecture
 

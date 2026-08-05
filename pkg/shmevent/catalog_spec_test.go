@@ -59,10 +59,10 @@ func TestCommandPayloadRoundTrip(t *testing.T) {
 			if name != tc.cmdName {
 				t.Fatalf("name = %q, want %q", name, tc.cmdName)
 			}
-			if !bytes.Equal(peerID, tc.peerID) && !(len(peerID) == 0 && len(tc.peerID) == 0) {
+			if !bytes.Equal(peerID, tc.peerID) && (len(peerID) != 0 || len(tc.peerID) != 0) {
 				t.Fatalf("peerID = %q, want %q", peerID, tc.peerID)
 			}
-			if !bytes.Equal(gotSpec, tc.wantSpec) && !(len(gotSpec) == 0 && len(tc.wantSpec) == 0) {
+			if !bytes.Equal(gotSpec, tc.wantSpec) && (len(gotSpec) != 0 || len(tc.wantSpec) != 0) {
 				t.Fatalf("spec = %q, want %q", gotSpec, tc.wantSpec)
 			}
 

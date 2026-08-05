@@ -1,0 +1,74 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  settings:
+    errcheck:
+      # Deferred/cleanup-path calls whose error has nowhere useful to go
+      # once already returning/unwinding, plus flag.FlagSet.Parse under
+      # flag.ExitOnError (every FlagSet in this repo uses it -- Parse
+      # already os.Exit()s on a bad flag, so it never returns a non-nil
+      # error to the caller in practice). Not a blanket opt-out: errcheck
+      # still runs on everything else.
+      exclude-functions:
+        - (io.Closer).Close
+        - (net.Conn).Close
+        - (*os.File).Close
+        - os.Remove
+        - (*flag.FlagSet).Parse
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - (*database/sql.Stmt).Close
+        - (*database/sql.Tx).Rollback
+        - (github.com/libp2p/go-libp2p/core/host.Host).Close
+        - (github.com/libp2p/go-libp2p/core/host.Host).Connect
+        - (github.com/libp2p/go-libp2p/core/network.Stream).Close
+        - (github.com/libp2p/go-libp2p/core/network.Stream).Reset
+        - (github.com/hashicorp/raft.SnapshotSink).Cancel
+  exclusions:
+    rules:
+      # Test files: cleanup (Close/RemoveAll/Setenv/Wait/...) errors on a
+      # t.Cleanup/defer/teardown path aren't meaningful -- the test itself
+      # already fails via its real assertions if setup went wrong.
+      - path: _test\.go
+        linters:
+          - errcheck
+      # Best-effort notification/cleanup calls outside test files: an
+      # already-failing or already-closing path writing a final error
+      # message/tearing down a resource, where the write/close's own
+      # error has nothing left to affect -- same reasoning as the
+      # exclude-functions list above, just for project-local types
+      # (shmring's Writer/Reader.CloseStorage, pkg/kvctl's
+      # Session.CloseChannel, os/exec's Cmd.Wait reaped in its own
+      # goroutine, a stream Write racing a Close right after) that
+      # exclude-functions can't name generically.
+      - linters:
+          - errcheck
+        text: '`[^`]*\.(Close|CloseStorage|CloseChannel|CloseWrite|Wait|Write)` is not checked'
+      - linters:
+          - errcheck
+        text: '`fmt\.(Fprintf|Fprintln|Fprint)` is not checked'
+      - linters:
+          - errcheck
+        text: '`os\.(Setenv|RemoveAll)` is not checked'
+      # A bare recover() call's return value can never be matched via
+      # errcheck's exclude-functions (its own name resolution only
+      # handles selector calls, not builtin/local ones) -- this is the
+      # deliberate "isolate a panic from a caller-supplied gomobile
+      # callback" pattern, discarding recover()'s value on purpose.
+      - linters:
+          - errcheck
+        path: mobile/kvmobile/channel.go
+        source: 'recover\(\)'
+      # writeChannelAccept's 3 rejection-path callers immediately s.Close()
+      # right after -- the connection is being torn down either way, so
+      # the accept-message write's own error doesn't change anything (its
+      # 4th, success-path caller does check the error, since that one
+      # matters for cleanup -- see daemon.go's own comment there).
+      - linters:
+          - errcheck
+        path: pkg/daemon/daemon.go
+        source: 'writeChannelAccept\('

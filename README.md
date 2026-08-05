@@ -915,14 +915,31 @@ single-node cluster bootstrapped from an operator-supplied identity via `mage ad
 <keyFile>` gets its own token the same way, usable immediately against the same running `kvhttp`:
 
 ```bash
-curl -X POST http://127.0.0.1:8787/command \
+curl -X POST https://127.0.0.1:8787/command \
   -H "Authorization: Bearer $(mage accesstoken <peerID>)" \
   -d '{"event":"set_key","value":"greeting","id":100}'
 ```
 
-Still meant for a trusted localhost network path, not a substitute for TLS/real network-level
-access control if exposed beyond that — token comparison is constant-time, but request bodies and
-tokens themselves travel in the clear otherwise.
+`/command` is served over HTTPS only — there is no plain-HTTP fallback, so the token and every
+request/response body never travel in the clear; token comparison is also constant-time
+(`crypto/hmac.Equal`), and `/command` additionally rate-limits per resolved peer id (not per
+source IP, which an attacker could rotate) rather than trusting the bearer scheme alone. Two TLS
+modes, chosen by whether `-domain` is set:
+
+- `-domain` unset (the default): a self-signed pair at `-tls-cert`/`-tls-key`, defaulting to what
+  `mage tls:genselfsigned <hosts>` writes under the local registry directory. No CA behind it, so
+  every caller must explicitly trust this exact certificate first — fine for this project's own
+  known-caller scripts/tests, not workable for an arbitrary browser.
+- `-domain <name>` set: a real CA-trusted certificate via Let's Encrypt/ACME, auto-issued and
+  auto-renewed — the right choice for a real deployment, and the only mode a browser caller can
+  use with no manual trust step. Requires `<name>`'s A/AAAA record to already resolve to this
+  host.
+
+Either way, `kvhttp` refuses to start at all if the relevant cert material can't be found/obtained,
+rather than silently falling back to plain HTTP. `-addr` defaults to loopback-only
+(`127.0.0.1:8787`); exposing it beyond localhost still needs the same care as any other
+network-facing service (firewalling, a real `-domain`, etc.) — CORS on `/command` is deliberately
+permissive since the bearer token, not origin, is what gates access.
 
 ### Local IPC token
 
