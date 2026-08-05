@@ -327,6 +327,24 @@ func statusName(status int) string {
 func runRow(kvnodeBin, kvctlBin string, nodeID int, node e2edata.Node, bootstrapMultiaddr string, ev e2edata.Event) (status int, errMsg string) {
 	if ev.EventType == shmevent.EventAdd {
 		resolved := ResolveBootstrapPlaceholder(string(ev.Value()), bootstrapMultiaddr)
+		// " learner" for a desktop node, the same marker and the same
+		// reason android.go's own join carries it: this shared bootstrap
+		// leader is long-lived and never torn down, while an e2e desktop
+		// node is a laptop process that restarts between runs and sits
+		// behind NAT on a link that comes and goes. Joined as a *voter* it
+		// made the cluster two-voter -- majority of two is two, so every
+		// one of those restarts took quorum with it, and this project's own
+		// voterCountWarning says exactly that about the size. Confirmed in
+		// the wild rather than reasoned about: the shared cluster was found
+		// with the desktop node as leader and the VPS as its only other
+		// voter, and rows across every platform were failing with
+		// "leadership lost while committing log"/"not leader and no leader
+		// known" whenever that laptop blinked. Learner keeps the sole voter
+		// (and so leadership) on the stable public host, which is where
+		// CLAUDE.md's connectivity policy says it belongs.
+		if node.Platform == e2edata.PlatformDesktop {
+			resolved += " learner"
+		}
 		ev = e2edata.NewEvent(ev.EventType, ev.SourceID, ev.DestinationID, []byte(resolved), ev.ID)
 	}
 	if expanded := ExpandRowValue(string(ev.Value())); expanded != string(ev.Value()) {

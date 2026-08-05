@@ -617,6 +617,18 @@ var (
 // directly.
 const channelMaxChunkSize = chandata.MaxChunkSize
 
+// maxPollChunkSize is the largest chunk EventChannelPoll can hand back:
+// a poll response is an ordinary shmevent.Msg, so its whole Value --
+// EncodeChannelPollResponse's 2-byte status+purpose header plus the chunk
+// -- has to fit valueSizeFor(EventChannelPoll), i.e. ChannelValueSize.
+//
+// It is far below channelMaxChunkSize, and that gap is real rather than
+// theoretical: the data plane exists to move 256KB chunks, every one of
+// which pumpChannelReads also buffers for this poll path. See
+// dispatchChannelPoll for what happens to a buffered chunk that cannot fit
+// here, and why it is reported rather than silently swallowed.
+const maxPollChunkSize = shmevent.ChannelValueSize - 2
+
 // channelChunk is one entry in channelSession.inbox -- a purpose-tagged
 // chunk pumpChannelReads has already verified and unwrapped from one
 // signed network frame (see ChannelProtocolID's doc comment). Unlike this
@@ -1518,8 +1530,17 @@ func (n *Node) watchLeadership(rf *raft.Raft, ch chan raft.Observation) {
 		if err := n.recordClusterMember(context.Background(), n.peerID, role); err != nil {
 			fmt.Fprintf(os.Stderr, "daemon: record own cluster member status: %v\n", err)
 		}
-		if err := n.syncMemberGroups(context.Background(), n.peerID, role); err != nil {
-			fmt.Fprintf(os.Stderr, "daemon: sync own reserved groups: %v\n", err)
+		// Only a voter (or the leader) syncs its own reserved groups. The
+		// sync ends in a delete, which is voter-gated at the leader (see
+		// deletePeerGroup), so a learner attempting it would fail every
+		// time -- and pointlessly: the leader already ran this exact sync
+		// for this peer when it admitted or demoted it (see
+		// addServerLine's own call). A learner re-running it adds nothing
+		// but a failed forward per leadership observation.
+		if role != shmevent.RoleLearner {
+			if err := n.syncMemberGroups(context.Background(), n.peerID, role); err != nil {
+				fmt.Fprintf(os.Stderr, "daemon: sync own reserved groups: %v\n", err)
+			}
 		}
 	}
 }
@@ -4324,13 +4345,28 @@ func (n *Node) setPeerGroup(ctx context.Context, peerID, groupID []byte) error {
 	return n.handleSetForward(ctx, key, nil, true)
 }
 
+// deletePeerGroup removes peerID's membership of groupID. It forwards
+// through handleConfirmForward (ForwardConfirmProtocolID), like every
+// other OpDel in this package, and not handleOpForward: that path's
+// handler accepts only OpSet and OpAppendCommandRequest -- deliberately,
+// since it has no sender-is-a-voter gate (see handleForwardSetStream) --
+// so a delete sent through it was rejected outright by the leader, on
+// every attempt, with "forward set: expected OpSet or
+// OpAppendCommandRequest, got op 2".
+//
+// That made the *last* step of syncMemberGroups impossible from anywhere
+// but the leader: a node that changed role could add its new reserved
+// group but never drop the stale one, so a demoted voter kept voter
+// standing indefinitely. watchLeadership re-runs that sync on every
+// leadership observation, so a real deployment logged the same failure
+// continuously (found exactly that way, on this project's own shared e2e
+// leader) while the membership it was trying to converge never moved.
 func (n *Node) deletePeerGroup(ctx context.Context, peerID, groupID []byte) error {
 	key, err := shmevent.PeerGroupKey(peerID, groupID)
 	if err != nil {
 		return err
 	}
-	_, err = n.handleOpForward(ctx, kvfsm.OpDel, key, nil, true)
-	return err
+	return n.handleConfirmForward(ctx, kvfsm.OpDel, key, nil, true)
 }
 
 // ensurePersonalGroup creates peerIDStr's own personal Group record (see
@@ -5691,6 +5727,21 @@ func (n *Node) dispatchChannelPoll(channelID string) ([]byte, error) {
 		return nil, fmt.Errorf("channel: no such channel %q", channelID)
 	}
 	if purpose, chunk, ok := sess.popChunk(); ok {
+		// A chunk the wire accepts (up to channelMaxChunkSize) can be far
+		// larger than a poll response can carry. Encoding one anyway
+		// produced a response pkg/ipc could not encode ("value too long"),
+		// which reached the caller as a bare transport error naming
+		// neither the channel nor the size -- and by then popChunk had
+		// already removed the entry, so the chunk was gone. Say exactly
+		// what happened instead, and point at the path that can carry it:
+		// the data-plane ring has this same chunk (pumpChannelReads writes
+		// every chunk to both), so nothing is actually lost for a reader
+		// on that path. Popping rather than leaving it queued is
+		// deliberate -- a chunk this reader can never take would otherwise
+		// block every later one behind it forever.
+		if len(chunk) > maxPollChunkSize {
+			return nil, fmt.Errorf("channel: buffered chunk is %d bytes, larger than a poll response can carry (max %d) -- read this channel through its data-plane ring (see pkg/chandata) instead", len(chunk), maxPollChunkSize)
+		}
 		return shmevent.EncodeChannelPollResponse(shmevent.ChannelPollChunk, purpose, chunk), nil
 	}
 	if closed, _ := sess.status(); closed {

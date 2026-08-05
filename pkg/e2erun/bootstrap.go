@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -386,11 +387,39 @@ func deployRegistryEntry(node e2edata.Node, listenAddrs []string) error {
 		DataDir:     BootstrapRemoteDir + "/data",
 		KeyPath:     BootstrapRemoteDir + "/data/identity.key",
 		ListenAddrs: listenAddrs,
+		// Without this the entry says pid 0, and every kvctl-cli command
+		// that first checks whether the node is up (listnodes, use, and so
+		// on -- see pkg/kvctl's "does not appear to be running" gate)
+		// refuses to talk to a daemon that is running perfectly well.
+		// That leaves the one node in this project nobody can reach
+		// directly also the one nobody can inspect with the CLI sitting
+		// next to it -- found while trying to read this very cluster's
+		// membership during an e2e failure. The pid is already recorded
+		// remotely by startIfNotRunning; this carries it into the registry
+		// the CLI actually reads.
+		PID: remoteBootstrapPID(),
 	}); err != nil {
 		return fmt.Errorf("e2erun: build local registry.json: %w", err)
 	}
 
 	return scp(filepath.Join(tmpDir, "registry.json"), BootstrapHost, BootstrapRemoteDir+"/registry.json")
+}
+
+// remoteBootstrapPID reads the pid startIfNotRunning recorded on the
+// bootstrap host, for deployRegistryEntry to store. Zero (what the entry
+// carried before this existed) whenever it cannot be read -- this is
+// bookkeeping that makes the remote CLI usable, never something worth
+// failing a deploy over.
+func remoteBootstrapPID() int {
+	out, err := sshOutput(BootstrapHost, fmt.Sprintf("cat %s 2>/dev/null || true", bootstrapPidFile))
+	if err != nil {
+		return 0
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		return 0
+	}
+	return pid
 }
 
 // bootstrapPidFile is where startIfNotRunning records the daemon's pid, so
