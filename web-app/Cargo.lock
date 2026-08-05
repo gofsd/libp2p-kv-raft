@@ -1869,9 +1869,9 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "shmring"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b870869ca0d83dcd56b8e688db60ae0e14bc008194ce88201a6d7e81d2e4271a"
+checksum = "8163754e1312b8536e59ca50d15cf38df5ee2d2798fc109b0927a987d8237ea8"
 dependencies = [
  "js-sys",
  "libc",

@@ -699,7 +699,7 @@ version = "3.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af43fadb8a98512d547e37b4e92e0ced13e205c061b87b4623eff01d918d6968"
 dependencies = [
- "gloo-timers 0.4.0",
+ "gloo-timers",
  "send_wrapper",
 ]
 
@@ -776,18 +776,6 @@ checksum = "f0d8a4362ccb29cb0b265253fb0a2728f592895ee6854fd9bc13f2ffda266ff1"
 dependencies = [
  "opaque-debug",
  "polyval",
-]
-
-[[package]]
-name = "gloo-timers"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbb143cf96099802033e0d4f4963b19fd2e0b728bcf076cd9cf7f6634f092994"
-dependencies = [
- "futures-channel",
- "futures-core",
- "js-sys",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -1045,7 +1033,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "futures",
  "getrandom 0.3.4",
- "gloo-timers 0.4.0",
+ "gloo-timers",
  "js-sys",
  "libp2p",
  "libp2p-stream",
@@ -1933,11 +1921,10 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "shmring"
-version = "0.3.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c06d5f6396d630a06be75b6d2c99a0d723a20656a53631b787a859942ec4e0b9"
+checksum = "8163754e1312b8536e59ca50d15cf38df5ee2d2798fc109b0927a987d8237ea8"
 dependencies = [
- "gloo-timers 0.3.0",
  "js-sys",
  "libc",
  "wasm-bindgen",

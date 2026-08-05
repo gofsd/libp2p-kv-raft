@@ -21,7 +21,7 @@ libp2p = { version = "0.56", features = ["noise", "yamux", "wasm-bindgen", "webt
 libp2p-stream = "0.4.0-alpha"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-shmring = "0.4.0"
+shmring = "0.4.1"
 time = { version = "0.3", default-features = false, features = ["parsing", "formatting", "serde-well-known", "macros"] }
 wasm-bindgen = "0.2.126"
 wasm-bindgen-futures = "0.4.76"
