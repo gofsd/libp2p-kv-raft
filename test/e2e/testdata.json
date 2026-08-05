@@ -9,27 +9,27 @@
   "nodes": {
     "1": {
       "platform": "desktop",
-      "peer_id": "12D3KooWJfT3n9iNirkjDzz2CVD2nGs8T7FMZ2Zkbb8Pqdj7oemC",
-      "public_key": "83707908a3e8e241b033ee1017f0f08b0ed1373855b98404baa902b40e194b07",
-      "private_key": "f6cade585fcc20a2d7231722320456721a424d65ec4a6c8f6659ece9809f53ca83707908a3e8e241b033ee1017f0f08b0ed1373855b98404baa902b40e194b07"
+      "peer_id": "12D3KooWFq6tBTMGTbBtVmcJ7YoJVjSYEViR6VyUvzFR7bkHiYsr",
+      "public_key": "59566b3dcc8758c9eaa49346d317b27ffe68134d37130468c80be7706e5559a9",
+      "private_key": "b5a466f5f7938aee28e65a52becf5bf81ef76ea33aba487644de8b6d7883b36759566b3dcc8758c9eaa49346d317b27ffe68134d37130468c80be7706e5559a9"
     },
     "2": {
       "platform": "android",
-      "peer_id": "12D3KooWT2cPK4A8xC36HFZyFkGtbbFPo8wgZLdnNPE6GczXozye",
-      "public_key": "ffb9b8e975c88466809b9afb374750213602880a25332dc52390a0a03f4c24c9",
-      "private_key": "7b408b82108100c81fdda8c742f6819c69bc65db73a60086e309d492c5446c57ffb9b8e975c88466809b9afb374750213602880a25332dc52390a0a03f4c24c9"
+      "peer_id": "12D3KooWB9MLfaC8Kn4ZJJT8LLJTN6FpeZZk28vBLGqZw1GfatMY",
+      "public_key": "13b8c8f68a1ce6f7f7749a7a9504314e60756c4ad75bd098b10ce96ab32241bb",
+      "private_key": "7647cfc04c71b3ab2b434c06a02f13e70da030f77d577e54a0a0ab42f9c4735613b8c8f68a1ce6f7f7749a7a9504314e60756c4ad75bd098b10ce96ab32241bb"
     },
     "3": {
       "platform": "web",
-      "peer_id": "12D3KooWAfxYcyL75pcwSuWxcQm82MWESZz5e5Nu5RkVBsvjdqQs",
-      "public_key": "0cb4547e0cb6e65f7c0348bb29aec67dfbaa2addbf7a6591ec424d5f57214408",
-      "private_key": "286e087ed3f9b3a74e29d40e31aadab1f009e8d16ed0541cdf2bc29a5e0279330cb4547e0cb6e65f7c0348bb29aec67dfbaa2addbf7a6591ec424d5f57214408"
+      "peer_id": "12D3KooWJNu7PopeuTngVcwRMPqcAWp8a3CC2ryEapUrj3ii8ser",
+      "public_key": "7f33115b28658d980fed3e3484713472d2e694675f374533992e1913ec308763",
+      "private_key": "1787a5c1ac4a32547ea82cd2650291745efd85a6d3ed430f277c26d0d874f8d67f33115b28658d980fed3e3484713472d2e694675f374533992e1913ec308763"
     },
     "4": {
       "platform": "remote",
-      "peer_id": "12D3KooWJLBVgVh2akkRLZLhL3R26QtdZU4wmsZnjumo9RzGgvNU",
-      "public_key": "7e80d9e3462a4a41d14e5e71b5a629039dc3a26e3a421772ada5a7c56e20edf9",
-      "private_key": "46deb81599feb137e00abcb94f8f1fb2cbde4ee454d739dc31a6c36a33fc4b8f7e80d9e3462a4a41d14e5e71b5a629039dc3a26e3a421772ada5a7c56e20edf9"
+      "peer_id": "12D3KooWA3J8yG2i7kXk6j5up3QS41fqhzawrseGcHJ2BcQUrpwm",
+      "public_key": "034ffe3d898e51fd1c507254d2ec72a2f5122728cfc8e60f520569e44e0ed07c",
+      "private_key": "c6be17f285a2155bf5528a5650bc92f6d46378eecf1720ff3c228fd9c387c932034ffe3d898e51fd1c507254d2ec72a2f5122728cfc8e60f520569e44e0ed07c"
     }
   },
   "rows": [
@@ -799,7 +799,7 @@
     }
   },
   "android_ui_result": {
-    "ran_at": "2026-08-05T02:48:44.162781694+03:00",
+    "ran_at": "2026-08-05T03:01:22.983467938+03:00",
     "status": 0,
     "cases": [
       {
@@ -847,12 +847,12 @@
       {
         "command": "Cluster: GetOwnAddr",
         "pass": true,
-        "output": "/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWJLBVgVh2akkRLZLhL3R26QtdZU4wmsZnjumo9RzGgvNU/p2p-circuit/p2p/12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ"
+        "output": "/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWA3J8yG2i7kXk6j5up3QS41fqhzawrseGcHJ2BcQUrpwm/p2p-circuit/p2p/12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ"
       },
       {
         "command": "Cluster: CreateJoinRequest",
         "pass": true,
-        "output": "9bcf63ab70d687e5052a9494c7586b22"
+        "output": "b1a067003fec0f32bdd74c446a0b314d"
       },
       {
         "command": "Cluster: CancelJoinRequest",
@@ -909,12 +909,12 @@
       {
         "command": "Cluster: ListClusters",
         "pass": true,
-        "output": "[{\"cluster_id\":\"12D3KooWJLBVgVh2akkRLZLhL3R26QtdZU4wmsZnjumo9RzGgvNU\",\"peer_id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\"}]"
+        "output": "[{\"cluster_id\":\"12D3KooWA3J8yG2i7kXk6j5up3QS41fqhzawrseGcHJ2BcQUrpwm\",\"peer_id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\"}]"
       },
       {
         "command": "Cluster: ListClusterMembers",
         "pass": true,
-        "output": "[{\"peer_id\":\"12D3KooWJLBVgVh2akkRLZLhL3R26QtdZU4wmsZnjumo9RzGgvNU\",\"role\":\"leader\"},{\"peer_id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"role\":\"learner\"}]"
+        "output": "[{\"peer_id\":\"12D3KooWA3J8yG2i7kXk6j5up3QS41fqhzawrseGcHJ2BcQUrpwm\",\"role\":\"leader\"},{\"peer_id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"role\":\"learner\"}]"
       },
       {
         "command": "Cluster: PeerID",
@@ -934,12 +934,12 @@
       {
         "command": "KV: Get",
         "pass": true,
-        "output": "e2e-ui-test-value-1785886870871"
+        "output": "e2e-ui-test-value-1785887687615"
       },
       {
         "command": "KV: RangeScan",
         "pass": true,
-        "output": "[{\"key\":\"e2e-ui-test-key\",\"value\":\"e2e-ui-test-value-1785886870871\"}]"
+        "output": "[{\"key\":\"e2e-ui-test-key\",\"value\":\"e2e-ui-test-value-1785887687615\"}]"
       },
       {
         "command": "Permits: RequestPermit",
@@ -977,7 +977,7 @@
       {
         "command": "Channel: OpenChannel",
         "pass": true,
-        "output": "Opened 22b7994f595fcef0 -- incoming data appears below as it arrives"
+        "output": "Opened 9339a5c099314e99 -- incoming data appears below as it arrives"
       },
       {
         "command": "Channel: ListenChannel",
@@ -1015,7 +1015,7 @@
       {
         "command": "Log records: LogQuery",
         "pass": true,
-        "output": "[{\"kind\":\"e2e-ui-test\",\"unit_id\":\"ui-test-unit\",\"timestamp\":\"2026-08-04T23:42:11.716008737Z\",\"author_peer_id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"narrative\":\"ui e2e test\"}]"
+        "output": "[{\"kind\":\"e2e-ui-test\",\"unit_id\":\"ui-test-unit\",\"timestamp\":\"2026-08-04T23:55:48.721093282Z\",\"author_peer_id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"narrative\":\"ui e2e test\"}]"
       },
       {
         "command": "Group: CreateGroup",
@@ -1036,7 +1036,7 @@
       {
         "command": "Group: ListGroups",
         "pass": true,
-        "output": "[{\"id\":\"12D3KooWJLBVgVh2akkRLZLhL3R26QtdZU4wmsZnjumo9RzGgvNU\",\"name\":\"12D3KooWJLBVgVh2akkRLZLhL3R26QtdZU4wmsZnjumo9RzGgvNU\",\"public\":false},{\"id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"name\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"public\":false},{\"id\":\"channel\",\"name\":\"channel\",\"public\":false},{\"id\":\"cluster\",\"name\":\"cluster\",\"public\":false},{\"id\":\"execute\",\"name\":\"execute\",\"public\":false},{\"id\":\"learner\",\"name\":\"learner\",\"public\":false},{\"id\":\"public\",\"name\":\"public\",\"public\":true},{\"id\":\"relay\",\"name\":\"relay\",\"public\":false},{\"id\":\"remote\",\"name\":\"remote\",\"public\":false},{\"id\":\"voter\",\"name\":\"voter\",\"public\":false}]"
+        "output": "[{\"id\":\"12D3KooWA3J8yG2i7kXk6j5up3QS41fqhzawrseGcHJ2BcQUrpwm\",\"name\":\"12D3KooWA3J8yG2i7kXk6j5up3QS41fqhzawrseGcHJ2BcQUrpwm\",\"public\":false},{\"id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"name\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"public\":false},{\"id\":\"channel\",\"name\":\"channel\",\"public\":false},{\"id\":\"cluster\",\"name\":\"cluster\",\"public\":false},{\"id\":\"execute\",\"name\":\"execute\",\"public\":false},{\"id\":\"learner\",\"name\":\"learner\",\"public\":false},{\"id\":\"public\",\"name\":\"public\",\"public\":true},{\"id\":\"relay\",\"name\":\"relay\",\"public\":false},{\"id\":\"remote\",\"name\":\"remote\",\"public\":false},{\"id\":\"voter\",\"name\":\"voter\",\"public\":false}]"
       },
       {
         "command": "Command: CreateCommand",
@@ -1159,7 +1159,7 @@
       {
         "command": "Raw: SendEvent",
         "pass": true,
-        "output": "{\"event\":\"get_public_key\",\"value\":\"0xe0379675fd5c73fd31c330ea8db67a3a94db7b57bc675dad2e1de39fe9eb77cd\",\"id\":6888}"
+        "output": "{\"event\":\"get_public_key\",\"value\":\"0xe0379675fd5c73fd31c330ea8db67a3a94db7b57bc675dad2e1de39fe9eb77cd\",\"id\":22436}"
       },
       {
         "command": "Test: SleepMillis",
