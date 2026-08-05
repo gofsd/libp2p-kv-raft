@@ -488,6 +488,103 @@ const (
 	// is answered directly, the same way EventGetOwnAddr already is, rather
 	// than added to the Group/Command catalog.
 	EventGetVersion uint8 = 46
+	// EventPublicAccess asks this node to submit DefaultPublicCommandID --
+	// the always-public front door every cluster bootstraps (see that
+	// constant's doc comment) -- to *another* cluster, named by Value: a
+	// multiaddr, or a bare peer id this machine's local registry can
+	// resolve, exactly the address forms EventExecInviteRedeem's own
+	// sourceAddr already accepts. Value may optionally carry a "#"-separated
+	// second half, an opaque UTF-8 metadata string stored as the request's
+	// "note" field, for a submitter that wants to say who/what it is.
+	//
+	// Local-only, and the mirror image of every other event here: the rest
+	// of this protocol acts on the node receiving it, while this one makes
+	// the receiving node act as a *client* of a cluster it has no standing
+	// in whatsoever. It exists because the escalation path
+	// DefaultPublicCommandID was designed for had, until now, no client
+	// side anywhere in this repo -- pkg/shmclient.Session only ever talks to
+	// its own local daemon, so a device that needs a stranger cluster's
+	// relay or Channel service (an app phone reserving a circuit-relay v2
+	// slot on a bootstrap node it isn't a member of, the case
+	// configs/bootstrap-nodes.json exists for) had no way to ask for it
+	// short of an operator running mage addpeertogroup by hand, per device.
+	// pkg/daemon's dialAndSubmitPublicAccess is the handler: it connects to
+	// the target and sends a single signed EventLogAppend over
+	// ClientProtocolID carrying a CommandRequestLogKind record for
+	// DefaultPublicCommandID -- byte for byte what SubmitCommand writes
+	// locally -- which the target's isCommandLogCarveOut admits from an
+	// unknown caller and kvfsm.Apply answers by granting this node
+	// ReservedGroupChannel + ReservedGroupRelay membership in that cluster.
+	//
+	// Response Value is the new dispatch's instance id (hex), the same id
+	// SubmitCommand returns, usable against the target's own
+	// GetCommandRequest/QueryCommandLog read-back carve-out.
+	EventPublicAccess uint8 = 47
+	// EventExecTicket never travels over shmring or the network wire the
+	// way every event above does -- Encode/Decode/Sign/Verify already
+	// work standalone on any Msg, with no live session involved, so this
+	// reuses them as the format for a self-contained, offline-verifiable
+	// exec-invite ticket instead of inventing a parallel encoding: Value
+	// is EncodeExecTicketPayload(sourceAddr, token) (byte-identical to
+	// EncodeExecInviteRedeemRequest -- see that function's doc comment),
+	// and the whole message is signed exactly like any other Event.
+	// pkg/kvctl.CreateExecInviteTicket builds one client-side (the local
+	// caller already holds the same signing key the node's own identity
+	// uses -- see this package's doc comment) for a DataMatrix code;
+	// pkg/kvctl.RedeemExecInviteTicket decodes it, extracts the issuing
+	// peer id from sourceAddr's own trailing /p2p/<peerID> component
+	// (self-certifying -- no separate issuer field needed), and verifies
+	// the signature against that peer id's own public key before ever
+	// dialing anything. A daemon that ever received one live would
+	// reject it exactly like any other unrecognized event (see
+	// pkg/daemon's handleShmEvent default case) -- nothing needs to
+	// special-case this type to stay safe.
+	EventExecTicket uint8 = 48
+	// EventJoinTicket is EventExecTicket's join-invite counterpart: Value
+	// is EncodeJoinTicketPayload(sourceAddr, token) (see that function's
+	// doc comment), signed and verified exactly the same way. Unlike
+	// EventExecTicket, redeeming one isn't a separate IPC call --
+	// join-invite redemption is already baked into `mage addfollower`/
+	// `mage addnode`/mobile/kvmobile.Join's own daemon-startup flow
+	// (pkg/daemon's splitInviteToken), which only ever wants the plain
+	// "<addr>#<tokenHex>" string -- so pkg/kvctl.VerifyJoinInviteTicket
+	// verifies the signature and hands back exactly that string, unlike
+	// RedeemExecInviteTicket, which also dials on the caller's behalf.
+	// Never travels over shmring or the network wire, same as
+	// EventExecTicket -- see that constant's doc comment for why that's
+	// safe by construction.
+	EventJoinTicket uint8 = 49
+	// EventJoinRequestTicket is EventJoinTicket's reverse-direction
+	// counterpart: EventJoinInviteCreate/EventJoinTicket are minted by an
+	// existing cluster's voter to admit a device it already knows how to
+	// reach, while a join-request ticket is minted by the requesting
+	// device itself (CreateJoinRequest) and redeemed by a voter on some
+	// other cluster it wants to join (RecruitPeer/EventRecruit) -- so the
+	// signature here proves the ticket really was produced by the
+	// requesting device, the opposite direction of trust from
+	// EventJoinTicket. Value is the same (sourceAddr, token) shape --
+	// EncodeJoinTicketPayload/DecodeJoinTicketPayload are reused as-is,
+	// since join-request tokens are JoinInviteTokenSize too (see
+	// DecodeJoinRequestCancelPayload) and the wire shape is identical;
+	// no separate Encode/DecodeJoinRequestTicketPayload pair exists.
+	// pkg/kvctl.RedeemJoinRequestTicket verifies then calls
+	// sess.Recruit(...) itself, the same "verify then act" shape
+	// RedeemExecInviteTicket uses -- unlike VerifyJoinInviteTicket, which
+	// only hands back a string for a separate addfollower/addnode call,
+	// since RecruitPeer (unlike joining via addfollower) already dials
+	// and completes the join in one round trip.
+	EventJoinRequestTicket uint8 = 50
+	// EventStationPut creates or updates the KindStation record describing
+	// one device (Value is EncodeStationPutPayload(peerID, name, attrs)),
+	// EventStationDelete removes it (Value is the peer id). Voter-gated and
+	// applied through handleConfirmForward exactly like EventCommandPut --
+	// this is the same catalog CRUD, widened to one more kind, not a new
+	// mechanism. Deleting a station removes only its description: the
+	// device's cluster membership (KindClusterMember), group memberships
+	// and any command targeting it are untouched, since none of them
+	// depend on a station record existing.
+	EventStationPut    uint8 = 51
+	EventStationDelete uint8 = 52
 	// EventError is response-only: Value carries a UTF-8 error message,
 	// ID echoes the failed request's ID. Not part of the fields the
 	// protocol was specified with -- added because the struct has no
@@ -540,6 +637,10 @@ func EventName(e uint8) string {
 		return "command_put"
 	case EventCommandDelete:
 		return "command_delete"
+	case EventStationPut:
+		return "station_put"
+	case EventStationDelete:
+		return "station_delete"
 	case EventGroupCommandPut:
 		return "group_command_put"
 	case EventGroupCommandDelete:
@@ -586,6 +687,14 @@ func EventName(e uint8) string {
 		return "channel_data_ready"
 	case EventGetVersion:
 		return "get_version"
+	case EventPublicAccess:
+		return "public_access"
+	case EventExecTicket:
+		return "exec_ticket"
+	case EventJoinTicket:
+		return "join_ticket"
+	case EventJoinRequestTicket:
+		return "join_request_ticket"
 	case EventError:
 		return "error"
 	default:
@@ -640,6 +749,10 @@ func EventFromName(name string) (uint8, bool) {
 		return EventCommandPut, true
 	case "command_delete":
 		return EventCommandDelete, true
+	case "station_put":
+		return EventStationPut, true
+	case "station_delete":
+		return EventStationDelete, true
 	case "group_command_put":
 		return EventGroupCommandPut, true
 	case "group_command_delete":
@@ -686,6 +799,14 @@ func EventFromName(name string) (uint8, bool) {
 		return EventChannelDataReady, true
 	case "get_version":
 		return EventGetVersion, true
+	case "public_access":
+		return EventPublicAccess, true
+	case "exec_ticket":
+		return EventExecTicket, true
+	case "join_ticket":
+		return EventJoinTicket, true
+	case "join_request_ticket":
+		return EventJoinRequestTicket, true
 	case "error":
 		return EventError, true
 	default:
@@ -721,22 +842,73 @@ const ValueSize = 512
 // type is still safe here, the same way ValueSize's fixed width is.
 const ChannelValueSize = 16 * 1024
 
+// KVValueSize is the plain-KV data path's own ceiling, sitting between
+// ValueSize and ChannelValueSize: EventSetKey/EventSetField/EventSet/
+// EventGetField/EventTxn carry whatever a caller chose to store under a
+// key, which -- unlike a permit record or a peer id -- is genuinely
+// caller-shaped data whose size the caller, not this package, decides.
+//
+// 512 bytes turned out to be the binding constraint on anything built on
+// top of these events rather than a safety margin: a document store
+// layering collections over raw keys (see object-history-app's core/jsondb)
+// has to round-trip each document in full on every write, since a Set
+// replaces a value outright, and a single JSON object with a handful of
+// nested fields already exceeds 512 bytes. Raised for these five event
+// types only, kept independent of ValueSize for exactly the reasons
+// ChannelValueSize's doc comment gives: every *other* event's
+// canonicalPayload stays as small as it was, so no extra CRC32/signing
+// cost lands on the traffic that never carries user data.
+//
+// Two things have to move with this constant, and both are silent when
+// missed:
+//
+//   - pkg/ipc's shared-memory capacity has to fit the largest encoded
+//     message; the Android transport's (ipc_android.go) is the tighter of
+//     the two and had to grow alongside this.
+//   - web-app/src/shmevent/mod.rs's own value_size_for must agree event for
+//     event. The ceiling is also the fixed width canonicalPayload pads to
+//     before CRC/signing, so a disagreement doesn't cause a size error --
+//     it makes both sides compute different CRCs and signatures over
+//     identical messages, and every affected message is rejected as forged.
+//     A test in this package (TestValueSizeTiers) lists the widths so a
+//     change here is at least visible; nothing can enforce the Rust side
+//     from Go, so it has to be updated by hand.
+const KVValueSize = 4 * 1024
+
 // valueSizeFor returns the maximum Msg.Value length -- and the fixed
 // width canonicalPayload zero-pads/truncates Value to -- for e.
 // EventChannelSend/EventChannelPoll (the two event types whose Value
 // carries a channel chunk, in the request and response direction
 // respectively -- see those events' doc comments) get ChannelValueSize;
-// every other event type keeps the original ValueSize. This is still
-// safe as a *fixed* per-message width, not a length-prefixed variable
-// one: e (a message's EventType) sits at a constant offset (byte 0) in
-// canonicalPayload, ahead of Value, so a verifier always knows which
-// width the signer must have used before it needs to know Value's own
-// length -- exactly the same property ValueSize's single fixed width
-// already relied on, just keyed by event type instead of being one
-// constant for everything.
+// the plain-KV data events get KVValueSize; every other event type keeps
+// the original ValueSize. This is still safe as a *fixed* per-message
+// width, not a length-prefixed variable one: e (a message's EventType)
+// sits at a constant offset (byte 0) in canonicalPayload, ahead of Value,
+// so a verifier always knows which width the signer must have used before
+// it needs to know Value's own length -- exactly the same property
+// ValueSize's single fixed width already relied on, just keyed by event
+// type instead of being one constant for everything.
 func valueSizeFor(e uint8) int {
 	if e == EventChannelSend || e == EventChannelPoll {
 		return ChannelValueSize
+	}
+	switch e {
+	case EventSetKey, EventSetField, EventSet, EventGetField, EventTxn:
+		return KVValueSize
+	case EventCommandPut, EventStationPut:
+		// These two carry caller-authored definitions -- a command's form
+		// spec, a station's attributes -- rather than fields this package
+		// defines, so they belong with the plain-KV events rather than with
+		// the fixed-shape system records they otherwise resemble.
+		return KVValueSize
+	case EventLogAppend:
+		// A journal entry is the durable record of something that happened
+		// -- a command's narration, an execution's result -- and 512 bytes
+		// left roughly 400-470 for Fields+Narrative combined, which is fine
+		// for "started"/"finished" and far too small for a real result with
+		// a dozen measured values. It is caller-authored data in the same
+		// sense the events above are.
+		return KVValueSize
 	}
 	return ValueSize
 }

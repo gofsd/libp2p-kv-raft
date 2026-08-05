@@ -21,7 +21,7 @@ const SystemKeyPrefix = 0x00
 // pkg/daemon's Channel/relay gates already used (see
 // shmevent.ReservedGroupRemote/ReservedGroupExecute/ReservedGroupRelay/
 // ReservedGroupChannel and pkg/daemon's isAuthorizedForGatedAccess/
-// isCommandLogCarveOut), which needs no permit record at all. Values 0x0B
+// isCommandLogCarveOut), which needs no permit record at all. Values 0x0D
 // and above are still unassigned, reserved for future system operations.
 const (
 	// KindBootstrapNode registers a stable relay/bootstrap point: a known
@@ -109,6 +109,24 @@ const (
 	// redemption attempt is rejected without consuming the invite, letting
 	// a legitimate peer still redeem it later.
 	KindExecInvite byte = 0x0B
+	// KindStation describes one device in operational terms -- a human name
+	// and whatever attributes an application cares about (location, model,
+	// capabilities), as an opaque payload this package never parses --
+	// keyed by that device's peer id. It exists because every other record
+	// naming a device names it by peer id alone, which is a 52-character
+	// base58 string that tells a person nothing: a Command's target, a
+	// PeerGroup's member and a CommandRequest's executor are all unreadable
+	// without somewhere to look up "which machine is that". This is that
+	// somewhere.
+	//
+	// Deliberately *not* the cluster's membership list: KindClusterMember
+	// already records who is in the cluster, replicated by the join path,
+	// and a station record neither grants membership nor implies it. A
+	// device can be described before it joins (staging a shop floor) and
+	// keep its description after it leaves (so historical records still
+	// name it). Written through the same voter-gated catalog CRUD path as
+	// KindGroup/KindCommand, so a device cannot rename itself.
+	KindStation byte = 0x0C
 )
 
 // KindName returns a human-readable name for k, for CLI use (mage/
@@ -134,6 +152,8 @@ func KindName(k byte) string {
 		return "join-invite"
 	case KindExecInvite:
 		return "exec-invite"
+	case KindStation:
+		return "station"
 	default:
 		return fmt.Sprintf("unknown(%d)", k)
 	}
@@ -158,6 +178,8 @@ func KindFromName(name string) (byte, bool) {
 		return KindGroupCommand, true
 	case "peer-group":
 		return KindPeerGroup, true
+	case "station":
+		return KindStation, true
 	case "join-invite":
 		return KindJoinInvite, true
 	case "exec-invite":

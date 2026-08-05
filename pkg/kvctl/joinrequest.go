@@ -2,11 +2,14 @@ package kvctl
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"time"
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/registry"
+	"github.com/gofsd/libp2p-kv-raft/pkg/shmclient"
+	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
 
 // AddPending implements `mage addpending`: spawns a brand new node, exactly
@@ -133,3 +136,108 @@ func RecruitPeer(ticket string, suffrage byte) (string, error) {
 // pkg/daemon's recruitJoinTimeout), so this needs real headroom beyond the
 // usual same-machine IPC budget.
 const recruitTimeout = 100 * time.Second
+
+// CreateJoinRequestTicket implements `mage createjoinrequestticket`: does
+// everything CreateJoinRequest does (mints a one-time join-request token
+// on the current node), then wraps this node's own current address and
+// that token into a signed, self-contained ticket -- an
+// EventJoinRequestTicket Msg built and signed with shmevent.Encode
+// entirely client-side, the same way CreateExecInviteTicket/
+// CreateJoinInviteTicket do (see CreateExecInviteTicket's doc comment for
+// why no daemon changes are needed). Returns the ticket base64-encoded --
+// the string a DataMatrix encodes; RedeemJoinRequestTicket is its
+// inverse.
+//
+// Unlike those two, this ticket is minted by the *requesting* device, not
+// an already-established voter -- see EventJoinRequestTicket's doc
+// comment for why the direction of proof is reversed here: the signature
+// proves the ticket really came from the device asking to join, not from
+// the cluster admitting it.
+func CreateJoinRequestTicket() (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
+	defer cancel()
+	sess, selfPeerID, err := openCurrentSession(ctx)
+	if err != nil {
+		return "", err
+	}
+	token, err := sess.CreateJoinRequest(ctx)
+	if err != nil {
+		return "", fmt.Errorf("create join request ticket: %w", err)
+	}
+
+	addr, err := sess.GetOwnAddr(ctx)
+	if err != nil {
+		return "", fmt.Errorf("create join request ticket: get own addr: %w", err)
+	}
+
+	value, err := shmevent.EncodeJoinTicketPayload(addr, token)
+	if err != nil {
+		return "", fmt.Errorf("create join request ticket: %w", err)
+	}
+	priv, err := shmclient.GetPrivateKey(ctx, selfPeerID)
+	if err != nil {
+		return "", fmt.Errorf("create join request ticket: fetch signing key: %w", err)
+	}
+	wire, err := shmevent.Encode(shmevent.Msg{EventType: shmevent.EventJoinRequestTicket, Value: value}, priv)
+	if err != nil {
+		return "", fmt.Errorf("create join request ticket: sign: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(wire), nil
+}
+
+// RedeemJoinRequestTicket implements `mage redeemjoinrequestticket
+// <ticketB64> <voter|learner>`: the CreateJoinRequestTicket counterpart
+// to RecruitPeer -- decodes ticketB64, extracts the requesting device's
+// peer id from its own embedded address (self-certifying, via the same
+// addr->peer.ID extraction RedeemExecInviteTicket/VerifyJoinInviteTicket
+// use) and verifies the signature against that peer id's own public key,
+// rejecting the ticket outright if it doesn't check out -- only then
+// calls RecruitPeer exactly like it always has (dials the requesting
+// device and hand-delivers a normal join invite on this node's own
+// cluster). Returns the recruited device's own join result
+// ("<peerID> ok"/"<peerID> pending") on success.
+func RedeemJoinRequestTicket(ticketB64 string, suffrage byte) (string, error) {
+	wire, err := base64.StdEncoding.DecodeString(ticketB64)
+	if err != nil {
+		return "", fmt.Errorf("invalid join request ticket: %w", err)
+	}
+	m, crc, sig, err := shmevent.Decode(wire)
+	if err != nil {
+		return "", fmt.Errorf("decode join request ticket: %w", err)
+	}
+	if m.EventType != shmevent.EventJoinRequestTicket {
+		return "", fmt.Errorf("not a join request ticket (event %s)", shmevent.EventName(m.EventType))
+	}
+	addr, token, err := shmevent.DecodeJoinTicketPayload(m.Value)
+	if err != nil {
+		return "", fmt.Errorf("decode join request ticket: %w", err)
+	}
+
+	requesterID, err := relayNodePeerID(addr)
+	if err != nil {
+		return "", fmt.Errorf("join request ticket: %w", err)
+	}
+	requesterPub, err := requesterID.ExtractPublicKey()
+	if err != nil {
+		return "", fmt.Errorf("join request ticket: extract requester public key: %w", err)
+	}
+	requesterPubRaw, err := requesterPub.Raw()
+	if err != nil {
+		return "", fmt.Errorf("join request ticket: requester public key: %w", err)
+	}
+	if err := shmevent.Verify(requesterPubRaw, m, crc, sig); err != nil {
+		return "", fmt.Errorf("join request ticket: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), recruitTimeout)
+	defer cancel()
+	sess, _, err := openCurrentSession(ctx)
+	if err != nil {
+		return "", err
+	}
+	result, err := sess.Recruit(ctx, addr+"#"+hex.EncodeToString(token), suffrage)
+	if err != nil {
+		return "", fmt.Errorf("recruit peer: %w", err)
+	}
+	return result, nil
+}

@@ -2,6 +2,7 @@ package shmevent
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"crypto/rand"
 	"testing"
 )
@@ -142,5 +143,117 @@ func TestExecInviteEventNameRoundTrip(t *testing.T) {
 		if !RequiresSignature(e) {
 			t.Fatalf("event %d (%s) unexpectedly does not require a signature", e, name)
 		}
+	}
+}
+
+func TestExecTicketEventNameRoundTrip(t *testing.T) {
+	name := EventName(EventExecTicket)
+	if name != "exec_ticket" {
+		t.Fatalf("got name %q, want %q", name, "exec_ticket")
+	}
+	got, ok := EventFromName(name)
+	if !ok || got != EventExecTicket {
+		t.Fatalf("round trip through name %q got %d ok=%v, want %d", name, got, ok, EventExecTicket)
+	}
+	if !RequiresSignature(EventExecTicket) {
+		t.Fatalf("EventExecTicket unexpectedly does not require a signature")
+	}
+}
+
+func TestExecTicketPayloadRoundTrip(t *testing.T) {
+	token := randomExecInviteToken(t)
+	const addr = "/ip4/127.0.0.1/tcp/4001/p2p/abc"
+
+	payload, err := EncodeExecTicketPayload(addr, token)
+	if err != nil {
+		t.Fatalf("EncodeExecTicketPayload: %v", err)
+	}
+	// Byte-identical to EncodeExecInviteRedeemRequest -- see that
+	// function's doc comment for why this dual use is deliberate.
+	want, err := EncodeExecInviteRedeemRequest(addr, token)
+	if err != nil {
+		t.Fatalf("EncodeExecInviteRedeemRequest: %v", err)
+	}
+	if !bytes.Equal(payload, want) {
+		t.Fatalf("EncodeExecTicketPayload diverged from EncodeExecInviteRedeemRequest: got %x, want %x", payload, want)
+	}
+
+	gotAddr, gotToken, err := DecodeExecTicketPayload(payload)
+	if err != nil {
+		t.Fatalf("DecodeExecTicketPayload: %v", err)
+	}
+	if gotAddr != addr {
+		t.Fatalf("got addr %q, want %q", gotAddr, addr)
+	}
+	if !bytes.Equal(gotToken, token) {
+		t.Fatalf("got token %x, want %x", gotToken, token)
+	}
+}
+
+// TestExecTicketSignVerifyRoundTrip exercises the actual security property
+// EventExecTicket exists for: a ticket signed by one key verifies against
+// that key's matching public key, fails against a different one, and any
+// tampering with the encoded bytes (as would happen if a scanned
+// DataMatrix payload were altered or a different sourceAddr/token were
+// substituted in) is caught by Verify -- entirely via Encode/Decode/Verify
+// standalone, no shmring session involved, confirming the "no daemon
+// changes needed" premise this event type was designed around.
+func TestExecTicketSignVerifyRoundTrip(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := randomExecInviteToken(t)
+	value, err := EncodeExecTicketPayload("/ip4/127.0.0.1/tcp/4001/p2p/abc", token)
+	if err != nil {
+		t.Fatalf("EncodeExecTicketPayload: %v", err)
+	}
+
+	wire, err := Encode(Msg{EventType: EventExecTicket, Value: value}, priv)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+
+	m, crc, sig, err := Decode(wire)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if m.EventType != EventExecTicket {
+		t.Fatalf("got event type %d, want %d", m.EventType, EventExecTicket)
+	}
+	gotAddr, gotToken, err := DecodeExecTicketPayload(m.Value)
+	if err != nil {
+		t.Fatalf("DecodeExecTicketPayload: %v", err)
+	}
+	if gotAddr != "/ip4/127.0.0.1/tcp/4001/p2p/abc" || !bytes.Equal(gotToken, token) {
+		t.Fatalf("decoded payload mismatch: addr=%q token=%x", gotAddr, gotToken)
+	}
+
+	if err := Verify(pub, m, crc, sig); err != nil {
+		t.Fatalf("Verify with correct key: %v", err)
+	}
+
+	otherPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Verify(otherPub, m, crc, sig); err == nil {
+		t.Fatal("Verify unexpectedly succeeded against the wrong public key")
+	}
+
+	// A ticket with a substituted token (e.g. an attacker splicing a
+	// different token into an otherwise-genuine ticket) must fail
+	// verification against the original signature -- same technique
+	// TestSignVerifyTamperDetection uses elsewhere in this package.
+	tampered := m
+	tamperedToken := append([]byte(nil), token...)
+	tamperedToken[0] ^= 0xFF
+	tamperedValue, err := EncodeExecTicketPayload("/ip4/127.0.0.1/tcp/4001/p2p/abc", tamperedToken)
+	if err != nil {
+		t.Fatalf("EncodeExecTicketPayload: %v", err)
+	}
+	tampered.Value = tamperedValue
+	if err := Verify(pub, tampered, crc, sig); err == nil {
+		t.Fatal("Verify unexpectedly succeeded after tampering with the ticket's token")
 	}
 }

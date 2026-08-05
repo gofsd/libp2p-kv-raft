@@ -84,3 +84,28 @@ func DecodeJoinInviteRevokePayload(payload []byte) (token []byte, err error) {
 	}
 	return payload, nil
 }
+
+// EncodeJoinTicketPayload packs sourceAddr and token into a single
+// EventJoinTicket Msg.Value: token first (fixed size, no length prefix
+// needed), then sourceAddr as the trailing field -- the same shape
+// EncodeExecInviteRedeemRequest uses for its own addr+token pair (there's
+// no existing join-invite equivalent to alias here, since redemption
+// isn't a shmring IPC call the way exec-invite's is -- see
+// EventJoinTicket's doc comment).
+func EncodeJoinTicketPayload(sourceAddr string, token []byte) ([]byte, error) {
+	if len(token) != JoinInviteTokenSize {
+		return nil, fmt.Errorf("shmevent: join invite token must be %d bytes, got %d", JoinInviteTokenSize, len(token))
+	}
+	buf := make([]byte, JoinInviteTokenSize+len(sourceAddr))
+	copy(buf, token)
+	copy(buf[JoinInviteTokenSize:], sourceAddr)
+	return buf, nil
+}
+
+// DecodeJoinTicketPayload is the inverse of EncodeJoinTicketPayload.
+func DecodeJoinTicketPayload(payload []byte) (sourceAddr string, token []byte, err error) {
+	if len(payload) < JoinInviteTokenSize {
+		return "", nil, fmt.Errorf("shmevent: join ticket payload too short: %d bytes", len(payload))
+	}
+	return string(payload[JoinInviteTokenSize:]), payload[:JoinInviteTokenSize], nil
+}

@@ -8,6 +8,90 @@ tracks *changes*, not a full feature description).
 
 ## [Unreleased]
 
+### Added
+- **Compare-and-swap**, as preconditions inside the existing atomic
+  transaction rather than a separate mechanism: `shmevent.TxnOpCompare`
+  ("key holds exactly this") and `TxnOpCompareAbsent` ("key does not
+  exist"), the `if:<key>=<value>` / `ifabsent:<key>` ops in
+  `ParseTxnOpsString`'s shared grammar, `shmclient.CompareAndSwap`,
+  `kvmobile.CompareAndSwap`/`CompareAndSwapAbsent`, `mage cas` /
+  `mage casabsent`. Every precondition is evaluated in `kvfsm.Apply`
+  *before any write in the same transaction lands*, so a failed compare
+  leaves the store exactly as it was -- and because raft has already
+  serialized the log entry, there is no window between the read and the
+  write, which no amount of client-side care could close for a
+  `Get`-then-`Set`. A failed compare crosses the IPC boundary as
+  `shmevent.CompareFailedMarker` and comes back as a typed result
+  (`shmclient.ErrCompareFailed`, `CompareAndSwap`'s plain `false`), since
+  losing a race is an expected outcome to retry, not an error to report.
+- **`shmevent.KVValueSize` (4KB)**, a third value ceiling between
+  `ValueSize` (512B) and `ChannelValueSize` (16KB), applied to the
+  plain-KV data events plus `EventCommandPut`/`EventStationPut` -- the
+  events whose `Value` is caller-authored data rather than fields this
+  project defines. 512 bytes had become the binding constraint on anything
+  layered over the KV store, since a `Set` replaces a value outright. The
+  Android IPC ring (`pkg/ipc/ipc_android.go`) grew 4096 -> 16384 to carry
+  it.
+- **A `Command` record's `spec`** -- an opaque, never-parsed form
+  definition replicated with the command, so a cluster gains a new command
+  without any device gaining new code (`mage createcommandspec`,
+  `kvmobile.CreateCommandWithSpec`, `shmclient.PutCommandWithSpec`).
+  Carried in a versioned payload marked by an impossible v1 name length
+  (`0xFFFF`); a command with no spec is still written as v1 byte for byte,
+  so existing records and readers that predate the field -- including
+  `web-app`'s Rust decoder -- are untouched. A spec-less `Put` preserves an
+  existing spec (`kvfsm.preserveCommandSpec`) instead of clearing it, so a
+  rename or a startup re-registration can't silently delete a form
+  definition; `mage clearcommandspec` removes one deliberately.
+- **`shmevent.KindStation`** (`0x0C`) plus `EventStationPut`/
+  `EventStationDelete` (51/52), `mage createstation`/`updatestation`/
+  `deletestation`/`getstation`/`liststations`, `kvctl.PutStation` and
+  `kvmobile.PutStation`/`ListStations`: a device's operational description
+  (name + opaque attributes) keyed by its peer id, so records that name a
+  device by a 52-character peer id can be shown as something readable.
+  Voter-gated like the rest of the catalog, so a device cannot name
+  itself; deliberately *not* cluster membership, so a device can be
+  described before it joins and keep its description after it leaves.
+
+### Changed
+- **A device may now be the target of many commands.** `kvfsm` no longer
+  rejects a second `Command` naming a peer that another command already
+  targets, and `peer_id` may be empty for a command not yet bound to a
+  station. The old rule capped a cluster's command list at its device
+  count, and nothing depended on it -- every consumer looks up command id
+  -> target peer, never the reverse. `SubmitCommand` now rejects an
+  unbound command by name, which is where a missing target genuinely
+  matters.
+
+### Added (earlier in this release)
+- `shmevent.EventPublicAccess` (byte 47) plus `pkg/daemon`'s
+  `dialAndSubmitPublicAccess`, `shmclient.Session.PublicAccess`,
+  `kvctl.RequestPublicAccess`, `kvmobile.RequestPublicAccess`/
+  `RequestRelayAccess`, `mage requestpublicaccess <targetAddr> [note]`, and
+  `kvctl-cli requestpublicaccess` -- the client side of
+  `shmevent.DefaultPublicCommandID`'s self-service escalation, which until
+  now existed only server-side. A node can now submit the always-public
+  `public-access` command to a cluster it has *no standing in at all*, over
+  that cluster's `ClientProtocolID`, and be granted real
+  `ReservedGroupChannel`/`ReservedGroupRelay` membership there
+  (`kvfsm.grantChannelRelayAccess`) in one raft-committed write. This is
+  what makes a relay usable by a device that isn't a member of the relay's
+  own cluster: relay admission is unconditionally group-gated
+  (`relayACL`, no opt-out by design), so before this the only way in was an
+  operator running `mage addpeertogroup <peerID> relay` by hand, once per
+  device. Local-only, for the same reason `EventExecInviteRedeem`/
+  `EventRecruit` are: it spends the receiving node's own identity.
+- `mage enablepublicaccess` / `kvctl-cli enablepublicaccess`
+  (`kvctl.EnablePublicAccess`) -- seeds the `public` Group,
+  `public-access` Command and their link on an *existing* cluster.
+  `pkg/daemon.ensureDefaultPublicCommand` only ever runs at first cluster
+  bootstrap, and deliberately not on later leadership transitions (they're
+  ordinary mutable records; an operator who closed self-service enrollment
+  must not have that undone by an election), so a cluster bootstrapped by
+  an older build never gains them and refuses every request with `is not
+  permitted to submit command public-access`. Idempotent; also the way to
+  re-open enrollment on a cluster where it was closed deliberately.
+
 ### Security
 - Removed the opt-in permit-based ACL for the generic remote
   (`ClientProtocolID`) RPC surface, `EventExecute` delivery, and per-log-kind

@@ -30,16 +30,14 @@ import (
 // mechanism (a durable request+response conversation, not ACL
 // configuration) that keys off commandID alone instead of groupID.
 //
-// Not carried over from the old scheme: Group's Description and Command's
-// GroupID/Description/FormSchema fields (a Command may now belong to
-// multiple groups via GroupCommand, so a single GroupID field no longer
-// makes sense, and the new daemon-enforced records have no room for
-// free-form metadata -- shmevent.EncodeCommandPayload only carries name and
-// peer_id). A caller that still wants a submission-form schema or
-// human-readable description alongside a Command should keep that as its
-// own pkg/logrecord entry (see LogAppend/LogQuery) keyed by the command id,
-// the same general-purpose mechanism this package already exposes for any
-// other structured record.
+// Partly carried over from the old scheme: Command's FormSchema came back,
+// as Spec (see CreateCommandWithSpec) -- shmevent.EncodeCommandPayloadWithSpec
+// carries name, peer_id and an opaque spec, so a submission form once again
+// travels with the command it belongs to instead of needing a parallel
+// pkg/logrecord entry keyed by the same id. Group's Description and Command's
+// GroupID did not come back: a Command may belong to multiple groups via
+// GroupCommand, so a single GroupID field no longer makes sense, and a
+// human-readable description belongs in the spec if a client wants one.
 //
 // Also not carried over: ResolveQRGroup/GroupView, the QR-scan convenience
 // that resolved a scanned group id straight into its available commands.
@@ -321,6 +319,17 @@ type Command struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
 	TargetPeerID string `json:"target_peer_id"`
+	// Spec is the command's form definition, verbatim as stored, omitted
+	// when it has none. See CreateCommandWithSpec.
+	Spec string `json:"spec,omitempty"`
+}
+
+// Station is a device's operational description -- see
+// shmevent.KindStation, and PutStation/ListStations below.
+type Station struct {
+	PeerID string `json:"peer_id"`
+	Name   string `json:"name"`
+	Attrs  string `json:"attrs,omitempty"`
 }
 
 // CreateCommand defines commandID, executable by targetPeerID -- see
@@ -329,21 +338,37 @@ type Command struct {
 // same Put operation, just named for intent. Only a current raft voter may
 // do this.
 func CreateCommand(id, name, targetPeerID string) error {
-	return putCommand(id, name, targetPeerID)
+	return putCommand(id, name, targetPeerID, "")
+}
+
+// CreateCommandWithSpec is CreateCommand carrying the command's form
+// definition as well -- an opaque string (JSON, in practice) the cluster
+// replicates verbatim and every device renders its inputs from. This is what
+// lets a new command reach every device without any of them gaining new
+// code: the definition travels through raft like any other catalog record.
+//
+// targetPeerID may be empty here, unlike CreateCommand's original contract: a
+// definition can exist before anyone decides which device runs it. Submitting
+// such a command fails, naming the missing target.
+func CreateCommandWithSpec(id, name, targetPeerID, spec string) error {
+	return putCommand(id, name, targetPeerID, spec)
+}
+
+// UpdateCommandWithSpec is CreateCommandWithSpec's alias for the "this id
+// already exists" case.
+func UpdateCommandWithSpec(id, name, targetPeerID, spec string) error {
+	return putCommand(id, name, targetPeerID, spec)
 }
 
 // UpdateCommand is CreateCommand's alias for the "this id already exists"
 // case -- see CreateCommand's doc comment.
 func UpdateCommand(id, name, targetPeerID string) error {
-	return putCommand(id, name, targetPeerID)
+	return putCommand(id, name, targetPeerID, "")
 }
 
-func putCommand(id, name, targetPeerID string) error {
+func putCommand(id, name, targetPeerID, spec string) error {
 	if err := validateCatalogID(id); err != nil {
 		return err
-	}
-	if targetPeerID == "" {
-		return fmt.Errorf("kvmobile: command target_peer_id must not be empty")
 	}
 	sess, err := currentSession()
 	if err != nil {
@@ -352,7 +377,7 @@ func putCommand(id, name, targetPeerID string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
-	if err := sess.PutCommand(ctx, id, name, []byte(targetPeerID)); err != nil {
+	if err := sess.PutCommandWithSpec(ctx, id, name, []byte(targetPeerID), []byte(spec)); err != nil {
 		return fmt.Errorf("kvmobile: put command: %w", err)
 	}
 	return nil
@@ -388,12 +413,12 @@ func GetCommand(id string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("kvmobile: command %s not found", id)
 	}
-	name, targetPeerID, err := shmevent.DecodeCommandPayload([]byte(value))
+	name, targetPeerID, spec, err := shmevent.DecodeCommandPayloadFull([]byte(value))
 	if err != nil {
 		return "", fmt.Errorf("kvmobile: decode command %s: %w", id, err)
 	}
 
-	out, err := json.Marshal(Command{ID: id, Name: name, TargetPeerID: string(targetPeerID)})
+	out, err := json.Marshal(Command{ID: id, Name: name, TargetPeerID: string(targetPeerID), Spec: string(spec)})
 	if err != nil {
 		return "", fmt.Errorf("kvmobile: encode command: %w", err)
 	}
@@ -425,11 +450,11 @@ func ListCommands() (string, error) {
 			return "", fmt.Errorf("kvmobile: malformed command key %x", key)
 		}
 		id := string(key[systemKeyIDOffset:])
-		name, targetPeerID, err := shmevent.DecodeCommandPayload(value)
+		name, targetPeerID, spec, err := shmevent.DecodeCommandPayloadFull(value)
 		if err != nil {
 			return "", fmt.Errorf("kvmobile: list commands: decode %s: %w", id, err)
 		}
-		commands = append(commands, Command{ID: id, Name: name, TargetPeerID: string(targetPeerID)})
+		commands = append(commands, Command{ID: id, Name: name, TargetPeerID: string(targetPeerID), Spec: string(spec)})
 		lo = append(append([]byte{}, key...), 0x00)
 	}
 
@@ -620,4 +645,103 @@ func isPermittedForCommand(ctx context.Context, sess *shmclient.Session, peerID,
 		}
 		lo = append(append([]byte{}, key...), 0x00)
 	}
+}
+
+// PutStation creates or updates the description of the device peerID -- a
+// human-readable name plus opaque attrs (JSON, in practice). Only a current
+// raft voter may do this, so a device cannot rename itself.
+//
+// This is what turns a 52-character peer id into something a person can read:
+// every other record naming a device -- a Command's target, a group
+// membership, an execution's executor -- names it by peer id alone.
+func PutStation(peerID, name, attrs string) error {
+	if peerID == "" {
+		return fmt.Errorf("kvmobile: station peer_id must not be empty")
+	}
+	sess, err := currentSession()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	if err := sess.PutStation(ctx, []byte(peerID), name, []byte(attrs)); err != nil {
+		return fmt.Errorf("kvmobile: put station: %w", err)
+	}
+	return nil
+}
+
+// DeleteStation removes peerID's description. Its cluster membership and
+// group memberships are untouched -- this deletes what the device is called,
+// not what it is.
+func DeleteStation(peerID string) error {
+	sess, err := currentSession()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	if err := sess.DeleteStation(ctx, []byte(peerID)); err != nil {
+		return fmt.Errorf("kvmobile: delete station: %w", err)
+	}
+	return nil
+}
+
+// GetStation returns peerID's station description as a JSON object.
+func GetStation(peerID string) (string, error) {
+	sess, err := currentSession()
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	value, err := sess.Get(ctx, string(shmevent.StationKey([]byte(peerID))))
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: station %s not found", peerID)
+	}
+	name, attrs, err := shmevent.DecodeStationPayload([]byte(value))
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: decode station %s: %w", peerID, err)
+	}
+	out, err := json.Marshal(Station{PeerID: peerID, Name: name, Attrs: string(attrs)})
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: encode station: %w", err)
+	}
+	return string(out), nil
+}
+
+// ListStations returns every station description as a JSON array (`"[]"`
+// when none exist).
+func ListStations() (string, error) {
+	sess, err := currentSession()
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	lo, hi := shmevent.StationKeyBounds()
+	stations := []Station{}
+	for {
+		key, value, ok, err := sess.ListRange(ctx, lo, hi)
+		if err != nil {
+			return "", fmt.Errorf("kvmobile: list stations: %w", err)
+		}
+		if !ok {
+			break
+		}
+		if len(key) < systemKeyIDOffset {
+			return "", fmt.Errorf("kvmobile: malformed station key %x", key)
+		}
+		peerID := string(key[systemKeyIDOffset:])
+		name, attrs, err := shmevent.DecodeStationPayload(value)
+		if err != nil {
+			return "", fmt.Errorf("kvmobile: list stations: decode %s: %w", peerID, err)
+		}
+		stations = append(stations, Station{PeerID: peerID, Name: name, Attrs: string(attrs)})
+		lo = append(append([]byte{}, key...), 0x00)
+	}
+	out, err := json.Marshal(stations)
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: encode stations: %w", err)
+	}
+	return string(out), nil
 }

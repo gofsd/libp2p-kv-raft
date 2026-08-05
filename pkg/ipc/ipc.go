@@ -146,7 +146,8 @@ func callerLock(peerID string) *sync.Mutex {
 // be a power of two and comfortably fit the largest encoded request/
 // response this package ever carries -- today, an EventChannelSend
 // request or EventChannelPoll response near shmevent.ChannelValueSize
-// (16KB), not the much smaller shmevent.ValueSize (512 bytes) every other
+// (16KB), then the plain-KV data events at shmevent.KVValueSize (4KB), not
+// the much smaller shmevent.ValueSize (512 bytes) every remaining
 // event's Value obeys -- see ChannelValueSize's doc comment for why
 // channel data alone gets a bigger ceiling. Each shmring segment this
 // package creates is transient (opened, used for one round trip, then

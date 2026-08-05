@@ -2,12 +2,14 @@ package kvmobile
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/daemon"
+	"github.com/gofsd/libp2p-kv-raft/pkg/registry"
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmclient"
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
@@ -104,6 +106,16 @@ func startPending(dataDirRoot string, port int, resolveIdentity func(dataDir str
 	if err := waitForReady(pendingDir, errC, callTimeout); err != nil {
 		cancel()
 		return "", fmt.Errorf("kvmobile: start pending: %w", err)
+	}
+
+	// Best-effort: register id -> pendingDir in the local registry, the
+	// same reasoning startAgainst's identical block gives -- needed only
+	// for this package's own test suite (which exercises the desktop
+	// ipc.go transport as a stand-in), never on a real device (Android's
+	// ipc_android.go transport has no token/registry concept at all, so
+	// registry.Open failing there must never block startup).
+	if reg, regErr := registry.Open(); regErr == nil {
+		_ = reg.Put(registry.NodeInfo{PeerID: id, DataDir: pendingDir})
 	}
 
 	sessCtx, sessCancel := context.WithTimeout(ctx, callTimeout)
@@ -215,6 +227,112 @@ func RecruitPeer(ticket, suffrage string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
 	result, err := sess.Recruit(ctx, ticket, sf)
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: recruit peer: %w", err)
+	}
+	return result, nil
+}
+
+// CreateJoinRequestTicket is CreateJoinRequest's signed-ticket
+// counterpart -- the mobile equivalent of desktop's
+// pkg/kvctl.CreateJoinRequestTicket. It does everything CreateJoinRequest
+// does (mints a one-time join-request token on this device), then wraps
+// this device's own current address and that token into a single signed,
+// self-contained ticket, base64-encoded, for an app to render as a Data
+// Matrix directly. Unlike CreateJoinInviteTicket, this ticket is signed
+// by the *requesting* device, not an already-established voter -- see
+// shmevent.EventJoinRequestTicket's doc comment for why the direction of
+// proof is reversed here.
+func CreateJoinRequestTicket() (string, error) {
+	sess, err := currentSession()
+	if err != nil {
+		return "", err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	token, err := sess.CreateJoinRequest(ctx)
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: create join request ticket: %w", err)
+	}
+
+	addr, err := sess.GetOwnAddr(ctx)
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: create join request ticket: get own addr: %w", err)
+	}
+
+	value, err := shmevent.EncodeJoinTicketPayload(addr, token)
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: create join request ticket: %w", err)
+	}
+	priv, err := shmclient.GetPrivateKey(ctx, PeerID())
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: create join request ticket: fetch signing key: %w", err)
+	}
+	wire, err := shmevent.Encode(shmevent.Msg{EventType: shmevent.EventJoinRequestTicket, Value: value}, priv)
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: create join request ticket: sign: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(wire), nil
+}
+
+// RedeemJoinRequestTicket is RecruitPeer's signed-ticket counterpart --
+// the mobile equivalent of desktop's pkg/kvctl.RedeemJoinRequestTicket.
+// Decodes ticketB64, extracts the requesting device's peer id from its
+// own embedded address (self-certifying, via relayNodePeerID) and
+// verifies the signature against that peer id's own public key,
+// rejecting the ticket outright if it doesn't check out -- only then
+// calls RecruitPeer exactly like it always has.
+func RedeemJoinRequestTicket(ticketB64, suffrage string) (string, error) {
+	var sf byte
+	switch suffrage {
+	case "voter":
+		sf = shmevent.SuffrageVoter
+	case "learner":
+		sf = shmevent.SuffrageLearner
+	default:
+		return "", fmt.Errorf("kvmobile: unknown suffrage %q (want \"voter\" or \"learner\")", suffrage)
+	}
+
+	wire, err := base64.StdEncoding.DecodeString(ticketB64)
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: invalid join request ticket: %w", err)
+	}
+	m, crc, sig, err := shmevent.Decode(wire)
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: decode join request ticket: %w", err)
+	}
+	if m.EventType != shmevent.EventJoinRequestTicket {
+		return "", fmt.Errorf("kvmobile: not a join request ticket (event %s)", shmevent.EventName(m.EventType))
+	}
+	addr, token, err := shmevent.DecodeJoinTicketPayload(m.Value)
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: decode join request ticket: %w", err)
+	}
+
+	requesterID, err := relayNodePeerID(addr)
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: join request ticket: %w", err)
+	}
+	requesterPub, err := requesterID.ExtractPublicKey()
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: join request ticket: extract requester public key: %w", err)
+	}
+	requesterPubRaw, err := requesterPub.Raw()
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: join request ticket: requester public key: %w", err)
+	}
+	if err := shmevent.Verify(requesterPubRaw, m, crc, sig); err != nil {
+		return "", fmt.Errorf("kvmobile: join request ticket: %w", err)
+	}
+
+	sess, err := currentSession()
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	result, err := sess.Recruit(ctx, addr+"#"+hex.EncodeToString(token), sf)
 	if err != nil {
 		return "", fmt.Errorf("kvmobile: recruit peer: %w", err)
 	}

@@ -234,13 +234,36 @@ func TestEventSetEncodeDecodeRoundTrip(t *testing.T) {
 	}
 }
 
+// Three ceilings now exist, and which one applies is decided by event type
+// alone (valueSizeFor). Each is pinned from both sides -- one byte under is
+// accepted, one byte over is refused -- because a ceiling that silently
+// applies the *wrong* tier is the failure mode worth catching: too small
+// breaks a caller storing legitimate data, too large produces a message the
+// shared-memory transport underneath (see pkg/ipc's capacity) can't carry.
 func TestValueTooLongRejected(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	big := make([]byte, ValueSize+1)
-	if _, err := Encode(Msg{EventType: EventSetKey, Value: big, ID: 1}, priv); err == nil {
-		t.Fatal("Encode unexpectedly accepted an oversized value")
+
+	for _, tc := range []struct {
+		name  string
+		event uint8
+		limit int
+	}{
+		{"an ordinary event keeps ValueSize", EventPermitRequest, ValueSize},
+		{"a plain-KV data event gets KVValueSize", EventSetKey, KVValueSize},
+		{"a set gets KVValueSize", EventSet, KVValueSize},
+		{"a txn gets KVValueSize", EventTxn, KVValueSize},
+		{"a channel chunk gets ChannelValueSize", EventChannelSend, ChannelValueSize},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := Encode(Msg{EventType: tc.event, Value: make([]byte, tc.limit), ID: 1}, priv); err != nil {
+				t.Fatalf("Encode rejected a value at the limit (%d bytes): %v", tc.limit, err)
+			}
+			if _, err := Encode(Msg{EventType: tc.event, Value: make([]byte, tc.limit+1), ID: 1}, priv); err == nil {
+				t.Fatalf("Encode accepted a value over the limit (%d bytes)", tc.limit+1)
+			}
+		})
 	}
 }

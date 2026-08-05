@@ -13,8 +13,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -118,11 +120,22 @@ func (s *Session) LogAppend(ctx context.Context, key, value []byte) error {
 	return nil
 }
 
+// ErrCompareFailed is what Txn/CompareAndSwap return when a
+// shmevent.TxnOpCompare/TxnOpCompareAbsent precondition didn't hold: the
+// transaction wrote nothing, and another writer changed the key first. It's
+// the one Txn failure worth handling rather than reporting -- see
+// CompareAndSwap, which turns it into a plain false for callers whose whole
+// response is to re-read and try again.
+var ErrCompareFailed = errors.New("shmclient: " + shmevent.CompareFailedMarker)
+
 // Txn atomically applies every op in ops through raft on the session's
 // node, in a single EventTxn round trip: either all of them land, or none
 // do (see shmevent.EventTxn's doc comment). Each op is a plain Set
-// (shmevent.TxnOpSet, key and value both required) or Delete
-// (shmevent.TxnOpDelete, value ignored).
+// (shmevent.TxnOpSet, key and value both required), Delete
+// (shmevent.TxnOpDelete, value ignored), or one of the two compare
+// preconditions (shmevent.TxnOpCompare/TxnOpCompareAbsent) -- a
+// transaction whose preconditions don't hold applies nothing and returns
+// an error matching [ErrCompareFailed].
 func (s *Session) Txn(ctx context.Context, ops []shmevent.TxnOp) error {
 	payload, err := shmevent.EncodeTxnPayload(ops)
 	if err != nil {
@@ -137,9 +150,43 @@ func (s *Session) Txn(ctx context.Context, ops []shmevent.TxnOp) error {
 		return fmt.Errorf("shmclient: txn: %w", err)
 	}
 	if resp.EventType == shmevent.EventError {
+		if strings.Contains(string(resp.Value), shmevent.CompareFailedMarker) {
+			return fmt.Errorf("%w: %s", ErrCompareFailed, resp.Value)
+		}
 		return fmt.Errorf("shmclient: txn: %s", resp.Value)
 	}
 	return nil
+}
+
+// CompareAndSwap writes value to key only if key currently holds expected,
+// and reports whether it did. A false return is not an error: it means
+// another writer got there first, which is the normal outcome of two
+// clients racing and the reason to call this instead of Get-then-Set.
+//
+// Pass absent=true to require that key does *not* exist instead (expected
+// is then ignored) -- the create-if-not-exists half of the same primitive,
+// which a Get-then-Set can't express safely at all: two clients that both
+// read "not found" will both write, and the loser never learns it lost.
+//
+// The comparison happens inside the raft FSM's Apply (see kvfsm's OpTxn
+// case), so it is serialized against every other write in the cluster;
+// nothing this function does client-side has a window in it.
+func (s *Session) CompareAndSwap(ctx context.Context, key, expected, value string, absent bool) (bool, error) {
+	compare := shmevent.TxnOp{Op: shmevent.TxnOpCompare, Key: []byte(key), Value: []byte(expected)}
+	if absent {
+		compare = shmevent.TxnOp{Op: shmevent.TxnOpCompareAbsent, Key: []byte(key)}
+	}
+	err := s.Txn(ctx, []shmevent.TxnOp{
+		compare,
+		{Op: shmevent.TxnOpSet, Key: []byte(key), Value: []byte(value)},
+	})
+	if errors.Is(err, ErrCompareFailed) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Get reads key from the session's node -- a one-shot GetField carrying
@@ -366,11 +413,57 @@ func (s *Session) DeleteGroup(ctx context.Context, id string) error {
 // (peerID is where the command may be executed) on the session's node.
 // Only a current raft voter may do this.
 func (s *Session) PutCommand(ctx context.Context, id, name string, peerID []byte) error {
-	payload, err := shmevent.EncodeCommandPutPayload(id, name, peerID)
+	return s.PutCommandWithSpec(ctx, id, name, peerID, nil)
+}
+
+// PutCommandWithSpec is PutCommand carrying the command's spec as well --
+// the form definition a client renders inputs from (see
+// shmevent.EncodeCommandPayloadWithSpec). Opaque to the daemon and the FSM,
+// which store and replicate it without parsing it. Passing a nil spec is
+// byte-for-byte identical to PutCommand.
+//
+// This is what lets a cluster gain a new command without any device gaining
+// new code: the definition replicates through raft like any other catalog
+// record, and every device renders it from the same bytes.
+func (s *Session) PutCommandWithSpec(ctx context.Context, id, name string, peerID, spec []byte) error {
+	payload, err := shmevent.EncodeCommandPutPayloadWithSpec(id, name, peerID, spec)
 	if err != nil {
 		return fmt.Errorf("shmclient: command_put: %w", err)
 	}
 	return s.catalogCall(ctx, shmevent.EventCommandPut, payload)
+}
+
+// ClearCommandSpec rewrites command id with an explicitly empty spec,
+// removing whatever form definition it held. Needed as its own call because
+// a plain PutCommand deliberately leaves an existing spec alone (see kvfsm's
+// preserveCommandSpec), so "send no spec" can no longer mean "delete it".
+func (s *Session) ClearCommandSpec(ctx context.Context, id, name string, peerID []byte) error {
+	payload, err := shmevent.EncodeCommandPutPayloadWithSpec(id, name, peerID, []byte{0})
+	if err != nil {
+		return fmt.Errorf("shmclient: command_put: %w", err)
+	}
+	// Trim the one placeholder byte: the encoder treats an empty spec as
+	// "no spec" and would emit v1, which is exactly the payload that means
+	// "preserve" rather than "clear".
+	return s.catalogCall(ctx, shmevent.EventCommandPut, payload[:len(payload)-1])
+}
+
+// PutStation creates or updates the KindStation record describing the device
+// peerID -- a human-readable name plus opaque attrs (JSON, in practice).
+// Only a current raft voter may do this, so a device cannot name itself.
+func (s *Session) PutStation(ctx context.Context, peerID []byte, name string, attrs []byte) error {
+	payload, err := shmevent.EncodeStationPutPayload(peerID, name, attrs)
+	if err != nil {
+		return fmt.Errorf("shmclient: station_put: %w", err)
+	}
+	return s.catalogCall(ctx, shmevent.EventStationPut, payload)
+}
+
+// DeleteStation removes the station description for peerID. The device's
+// cluster membership and group memberships are untouched -- this deletes
+// what it's *called*, not what it *is*.
+func (s *Session) DeleteStation(ctx context.Context, peerID []byte) error {
+	return s.catalogCall(ctx, shmevent.EventStationDelete, peerID)
 }
 
 // DeleteCommand deletes the Command record id, cascading to every
@@ -520,6 +613,39 @@ func (s *Session) RedeemExecInvite(ctx context.Context, sourceAddr string, token
 	}
 	if resp.EventType == shmevent.EventError {
 		return "", fmt.Errorf("shmclient: exec_invite_redeem: %s", resp.Value)
+	}
+	return string(resp.Value), nil
+}
+
+// PublicAccess tells the session's own node to submit
+// shmevent.DefaultPublicCommandID -- the always-public front door every
+// cluster bootstraps -- to the cluster at targetAddr, which grants this
+// node Channel and relay standing there. note is an optional free-text
+// tag stored on the request. See shmevent.EventPublicAccess's doc comment
+// for the full design; returns the new dispatch's instance id.
+//
+// This is what a device with no standing in a cluster it needs the relay
+// service of (a phone reserving a circuit-relay v2 slot on one of
+// configs/bootstrap-nodes.json's nodes) calls once, instead of an operator
+// running mage addpeertogroup by hand for every such device.
+func (s *Session) PublicAccess(ctx context.Context, targetAddr, note string) (string, error) {
+	if strings.Contains(targetAddr, "#") {
+		return "", fmt.Errorf("shmclient: public_access: target address %q must not contain '#' (the note separator)", targetAddr)
+	}
+	value := targetAddr
+	if note != "" {
+		value += "#" + note
+	}
+	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
+		EventType: shmevent.EventPublicAccess,
+		Value:     []byte(value),
+		ID:        newID(),
+	}, s.priv)
+	if err != nil {
+		return "", fmt.Errorf("shmclient: public_access: %w", err)
+	}
+	if resp.EventType == shmevent.EventError {
+		return "", fmt.Errorf("shmclient: public_access: %s", resp.Value)
 	}
 	return string(resp.Value), nil
 }
@@ -1054,6 +1180,16 @@ func Txn(ctx context.Context, peerID string, ops []shmevent.TxnOp) error {
 		return err
 	}
 	return s.Txn(ctx, ops)
+}
+
+// CompareAndSwap is the one-shot convenience wrapper around
+// Open+Session.CompareAndSwap.
+func CompareAndSwap(ctx context.Context, peerID, key, expected, value string, absent bool) (bool, error) {
+	s, err := Open(ctx, peerID)
+	if err != nil {
+		return false, err
+	}
+	return s.CompareAndSwap(ctx, key, expected, value, absent)
 }
 
 // Get is the one-shot convenience wrapper around Open+Session.Get.

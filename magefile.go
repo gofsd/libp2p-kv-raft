@@ -1412,13 +1412,33 @@ func Get(key string) error {
 
 // Txn atomically applies a space-separated list of ops through raft on the
 // current node -- either all of them land, or none do. Each op is
-// `<key>=<value>` (a Set) or `del:<key>` (a Delete); pass the whole list as
-// one quoted argument, the same convention `mage kvrecover`'s voterMultiaddr
-// list already uses.
+// `<key>=<value>` (a Set), `del:<key>` (a Delete), `if:<key>=<value>` or
+// `ifabsent:<key>` (preconditions -- the transaction applies only if every
+// one of them holds); pass the whole list as one quoted argument, the same
+// convention `mage kvrecover`'s voterMultiaddr list already uses.
 //
-// Usage: mage txn "<key1>=<value1> [key2=value2 ...] [del:key3 ...]"
+// Usage: mage txn "<key1>=<value1> [key2=value2 ...] [del:key3 ...] [if:key4=value4 ...] [ifabsent:key5 ...]"
 func Txn(ops string) error {
 	return kvctl.Txn(ops)
+}
+
+// Cas writes value to key on the current node only if key currently holds
+// expected, printing whether the swap happened. The compare runs inside the
+// raft FSM, serialized against every other write in the cluster, so unlike a
+// get-then-set there is no window another node can write in between.
+//
+// Usage: mage cas <key> <expected> <value>
+func Cas(key, expected, value string) error {
+	return kvctl.CompareAndSwap(key, expected, value, false)
+}
+
+// CasAbsent writes value to key on the current node only if key does not
+// exist yet -- Cas's create-if-not-exists half, for the case no expected
+// value can express ("not there" is not a value).
+//
+// Usage: mage casabsent <key> <value>
+func CasAbsent(key, value string) error {
+	return kvctl.CompareAndSwap(key, "", value, true)
 }
 
 // RangeScan lists every key/value pair between start and end (both
@@ -1611,6 +1631,38 @@ func ListRelayNodes() error {
 	return nil
 }
 
+// RequestPublicAccess implements `mage requestpublicaccess <targetAddr>
+// [note]`: asks the current node to submit the always-public
+// "public-access" command to the cluster at targetAddr, which grants this
+// node Channel and circuit-relay standing there. This is the self-service
+// alternative to an operator on the *target* cluster running `mage
+// addpeertogroup <thisPeerID> relay` for every node needing its relay --
+// see shmevent.EventPublicAccess for the design.
+// Usage: mage requestpublicaccess <targetAddr> [note]
+func RequestPublicAccess(targetAddr string, note string) error {
+	instanceID, err := kvctl.RequestPublicAccess(targetAddr, note)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("✅ public access requested (instance %s)\n", instanceID)
+	return nil
+}
+
+// EnablePublicAccess implements `mage enablepublicaccess`: seeds the
+// "public" Group + "public-access" Command + their link on the current
+// node's cluster, so strangers' `requestpublicaccess` submissions against
+// it succeed. Needed on any cluster bootstrapped before pkg/daemon started
+// seeding these itself, and the way to re-open enrollment on one where it
+// was deliberately closed. Idempotent; the current node must be a voter.
+// Usage: mage enablepublicaccess
+func EnablePublicAccess() error {
+	if err := kvctl.EnablePublicAccess(); err != nil {
+		return err
+	}
+	fmt.Println("✅ public access enabled -- strangers may now submit the 'public-access' command")
+	return nil
+}
+
 // CreateJoinInvite generates a fresh one-time join-invite token and
 // prints it -- append it to a leader multiaddr as
 // "<multiaddr>#<tokenHex>" and pass that to mage addfollower/addnode to
@@ -1644,6 +1696,49 @@ func RevokeJoinInvite(tokenHex string) error {
 		return err
 	}
 	fmt.Println("✅ join invite revoked")
+	return nil
+}
+
+// CreateJoinInviteTicket is CreateJoinInvite's signed-ticket counterpart:
+// mints the same one-time join-invite token and lodges the same
+// KindJoinInvite record, but prints a single self-contained, base64
+// ticket (this node's own address + the token, signed with this node's
+// own key) instead of a bare token to hand-combine with an address
+// yourself. A recipient verifies it really came from this peer id before
+// ever using it -- see verifyjoininviteticket. Only takes effect if the
+// current node is itself a raft voter.
+// Usage: mage createjoininviteticket <voter|learner>
+func CreateJoinInviteTicket(suffrage string) error {
+	var sf byte
+	switch suffrage {
+	case "voter":
+		sf = shmevent.SuffrageVoter
+	case "learner":
+		sf = shmevent.SuffrageLearner
+	default:
+		return fmt.Errorf("unknown suffrage %q (want \"voter\" or \"learner\")", suffrage)
+	}
+	ticket, err := kvctl.CreateJoinInviteTicket(sf)
+	if err != nil {
+		return err
+	}
+	fmt.Println(ticket)
+	return nil
+}
+
+// VerifyJoinInviteTicket verifies ticketB64 (as printed by
+// createjoininviteticket) against the peer id embedded in its own
+// address, rejecting it outright if the signature doesn't check out, and
+// prints the plain "<addr>#<tokenHex>" string -- pass that straight to
+// addfollower/addnode/rejoinnode exactly as you would today's bare
+// createjoininvite output combined with an address by hand.
+// Usage: mage verifyjoininviteticket <ticketB64>
+func VerifyJoinInviteTicket(ticketB64 string) error {
+	addrAndToken, err := kvctl.VerifyJoinInviteTicket(ticketB64)
+	if err != nil {
+		return err
+	}
+	fmt.Println(addrAndToken)
 	return nil
 }
 
@@ -1687,6 +1782,42 @@ func RevokeExecInvite(tokenHex string) error {
 // Usage: mage redeemexecinvite <sourceAddr#tokenHex>
 func RedeemExecInvite(sourceAddrAndToken string) error {
 	instanceID, err := kvctl.RedeemExecInvite(sourceAddrAndToken)
+	if err != nil {
+		return err
+	}
+	fmt.Println(instanceID)
+	return nil
+}
+
+// CreateExecInviteTicket is CreateExecInvite's signed-ticket counterpart:
+// mints the same one-time execution-invite token and lodges the same
+// KindExecInvite record, but prints a single self-contained, base64
+// ticket (this node's own address + the token, signed with this node's
+// own key) instead of a bare token to hand-combine with an address
+// yourself. That ticket is what a DataMatrix code encodes; a redeeming
+// peer verifies it really came from the peer id embedded in its own
+// address before ever dialing anything -- see redeemexecinviteticket.
+// Only takes effect if the current node is itself a raft voter.
+// Usage: mage createexecinviteticket <commandID> <inputsJSON>
+func CreateExecInviteTicket(commandID, inputsJSON string) error {
+	ticket, err := kvctl.CreateExecInviteTicket(commandID, inputsJSON)
+	if err != nil {
+		return err
+	}
+	fmt.Println(ticket)
+	return nil
+}
+
+// RedeemExecInviteTicket is RedeemExecInvite's signed-ticket counterpart:
+// verifies ticketB64 (as printed by createexecinviteticket) against the
+// peer id embedded in its own address, rejecting it outright if the
+// signature doesn't check out, then redeems it exactly like
+// redeemexecinvite does. Prints the new instance id on success; track it
+// with getcommandrequest/querycommandlog/latestcommandlog against the
+// target's own node.
+// Usage: mage redeemexecinviteticket <ticketB64>
+func RedeemExecInviteTicket(ticketB64 string) error {
+	instanceID, err := kvctl.RedeemExecInviteTicket(ticketB64)
 	if err != nil {
 		return err
 	}
@@ -1767,6 +1898,50 @@ func RecruitPeer(ticket, suffrage string) error {
 		return fmt.Errorf("unknown suffrage %q (want \"voter\" or \"learner\")", suffrage)
 	}
 	result, err := kvctl.RecruitPeer(ticket, sf)
+	if err != nil {
+		return err
+	}
+	fmt.Println(result)
+	return nil
+}
+
+// CreateJoinRequestTicket is CreateJoinRequest's signed-ticket
+// counterpart: mints the same one-time join-request token, but prints a
+// single self-contained, base64 ticket (this node's own address + the
+// token, signed with this node's own key) instead of a bare token to
+// hand-combine with an address yourself. A recruiting peer verifies it
+// really came from this device before ever dialing it -- see
+// redeemjoinrequestticket.
+//
+// Usage: mage createjoinrequestticket
+func CreateJoinRequestTicket() error {
+	ticket, err := kvctl.CreateJoinRequestTicket()
+	if err != nil {
+		return err
+	}
+	fmt.Println(ticket)
+	return nil
+}
+
+// RedeemJoinRequestTicket is RecruitPeer's signed-ticket counterpart:
+// verifies ticketB64 (as printed by createjoinrequestticket) against the
+// peer id embedded in its own address, rejecting it outright if the
+// signature doesn't check out, then recruits the device exactly like
+// recruitpeer does. Prints the recruited device's own join result
+// ("<peerID> ok"/"<peerID> pending") on success.
+//
+// Usage: mage redeemjoinrequestticket <ticketB64> <voter|learner>
+func RedeemJoinRequestTicket(ticketB64, suffrage string) error {
+	var sf byte
+	switch suffrage {
+	case "voter":
+		sf = shmevent.SuffrageVoter
+	case "learner":
+		sf = shmevent.SuffrageLearner
+	default:
+		return fmt.Errorf("unknown suffrage %q (want \"voter\" or \"learner\")", suffrage)
+	}
+	result, err := kvctl.RedeemJoinRequestTicket(ticketB64, sf)
 	if err != nil {
 		return err
 	}
@@ -2074,6 +2249,99 @@ func CreateCommand(id, name, peerID string) error {
 // Usage: mage updatecommand <id> <name> <peerID>
 func UpdateCommand(id, name, peerID string) error {
 	return CreateCommand(id, name, peerID)
+}
+
+// CreateCommandSpec is CreateCommand carrying the command's form definition
+// as well -- an opaque string (JSON, in practice) the cluster replicates
+// verbatim and every client renders its inputs from, so a new command reaches
+// every device without any of them gaining new code. peerID may be empty for
+// a command not yet bound to a station; submitting one then fails naming the
+// missing target.
+//
+// Usage: mage createcommandspec <id> <name> <peerID|""> '<specJSON>'
+func CreateCommandSpec(id, name, peerID, spec string) error {
+	if err := kvctl.PutCommandWithSpec(id, name, peerID, spec); err != nil {
+		return err
+	}
+	fmt.Println("✅ command put")
+	return nil
+}
+
+// ClearCommandSpec removes a command's form definition while keeping the
+// command. A plain updatecommand preserves the stored spec, so this is the
+// only way to remove one deliberately.
+//
+// Usage: mage clearcommandspec <id> <name> <peerID|"">
+func ClearCommandSpec(id, name, peerID string) error {
+	if err := kvctl.ClearCommandSpec(id, name, peerID); err != nil {
+		return err
+	}
+	fmt.Println("✅ command spec cleared")
+	return nil
+}
+
+// CreateStation implements `mage createstation <peerID> <name> [attrsJSON]`:
+// describes a device in operational terms, so every record naming it by peer
+// id can be shown as something a person can read. Only a current raft voter
+// may do this -- a device cannot name itself.
+//
+// Usage: mage createstation <peerID> <name> <attrsJSON|"">
+func CreateStation(peerID, name, attrs string) error {
+	if err := kvctl.PutStation(peerID, name, attrs); err != nil {
+		return err
+	}
+	fmt.Println("✅ station put")
+	return nil
+}
+
+// UpdateStation is CreateStation's alias for the "this peer id is already
+// described" case.
+// Usage: mage updatestation <peerID> <name> <attrsJSON|"">
+func UpdateStation(peerID, name, attrs string) error {
+	return CreateStation(peerID, name, attrs)
+}
+
+// DeleteStation removes a device's description. Its cluster membership and
+// group memberships are untouched.
+// Usage: mage deletestation <peerID>
+func DeleteStation(peerID string) error {
+	if err := kvctl.DeleteStation(peerID); err != nil {
+		return err
+	}
+	fmt.Println("🗑️  station deleted")
+	return nil
+}
+
+// GetStation prints one station description as JSON.
+// Usage: mage getstation <peerID>
+func GetStation(peerID string) error {
+	station, err := kvctl.GetStation(peerID)
+	if err != nil {
+		return err
+	}
+	out, err := json.Marshal(station)
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(out))
+	return nil
+}
+
+// ListStations prints every station description, one JSON object per line.
+// Usage: mage liststations
+func ListStations() error {
+	stations, err := kvctl.ListStations()
+	if err != nil {
+		return err
+	}
+	for _, s := range stations {
+		out, err := json.Marshal(s)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(out))
+	}
+	return nil
 }
 
 // DeleteCommand implements `mage deletecommand <id>`: deletes Command id,

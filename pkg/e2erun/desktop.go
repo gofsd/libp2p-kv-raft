@@ -7,10 +7,12 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/daemon"
 	"github.com/gofsd/libp2p-kv-raft/pkg/e2edata"
+	"github.com/gofsd/libp2p-kv-raft/pkg/registry"
 )
 
 // EnvE2EHome, when set, overrides localE2EHome's default location -- tests
@@ -108,7 +110,11 @@ func EnsureLocalDesktopNode(kvnodeBin string, nodeID int, node e2edata.Node, boo
 
 	pidPath := filepath.Join(dataDir, "e2e.pid")
 	if isPidfileAlive(pidPath) {
-		return nil
+		ready, err := daemon.ReadReadyFile(dataDir)
+		if err != nil {
+			return fmt.Errorf("e2erun: local desktop node %s already running but ready file unreadable: %w", node.PeerID, err)
+		}
+		return registerLocalDesktopNode(e2eHome, node, dataDir, keyPath, pidPath, ready.ListenAddrs)
 	}
 
 	logPath := filepath.Join(dataDir, "daemon.log")
@@ -139,10 +145,44 @@ func EnsureLocalDesktopNode(kvnodeBin string, nodeID int, node e2edata.Node, boo
 		return err
 	}
 
-	if _, err := waitLocalReady(dataDir, readyTimeout); err != nil {
+	ready, err := waitLocalReady(dataDir, readyTimeout)
+	if err != nil {
 		return fmt.Errorf("e2erun: local desktop node %s never became ready: %w", node.PeerID, err)
 	}
-	return nil
+	return registerLocalDesktopNode(e2eHome, node, dataDir, keyPath, pidPath, ready.ListenAddrs)
+}
+
+// registerLocalDesktopNode writes (or refreshes) node's pkg/registry entry
+// under e2eHome -- a Registry rooted there directly (bypassing Open(),
+// which would resolve KVSTORE_HOME/the operator's real default instead),
+// consistent with localE2EHome's own doc comment on why e2e desktop node
+// state stays fully separate from `mage addnode`'s registry.
+//
+// This exists because pkg/ipc.tokenForPeer (added by the local IPC token
+// work) refuses to hand out an auth token for any peer id with no
+// pkg/registry entry, and EnsureLocalDesktopNode never had one -- it starts
+// kvnode directly (exec.Command) rather than through
+// pkg/kvctl.AddNodeWithArgs, the only other code path that already calls
+// Registry.Put. Without this, sendEventLocal's own kvctl-cli sendevent call
+// fails outright with "ipc: no registered node for peer id ..." against
+// any node this function starts -- caught by an actual `mage e2e:all` run,
+// not by inspection. Called on every EnsureLocalDesktopNode call, not just
+// a freshly started one, so a node still alive from an earlier e2e run
+// (before this existed) gets registered too, and ListenAddrs stays fresh.
+func registerLocalDesktopNode(e2eHome string, node e2edata.Node, dataDir, keyPath, pidPath string, listenAddrs []string) error {
+	pid := 0
+	if data, err := os.ReadFile(pidPath); err == nil {
+		pid, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+	}
+	reg := &registry.Registry{Dir: e2eHome}
+	return reg.Put(registry.NodeInfo{
+		PeerID:      node.PeerID,
+		Role:        registry.RolePending,
+		DataDir:     dataDir,
+		KeyPath:     keyPath,
+		ListenAddrs: listenAddrs,
+		PID:         pid,
+	})
 }
 
 // EnsureAllDesktopNodes starts a real local kvnode process (via

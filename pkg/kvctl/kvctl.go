@@ -533,9 +533,47 @@ func ParseTxnOps(ops string) ([]shmevent.TxnOp, error) {
 	return shmevent.ParseTxnOpsString(ops)
 }
 
+// CompareAndSwap implements `mage cas <key> <expected> <value>`: writes
+// value to key on the current node only if key currently holds expected,
+// printing whether it did. `mage casabsent <key> <value>` is the
+// create-if-not-exists half, requiring that key not exist at all.
+//
+// A refused swap is reported on stdout, not as an error exit: "somebody
+// else changed it first" is this command's ordinary second outcome, and a
+// script looping on it wants to read that rather than trap a failure.
+func CompareAndSwap(key, expected, value string, absent bool) error {
+	reg, err := registry.Open()
+	if err != nil {
+		return err
+	}
+	peerID, err := reg.Current()
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
+	defer cancel()
+	swapped, err := shmclient.CompareAndSwap(ctx, peerID, key, expected, value, absent)
+	if err != nil {
+		return fmt.Errorf("compare and swap: %w", err)
+	}
+	if swapped {
+		fmt.Printf("swapped %s\n", key)
+		return nil
+	}
+	if absent {
+		fmt.Printf("not swapped: %s already exists\n", key)
+	} else {
+		fmt.Printf("not swapped: %s no longer holds the expected value\n", key)
+	}
+	return nil
+}
+
 // Txn implements `mage txn "<op1> [op2] ..."`: atomically applies every op
 // in ops (parsed by ParseTxnOps) through raft on the current node -- either
-// all of them land, or none do (see shmevent.EventTxn's doc comment).
+// all of them land, or none do (see shmevent.EventTxn's doc comment). An op
+// may also be a precondition (`if:<key>=<value>`, `ifabsent:<key>`), in
+// which case the whole transaction applies only if it holds.
 func Txn(ops string) error {
 	parsed, err := ParseTxnOps(ops)
 	if err != nil {

@@ -96,6 +96,18 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     add("Cluster", "RecruitPeer", listOf("ticket (addr#tokenHex)", "voter|learner")) { a ->
         Kvmobile.recruitPeer(a[0], a[1])
     }
+    // CreateJoinRequestTicket/RedeemJoinRequestTicket are
+    // CreateJoinRequest/RecruitPeer's signed-ticket counterpart (see
+    // README's "Signed tickets" section): the ticket already carries this
+    // device's own address (no separate GetOwnAddr combine step), signed
+    // with this device's own key, so a recruiting peer can verify it
+    // really came from this device before ever dialing it.
+    // RedeemJoinRequestTicket verifies then recruits in one call, exactly
+    // like RecruitPeer does for a plain ticket.
+    add("Cluster", "CreateJoinRequestTicket", emptyList()) { Kvmobile.createJoinRequestTicket() }
+    add("Cluster", "RedeemJoinRequestTicket", listOf("ticketB64", "voter|learner")) { a ->
+        Kvmobile.redeemJoinRequestTicket(a[0], a[1])
+    }
     // CreateJoinInvite mints a one-time token granting suffrage on THIS
     // device's own cluster, without hand-delivering it the way RecruitPeer
     // does -- combine with GetOwnAddr's address as "<addr>#<tokenHex>" for
@@ -105,6 +117,16 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     // redeemed. Only take effect if this device is itself a raft voter.
     add("Cluster", "CreateJoinInvite", listOf("voter|learner")) { a -> Kvmobile.createJoinInvite(a[0]) }
     add("Cluster", "RevokeJoinInvite", listOf("tokenHex")) { a -> Kvmobile.revokeJoinInvite(a[0]); ok() }
+    // CreateJoinInviteTicket/VerifyJoinInviteTicket are CreateJoinInvite's
+    // signed-ticket counterpart (see README's "Signed tickets" section).
+    // Unlike RedeemJoinRequestTicket above, VerifyJoinInviteTicket doesn't
+    // redeem anything itself -- join-invite redemption is baked into
+    // Join/JoinWithKey's own daemon-startup flow -- it only verifies and
+    // hands back the identical plain "<addr>#<tokenHex>" string
+    // CreateJoinInvite's caller has always hand-assembled, ready to pass
+    // to Join/JoinWithKey unchanged.
+    add("Cluster", "CreateJoinInviteTicket", listOf("voter|learner")) { a -> Kvmobile.createJoinInviteTicket(a[0]) }
+    add("Cluster", "VerifyJoinInviteTicket", listOf("ticketB64")) { a -> Kvmobile.verifyJoinInviteTicket(a[0]) }
 
     add("Cluster", "Stop", emptyList()) { Kvmobile.stop(); ok() }
     add("Cluster", "Delete", emptyList()) { Kvmobile.delete(dataDir); ok() }
@@ -131,24 +153,19 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
         Kvmobile.rangeScan(a[0], a[1], a[2].toLongOrThrow("limit"))
     }
 
-    // Permits
-    add("Permits", "RequestPermit", listOf("kind (peer|bootstrap)", "targetPeerID", "metadata")) { a ->
+    // Permits -- shmevent.KindBootstrapNode's request/confirm/revoke
+    // lifecycle; ConfirmPermit alone also accepts "cluster-join" (see
+    // permitKindFromName's doc comment: "peer"/log-permit kinds were
+    // removed when this project's ACL model moved to the unconditional
+    // Group/Command catalog below).
+    add("Permits", "RequestPermit", listOf("kind (bootstrap)", "targetPeerID", "metadata")) { a ->
         Kvmobile.requestPermit(a[0], a[1], a[2]); ok()
     }
-    add("Permits", "ConfirmPermit", listOf("kind (peer|bootstrap)", "targetPeerID")) { a ->
+    add("Permits", "ConfirmPermit", listOf("kind (bootstrap|cluster-join)", "targetPeerID")) { a ->
         Kvmobile.confirmPermit(a[0], a[1]); ok()
     }
-    add("Permits", "RevokePermit", listOf("kind (peer|bootstrap)", "targetPeerID")) { a ->
+    add("Permits", "RevokePermit", listOf("kind (bootstrap)", "targetPeerID")) { a ->
         Kvmobile.revokePermit(a[0], a[1]); ok()
-    }
-    add("Permits", "RequestLogPermit", listOf("logKind", "targetPeerID", "metadata")) { a ->
-        Kvmobile.requestLogPermit(a[0], a[1], a[2]); ok()
-    }
-    add("Permits", "ConfirmLogPermit", listOf("logKind", "targetPeerID")) { a ->
-        Kvmobile.confirmLogPermit(a[0], a[1]); ok()
-    }
-    add("Permits", "RevokeLogPermit", listOf("logKind", "targetPeerID")) { a ->
-        Kvmobile.revokeLogPermit(a[0], a[1]); ok()
     }
 
     // Execute -- the raft-bypassing peer-to-peer notification.
@@ -308,6 +325,17 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     }
     add("ExecInvite", "RevokeExecInvite", listOf("tokenHex")) { a -> Kvmobile.revokeExecInvite(a[0]); ok() }
     add("ExecInvite", "RedeemExecInvite", listOf("sourceAddr#tokenHex")) { a -> Kvmobile.redeemExecInvite(a[0]) }
+    // CreateExecInviteTicket/RedeemExecInviteTicket are CreateExecInvite/
+    // RedeemExecInvite's signed-ticket counterpart (see README's "Signed
+    // tickets" section): the ticket already carries this device's own
+    // address, signed with this device's own key, so a redeeming peer can
+    // verify it really came from this device before ever dialing it.
+    // RedeemExecInviteTicket verifies then redeems in one call, exactly
+    // like RedeemExecInvite does for a plain ticket.
+    add("ExecInvite", "CreateExecInviteTicket", listOf("commandID", "inputsJSON")) { a ->
+        Kvmobile.createExecInviteTicket(a[0], a[1])
+    }
+    add("ExecInvite", "RedeemExecInviteTicket", listOf("ticketB64")) { a -> Kvmobile.redeemExecInviteTicket(a[0]) }
 
     // Raw escape hatch -- the same one E2ETest uses, see its own doc
     // comment and README's "Follower on Android" section.

@@ -298,17 +298,36 @@ type Command struct {
 	ID     string `json:"id"`
 	Name   string `json:"name"`
 	PeerID string `json:"peer_id"`
+	// Spec is the command's form definition, verbatim as stored -- empty for
+	// a command that has none (every command predating the field, and any
+	// created without one). Opaque here; see PutCommandWithSpec.
+	Spec string `json:"spec,omitempty"`
 }
 
 // PutCommand implements `mage createcommand`/`mage updatecommand <id>
 // <name> <peerID>`: creates or updates the Command record
 // id={name, peerID}. Only a current raft voter may do this.
 func PutCommand(id, name, peerID string) error {
+	return PutCommandWithSpec(id, name, peerID, "")
+}
+
+// PutCommandWithSpec implements `mage createcommand <id> <name> [peerID]
+// [specJSON]`: creates or updates the Command record id={name, peerID, spec}.
+// Only a current raft voter may do this.
+//
+// peerID may be empty, unlike before: a command definition can exist before
+// anyone has decided which station runs it. Dispatch is where that becomes an
+// error -- SubmitCommand needs a target and says so -- rather than here,
+// which would make it impossible to define a command set ahead of deploying
+// the devices that serve it.
+//
+// spec is opaque: a client's form definition, stored and replicated verbatim.
+// This package deliberately doesn't parse or validate it, because every
+// validation rule it invented would be a wire change the moment an
+// application wanted a field kind this repo had never heard of.
+func PutCommandWithSpec(id, name, peerID, spec string) error {
 	if err := validateCatalogID(id); err != nil {
 		return err
-	}
-	if peerID == "" {
-		return fmt.Errorf("kvctl: command peer_id must not be empty")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
 	defer cancel()
@@ -316,8 +335,28 @@ func PutCommand(id, name, peerID string) error {
 	if err != nil {
 		return err
 	}
-	if err := sess.PutCommand(ctx, id, name, []byte(peerID)); err != nil {
+	if err := sess.PutCommandWithSpec(ctx, id, name, []byte(peerID), []byte(spec)); err != nil {
 		return fmt.Errorf("kvctl: put command: %w", err)
+	}
+	return nil
+}
+
+// ClearCommandSpec implements `mage clearcommandspec <id> <name> <peerID|"">`:
+// removes a command's form definition while keeping the command itself. A
+// plain updatecommand no longer does this -- it preserves the stored spec, so
+// that renaming a command doesn't silently discard one.
+func ClearCommandSpec(id, name, peerID string) error {
+	if err := validateCatalogID(id); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
+	defer cancel()
+	sess, _, err := openCurrentSession(ctx)
+	if err != nil {
+		return err
+	}
+	if err := sess.ClearCommandSpec(ctx, id, name, []byte(peerID)); err != nil {
+		return fmt.Errorf("kvctl: clear command spec: %w", err)
 	}
 	return nil
 }
@@ -350,11 +389,11 @@ func GetCommand(id string) (Command, error) {
 	if err != nil {
 		return Command{}, fmt.Errorf("kvctl: command %s not found", id)
 	}
-	name, peerID, err := shmevent.DecodeCommandPayload([]byte(value))
+	name, peerID, spec, err := shmevent.DecodeCommandPayloadFull([]byte(value))
 	if err != nil {
 		return Command{}, fmt.Errorf("kvctl: decode command %s: %w", id, err)
 	}
-	return Command{ID: id, Name: name, PeerID: string(peerID)}, nil
+	return Command{ID: id, Name: name, PeerID: string(peerID), Spec: string(spec)}, nil
 }
 
 // ListCommands implements `mage listcommands`: returns every Command
@@ -380,11 +419,106 @@ func ListCommands() ([]Command, error) {
 			return nil, fmt.Errorf("kvctl: malformed command key %x", key)
 		}
 		id := string(key[systemKeyIDOffset:])
-		name, peerID, err := shmevent.DecodeCommandPayload(value)
+		name, peerID, spec, err := shmevent.DecodeCommandPayloadFull(value)
 		if err != nil {
 			return nil, fmt.Errorf("kvctl: list commands: decode %s: %w", id, err)
 		}
-		commands = append(commands, Command{ID: id, Name: name, PeerID: string(peerID)})
+		commands = append(commands, Command{ID: id, Name: name, PeerID: string(peerID), Spec: string(spec)})
+		lo = append(append([]byte{}, key...), 0x00)
+	}
+}
+
+// Station is a device's operational description -- what it's called and
+// whatever attributes an application attaches to it -- keyed by its peer id.
+// See shmevent.KindStation for why this is separate from cluster membership.
+type Station struct {
+	PeerID string `json:"peer_id"`
+	Name   string `json:"name"`
+	// Attrs is opaque, verbatim as stored (JSON, in practice).
+	Attrs string `json:"attrs,omitempty"`
+}
+
+// PutStation implements `mage createstation`/`mage updatestation <peerID>
+// <name> [attrsJSON]`: creates or updates the station description for
+// peerID. Only a current raft voter may do this -- a device cannot name
+// itself, the same rule the rest of this catalog follows.
+func PutStation(peerID, name, attrs string) error {
+	if peerID == "" {
+		return fmt.Errorf("kvctl: station peer_id must not be empty")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
+	defer cancel()
+	sess, _, err := openCurrentSession(ctx)
+	if err != nil {
+		return err
+	}
+	if err := sess.PutStation(ctx, []byte(peerID), name, []byte(attrs)); err != nil {
+		return fmt.Errorf("kvctl: put station: %w", err)
+	}
+	return nil
+}
+
+// DeleteStation implements `mage deletestation <peerID>`.
+func DeleteStation(peerID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
+	defer cancel()
+	sess, _, err := openCurrentSession(ctx)
+	if err != nil {
+		return err
+	}
+	if err := sess.DeleteStation(ctx, []byte(peerID)); err != nil {
+		return fmt.Errorf("kvctl: delete station: %w", err)
+	}
+	return nil
+}
+
+// GetStation implements `mage getstation <peerID>`.
+func GetStation(peerID string) (Station, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
+	defer cancel()
+	sess, _, err := openCurrentSession(ctx)
+	if err != nil {
+		return Station{}, err
+	}
+	value, err := sess.Get(ctx, string(shmevent.StationKey([]byte(peerID))))
+	if err != nil {
+		return Station{}, fmt.Errorf("kvctl: station %s not found", peerID)
+	}
+	name, attrs, err := shmevent.DecodeStationPayload([]byte(value))
+	if err != nil {
+		return Station{}, fmt.Errorf("kvctl: decode station %s: %w", peerID, err)
+	}
+	return Station{PeerID: peerID, Name: name, Attrs: string(attrs)}, nil
+}
+
+// ListStations implements `mage liststations`: returns every station
+// description (nil, not an error, when none exist).
+func ListStations() ([]Station, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
+	defer cancel()
+	sess, _, err := openCurrentSession(ctx)
+	if err != nil {
+		return nil, err
+	}
+	lo, hi := shmevent.StationKeyBounds()
+	var stations []Station
+	for {
+		key, value, ok, err := sess.ListRange(ctx, lo, hi)
+		if err != nil {
+			return nil, fmt.Errorf("kvctl: list stations: %w", err)
+		}
+		if !ok {
+			return stations, nil
+		}
+		if len(key) < systemKeyIDOffset {
+			return nil, fmt.Errorf("kvctl: malformed station key %x", key)
+		}
+		peerID := string(key[systemKeyIDOffset:])
+		name, attrs, err := shmevent.DecodeStationPayload(value)
+		if err != nil {
+			return nil, fmt.Errorf("kvctl: list stations: decode %s: %w", peerID, err)
+		}
+		stations = append(stations, Station{PeerID: peerID, Name: name, Attrs: string(attrs)})
 		lo = append(append([]byte{}, key...), 0x00)
 	}
 }

@@ -2040,6 +2040,9 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 	if caller.remotePeer != "" && m.EventType == shmevent.EventRecruit {
 		return errorMsg(m.ID, fmt.Errorf("recruit: not available to a remote caller -- this node dials the ticket's device on its own operator's behalf, never on an arbitrary remote caller's"))
 	}
+	if caller.remotePeer != "" && m.EventType == shmevent.EventPublicAccess {
+		return errorMsg(m.ID, fmt.Errorf("public_access: not available to a remote caller -- this node submits to the target cluster under its own identity, so letting a stranger trigger it would spend this node's standing on that stranger's behalf"))
+	}
 	if caller.remotePeer != "" && (m.EventType == shmevent.EventChannelOpen || m.EventType == shmevent.EventChannelSend ||
 		m.EventType == shmevent.EventChannelPoll || m.EventType == shmevent.EventChannelListen || m.EventType == shmevent.EventChannelClose ||
 		m.EventType == shmevent.EventChannelCloseWrite || m.EventType == shmevent.EventChannelDataReady) {
@@ -2274,12 +2277,24 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
 			}
 		}
-		id, name, peerID, err := shmevent.DecodeCommandPutPayload(m.Value)
+		id, name, peerID, spec, err := shmevent.DecodeCommandPutPayloadFull(m.Value)
 		if err != nil {
 			return errorMsg(m.ID, err)
 		}
 		key := shmevent.CommandKey([]byte(id))
-		value, err := shmevent.EncodeCommandPayload(name, peerID)
+		// "Carried an empty spec" and "didn't mention the spec" must stay
+		// distinguishable all the way to the FSM, which reads the absence of
+		// the field as "leave the stored spec alone" (see
+		// kvfsm.preserveCommandSpec). Re-encoding both through
+		// EncodeCommandPayloadWithSpec would collapse them, since it treats
+		// an empty spec as no spec -- and a caller clearing a spec would
+		// silently keep it.
+		var value []byte
+		if len(spec) == 0 && shmevent.CommandPutPayloadHasSpec(m.Value) {
+			value, err = shmevent.EncodeCommandPayloadClearingSpec(name, peerID)
+		} else {
+			value, err = shmevent.EncodeCommandPayloadWithSpec(name, peerID, spec)
+		}
 		if err != nil {
 			return errorMsg(m.ID, err)
 		}
@@ -2300,6 +2315,45 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 			return errorMsg(m.ID, err)
 		}
 		return shmevent.Msg{EventType: shmevent.EventCommandDelete, ID: m.ID}
+
+	case shmevent.EventStationPut:
+		if caller.remotePeer != "" {
+			rf := n.getRaft()
+			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
+				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
+			}
+		}
+		peerID, name, attrs, err := shmevent.DecodeStationPutPayload(m.Value)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		if len(peerID) == 0 {
+			return errorMsg(m.ID, fmt.Errorf("station peer id must not be empty"))
+		}
+		value, err := shmevent.EncodeStationPayload(name, attrs)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		if err := n.handleConfirmForward(ctx, kvfsm.OpSet, shmevent.StationKey(peerID), value, true); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventStationPut, ID: m.ID}
+
+	case shmevent.EventStationDelete:
+		if caller.remotePeer != "" {
+			rf := n.getRaft()
+			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
+				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
+			}
+		}
+		// Plain OpDel, not OpCascadeDelete: nothing references a station
+		// record. A station is a description hanging off a peer id that
+		// every other record already names directly, so deleting one can
+		// never orphan a relation the way deleting a Group or Command can.
+		if err := n.handleConfirmForward(ctx, kvfsm.OpDel, shmevent.StationKey(m.Value), nil, true); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventStationDelete, ID: m.ID}
 
 	case shmevent.EventGroupCommandPut:
 		if caller.remotePeer != "" {
@@ -2520,6 +2574,18 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 			return errorMsg(m.ID, err)
 		}
 		return shmevent.Msg{EventType: shmevent.EventExecInviteRedeem, ID: m.ID, Value: []byte(instanceID)}
+
+	// EventPublicAccess is local-only for the same reason
+	// EventExecInviteRedeem above is: it makes this node act as a client of
+	// somebody else's cluster, under this node's own identity -- see that
+	// event's doc comment and dialAndSubmitPublicAccess.
+	case shmevent.EventPublicAccess:
+		targetAddr, note, _ := strings.Cut(string(m.Value), "#")
+		instanceID, err := n.dialAndSubmitPublicAccess(ctx, targetAddr, note)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventPublicAccess, ID: m.ID, Value: []byte(instanceID)}
 
 	case shmevent.EventExecute:
 		if err := n.dispatchExecute(ctx, m); err != nil {
@@ -3146,25 +3212,9 @@ func (n *Node) consumeJoinInvite(rf *raft.Raft, token []byte) (raft.ServerSuffra
 // ExecInviteRedeemProtocolID directly at sourceAddr. Returns the new
 // instance id on success.
 func (n *Node) dialAndRedeemExecInvite(ctx context.Context, sourceAddr string, token []byte) (string, error) {
-	addr := sourceAddr
-	if !registry.IsMultiaddr(addr) {
-		reg, err := registry.Open()
-		if err != nil {
-			return "", err
-		}
-		addr, err = reg.ResolveAddress(addr)
-		if err != nil {
-			return "", err
-		}
-	}
-
-	maddr, err := multiaddr.NewMultiaddr(addr)
+	info, err := resolveDialAddr(sourceAddr)
 	if err != nil {
-		return "", fmt.Errorf("invalid source address %q: %w", addr, err)
-	}
-	info, err := peer.AddrInfoFromP2pAddr(maddr)
-	if err != nil {
-		return "", fmt.Errorf("source address %q missing peer id: %w", addr, err)
+		return "", err
 	}
 	if err := n.host.Connect(ctx, *info); err != nil {
 		return "", fmt.Errorf("connect to %s: %w", info.ID, err)
@@ -3204,6 +3254,136 @@ func (n *Node) dialAndRedeemExecInvite(ctx context.Context, sourceAddr string, t
 		return rest, nil
 	}
 	return "", fmt.Errorf("exec invite redeem rejected: %s", strings.TrimPrefix(line, "ERR: "))
+}
+
+// resolveDialAddr turns addr -- a multiaddr, or a bare peer id this
+// machine's local registry knows -- into the peer.AddrInfo to dial, the
+// resolution dialAndRedeemExecInvite/dialAndPushRecruit each open with.
+func resolveDialAddr(addr string) (*peer.AddrInfo, error) {
+	resolved := addr
+	if !registry.IsMultiaddr(resolved) {
+		reg, err := registry.Open()
+		if err != nil {
+			return nil, err
+		}
+		resolved, err = reg.ResolveAddress(resolved)
+		if err != nil {
+			return nil, err
+		}
+	}
+	maddr, err := multiaddr.NewMultiaddr(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("invalid address %q: %w", resolved, err)
+	}
+	info, err := peer.AddrInfoFromP2pAddr(maddr)
+	if err != nil {
+		return nil, fmt.Errorf("address %q missing peer id: %w", resolved, err)
+	}
+	return info, nil
+}
+
+// dialAndSubmitPublicAccess is EventPublicAccess's local-only handler (see
+// that event's doc comment). It dials targetAddr's ClientProtocolID -- the
+// remote-client surface, not a local ipc.Call -- and sends one signed
+// EventLogAppend carrying a pkg/logrecord record under
+// shmevent.CommandRequestLogKind(shmevent.DefaultPublicCommandID),
+// attributed to this node's own peer id.
+//
+// The grant itself hinges on exactly two things, both of which this builds
+// deliberately rather than incidentally: the *key's* logrecord kind, which
+// is where the target's kvfsm.OpAppendCommandRequest reads the command id
+// back out of (ParseCommandRequestLogKind) before matching it against
+// DefaultPublicCommandID, and the message signature, which is where it
+// gets the author peer id it grants membership to. The record's own
+// "command_id"/"note" fields are informational -- they exist so the
+// target's GetCommandRequest/ListCommandRequests read this back as an
+// ordinary dispatch, indistinguishable from a local SubmitCommand, rather
+// than as some bespoke half-record. What's deliberately *not* replicated
+// is SubmitCommand's exec-index and Execute-poke bookkeeping, which serves
+// the target's own dispatcher (nothing here waits to be dispatched) and
+// has no bearing on the grant.
+//
+// note, if non-empty, rides along as the request's "note" field -- purely
+// informational (who/what asked), never consulted by the grant itself.
+func (n *Node) dialAndSubmitPublicAccess(ctx context.Context, targetAddr, note string) (string, error) {
+	info, err := resolveDialAddr(targetAddr)
+	if err != nil {
+		return "", err
+	}
+	if info.ID.String() == n.peerID {
+		return "", fmt.Errorf("public_access: %s is this node itself -- a node already has every standing in its own cluster", n.peerID)
+	}
+	if err := n.host.Connect(ctx, *info); err != nil {
+		return "", fmt.Errorf("connect to %s: %w", info.ID, err)
+	}
+
+	var raw [16]byte
+	if _, err := cryptorand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("public_access: generate instance id: %w", err)
+	}
+	instanceID := hex.EncodeToString(raw[:])
+
+	rnd, err := logrecord.NewRand()
+	if err != nil {
+		return "", fmt.Errorf("public_access: %w", err)
+	}
+	kind := shmevent.CommandRequestLogKind(shmevent.DefaultPublicCommandID)
+	ts := time.Now()
+	key, err := logrecord.BuildKey(kind, instanceID, ts, rnd)
+	if err != nil {
+		return "", fmt.Errorf("public_access: %w", err)
+	}
+	fields := map[string]string{"command_id": shmevent.DefaultPublicCommandID}
+	if note != "" {
+		fields["note"] = note
+	}
+	value, err := logrecord.Record{
+		Kind:         kind,
+		UnitID:       instanceID,
+		Timestamp:    ts,
+		AuthorPeerID: n.peerID,
+		Fields:       fields,
+	}.Encode()
+	if err != nil {
+		return "", fmt.Errorf("public_access: encode record: %w", err)
+	}
+	payload, err := shmevent.EncodeSetPayload(key, value)
+	if err != nil {
+		return "", fmt.Errorf("public_access: encode payload: %w", err)
+	}
+	buf, err := shmevent.Encode(shmevent.Msg{EventType: shmevent.EventLogAppend, Value: payload}, n.ed25519Priv)
+	if err != nil {
+		return "", fmt.Errorf("public_access: encode message: %w", err)
+	}
+
+	// A bootstrap node worth asking for relay access usually has a real
+	// public address, but nothing says the caller can only reach it
+	// directly -- allow a limited/relay connection the same way dialForward
+	// does, so this works from behind NAT via a relay this node already has.
+	s, err := n.host.NewStream(network.WithAllowLimitedConn(ctx, "public_access"), info.ID, ClientProtocolID)
+	if err != nil {
+		return "", fmt.Errorf("open client stream to %s: %w", info.ID, err)
+	}
+	defer s.Close()
+
+	if _, err := s.Write(buf); err != nil {
+		return "", fmt.Errorf("public_access: write to %s: %w", info.ID, err)
+	}
+	if err := s.CloseWrite(); err != nil {
+		return "", fmt.Errorf("public_access: close write to %s: %w", info.ID, err)
+	}
+	respBuf, err := io.ReadAll(s)
+	if err != nil {
+		return "", fmt.Errorf("public_access: read response from %s: %w", info.ID, err)
+	}
+	resp, _, _, err := shmevent.Decode(respBuf)
+	if err != nil {
+		return "", fmt.Errorf("public_access: decode response from %s: %w", info.ID, err)
+	}
+	if resp.EventType == shmevent.EventError {
+		return "", fmt.Errorf("public_access rejected by %s: %s", info.ID, resp.Value)
+	}
+	return instanceID, nil
 }
 
 // recruitJoinTimeout bounds handleRecruitStream's in-process call to

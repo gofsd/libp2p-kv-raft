@@ -51,6 +51,104 @@ func CommandKeyBounds() (lo, hi []byte) {
 	return keyListBounds(KindCommand)
 }
 
+// StationKey builds the pkg/store key for one KindStation record, keyed by
+// the described device's peer id -- same single-trailing-ID-field shape as
+// GroupKey/CommandKey, so StationKeyBounds can reuse keyListBounds too.
+func StationKey(peerID []byte) []byte {
+	return SystemKey(KindStation, catalogStatusPlaceholder, peerID)
+}
+
+// StationKeyBounds returns the [lo, hi] range covering every KindStation
+// record, for a ScanRange listing.
+func StationKeyBounds() (lo, hi []byte) {
+	return keyListBounds(KindStation)
+}
+
+// EncodeStationPayload packs a Station record's name and attrs into its
+// value: a 2-byte big-endian length prefix for name, then name, then attrs
+// verbatim (last field, no prefix needed) -- peer id is already the
+// record's key (StationKey). attrs is opaque here (JSON, in practice):
+// what a station's attributes *mean* is an application's business, and
+// pinning a schema in this package would make every new attribute a wire
+// change in three languages.
+func EncodeStationPayload(name string, attrs []byte) ([]byte, error) {
+	if len(name) > 0xFFFF {
+		return nil, fmt.Errorf("shmevent: station name too long: %d bytes", len(name))
+	}
+	buf := make([]byte, 2+len(name)+len(attrs))
+	buf[0] = byte(len(name) >> 8)
+	buf[1] = byte(len(name))
+	off := 2
+	off += copy(buf[off:], name)
+	copy(buf[off:], attrs)
+	return buf, nil
+}
+
+// DecodeStationPayload is the inverse of EncodeStationPayload.
+func DecodeStationPayload(payload []byte) (name string, attrs []byte, err error) {
+	if len(payload) < 2 {
+		return "", nil, fmt.Errorf("shmevent: station payload too short: %d bytes", len(payload))
+	}
+	nameLen := int(payload[0])<<8 | int(payload[1])
+	off := 2
+	if off+nameLen > len(payload) {
+		return "", nil, fmt.Errorf("shmevent: station name length %d exceeds payload size %d", nameLen, len(payload))
+	}
+	name = string(payload[off : off+nameLen])
+	off += nameLen
+	return name, payload[off:], nil
+}
+
+// EncodeStationPutPayload packs peerID, name and attrs into a single
+// EventStationPut Msg.Value: 2-byte length prefix + peerID, then 2-byte
+// length prefix + name, then attrs verbatim. Distinct from
+// EncodeStationPayload (the record's stored *value*), same reasoning as
+// EncodeGroupPutPayload.
+func EncodeStationPutPayload(peerID []byte, name string, attrs []byte) ([]byte, error) {
+	if len(peerID) > 0xFFFF {
+		return nil, fmt.Errorf("shmevent: station put peer id too long: %d bytes", len(peerID))
+	}
+	if len(name) > 0xFFFF {
+		return nil, fmt.Errorf("shmevent: station put name too long: %d bytes", len(name))
+	}
+	buf := make([]byte, 2+len(peerID)+2+len(name)+len(attrs))
+	buf[0] = byte(len(peerID) >> 8)
+	buf[1] = byte(len(peerID))
+	off := 2
+	off += copy(buf[off:], peerID)
+	buf[off] = byte(len(name) >> 8)
+	buf[off+1] = byte(len(name))
+	off += 2
+	off += copy(buf[off:], name)
+	copy(buf[off:], attrs)
+	return buf, nil
+}
+
+// DecodeStationPutPayload is the inverse of EncodeStationPutPayload.
+func DecodeStationPutPayload(payload []byte) (peerID []byte, name string, attrs []byte, err error) {
+	if len(payload) < 2 {
+		return nil, "", nil, fmt.Errorf("shmevent: station put payload too short: %d bytes", len(payload))
+	}
+	peerLen := int(payload[0])<<8 | int(payload[1])
+	off := 2
+	if off+peerLen > len(payload) {
+		return nil, "", nil, fmt.Errorf("shmevent: station put peer id length %d exceeds payload size %d", peerLen, len(payload))
+	}
+	peerID = payload[off : off+peerLen]
+	off += peerLen
+	if off+2 > len(payload) {
+		return nil, "", nil, fmt.Errorf("shmevent: station put payload too short for name length")
+	}
+	nameLen := int(payload[off])<<8 | int(payload[off+1])
+	off += 2
+	if off+nameLen > len(payload) {
+		return nil, "", nil, fmt.Errorf("shmevent: station put name length %d exceeds payload size %d", nameLen, len(payload))
+	}
+	name = string(payload[off : off+nameLen])
+	off += nameLen
+	return peerID, name, payload[off:], nil
+}
+
 // GroupCommandKey builds the pkg/store key for one Group<->Command
 // relation record: commandID first (length-prefixed, so it alone can be
 // prefix-scanned -- see GroupCommandBounds -- to answer "every group this
@@ -230,19 +328,145 @@ func EncodeCommandPayload(name string, peerID []byte) ([]byte, error) {
 	return buf, nil
 }
 
-// DecodeCommandPayload is the inverse of EncodeCommandPayload.
-func DecodeCommandPayload(payload []byte) (name string, peerID []byte, err error) {
-	if len(payload) < 2 {
-		return "", nil, fmt.Errorf("shmevent: command payload too short: %d bytes", len(payload))
+// commandPayloadV2Sentinel is an impossible v1 name length (0xFFFF) used as
+// a version marker in a Command payload's first two bytes. A v1 payload
+// starts with its name's big-endian length, and a name that long could never
+// have been stored: the whole value was capped at ValueSize (512 bytes) when
+// v1 was the only format, and is capped at KVValueSize (4KB) now. So any
+// payload beginning 0xFF 0xFF is unambiguously v2.
+//
+// This exists because a Command record grew a third field -- Spec, the form
+// definition a client renders (see EncodeCommandPayloadWithSpec) -- and v1's
+// layout has no room for one: peerID is the trailing field and takes the rest
+// of the buffer, so nothing can follow it. Rather than migrate every stored
+// record, both formats are readable forever and v1 is still *written*
+// whenever there is no spec, which keeps a spec-less command byte-identical
+// to what any older reader (including web-app's Rust decoder in
+// shmevent/catalog_keys.rs) already understands.
+const commandPayloadV2Sentinel = 0xFFFF
+
+// EncodeCommandPayloadWithSpec is EncodeCommandPayload plus spec, the
+// command's form definition -- what a client needs to render inputs for it,
+// opaque to this package and to the FSM (JSON, in practice). Emits v1 byte
+// -for-byte when spec is empty, so adding this field costs nothing for the
+// commands that don't use it.
+//
+// v2 layout: [0xFF 0xFF][2-byte name len][name][2-byte peerID len][peerID]
+// [spec, taking the rest].
+func EncodeCommandPayloadWithSpec(name string, peerID, spec []byte) ([]byte, error) {
+	if len(spec) == 0 {
+		return EncodeCommandPayload(name, peerID)
 	}
-	nameLen := int(payload[0])<<8 | int(payload[1])
+	if len(name) > 0xFFFF {
+		return nil, fmt.Errorf("shmevent: command name too long: %d bytes", len(name))
+	}
+	if len(peerID) > 0xFFFF {
+		return nil, fmt.Errorf("shmevent: command peer id too long: %d bytes", len(peerID))
+	}
+	buf := make([]byte, 2+2+len(name)+2+len(peerID)+len(spec))
+	buf[0], buf[1] = 0xFF, 0xFF
 	off := 2
-	if off+nameLen > len(payload) {
-		return "", nil, fmt.Errorf("shmevent: command name length %d exceeds payload size %d", nameLen, len(payload))
+	buf[off] = byte(len(name) >> 8)
+	buf[off+1] = byte(len(name))
+	off += 2
+	off += copy(buf[off:], name)
+	buf[off] = byte(len(peerID) >> 8)
+	buf[off+1] = byte(len(peerID))
+	off += 2
+	off += copy(buf[off:], peerID)
+	copy(buf[off:], spec)
+	return buf, nil
+}
+
+// DecodeCommandPayload is the inverse of EncodeCommandPayload, reading either
+// format and discarding any spec -- so every caller that only wants the name
+// and target peer (dispatch, the ACL checks, the CLI listings) needs no
+// change and cannot accidentally depend on a spec being present. Use
+// DecodeCommandPayloadFull to read the spec.
+func DecodeCommandPayload(payload []byte) (name string, peerID []byte, err error) {
+	name, peerID, _, err = DecodeCommandPayloadFull(payload)
+	return name, peerID, err
+}
+
+// EncodeCommandPayloadClearingSpec writes a v2 payload carrying an
+// explicitly *empty* spec -- the one thing EncodeCommandPayloadWithSpec
+// cannot express, since it treats an empty spec as "no spec" and falls back
+// to v1. The difference matters because a v1 payload now means "leave
+// whatever spec is stored alone" (see kvfsm's OpSet case): without this,
+// there would be no way to remove a spec once set.
+func EncodeCommandPayloadClearingSpec(name string, peerID []byte) ([]byte, error) {
+	payload, err := EncodeCommandPayloadWithSpec(name, peerID, []byte{0})
+	if err != nil {
+		return nil, err
+	}
+	return payload[:len(payload)-1], nil
+}
+
+// CommandPutPayloadHasSpec reports whether an EventCommandPut payload
+// carries a spec field at all, the put-payload counterpart of
+// DecodeCommandPayloadSpec's `present`. pkg/daemon needs it to tell a put
+// that simply didn't mention the spec (leave the stored one alone) from one
+// that carried an empty spec deliberately (clear it) -- a distinction that
+// disappears if the two are re-encoded through the same helper.
+func CommandPutPayloadHasSpec(payload []byte) bool {
+	return len(payload) >= 2 && int(payload[0])<<8|int(payload[1]) == commandPayloadV2Sentinel
+}
+
+// DecodeCommandPayloadSpec reports whether payload carries a spec field at
+// all, distinct from carrying an empty one. A v1 payload has no field
+// (present is false); a v2 payload always has one, even when it's
+// zero-length. kvfsm's OpSet case needs exactly this distinction to tell
+// "the caller didn't mention the spec" from "the caller cleared it".
+func DecodeCommandPayloadSpec(payload []byte) (spec []byte, present bool, err error) {
+	if len(payload) < 2 {
+		return nil, false, fmt.Errorf("shmevent: command payload too short: %d bytes", len(payload))
+	}
+	if int(payload[0])<<8|int(payload[1]) != commandPayloadV2Sentinel {
+		return nil, false, nil
+	}
+	_, _, spec, err = DecodeCommandPayloadFull(payload)
+	if err != nil {
+		return nil, false, err
+	}
+	return spec, true, nil
+}
+
+// DecodeCommandPayloadFull decodes either payload format, returning the spec
+// as well (nil for a v1 record, which has none).
+func DecodeCommandPayloadFull(payload []byte) (name string, peerID, spec []byte, err error) {
+	if len(payload) < 2 {
+		return "", nil, nil, fmt.Errorf("shmevent: command payload too short: %d bytes", len(payload))
+	}
+	if int(payload[0])<<8|int(payload[1]) != commandPayloadV2Sentinel {
+		nameLen := int(payload[0])<<8 | int(payload[1])
+		off := 2
+		if off+nameLen > len(payload) {
+			return "", nil, nil, fmt.Errorf("shmevent: command name length %d exceeds payload size %d", nameLen, len(payload))
+		}
+		name = string(payload[off : off+nameLen])
+		off += nameLen
+		return name, payload[off:], nil, nil
+	}
+
+	off := 2
+	if off+2 > len(payload) {
+		return "", nil, nil, fmt.Errorf("shmevent: command payload truncated reading name length")
+	}
+	nameLen := int(payload[off])<<8 | int(payload[off+1])
+	off += 2
+	if off+nameLen+2 > len(payload) {
+		return "", nil, nil, fmt.Errorf("shmevent: command name length %d exceeds payload size %d", nameLen, len(payload))
 	}
 	name = string(payload[off : off+nameLen])
 	off += nameLen
-	return name, payload[off:], nil
+	peerLen := int(payload[off])<<8 | int(payload[off+1])
+	off += 2
+	if off+peerLen > len(payload) {
+		return "", nil, nil, fmt.Errorf("shmevent: command peer id length %d exceeds payload size %d", peerLen, len(payload))
+	}
+	peerID = payload[off : off+peerLen]
+	off += peerLen
+	return name, peerID, payload[off:], nil
 }
 
 // EncodeGroupPutPayload packs public, id, and name into a single
@@ -310,29 +534,102 @@ func EncodeCommandPutPayload(id, name string, peerID []byte) ([]byte, error) {
 	return buf, nil
 }
 
-// DecodeCommandPutPayload is the inverse of EncodeCommandPutPayload.
-func DecodeCommandPutPayload(payload []byte) (id, name string, peerID []byte, err error) {
-	if len(payload) < 2 {
-		return "", "", nil, fmt.Errorf("shmevent: command put payload too short: %d bytes", len(payload))
+// EncodeCommandPutPayloadWithSpec is EncodeCommandPutPayload carrying the
+// command's spec as well, versioned by the same sentinel and for the same
+// reason as EncodeCommandPayloadWithSpec: peerID is v1's trailing field, so
+// a fourth field can only follow a length prefix that v1 doesn't have.
+// Emits v1 byte-for-byte when spec is empty.
+//
+// v2 layout: [0xFF 0xFF][2-byte id len][id][2-byte name len][name]
+// [2-byte peerID len][peerID][spec, taking the rest].
+func EncodeCommandPutPayloadWithSpec(id, name string, peerID, spec []byte) ([]byte, error) {
+	if len(spec) == 0 {
+		return EncodeCommandPutPayload(id, name, peerID)
 	}
-	idLen := int(payload[0])<<8 | int(payload[1])
+	if len(id) > 0xFFFF {
+		return nil, fmt.Errorf("shmevent: command put id too long: %d bytes", len(id))
+	}
+	if len(name) > 0xFFFF {
+		return nil, fmt.Errorf("shmevent: command put name too long: %d bytes", len(name))
+	}
+	if len(peerID) > 0xFFFF {
+		return nil, fmt.Errorf("shmevent: command put peer id too long: %d bytes", len(peerID))
+	}
+	buf := make([]byte, 2+2+len(id)+2+len(name)+2+len(peerID)+len(spec))
+	buf[0], buf[1] = 0xFF, 0xFF
 	off := 2
+	buf[off] = byte(len(id) >> 8)
+	buf[off+1] = byte(len(id))
+	off += 2
+	off += copy(buf[off:], id)
+	buf[off] = byte(len(name) >> 8)
+	buf[off+1] = byte(len(name))
+	off += 2
+	off += copy(buf[off:], name)
+	buf[off] = byte(len(peerID) >> 8)
+	buf[off+1] = byte(len(peerID))
+	off += 2
+	off += copy(buf[off:], peerID)
+	copy(buf[off:], spec)
+	return buf, nil
+}
+
+// DecodeCommandPutPayload is the inverse of EncodeCommandPutPayload, reading
+// either format and discarding any spec.
+func DecodeCommandPutPayload(payload []byte) (id, name string, peerID []byte, err error) {
+	id, name, peerID, _, err = DecodeCommandPutPayloadFull(payload)
+	return id, name, peerID, err
+}
+
+// DecodeCommandPutPayloadFull decodes either format, returning the spec as
+// well (nil for a v1 payload).
+func DecodeCommandPutPayloadFull(payload []byte) (id, name string, peerID, spec []byte, err error) {
+	if len(payload) < 2 {
+		return "", "", nil, nil, fmt.Errorf("shmevent: command put payload too short: %d bytes", len(payload))
+	}
+	v2 := int(payload[0])<<8|int(payload[1]) == commandPayloadV2Sentinel
+	off := 0
+	if v2 {
+		off = 2
+	}
+
+	if off+2 > len(payload) {
+		return "", "", nil, nil, fmt.Errorf("shmevent: command put payload too short for id length")
+	}
+	idLen := int(payload[off])<<8 | int(payload[off+1])
+	off += 2
 	if off+idLen > len(payload) {
-		return "", "", nil, fmt.Errorf("shmevent: command put id length %d exceeds payload size %d", idLen, len(payload))
+		return "", "", nil, nil, fmt.Errorf("shmevent: command put id length %d exceeds payload size %d", idLen, len(payload))
 	}
 	id = string(payload[off : off+idLen])
 	off += idLen
+
 	if off+2 > len(payload) {
-		return "", "", nil, fmt.Errorf("shmevent: command put payload too short for name length")
+		return "", "", nil, nil, fmt.Errorf("shmevent: command put payload too short for name length")
 	}
 	nameLen := int(payload[off])<<8 | int(payload[off+1])
 	off += 2
 	if off+nameLen > len(payload) {
-		return "", "", nil, fmt.Errorf("shmevent: command put name length %d exceeds payload size %d", nameLen, len(payload))
+		return "", "", nil, nil, fmt.Errorf("shmevent: command put name length %d exceeds payload size %d", nameLen, len(payload))
 	}
 	name = string(payload[off : off+nameLen])
 	off += nameLen
-	return id, name, payload[off:], nil
+
+	if !v2 {
+		return id, name, payload[off:], nil, nil
+	}
+
+	if off+2 > len(payload) {
+		return "", "", nil, nil, fmt.Errorf("shmevent: command put payload too short for peer id length")
+	}
+	peerLen := int(payload[off])<<8 | int(payload[off+1])
+	off += 2
+	if off+peerLen > len(payload) {
+		return "", "", nil, nil, fmt.Errorf("shmevent: command put peer id length %d exceeds payload size %d", peerLen, len(payload))
+	}
+	peerID = payload[off : off+peerLen]
+	off += peerLen
+	return id, name, peerID, payload[off:], nil
 }
 
 // EncodeGroupCommandPayload packs commandID and groupID into a single

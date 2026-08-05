@@ -38,9 +38,20 @@ import (
 )
 
 // capacity is the shared-memory data region size for both channels. It must
-// be a power of two and comfortably fit the larger of an encoded
-// request/response (see pkg/shmevent.ValueSize).
-const capacity = 4096
+// be a power of two and comfortably fit the largest encoded request/response
+// this transport carries -- today an EventSet/EventTxn near
+// shmevent.KVValueSize (4KB), plus capnp framing, CRC32 and the 64-byte
+// signature, not the much smaller shmevent.ValueSize (512 bytes) every event
+// outside the plain-KV data path obeys.
+//
+// 16KB rather than the 8KB that would technically fit: the Android segment
+// is created once per node and lives for the whole process (unlike the
+// desktop transport's transient per-call segments), so the headroom costs
+// one 16KB mapping for the lifetime of the app -- cheaper than the class of
+// bug where a value just under the protocol ceiling is rejected by the
+// transport underneath it. Channel bulk data never comes through here (see
+// pkg/chandata), so ChannelValueSize is not this transport's concern.
+const capacity = 16384
 
 // call is what Call hands to Serve via the per-peer mailbox.
 type call struct {

@@ -265,7 +265,11 @@ func TestAppendCommandLogRejectsOversizedEntry(t *testing.T) {
 		t.Fatalf("AddNode: %v", err)
 	}
 
-	hugeOutput := strings.Repeat("x", shmevent.ValueSize*4)
+	// Sized against KVValueSize, not ValueSize: EventLogAppend moved to the
+	// larger tier so a journal entry can hold a real execution result rather
+	// than only a one-line narration. The ceiling moved; that there *is* one,
+	// enforced at write time, did not.
+	hugeOutput := strings.Repeat("x", shmevent.KVValueSize*4)
 	if err := kvctl.AppendCommandLog("", "instance-oversized", nil, hugeOutput); err == nil {
 		t.Fatalf("AppendCommandLog with oversized narrative: want error, got none")
 	}

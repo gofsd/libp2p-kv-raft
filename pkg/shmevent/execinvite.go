@@ -125,3 +125,23 @@ func DecodeExecInviteRedeemRequest(payload []byte) (sourceAddr string, token []b
 	}
 	return string(payload[ExecInviteTokenSize:]), payload[:ExecInviteTokenSize], nil
 }
+
+// EncodeExecTicketPayload packs sourceAddr and token into a single
+// EventExecTicket Msg.Value -- byte-identical to
+// EncodeExecInviteRedeemRequest (same two fields, same order), just under
+// a name that reads correctly at the ticket call site, the same way
+// EncodeListRangeQuery is EncodeSetPayload under a different name. Kept
+// as a distinct wrapper rather than callers reusing
+// EncodeExecInviteRedeemRequest directly: that function's own doc
+// comment specifically describes the *local-only shmring* payload a
+// redeeming peer's CLI sends its own daemon, a different call site with
+// different trust assumptions than a signed, self-contained ticket
+// someone else's device produced.
+func EncodeExecTicketPayload(sourceAddr string, token []byte) ([]byte, error) {
+	return EncodeExecInviteRedeemRequest(sourceAddr, token)
+}
+
+// DecodeExecTicketPayload is the inverse of EncodeExecTicketPayload.
+func DecodeExecTicketPayload(payload []byte) (sourceAddr string, token []byte, err error) {
+	return DecodeExecInviteRedeemRequest(payload)
+}

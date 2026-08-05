@@ -44,8 +44,27 @@ mage listnodes <peerID>                          # query a running node for its 
 mage set <key> <value>
 mage get <key>
 mage rangescan <start> <end> [limit|""]           # list every key/value pair in [start, end] on the current node
+mage txn "<op> [op...]"                           # atomic multi-key write: k=v, del:k, if:k=v, ifabsent:k
+mage cas <key> <expected> <value>                 # write only if key still holds expected
+mage casabsent <key> <value>                      # write only if key doesn't exist yet
 mage version                                      # current node's own build/version info (git commit, dirty, go-libp2p version, ...)
+mage requestpublicaccess <targetAddr> [note]      # ask another cluster for channel+relay standing in it
+mage enablepublicaccess                           # (on a voter) seed the public group/command on this cluster
 ```
+
+`requestpublicaccess` is the client side of `shmevent.DefaultPublicCommandID`'s self-service
+escalation, and the only thing in this repo that makes a node act as a *client of a cluster it
+doesn't belong to*: `shmevent.EventPublicAccess` is local-only, and `pkg/daemon`'s
+`dialAndSubmitPublicAccess` dials the target's `ClientProtocolID` and submits the always-public
+`public-access` command under this node's own identity, which that cluster answers by granting it
+`ReservedGroupChannel` + `ReservedGroupRelay` membership (`kvfsm`'s `grantChannelRelayAccess`).
+This is what lets a device with no standing anywhere actually *use* a relay it's pointed at --
+relay admission is unconditionally gated (`relayACL`), so without it a fresh install advertises
+only undialable addresses. `enablepublicaccess` is its operator-side counterpart: `pkg/daemon`
+seeds those records only at first cluster bootstrap (`ensureDefaultPublicCommand`) and
+deliberately never re-seeds them afterwards, so a cluster bootstrapped by an older build needs
+this run once or every request is refused. Both have `kvctl-cli` and `mobile/kvmobile`
+(`RequestPublicAccess`/`RequestRelayAccess`) equivalents.
 
 `listclusters` is a pure local registry read (grouped by whichever peer id originally bootstrapped each
 cluster) -- no daemon needs to be running, but for the same reason it only ever shows clusters this
@@ -113,6 +132,9 @@ mage creategroup/updategroup/deletegroup/getgroup/listgroups <id> [name]
 mage addpeertogroup/removepeerfromgroup <peerID> <groupID>
 mage listgroupsforpeer <peerID>
 mage createcommand/updatecommand/deletecommand/getcommand/listcommands <id> [name peerID]
+mage createcommandspec <id> <name> <peerID|""> '<specJSON>'   # a command carrying its own form definition
+mage clearcommandspec <id> <name> <peerID|"">                  # remove a spec (a plain update preserves it)
+mage createstation/updatestation/deletestation/getstation/liststations <peerID> [name attrsJSON]
 mage addcommandtogroup/removecommandfromgroup <commandID> <groupID>
 mage listgroupsforcommand <commandID>
 mage submitcommand/getcommandrequest/listcommandrequests <args>

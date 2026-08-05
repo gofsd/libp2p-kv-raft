@@ -586,9 +586,12 @@ func Get(key string) (string, error) {
 // Txn atomically applies a space-separated list of ops through raft --
 // either all of them land, or none do (see shmevent.EventTxn's doc
 // comment) -- forwarding to the current leader exactly like Submit. Each
-// op is `<key>=<value>` (a Set) or `del:<key>` (a Delete); see
-// shmevent.ParseTxnOpsString's doc comment for the full grammar, shared
-// as-is with desktop's `mage txn`.
+// op is `<key>=<value>` (a Set), `del:<key>` (a Delete), `if:<key>=<value>`
+// or `ifabsent:<key>` (preconditions: the whole transaction applies only if
+// they hold); see shmevent.ParseTxnOpsString's doc comment for the full
+// grammar, shared as-is with desktop's `mage txn`. A transaction whose
+// preconditions fail returns an error -- see CompareAndSwap for the
+// single-key case, where that outcome is expected rather than exceptional.
 func Txn(ops string) error {
 	parsed, err := shmevent.ParseTxnOpsString(ops)
 	if err != nil {
@@ -605,6 +608,46 @@ func Txn(ops string) error {
 		return fmt.Errorf("kvmobile: txn: %w", err)
 	}
 	return nil
+}
+
+// CompareAndSwap writes value to key only if key currently holds expected,
+// and reports whether it did -- the primitive a caller needs to build any
+// safe read-modify-write on top of Submit/Get, which alone can't express
+// one: between a Get and the Submit that acts on it, another device in the
+// cluster can commit its own write, and neither device can tell afterwards.
+// The comparison runs inside the raft FSM's own Apply, already serialized
+// against every other write in the cluster (see kvfsm's OpTxn case).
+//
+// A false return means another writer got there first; nothing was written
+// and the caller should re-read and retry. That is an ordinary outcome, not
+// an error -- errors are reserved for a node that couldn't be reached or a
+// transaction that couldn't be applied at all.
+func CompareAndSwap(key, expected, value string) (bool, error) {
+	return compareAndSwap(key, expected, value, false)
+}
+
+// CompareAndSwapAbsent writes value to key only if key does not exist yet,
+// and reports whether it did -- CompareAndSwap's create-if-not-exists half,
+// for the case a plain comparison can't cover, since "not there" is not a
+// value any expected string could match. Two devices creating the same key
+// at once both see false from one of the two calls, rather than one
+// silently overwriting the other.
+func CompareAndSwapAbsent(key, value string) (bool, error) {
+	return compareAndSwap(key, "", value, true)
+}
+
+func compareAndSwap(key, expected, value string, absent bool) (bool, error) {
+	sess, err := currentSession()
+	if err != nil {
+		return false, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	swapped, err := sess.CompareAndSwap(ctx, key, expected, value, absent)
+	if err != nil {
+		return false, fmt.Errorf("kvmobile: compare and swap: %w", err)
+	}
+	return swapped, nil
 }
 
 // PeerID returns this device's peer id, or "" if Start hasn't completed

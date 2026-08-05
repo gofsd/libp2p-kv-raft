@@ -198,6 +198,56 @@ comment), so a local caller already had unrestricted read access to its own node
 this just exposes it conveniently instead of requiring a raw `sendevent` call. Also exposed on
 `kvctl-cli` as `rangescan <start> <end> [-limit N]`.
 
+### Value size ceilings
+
+`Msg.Value` has three ceilings, picked by event type (`shmevent.valueSizeFor`), not one:
+
+| Ceiling | Events | Why |
+| --- | --- | --- |
+| `ValueSize`, 512B | everything else — permits, cluster membership, catalog records, `EventLogAppend` | These carry fields this project defines (a peer id, a permit record, a narration). Their size is known and small. |
+| `KVValueSize`, 4KB | `EventSetKey`/`EventSetField`/`EventSet`/`EventGetField`/`EventTxn` | These carry whatever a *caller* chose to store. Their size is the caller's decision, not this project's. |
+| `ChannelValueSize`, 16KB | `EventChannelSend`/`EventChannelPoll` | Bulk data (a file, a video frame). Superseded in practice by `pkg/chandata`'s rings for real throughput. |
+
+Kept as three constants rather than one large one because the ceiling is also the *fixed width*
+`canonicalPayload` zero-pads to before signing: a single 16KB ceiling would make every permit
+record and heartbeat pay CRC32 and Ed25519 cost over 16KB of mostly zeroes. That's safe as a fixed
+per-message width because the event type sits at byte 0 of `canonicalPayload`, ahead of `Value`, so
+a verifier always knows which width the signer used before it needs `Value`'s own length.
+
+`KVValueSize` exists because 512 bytes turned out to bound things built *on top* of the KV store
+rather than the store itself: a `Set` replaces a value outright, so anything layering structure over
+raw keys (a JSON document store, say) round-trips its whole unit on every write, and one small
+object with nested fields already exceeded it. Anyone raising these further should note
+`pkg/ipc`'s shared-memory `capacity` has to fit the largest encoded message — the Android
+transport's (`ipc_android.go`) is the tighter of the two and had to grow alongside `KVValueSize`.
+
+### Conditional writes (compare-and-swap)
+
+`mage txn "<op> [op...]"` applies an ordered op list as one raft log entry — every op lands or
+none do. Alongside the plain `<key>=<value>` (set) and `del:<key>` (delete) ops, an op may be a
+**precondition**: `if:<key>=<value>` (that key must currently hold exactly that value) or
+`ifabsent:<key>` (that key must not exist). Every precondition in a transaction is evaluated
+before any of its writes are applied, so a transaction whose preconditions don't hold changes
+nothing at all. `mage cas <key> <expected> <value>` and `mage casabsent <key> <value>` are the
+single-key shorthands, printing whether the swap happened; `kvmobile` binds them as
+`CompareAndSwap`/`CompareAndSwapAbsent`, returning a plain boolean.
+
+The reason this can't be built on top of `Set`/`Get` by a caller is that the comparison has to
+happen where the ordering already exists. `kvfsm.Apply` runs one raft log entry at a time, so a
+compare evaluated there is serialized against every other write in the cluster; a client doing
+the same comparison across a `Get` and a `Set` has a window between the two that no amount of
+client-side care closes — two devices both read a value, both write, and the loser never learns
+it lost. `ifabsent:` covers the case a value comparison can't express at all, since "not there"
+is not a value any expected string could match; without it, "read, see nothing, create" has the
+same race with no way to detect it afterwards.
+
+A failed precondition is deliberately not an error in the client bindings that have a natural
+place for it (`CompareAndSwap`'s `false`, `mage cas`'s printed line): it's the expected second
+outcome of a race, and the correct response is to re-read and retry, not to abort. The sentinel
+travels as `shmevent.CompareFailedMarker` — the FSM raises `kvfsm.ErrCompareFailed`, `pkg/daemon`
+forwards its text over IPC, and the client turns it back into a typed result, since a Go error
+value can't cross that boundary intact.
+
 `kvctl-cli sendrawevent <peerID> <base64Payload>` and `kvctl-cli printeventdatamatrix <peerID>
 <eventJSON> <outFile.png>` extend `sendevent` for one-time, pre-signed events. `sendevent` always
 signs fresh with whoever it's calling; `printeventdatamatrix` instead builds and signs the event
@@ -346,7 +396,10 @@ involved in this leg at all, so the daemon does it itself.
 `CancelJoinRequest`/`RecruitPeer`, wired into `CommandCatalog.kt`'s Cluster category) — the same
 "brand new device with no cluster yet, admitted by whoever scans its ticket" flow, just triggered
 from the Android UI instead of `mage`. `GetOwnAddr` matters even more here than on desktop: a phone
-is exactly the "no other way to learn my own address" case this exists for.
+is exactly the "no other way to learn my own address" case this exists for. See [Signed tickets:
+proving a barcode really came from who it claims](#signed-tickets-proving-a-barcode-really-came-from-who-it-claims)
+below for `CreateJoinRequestTicket`/`RedeemJoinRequestTicket`, the signed-ticket variant of this
+same flow.
 
 ### Follower on Android
 
@@ -429,7 +482,9 @@ given suffrage on this device's own cluster, without hand-delivering it the way 
 — append it to this device's own address (`GetOwnAddr`) as `"<addr>#<tokenHex>"` for some other
 device's `Join`/`Start` to redeem directly, admitted immediately even if this cluster's leader
 normally requires confirmation. `RevokeJoinInvite(tokenHex)` deletes one before it's ever redeemed.
-Both only take effect if this device is itself a raft voter, same as desktop.
+Both only take effect if this device is itself a raft voter, same as desktop. See [Signed tickets:
+proving a barcode really came from who it claims](#signed-tickets-proving-a-barcode-really-came-from-who-it-claims)
+below for `CreateJoinInviteTicket`/`VerifyJoinInviteTicket`, the signed-ticket variant.
 
 `Kick(targetPeerID)` is the Android counterpart of desktop's `mage kick`: force-removes some
 *other* peer from the currently-joined cluster (`raft.RemoveServer`) without that peer's own
@@ -587,7 +642,9 @@ gomobile-bindable client wrapper). Unlike desktop's `kvctl-cli printexecinviteda
 barcode-rendering call here: `CreateExecInvite` just returns the raw `tokenHex`, and the app combines
 it with its own advertised multiaddr and renders the barcode itself (e.g. a Kotlin QR/Data-Matrix
 library) — the same "this Go layer hands back data, presentation is the app's job" reasoning
-`catalog.go`'s doc comment gives for why `ResolveQRGroup` wasn't carried over either.
+`catalog.go`'s doc comment gives for why `ResolveQRGroup` wasn't carried over either. See [Signed
+tickets: proving a barcode really came from who it claims](#signed-tickets-proving-a-barcode-really-came-from-who-it-claims)
+below for `CreateExecInviteTicket`/`RedeemExecInviteTicket`, the signed-ticket variant.
 
 `RunCommandDispatcher(commandID, handler)`/`StopCommandDispatcher(commandID)` are `kvmobile`'s port of
 desktop's `pkg/kvctl.RunCommandDispatcher` — the first real implementation of the "target device's own
@@ -652,6 +709,43 @@ are the Android-bound equivalents, same request/confirm/revoke shape, `priority`
 clamped into `0-255`. Because this is ordinary raft-replicated state, a newly confirmed relay
 reaches every cluster member's own candidate list the next time each one calls `relayCandidates`
 (startup, or the next `join()`) — no coordinated restart needed.
+
+**Getting permission to use a relay in the first place** (`mage requestpublicaccess`,
+`kvmobile.RequestRelayAccess`): pointing a node at a relay is not the same as being *allowed* to
+use one. A relay's circuit-relay v2 service is ACL-gated against its own cluster's
+`shmevent.ReservedGroupRelay` membership (`pkg/daemon`'s `relayACL`), with no opt-out flag by
+design — so a freshly installed device, a total stranger to the relay's cluster, has every
+reservation denied and ends up advertising only addresses nobody can dial. Until this session
+there was no client side to fix that short of an operator running `mage addpeertogroup <peerID>
+relay` on the relay itself, by hand, once per device.
+
+`shmevent.DefaultPublicCommandID` (the always-public `public-access` command, see
+[Group/command ACL](#groupcommand-acl)) was already the designed escalation path — submitting it
+grants the submitter `channel` + `relay` standing atomically inside the same raft-committed write
+(`kvfsm`'s `grantChannelRelayAccess`) — but nothing in this repo could submit a command to a
+cluster it wasn't part of, since `pkg/shmclient.Session` only ever talks to its own local daemon.
+`shmevent.EventPublicAccess` is that missing client leg: a local-only event that makes *this*
+node dial another cluster's `ClientProtocolID` and submit the public command under its own
+identity, landing in that cluster's `isCommandLogCarveOut` exception.
+
+```bash
+mage requestpublicaccess "<relayMultiaddr>" "my laptop"   # ask; grants this node channel+relay there
+mage enablepublicaccess                                   # (on a voter) seed the public group/command here
+```
+
+`kvmobile.RequestPublicAccess(addr, note)` / `RequestRelayAccess(note)` (the latter aims at
+whichever relay was baked in at `gomobile bind` time) are the Android equivalents — the Android
+app calls it on every launch, since the grant lives in the *relay's* cluster, not on the device.
+
+`enablepublicaccess` is the counterpart for the relay's own operator, and is needed more often
+than it looks: `pkg/daemon` seeds the `public` group + `public-access` command itself
+(`ensureDefaultPublicCommand`), but **only at the moment a brand new cluster is first
+bootstrapped**, and deliberately not on every leadership transition — they're ordinary mutable
+records, so an operator who closed self-service enrollment must not have that silently undone by
+the next election. The consequence is that a cluster bootstrapped by an older build never gains
+them, and every request is refused with `is not permitted to submit command public-access`. This
+was true of this project's own deployed relay until it was run there once. It's idempotent, and
+it's equally how to re-open enrollment on a cluster where it was closed on purpose.
 
 **Which node to point `RelayPeers`/`relayMultiaddr` at**: `configs/bootstrap-nodes.json` (read via
 `mage bootstrapnodes`) is the catalog of already-deployed `-relay-service` nodes -- any node that
@@ -823,12 +917,15 @@ ordinary caller-supplied key can never collide with — reached through its own
 `shmevent.EventLogAppend` event rather than plain `Set`, since `Set`/`SetField`
 themselves reject that reserved namespace outright.
 
-Two accepted v1 limits, not oversights: a record's JSON encoding shares the same
-512-byte `Set` payload budget as everything else (`shmevent.ValueSize`), leaving roughly
-400-470 bytes for `Fields`+`Narrative` combined — tight for a long narrative; and there's
+One accepted v1 limit, not an oversight: there's
 no entry cap or rotation policy, since silently dropping old journal entries once a
-count limit is hit would be actively wrong for a logbook. Both are left for a future pass
-if they turn out to matter in practice.
+count limit is hit would be actively wrong for a logbook. Left for a future pass
+if it turns out to matter in practice.
+
+A record's JSON encoding gets `shmevent.KVValueSize`'s 4KB payload budget. It was 512 bytes,
+which left roughly 400-470 for `Fields`+`Narrative` combined — enough for "started"/"finished"
+and far too little for an execution result carrying a dozen measured values, which is exactly what
+this journal is for once anything real is built on it.
 
 ### Log access control
 
@@ -902,6 +999,52 @@ that is marked public. A group's `public` flag is meant for commands any peer sh
 trigger regardless of standing (e.g. a status/health check) — `addpeertogroup`/
 `removepeerfromgroup` become no-ops for authorization purposes on a public group, since membership
 was never what was granting access.
+
+### Commands carry their own form definition
+
+A `Command` record holds a third, optional field beyond `name`/`peer_id`: `spec`, an opaque string
+(JSON, in practice) that this repo never parses. It is a *client's* form definition — which inputs
+a command takes, of what kinds, with what validation — replicated through raft like any other
+catalog record, so a cluster gains a new command without any device gaining new code. Write one
+with `mage createcommandspec <id> <name> <peerID|""> '<specJSON>'`, or `kvmobile`'s
+`CreateCommandWithSpec`; read it back with `getcommand`/`listcommands`, which now include `spec`.
+
+Two rules changed to make that usable as an application's real command set:
+
+- **A device may be the target of many commands.** `kvfsm` used to reject a second `Command`
+  naming a peer some other command already targeted, which capped a cluster's whole command list at
+  its device count — twenty operations across five stations was unrepresentable. Nothing depended
+  on the rule: every consumer looks up command id → target peer, never peer → its command.
+- **`peer_id` may be empty.** A definition can exist before anyone decides which device runs it.
+  `submitcommand` is where that becomes an error, since dispatch is the first operation that
+  genuinely needs a target and the only layer that can tell "not bound yet" from "broken".
+
+A `Put` that carries no spec **preserves** whatever spec is stored (`kvfsm`'s
+`preserveCommandSpec`), rather than replacing the record wholesale the way every other field works.
+Renaming a command, or an app re-registering its catalog on startup, would otherwise silently
+delete a form definition nobody meant to touch. Removing one is therefore explicit:
+`mage clearcommandspec <id> <name> <peerID|"">`. Like the group-name check, this is evaluated
+inside `Apply` rather than as a pre-check, so reading the previous record has nothing to race
+against.
+
+The spec rides in the record's value under a versioned payload: a v2 payload is marked by an
+impossible v1 name length (`0xFFFF`), and a command with no spec is still written as v1 byte for
+byte, so records predating the field are untouched and readers that predate it — including
+`web-app`'s Rust decoder — keep working unchanged. `EventCommandPut` moved to the `KVValueSize`
+(4KB) tier to fit a real form.
+
+### Stations
+
+`KindStation` describes one device in operational terms — a name plus opaque attributes — keyed by
+its peer id (`mage createstation <peerID> <name> '<attrsJSON>'`, `liststations`, `kvmobile`'s
+`PutStation`/`ListStations`). It exists because every other record naming a device names it by peer
+id alone, and a 52-character base58 string tells a person nothing about which machine it is.
+
+Deliberately *not* cluster membership: `KindClusterMember` already records who is in the cluster.
+A station record neither grants membership nor implies it, so a device can be described before it
+joins and keep its description after it leaves — which is what lets historical records still name
+it. Written through the same voter-gated catalog CRUD path as `Group`/`Command`, so a device cannot
+rename itself, and deleted with a plain `OpDel` rather than a cascade, since nothing references it.
 
 Deleting a `Group` or `Command` cascades in the same raft `Apply` (`pkg/kvfsm.OpCascadeDelete`): every
 `GroupCommand`/`PeerGroup` record referencing the deleted id is removed alongside it, so a delete
@@ -1006,6 +1149,78 @@ invite, so a legitimate peer can still redeem it afterward; only a successful, p
 burns the ticket. On success, `redeemexecinvite` prints a new instance id — track it with
 `getcommandrequest`/`querycommandlog`/`latestcommandlog` against the target's own node, same as any
 other `submitcommand` dispatch.
+
+### Signed tickets: proving a barcode really came from who it claims
+
+Every one-time ticket above (`KindJoinInvite`, join-request, `KindExecInvite`) is deliberately
+unsigned — "the token itself is the credential" is the recurring design choice in each of the three
+sections above, since a leaked or forged token still fails safely at redemption (raft-authoritative
+ACL checks and one-time consumption, not anything embedded in the barcode, are what actually gate
+admission or execution). `EventExecTicket`/`EventJoinTicket`/`EventJoinRequestTicket` add an
+optional, narrower property on top for anyone who wants it: a scanning device can verify a ticket
+really was produced by the peer id embedded in its own address **before ever dialing anything** —
+catching a forged/tampered barcode at scan time instead of after a wasted (and, for a relay-only
+address, possibly slow) connection attempt. This doesn't change what's actually authorized at
+redemption time; every plain ticket's existing daemon-side guarantee above is untouched.
+
+Each signed ticket packs the exact same `(sourceAddr, token)` pair its plain counterpart already
+uses, base64-encoded as a full `shmevent.Event` (`shmevent.Encode`/`Decode`/`Sign`/`Verify` —
+standalone calls needing no live shmring session, the same primitives
+`printeventdatamatrix`/`sendrawevent` above already use for a different purpose), signed over a
+canonical field layout (`pkg/shmevent/sign.go`'s `canonicalPayload`) rather than the raw wire bytes
+— so word-alignment padding a capnp encoder inserts is never mistaken for tampering, only a real
+change to `EventType`/`Value` is. Deliberately *not* the literal generic `Event` shape a live
+shmring/network message uses everywhere else in this doc: `sourceId`/`destinationId`/correlation
+`id` are request/response fields with no meaning for a static, possibly-printed, scanned-later
+ticket, so each one is zeroed and nothing else is added beyond its own `EventType`.
+
+```bash
+mage createexecinviteticket c1 '{"qty":"20"}'          # mint + sign in one step, prints ticketB64
+mage redeemexecinviteticket <ticketB64>                # verify signature, then redeem exactly like redeemexecinvite
+kvctl-cli printexecinviteticketdatamatrix <ticketB64> <outFile.png>   # barcode the already-signed ticket as-is
+
+mage createjoininviteticket <voter|learner>
+mage verifyjoininviteticket <ticketB64>                # verify, prints the plain "<addr>#<tokenHex>" string
+mage addfollower "<verified addr#tokenHex>"            # unchanged -- redemption is still the same existing path
+kvctl-cli printjoininviteticketdatamatrix <ticketB64> <outFile.png>
+
+mage createjoinrequestticket
+mage redeemjoinrequestticket <ticketB64> <voter|learner>   # verify, then recruit exactly like recruitpeer
+kvctl-cli printjoinrequestticketdatamatrix <ticketB64> <outFile.png>
+```
+
+The three commands per ticket kind map one-for-one onto their plain counterparts: `create*ticket`
+replaces `create*` plus a manual `getownaddr`/string-concatenation step (the ticket already carries
+its own address); the redeem side either fully performs the same action its plain counterpart does
+(`redeemexecinviteticket`/`redeemjoinrequestticket`, since `redeemexecinvite`/`recruitpeer` already
+dial-and-act in one call) or, when redemption is actually baked into a *different* command
+(`addfollower`/`addnode` for join-invite, not a `kvctl` call at all), only verifies and hands back
+the identical plain string that command already accepts unchanged (`verifyjoininviteticket`) —
+`pkg/daemon` needed no changes for any of the three, since every signed ticket is verified entirely
+client-side before reaching whatever already-existing, unmodified redemption path takes over.
+`print*ticketdatamatrix` barcodes an already-minted ticket as one opaque string (unlike its plain
+counterpart, which takes a separate address and token to combine) — a real Data Matrix PNG, the same
+`boombuler/barcode` encode/scale/write path `printeventdatamatrix` above uses.
+
+Verifying the signature needs no PKI or prior relationship with the issuer: this project's peer ids
+are Ed25519-self-certifying (the same trick `pkg/daemon.recordClusterMember` and `EventExecute`'s
+own delivery already rely on), so the verifying side extracts the claimed issuer's public key
+straight out of the ticket's own embedded address (`peer.AddrInfoFromP2pAddr` +
+`ExtractPublicKey`) — no separate key-fetch round trip, no prior cluster membership needed.
+`mobile/kvmobile` mirrors all three one-for-one (`CreateExecInviteTicket`/`RedeemExecInviteTicket`,
+`CreateJoinInviteTicket`/`VerifyJoinInviteTicket`, `CreateJoinRequestTicket`/
+`RedeemJoinRequestTicket`), fetching the signing key the same way `Session.Open` already does for
+every other signed call — an Android app renders/scans the resulting base64 string as a Data Matrix
+itself, the same "this Go layer hands back data, presentation is the app's job" split every other
+kvmobile ticket function already follows. Wired into `android-app/`'s `CommandCatalog.kt` UI under
+the existing `Cluster`/`ExecInvite` categories, right beside each ticket kind's plain counterpart,
+and compiles against a real `gomobile bind` rebuild of `kvmobile.aar` (not just against the Go side
+in isolation). Not yet in `test/e2e/testdata.json`'s `UICases`, though — `UiCommandE2ETest.kt`
+sources tailored per-command execute plans from that file rather than hardcoding them (see [End-to-end
+tests / deploy pipeline](#end-to-end-tests--deploy-pipeline) above), and every new entry with no
+tailored case there still gets full navigation-only UI coverage automatically, just not a real
+invocation — adding a tailored, actually-executed case is a deliberate, separately-tracked step that
+needs a real device/emulator pass to validate, not an oversight.
 
 ## Raw Channel
 

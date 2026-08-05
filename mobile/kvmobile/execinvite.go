@@ -3,10 +3,12 @@ package kvmobile
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"strings"
 
+	"github.com/gofsd/libp2p-kv-raft/pkg/shmclient"
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
 
@@ -102,6 +104,107 @@ func RedeemExecInvite(sourceAddrAndToken string) (string, error) {
 		return "", err
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	instanceID, err := sess.RedeemExecInvite(ctx, sourceAddr, token)
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: redeem exec invite: %w", err)
+	}
+	return instanceID, nil
+}
+
+// CreateExecInviteTicket is CreateExecInvite's signed-ticket counterpart --
+// the mobile equivalent of desktop's pkg/kvctl.CreateExecInviteTicket. It
+// does everything CreateExecInvite does (mints a token, lodges the
+// KindExecInvite record), then wraps this device's own current address
+// and that token into a single signed, self-contained ticket, base64
+// -encoded -- an app renders that string as a Data Matrix directly (see
+// this file's doc comment on why kvmobile hands back data rather than a
+// rendered barcode itself). Unlike the bare tokenHex CreateExecInvite
+// returns, a redeeming peer can verify this ticket really came from this
+// device before ever dialing it -- see shmevent.EventExecTicket's doc
+// comment.
+func CreateExecInviteTicket(commandID, inputsJSON string) (string, error) {
+	token := make([]byte, shmevent.ExecInviteTokenSize)
+	if _, err := rand.Read(token); err != nil {
+		return "", fmt.Errorf("kvmobile: generate exec invite token: %w", err)
+	}
+
+	sess, err := currentSession()
+	if err != nil {
+		return "", err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	if err := sess.CreateExecInvite(ctx, token, commandID, inputsJSON); err != nil {
+		return "", fmt.Errorf("kvmobile: create exec invite ticket: %w", err)
+	}
+
+	addr, err := sess.GetOwnAddr(ctx)
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: create exec invite ticket: get own addr: %w", err)
+	}
+
+	value, err := shmevent.EncodeExecTicketPayload(addr, token)
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: create exec invite ticket: %w", err)
+	}
+	priv, err := shmclient.GetPrivateKey(ctx, PeerID())
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: create exec invite ticket: fetch signing key: %w", err)
+	}
+	wire, err := shmevent.Encode(shmevent.Msg{EventType: shmevent.EventExecTicket, Value: value}, priv)
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: create exec invite ticket: sign: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(wire), nil
+}
+
+// RedeemExecInviteTicket is RedeemExecInvite's signed-ticket counterpart
+// -- the mobile equivalent of desktop's pkg/kvctl.RedeemExecInviteTicket.
+// Decodes ticketB64, extracts the issuing peer id from its own embedded
+// address (self-certifying, via relayNodePeerID) and verifies the
+// signature against that peer id's own public key, rejecting the ticket
+// outright if it doesn't check out -- only then redeems it exactly like
+// RedeemExecInvite does.
+func RedeemExecInviteTicket(ticketB64 string) (string, error) {
+	wire, err := base64.StdEncoding.DecodeString(ticketB64)
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: invalid exec invite ticket: %w", err)
+	}
+	m, crc, sig, err := shmevent.Decode(wire)
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: decode exec invite ticket: %w", err)
+	}
+	if m.EventType != shmevent.EventExecTicket {
+		return "", fmt.Errorf("kvmobile: not an exec invite ticket (event %s)", shmevent.EventName(m.EventType))
+	}
+	sourceAddr, token, err := shmevent.DecodeExecTicketPayload(m.Value)
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: decode exec invite ticket: %w", err)
+	}
+
+	issuerID, err := relayNodePeerID(sourceAddr)
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: exec invite ticket: %w", err)
+	}
+	issuerPub, err := issuerID.ExtractPublicKey()
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: exec invite ticket: extract issuer public key: %w", err)
+	}
+	issuerPubRaw, err := issuerPub.Raw()
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: exec invite ticket: issuer public key: %w", err)
+	}
+	if err := shmevent.Verify(issuerPubRaw, m, crc, sig); err != nil {
+		return "", fmt.Errorf("kvmobile: exec invite ticket: %w", err)
+	}
+
+	sess, err := currentSession()
+	if err != nil {
+		return "", err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
 	instanceID, err := sess.RedeemExecInvite(ctx, sourceAddr, token)

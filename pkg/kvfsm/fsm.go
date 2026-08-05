@@ -123,44 +123,70 @@ func checkGroupNameUnique(s *store.Store, key, value []byte) error {
 	return nil
 }
 
-// checkCommandPeerIDUnique enforces that no two Command records share the
-// same peerID, called from Apply's OpSet case whenever key is a CommandKey
-// -- same rationale as checkGroupNameUnique: doing this check in
-// pkg/daemon/pkg/kvctl before ever reaching Apply would leave a TOCTOU race
-// between two concurrent PutCommand calls choosing the same peerID: Apply
-// runs exactly once, in raft log order, so there's nothing to race against.
-// A command being overwritten under its own id (a rename, or a plain
-// re-Put) is not a collision with itself -- only a genuinely different id
-// already holding that peerID is rejected. At most systemListLimits' own
-// KindCommand cap (2000) records exist at once, so a full scan here is
-// cheap and bounded.
-func checkCommandPeerIDUnique(s *store.Store, key, value []byte) error {
+// preserveCommandSpec carries an existing Command record's spec forward when
+// the incoming write doesn't mention one, returning the value to actually
+// store. Every non-Command key, and every write that does carry a spec field
+// (including an explicitly emptied one -- see
+// shmevent.EncodeCommandPayloadClearingSpec), passes through untouched.
+//
+// This exists because a spec is a big, human-authored field written once,
+// while name and target peer are small ones edited often -- and every
+// existing caller of PutCommand sends only the latter. Without this, the
+// ordinary act of renaming a command, or an app re-registering its catalog
+// on startup, would silently delete a form definition nobody meant to touch:
+// the write is a Put, so it replaces the whole record. Making the *absence*
+// of a field mean "leave it alone" is what keeps that from being a trap,
+// while an explicit empty spec still clears it.
+//
+// Done here rather than in pkg/daemon before rf.Apply for the same reason
+// the group-name check is: Apply runs exactly once, in raft log order,
+// against state every replica already agrees on, so reading the previous
+// record here has nothing to race against. A pre-check would.
+func preserveCommandSpec(s *store.Store, key, value []byte) ([]byte, error) {
 	if len(key) < systemKeyPrefixLen || key[0] != shmevent.SystemKeyPrefix || key[1] != shmevent.KindCommand {
-		return nil
+		return value, nil
 	}
-	_, peerID, err := shmevent.DecodeCommandPayload(value)
+	if _, present, err := shmevent.DecodeCommandPayloadSpec(value); err != nil {
+		return nil, fmt.Errorf("kvfsm: command spec: %w", err)
+	} else if present {
+		return value, nil
+	}
+
+	existing, err := s.Get(key)
+	if errors.Is(err, store.ErrNotFound) {
+		return value, nil
+	}
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("kvfsm: command spec: read existing: %w", err)
 	}
-	lo, hi := shmevent.CommandKeyBounds()
-	matches, err := s.ScanRange(lo, hi, 0)
+	oldSpec, _, err := shmevent.DecodeCommandPayloadSpec(existing)
+	if err != nil || len(oldSpec) == 0 {
+		// A previous record that is itself malformed must not block a write
+		// that would replace it -- that would make a bad record permanent.
+		return value, nil
+	}
+	name, peerID, err := shmevent.DecodeCommandPayload(value)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("kvfsm: command spec: decode incoming: %w", err)
 	}
-	for _, m := range matches {
-		if bytes.Equal(m.Key, key) {
-			continue
-		}
-		_, existingPeerID, err := shmevent.DecodeCommandPayload(m.Value)
-		if err != nil {
-			return err
-		}
-		if bytes.Equal(existingPeerID, peerID) {
-			return fmt.Errorf("kvfsm: peer %s already has a command assigned", peerID)
-		}
+	merged, err := shmevent.EncodeCommandPayloadWithSpec(name, peerID, oldSpec)
+	if err != nil {
+		return nil, fmt.Errorf("kvfsm: command spec: re-encode: %w", err)
 	}
-	return nil
+	return merged, nil
 }
+
+// A note on a rule that used to be here: Apply once enforced that no two
+// Command records shared the same target peerID -- "a peer has at most one
+// command". It was removed, deliberately, because it made the catalog a 1:1
+// device<->command mapping, and so capped a cluster's whole command list at
+// its device count. Nothing depended on it: every consumer of a Command
+// record looks up command id -> target peer (pkg/daemon's exec-invite path,
+// pkg/kvctl/dispatch.go's SubmitCommand, kvmobile's catalog listings), never
+// peer -> its command, so no reader had a uniqueness assumption to break. A
+// device may now be the target of as many commands as the catalog holds,
+// which is what lets a cluster define a real command set rather than one
+// entry per station.
 
 // OpType identifies the kind of mutation carried by a raft log entry.
 type OpType uint8
@@ -268,6 +294,17 @@ const (
 	OpTxn OpType = 8
 )
 
+// ErrCompareFailed is what an OpTxn whose shmevent.TxnOpCompare/
+// TxnOpCompareAbsent precondition didn't hold wraps its ApplyResult.Err in.
+// A distinct sentinel rather than a plain error string because a failed
+// compare is the one transaction failure that is *expected*, and means
+// something specific to the caller: nothing was written, another writer got
+// there first, and the right response is to re-read and retry rather than to
+// surface an error. Callers reach it through errors.Is -- pkg/daemon
+// forwards the wrapped message verbatim to the IPC caller, which is what
+// pkg/shmclient's CompareAndSwap turns back into a plain false.
+var ErrCompareFailed = errors.New("kvfsm: " + shmevent.CompareFailedMarker)
+
 // EncodeCommand builds the raft log payload for a Set/Delete operation.
 // Layout: [1 byte op][4 byte big-endian key len][key][4 byte big-endian value len][value].
 func EncodeCommand(op OpType, key, value []byte) []byte {
@@ -348,7 +385,8 @@ func (f *FSM) Apply(l *raft.Log) any {
 		if err := checkGroupNameUnique(f.Store, key, value); err != nil {
 			return ApplyResult{Err: err}
 		}
-		if err := checkCommandPeerIDUnique(f.Store, key, value); err != nil {
+		value, err := preserveCommandSpec(f.Store, key, value)
+		if err != nil {
 			return ApplyResult{Err: err}
 		}
 		return ApplyResult{Err: f.Store.Set(key, value)}
@@ -456,14 +494,51 @@ func (f *FSM) Apply(l *raft.Log) any {
 			return ApplyResult{Err: fmt.Errorf("kvfsm: txn: decode payload: %w", err)}
 		}
 		for i, op := range ops {
-			if op.Op != shmevent.TxnOpSet && op.Op != shmevent.TxnOpDelete {
+			if !shmevent.ValidTxnOp(op.Op) {
 				return ApplyResult{Err: fmt.Errorf("kvfsm: txn: op %d has unknown kind %d", i, op.Op)}
+			}
+		}
+		// Every precondition is evaluated before any write in the same
+		// transaction lands, so a failed compare leaves the store exactly
+		// as it was rather than half-applied. This -- not the compare
+		// itself -- is what makes the pair a real compare-and-swap: raft
+		// has already serialized this entry against every other write, so
+		// between reading a key here and writing it three lines down
+		// there is no window another client can act in. The same read
+		// done by a client over two IPC round trips has a window that no
+		// amount of care on the client side can close.
+		for i, op := range ops {
+			if !op.IsCompare() {
+				continue
+			}
+			current, err := f.Store.Get(op.Key)
+			switch op.Op {
+			case shmevent.TxnOpCompareAbsent:
+				if err == nil {
+					return ApplyResult{Err: fmt.Errorf("%w: op %d: key %q exists", ErrCompareFailed, i, op.Key)}
+				}
+				if !errors.Is(err, store.ErrNotFound) {
+					return ApplyResult{Err: fmt.Errorf("kvfsm: txn: op %d: read key %q: %w", i, op.Key, err)}
+				}
+			case shmevent.TxnOpCompare:
+				if errors.Is(err, store.ErrNotFound) {
+					return ApplyResult{Err: fmt.Errorf("%w: op %d: key %q does not exist", ErrCompareFailed, i, op.Key)}
+				}
+				if err != nil {
+					return ApplyResult{Err: fmt.Errorf("kvfsm: txn: op %d: read key %q: %w", i, op.Key, err)}
+				}
+				if !bytes.Equal(current, op.Value) {
+					return ApplyResult{Err: fmt.Errorf("%w: op %d: key %q holds a different value", ErrCompareFailed, i, op.Key)}
+				}
 			}
 		}
 		// See OpTxn's own doc comment for why this loop -- not any single
 		// Store call -- is where future rollback support would wrap a
 		// real Store-level transaction.
 		for _, op := range ops {
+			if op.IsCompare() {
+				continue
+			}
 			var err error
 			if op.Op == shmevent.TxnOpSet {
 				err = f.Store.Set(op.Key, op.Value)

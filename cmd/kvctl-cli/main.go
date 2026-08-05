@@ -58,6 +58,24 @@ func main() {
 		cmdAccessToken(os.Args[2:])
 	case "rangescan":
 		cmdRangeScan(os.Args[2:])
+	case "txn":
+		cmdTxn(os.Args[2:])
+	case "cas":
+		cmdCas(os.Args[2:])
+	case "casabsent":
+		cmdCasAbsent(os.Args[2:])
+	case "createcommandspec", "updatecommandspec":
+		cmdCreateCommandSpec(os.Args[2:])
+	case "clearcommandspec":
+		cmdClearCommandSpec(os.Args[2:])
+	case "createstation", "updatestation":
+		cmdCreateStation(os.Args[2:])
+	case "deletestation":
+		cmdDeleteStation(os.Args[2:])
+	case "getstation":
+		cmdGetStation(os.Args[2:])
+	case "liststations":
+		cmdListStations(os.Args[2:])
 	case "requestpermit":
 		cmdRequestPermit(os.Args[2:])
 	case "confirmpermit":
@@ -70,6 +88,12 @@ func main() {
 		cmdRevokeJoinInvite(os.Args[2:])
 	case "printjoininvitedatamatrix":
 		cmdPrintJoinInviteDataMatrix(os.Args[2:])
+	case "createjoininviteticket":
+		cmdCreateJoinInviteTicket(os.Args[2:])
+	case "verifyjoininviteticket":
+		cmdVerifyJoinInviteTicket(os.Args[2:])
+	case "printjoininviteticketdatamatrix":
+		cmdPrintJoinInviteTicketDataMatrix(os.Args[2:])
 	case "createjoinrequest":
 		cmdCreateJoinRequest(os.Args[2:])
 	case "canceljoinrequest":
@@ -78,6 +102,12 @@ func main() {
 		cmdPrintJoinRequestDataMatrix(os.Args[2:])
 	case "recruitpeer":
 		cmdRecruitPeer(os.Args[2:])
+	case "createjoinrequestticket":
+		cmdCreateJoinRequestTicket(os.Args[2:])
+	case "redeemjoinrequestticket":
+		cmdRedeemJoinRequestTicket(os.Args[2:])
+	case "printjoinrequestticketdatamatrix":
+		cmdPrintJoinRequestTicketDataMatrix(os.Args[2:])
 	case "getownaddr":
 		cmdGetOwnAddr(os.Args[2:])
 	case "version":
@@ -88,8 +118,18 @@ func main() {
 		cmdRevokeExecInvite(os.Args[2:])
 	case "redeemexecinvite":
 		cmdRedeemExecInvite(os.Args[2:])
+	case "requestpublicaccess":
+		cmdRequestPublicAccess(os.Args[2:])
+	case "enablepublicaccess":
+		cmdEnablePublicAccess(os.Args[2:])
 	case "printexecinvitedatamatrix":
 		cmdPrintExecInviteDataMatrix(os.Args[2:])
+	case "createexecinviteticket":
+		cmdCreateExecInviteTicket(os.Args[2:])
+	case "redeemexecinviteticket":
+		cmdRedeemExecInviteTicket(os.Args[2:])
+	case "printexecinviteticketdatamatrix":
+		cmdPrintExecInviteTicketDataMatrix(os.Args[2:])
 	case "execute":
 		cmdExecute(os.Args[2:])
 	case "pollexecute":
@@ -122,22 +162,42 @@ func usage() {
   kvctl-cli listnodes <peerID>
   kvctl-cli accesstoken <peerID>
   kvctl-cli rangescan <start> <end> [-limit N]
+  kvctl-cli txn "<op> [op...]"                 (ops: k=v, del:k, if:k=v, ifabsent:k)
+  kvctl-cli cas <key> <expected> <value>
+  kvctl-cli casabsent <key> <value>
+  kvctl-cli createcommandspec <id> <name> <peerID|""> <specJSON>
+  kvctl-cli clearcommandspec <id> <name> <peerID|"">
+  kvctl-cli createstation <peerID> <name> [attrsJSON]
+  kvctl-cli deletestation <peerID>
+  kvctl-cli getstation <peerID>
+  kvctl-cli liststations
   kvctl-cli requestpermit <kind: bootstrap> <peerID> <metadata>
   kvctl-cli confirmpermit <kind: bootstrap|cluster-join> <peerID>
   kvctl-cli revokepermit <kind: bootstrap> <peerID>
   kvctl-cli createjoininvite <voter|learner>
   kvctl-cli revokejoininvite <tokenHex>
   kvctl-cli printjoininvitedatamatrix <leaderMultiaddr> <tokenHex> <outFile.png>
+  kvctl-cli createjoininviteticket <voter|learner>
+  kvctl-cli verifyjoininviteticket <ticketB64>
+  kvctl-cli printjoininviteticketdatamatrix <ticketB64> <outFile.png>
   kvctl-cli createjoinrequest
   kvctl-cli canceljoinrequest <tokenHex>
   kvctl-cli printjoinrequestdatamatrix <ownMultiaddr> <tokenHex> <outFile.png>
   kvctl-cli recruitpeer <ticket> <voter|learner>
+  kvctl-cli createjoinrequestticket
+  kvctl-cli redeemjoinrequestticket <ticketB64> <voter|learner>
+  kvctl-cli printjoinrequestticketdatamatrix <ticketB64> <outFile.png>
   kvctl-cli getownaddr
   kvctl-cli version
   kvctl-cli createexecinvite <commandID> <inputsJSON>
   kvctl-cli revokeexecinvite <tokenHex>
   kvctl-cli redeemexecinvite <sourceAddr#tokenHex>
+  kvctl-cli requestpublicaccess <targetAddr> [note]
+  kvctl-cli enablepublicaccess
   kvctl-cli printexecinvitedatamatrix <sourceMultiaddr> <tokenHex> <outFile.png>
+  kvctl-cli createexecinviteticket <commandID> <inputsJSON>
+  kvctl-cli redeemexecinviteticket <ticketB64>
+  kvctl-cli printexecinviteticketdatamatrix <ticketB64> <outFile.png>
   kvctl-cli execute <destPeerID> <value>
   kvctl-cli pollexecute
   kvctl-cli logappend <kind> <unitID> <fieldsJSON> <narrative>
@@ -198,6 +258,23 @@ credential); scanning it and passing the decoded string straight to mage
 addfollower/addnode (or kvctl-cli addnode) is the entire redemption step.
 revokejoininvite deletes a token outright before it's ever redeemed.
 
+createjoininviteticket/verifyjoininviteticket/printjoininviteticketdatamatrix
+are createjoininvite's signed counterpart: createjoininviteticket mints the
+same token but wraps this node's own address and the token into a single
+self-contained ticket, signed with this node's own key (see
+pkg/shmevent.EventJoinTicket's doc comment) -- a scanning device can then
+verify the ticket really came from the peer id embedded in its own
+address, before ever dialing it, which the plain printjoininvitedatamatrix
+form has no way to do (its token is the sole credential; forging one just
+fails harmlessly at redemption instead). verifyjoininviteticket checks
+that signature and, on success, prints the same plain
+"<leaderMultiaddr>#<tokenHex>" string createjoininvite's caller has always
+hand-assembled -- pass it to addnode/addfollower exactly as before.
+printjoininviteticketdatamatrix barcodes an already-minted ticketB64 as-is
+(unlike printjoininvitedatamatrix, it takes one already-complete string,
+not separate address/token arguments, since the ticket already carries
+both).
+
 createjoinrequest/canceljoinrequest/printjoinrequestdatamatrix/recruitpeer
 are join-invite's reverse: instead of an existing cluster voter minting a
 token that some outside device dials in to redeem, a device with no
@@ -217,6 +294,22 @@ triggered by this network push instead of a local operator command.
 Prints the recruited device's own join result ("<peerID> ok"/"<peerID>
 pending") on success. canceljoinrequest clears a device's own pending
 ticket before it's ever redeemed.
+
+createjoinrequestticket/redeemjoinrequestticket/printjoinrequestticketdatamatrix
+are createjoinrequest's signed counterpart, same relationship
+createjoininviteticket has to createjoininvite but in the reverse
+direction: createjoinrequestticket wraps this (addpending) device's own
+address and its fresh token into a ticket signed with *this device's own*
+key -- the signature here proves the ticket really came from the device
+asking to join, not from the cluster admitting it (see
+pkg/shmevent.EventJoinRequestTicket's doc comment). redeemjoinrequestticket
+is recruitpeer's counterpart: it verifies that signature against the peer
+id embedded in the ticket's own address, then -- unlike
+verifyjoininviteticket, which only hands back a string -- calls recruitpeer
+itself, since recruiting (unlike addfollower) already dials and completes
+the join in one step. printjoinrequestticketdatamatrix barcodes an
+already-minted ticketB64 as-is, same reasoning as
+printjoininviteticketdatamatrix.
 
 getownaddr prints this node's own current best-advertised multiaddr
 (public first, then a relay reservation, then anything else, loopback
@@ -251,6 +344,18 @@ having a Group/Command ACL grant there. Prints the new instance id on
 success; track it with getcommandrequest/querycommandlog/latestcommandlog
 (mage) against the target's own node. revokeexecinvite deletes a token
 outright before it's ever redeemed.
+
+createexecinviteticket/redeemexecinviteticket/printexecinviteticketdatamatrix
+are createexecinvite's signed counterpart, the same relationship
+createjoininviteticket has to createjoininvite: createexecinviteticket
+mints the same token and KindExecInvite record but wraps this node's own
+address and the token into a ticket signed with this node's own key (see
+pkg/shmevent.EventExecTicket's doc comment). redeemexecinviteticket
+verifies that signature against the peer id embedded in the ticket's own
+address before ever dialing anything, then redeems it exactly like
+redeemexecinvite does. printexecinviteticketdatamatrix barcodes an
+already-minted ticketB64 as-is, same reasoning as
+printjoininviteticketdatamatrix.
 
 raft flags (all default to hashicorp/raft's own WAN-appropriate values):
   -raft-heartbeat-timeout, -raft-election-timeout, -raft-commit-timeout, -raft-leader-lease-timeout`)
@@ -496,6 +601,134 @@ func cmdAccessToken(args []string) {
 	fmt.Println(token)
 }
 
+// cmdTxn/cmdCas/cmdCasAbsent are the conditional-write family (see README's
+// "Conditional writes"). A refused swap prints to stdout and exits 0: losing
+// a race is these commands' ordinary second outcome, and a script looping on
+// one wants to read that rather than trap a failure.
+func cmdTxn(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, `usage: kvctl-cli txn "<op> [op...]"  (ops: k=v, del:k, if:k=v, ifabsent:k)`)
+		os.Exit(2)
+	}
+	if err := kvctl.Txn(args[0]); err != nil {
+		fmt.Fprintf(os.Stderr, "txn: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdCas(args []string) {
+	if len(args) != 3 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli cas <key> <expected> <value>")
+		os.Exit(2)
+	}
+	if err := kvctl.CompareAndSwap(args[0], args[1], args[2], false); err != nil {
+		fmt.Fprintf(os.Stderr, "cas: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdCasAbsent(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli casabsent <key> <value>")
+		os.Exit(2)
+	}
+	if err := kvctl.CompareAndSwap(args[0], "", args[1], true); err != nil {
+		fmt.Fprintf(os.Stderr, "casabsent: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// cmdCreateCommandSpec writes a command carrying its own form definition.
+// peerID may be empty for a command not yet bound to a station.
+func cmdCreateCommandSpec(args []string) {
+	if len(args) != 4 {
+		fmt.Fprintln(os.Stderr, `usage: kvctl-cli createcommandspec <id> <name> <peerID|""> <specJSON>`)
+		os.Exit(2)
+	}
+	if err := kvctl.PutCommandWithSpec(args[0], args[1], args[2], args[3]); err != nil {
+		fmt.Fprintf(os.Stderr, "createcommandspec: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// cmdClearCommandSpec removes a command's form definition. Its own
+// subcommand because a plain command put preserves the stored spec rather
+// than replacing it (see kvfsm.preserveCommandSpec).
+func cmdClearCommandSpec(args []string) {
+	if len(args) != 3 {
+		fmt.Fprintln(os.Stderr, `usage: kvctl-cli clearcommandspec <id> <name> <peerID|"">`)
+		os.Exit(2)
+	}
+	if err := kvctl.ClearCommandSpec(args[0], args[1], args[2]); err != nil {
+		fmt.Fprintf(os.Stderr, "clearcommandspec: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdCreateStation(args []string) {
+	if len(args) != 2 && len(args) != 3 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli createstation <peerID> <name> [attrsJSON]")
+		os.Exit(2)
+	}
+	attrs := ""
+	if len(args) == 3 {
+		attrs = args[2]
+	}
+	if err := kvctl.PutStation(args[0], args[1], attrs); err != nil {
+		fmt.Fprintf(os.Stderr, "createstation: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdDeleteStation(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli deletestation <peerID>")
+		os.Exit(2)
+	}
+	if err := kvctl.DeleteStation(args[0]); err != nil {
+		fmt.Fprintf(os.Stderr, "deletestation: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdGetStation(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli getstation <peerID>")
+		os.Exit(2)
+	}
+	station, err := kvctl.GetStation(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "getstation: %v\n", err)
+		os.Exit(1)
+	}
+	out, err := json.Marshal(station)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "getstation: encode: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(out))
+}
+
+func cmdListStations(args []string) {
+	if len(args) != 0 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli liststations")
+		os.Exit(2)
+	}
+	stations, err := kvctl.ListStations()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "liststations: %v\n", err)
+		os.Exit(1)
+	}
+	for _, station := range stations {
+		out, err := json.Marshal(station)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "liststations: encode: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(out))
+	}
+}
+
 func cmdRequestPermit(args []string) {
 	if len(args) != 3 {
 		fmt.Fprintln(os.Stderr, "usage: kvctl-cli requestpermit <kind: bootstrap> <peerID> <metadata>")
@@ -623,6 +856,81 @@ func cmdPrintJoinInviteDataMatrix(args []string) {
 	fmt.Println(joinString)
 }
 
+func cmdCreateJoinInviteTicket(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli createjoininviteticket <voter|learner>")
+		os.Exit(2)
+	}
+	var suffrage byte
+	switch args[0] {
+	case "voter":
+		suffrage = shmevent.SuffrageVoter
+	case "learner":
+		suffrage = shmevent.SuffrageLearner
+	default:
+		fmt.Fprintf(os.Stderr, "createjoininviteticket: unknown suffrage %q (want \"voter\" or \"learner\")\n", args[0])
+		os.Exit(2)
+	}
+	ticket, err := kvctl.CreateJoinInviteTicket(suffrage)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "createjoininviteticket: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(ticket)
+}
+
+func cmdVerifyJoinInviteTicket(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli verifyjoininviteticket <ticketB64>")
+		os.Exit(2)
+	}
+	addrAndToken, err := kvctl.VerifyJoinInviteTicket(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "verifyjoininviteticket: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(addrAndToken)
+}
+
+// cmdPrintJoinInviteTicketDataMatrix implements `kvctl-cli
+// printjoininviteticketdatamatrix <ticketB64> <outFile.png>` -- unlike
+// cmdPrintJoinInviteDataMatrix, ticketB64 is already one complete,
+// self-contained, signed string (see createjoininviteticket), so this
+// only barcodes it as-is -- no address/token args to combine.
+func cmdPrintJoinInviteTicketDataMatrix(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli printjoininviteticketdatamatrix <ticketB64> <outFile.png>")
+		os.Exit(2)
+	}
+	ticket, outFile := args[0], args[1]
+
+	code, err := datamatrix.Encode(ticket)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "printjoininviteticketdatamatrix: encode data matrix: %v\n", err)
+		os.Exit(1)
+	}
+	bounds := code.Bounds()
+	scaled, err := barcode.Scale(code, bounds.Dx()*dataMatrixModuleSize, bounds.Dy()*dataMatrixModuleSize)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "printjoininviteticketdatamatrix: scale data matrix: %v\n", err)
+		os.Exit(1)
+	}
+
+	f, err := os.Create(outFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "printjoininviteticketdatamatrix: create %s: %v\n", outFile, err)
+		os.Exit(1)
+	}
+	defer f.Close()
+	if err := png.Encode(f, scaled); err != nil {
+		fmt.Fprintf(os.Stderr, "printjoininviteticketdatamatrix: write %s: %v\n", outFile, err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("wrote %s\n", outFile)
+	fmt.Println(ticket)
+}
+
 func cmdCreateJoinRequest(args []string) {
 	if len(args) != 0 {
 		fmt.Fprintln(os.Stderr, "usage: kvctl-cli createjoinrequest")
@@ -714,6 +1022,81 @@ func cmdRecruitPeer(args []string) {
 	fmt.Println(result)
 }
 
+func cmdCreateJoinRequestTicket(args []string) {
+	if len(args) != 0 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli createjoinrequestticket")
+		os.Exit(2)
+	}
+	ticket, err := kvctl.CreateJoinRequestTicket()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "createjoinrequestticket: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(ticket)
+}
+
+func cmdRedeemJoinRequestTicket(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli redeemjoinrequestticket <ticketB64> <voter|learner>")
+		os.Exit(2)
+	}
+	var suffrage byte
+	switch args[1] {
+	case "voter":
+		suffrage = shmevent.SuffrageVoter
+	case "learner":
+		suffrage = shmevent.SuffrageLearner
+	default:
+		fmt.Fprintf(os.Stderr, "redeemjoinrequestticket: unknown suffrage %q (want \"voter\" or \"learner\")\n", args[1])
+		os.Exit(2)
+	}
+	result, err := kvctl.RedeemJoinRequestTicket(args[0], suffrage)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "redeemjoinrequestticket: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(result)
+}
+
+// cmdPrintJoinRequestTicketDataMatrix implements `kvctl-cli
+// printjoinrequestticketdatamatrix <ticketB64> <outFile.png>` -- unlike
+// cmdPrintJoinRequestDataMatrix, ticketB64 is already one complete,
+// self-contained, signed string (see createjoinrequestticket), so this
+// only barcodes it as-is -- no address/token args to combine.
+func cmdPrintJoinRequestTicketDataMatrix(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli printjoinrequestticketdatamatrix <ticketB64> <outFile.png>")
+		os.Exit(2)
+	}
+	ticket, outFile := args[0], args[1]
+
+	code, err := datamatrix.Encode(ticket)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "printjoinrequestticketdatamatrix: encode data matrix: %v\n", err)
+		os.Exit(1)
+	}
+	bounds := code.Bounds()
+	scaled, err := barcode.Scale(code, bounds.Dx()*dataMatrixModuleSize, bounds.Dy()*dataMatrixModuleSize)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "printjoinrequestticketdatamatrix: scale data matrix: %v\n", err)
+		os.Exit(1)
+	}
+
+	f, err := os.Create(outFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "printjoinrequestticketdatamatrix: create %s: %v\n", outFile, err)
+		os.Exit(1)
+	}
+	defer f.Close()
+	if err := png.Encode(f, scaled); err != nil {
+		fmt.Fprintf(os.Stderr, "printjoinrequestticketdatamatrix: write %s: %v\n", outFile, err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("wrote %s\n", outFile)
+	fmt.Println(ticket)
+}
+
 // cmdGetOwnAddr implements `kvctl-cli getownaddr` -- see kvctl.GetOwnAddr's
 // doc comment.
 func cmdGetOwnAddr(args []string) {
@@ -786,6 +1169,35 @@ func cmdRedeemExecInvite(args []string) {
 	fmt.Println(instanceID)
 }
 
+func cmdRequestPublicAccess(args []string) {
+	if len(args) < 1 || len(args) > 2 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli requestpublicaccess <targetAddr> [note]")
+		os.Exit(2)
+	}
+	var note string
+	if len(args) == 2 {
+		note = args[1]
+	}
+	instanceID, err := kvctl.RequestPublicAccess(args[0], note)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "requestpublicaccess: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(instanceID)
+}
+
+func cmdEnablePublicAccess(args []string) {
+	if len(args) != 0 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli enablepublicaccess")
+		os.Exit(2)
+	}
+	if err := kvctl.EnablePublicAccess(); err != nil {
+		fmt.Fprintf(os.Stderr, "enablepublicaccess: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("ok")
+}
+
 // cmdPrintExecInviteDataMatrix implements `kvctl-cli
 // printexecinvitedatamatrix <sourceMultiaddr> <tokenHex> <outFile.png>` --
 // mirrors cmdPrintJoinInviteDataMatrix exactly: barcodes a plain string,
@@ -825,6 +1237,71 @@ func cmdPrintExecInviteDataMatrix(args []string) {
 
 	fmt.Printf("wrote %s\n", outFile)
 	fmt.Println(redeemString)
+}
+
+func cmdCreateExecInviteTicket(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli createexecinviteticket <commandID> <inputsJSON>")
+		os.Exit(2)
+	}
+	ticket, err := kvctl.CreateExecInviteTicket(args[0], args[1])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "createexecinviteticket: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(ticket)
+}
+
+func cmdRedeemExecInviteTicket(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli redeemexecinviteticket <ticketB64>")
+		os.Exit(2)
+	}
+	instanceID, err := kvctl.RedeemExecInviteTicket(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "redeemexecinviteticket: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(instanceID)
+}
+
+// cmdPrintExecInviteTicketDataMatrix implements `kvctl-cli
+// printexecinviteticketdatamatrix <ticketB64> <outFile.png>` -- unlike
+// cmdPrintExecInviteDataMatrix, ticketB64 is already one complete,
+// self-contained, signed string (see createexecinviteticket), so this
+// only barcodes it as-is -- no address/token args to combine.
+func cmdPrintExecInviteTicketDataMatrix(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli printexecinviteticketdatamatrix <ticketB64> <outFile.png>")
+		os.Exit(2)
+	}
+	ticket, outFile := args[0], args[1]
+
+	code, err := datamatrix.Encode(ticket)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "printexecinviteticketdatamatrix: encode data matrix: %v\n", err)
+		os.Exit(1)
+	}
+	bounds := code.Bounds()
+	scaled, err := barcode.Scale(code, bounds.Dx()*dataMatrixModuleSize, bounds.Dy()*dataMatrixModuleSize)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "printexecinviteticketdatamatrix: scale data matrix: %v\n", err)
+		os.Exit(1)
+	}
+
+	f, err := os.Create(outFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "printexecinviteticketdatamatrix: create %s: %v\n", outFile, err)
+		os.Exit(1)
+	}
+	defer f.Close()
+	if err := png.Encode(f, scaled); err != nil {
+		fmt.Fprintf(os.Stderr, "printexecinviteticketdatamatrix: write %s: %v\n", outFile, err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("wrote %s\n", outFile)
+	fmt.Println(ticket)
 }
 
 func cmdExecute(args []string) {

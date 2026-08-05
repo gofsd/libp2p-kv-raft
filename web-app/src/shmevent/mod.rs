@@ -119,14 +119,47 @@ pub const EVENT_PEER_GROUP_PUT: u8 = 26;
 /// Removes a peer from a Group. Same payload shape as
 /// `EVENT_PEER_GROUP_PUT`.
 pub const EVENT_PEER_GROUP_DELETE: u8 = 27;
+/// Atomically applies an ordered op list -- see `pkg/shmevent.EventTxn`.
+/// Not sent by this client, but defined so `value_size_for` can name it:
+/// its width has to match Go's whether or not this client ever uses it.
+pub const EVENT_TXN: u8 = 44;
+/// Creates/updates a device's station description -- see
+/// `pkg/shmevent.EventStationPut`. Defined here for the same reason as
+/// `EVENT_TXN`.
+pub const EVENT_STATION_PUT: u8 = 51;
+/// Removes a station description -- `pkg/shmevent.EventStationDelete`.
+pub const EVENT_STATION_DELETE: u8 = 52;
 /// Response-only; see `pkg/shmevent.EventError`'s doc comment for why
 /// this exists even though it isn't part of `api/shmevent.capnp`'s
 /// originally specified field set.
 pub const EVENT_ERROR: u8 = 255;
 
-/// Maximum length of `Msg.value` this module enforces (a convention, not
-/// a capnp schema constraint).
+/// Maximum length of `Msg.value` for most events (a convention, not a capnp
+/// schema constraint), and the fixed width `canonical_payload` zero-pads to
+/// before CRC/signing.
 pub const VALUE_SIZE: usize = 512;
+
+/// The plain-KV data path's larger ceiling, mirroring
+/// `pkg/shmevent.KVValueSize`. **This must stay in lockstep with Go's
+/// `valueSizeFor`**: the ceiling is also the fixed width the signed payload
+/// is padded to, so if the two sides disagree about an event's width they
+/// compute different CRCs and different signatures over identical messages,
+/// and every such message is rejected as forged. That is not a theoretical
+/// risk -- it is what happened when Go gained this constant and this file
+/// still padded everything to VALUE_SIZE.
+pub const KV_VALUE_SIZE: usize = 4 * 1024;
+
+/// The maximum `Msg.value` length -- and the fixed padding width -- for
+/// `event`. Mirrors `pkg/shmevent.valueSizeFor`. Channel events are absent
+/// deliberately: this client implements no Channel support, so it never
+/// constructs or verifies one (see Go's `ChannelValueSize` doc comment).
+pub fn value_size_for(event: u8) -> usize {
+    match event {
+        EVENT_SET_KEY | EVENT_SET_FIELD | EVENT_SET | EVENT_GET_FIELD | EVENT_TXN
+        | EVENT_LOG_APPEND | EVENT_COMMAND_PUT | EVENT_STATION_PUT => KV_VALUE_SIZE,
+        _ => VALUE_SIZE,
+    }
+}
 pub const SIGNATURE_SIZE: usize = 64;
 pub const PUBLIC_KEY_SIZE: usize = 32;
 pub const PRIVATE_KEY_SIZE: usize = 32; // ed25519-dalek's SigningKey seed length
@@ -183,13 +216,18 @@ pub fn requires_signature(event_type: u8) -> bool {
 /// `api/shmevent.capnp`'s doc comment and `pkg/shmevent`'s
 /// `canonicalPayload`, which this matches byte-for-byte.
 fn canonical_payload(m: &Msg) -> Vec<u8> {
-    let mut buf = vec![0u8; 1 + 2 + 2 + VALUE_SIZE + 2];
+    // Width is per event type (see value_size_for), exactly as Go's
+    // canonicalPayload does -- safe because the event type sits at byte 0,
+    // ahead of the value, so a verifier knows which width the signer used
+    // before it needs the value's own length.
+    let vs = value_size_for(m.event_type);
+    let mut buf = vec![0u8; 1 + 2 + 2 + vs + 2];
     buf[0] = m.event_type;
     buf[1..3].copy_from_slice(&m.source_id.to_be_bytes());
     buf[3..5].copy_from_slice(&m.destination_id.to_be_bytes());
-    let n = m.value.len().min(VALUE_SIZE);
+    let n = m.value.len().min(vs);
     buf[5..5 + n].copy_from_slice(&m.value[..n]);
-    buf[5 + VALUE_SIZE..].copy_from_slice(&m.id.to_be_bytes());
+    buf[5 + vs..].copy_from_slice(&m.id.to_be_bytes());
     buf
 }
 
@@ -255,9 +293,10 @@ pub fn verify(pub_key: &VerifyingKey, m: &Msg, crc: u32, sig: &[u8]) -> Result<(
 /// Serializes `m` to its capnp wire form, computing CRC32 and signing
 /// with `priv_key`. Matches `pkg/shmevent.Encode`.
 pub fn encode(m: &Msg, priv_key: Option<&SigningKey>) -> Result<Vec<u8>, Error> {
-    if m.value.len() > VALUE_SIZE {
+    let max = value_size_for(m.event_type);
+    if m.value.len() > max {
         return Err(Error(format!(
-            "value too long: {} bytes (max {VALUE_SIZE})",
+            "value too long: {} bytes (max {max})",
             m.value.len()
         )));
     }

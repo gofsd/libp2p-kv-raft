@@ -283,10 +283,14 @@ func TestLatestCommandLogReturnsOutputIntact(t *testing.T) {
 }
 
 // TestAppendCommandLogRejectsOversizedEntry checks AppendCommandLog
-// surfaces a clear error for a narrative too large for
-// shmevent.ValueSize, rather than silently accepting or corrupting it --
-// the write-time half of the guarantee LatestCommandLog's doc comment
-// relies on.
+// surfaces a clear error for a narrative too large for a single record,
+// rather than silently accepting or corrupting it -- the write-time half of
+// the guarantee LatestCommandLog's doc comment relies on.
+//
+// Sized against shmevent.KVValueSize, not ValueSize: EventLogAppend moved to
+// the larger tier so a journal entry can hold a real result rather than only
+// a one-line narration. The ceiling moved; that there *is* one, enforced at
+// write time, did not.
 func TestAppendCommandLogRejectsOversizedEntry(t *testing.T) {
 	leaderAddr := spawnTestLeader(t, t.TempDir())
 
@@ -302,7 +306,7 @@ func TestAppendCommandLogRejectsOversizedEntry(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	hugeOutput := strings.Repeat("x", shmevent.ValueSize*4)
+	hugeOutput := strings.Repeat("x", shmevent.KVValueSize*4)
 	if err := AppendCommandLog("", "instance-oversized", "", hugeOutput); err == nil {
 		t.Fatalf("AppendCommandLog with oversized narrative: want error, got none")
 	}

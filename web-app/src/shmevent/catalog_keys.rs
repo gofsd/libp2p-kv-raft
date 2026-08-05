@@ -193,8 +193,78 @@ pub fn encode_command_payload(name: &str, peer_id: &[u8]) -> Result<Vec<u8>, Err
     Ok(buf)
 }
 
-/// Inverse of [`encode_command_payload`].
+/// Inverse of [`encode_command_payload`], reading either payload version and
+/// discarding any spec -- see [`decode_command_payload_full`].
 pub fn decode_command_payload(payload: &[u8]) -> Result<(String, &[u8]), Error> {
+    let (name, peer_id, _) = decode_command_payload_full(payload)?;
+    Ok((name, peer_id))
+}
+
+/// Decodes either Command payload version, returning the spec as well (empty
+/// for a v1 record, which has none).
+///
+/// A Command record grew a third field -- the form definition a client renders
+/// inputs from -- and v1's layout had no room for one, since `peer_id` is its
+/// trailing field and takes the rest of the buffer. v2 is marked by an
+/// impossible v1 name length (`0xFFFF`; the whole value is capped far below
+/// that) followed by explicitly length-prefixed fields. Go's
+/// `shmevent.EncodeCommandPayloadWithSpec` is the writer, and it still emits
+/// v1 byte-for-byte whenever there is no spec, so a spec-less command reaching
+/// this decoder is unchanged from before the field existed.
+pub fn decode_command_payload_full(payload: &[u8]) -> Result<(String, &[u8], &[u8]), Error> {
+    if payload.len() < 2 {
+        return Err(Error(format!(
+            "command payload too short: {} bytes",
+            payload.len()
+        )));
+    }
+    if ((payload[0] as usize) << 8 | payload[1] as usize) == COMMAND_PAYLOAD_V2_SENTINEL {
+        let mut off = 2usize;
+        let name_len = read_len(payload, &mut off, "command name length")?;
+        let name = read_slice(payload, &mut off, name_len, "command name")?;
+        let peer_len = read_len(payload, &mut off, "command peer id length")?;
+        let peer_id = read_slice(payload, &mut off, peer_len, "command peer id")?;
+        return Ok((
+            String::from_utf8_lossy(name).to_string(),
+            peer_id,
+            &payload[off..],
+        ));
+    }
+    let (name, peer_id) = decode_command_payload_v1(payload)?;
+    Ok((name, peer_id, &[]))
+}
+
+/// An impossible v1 name length, marking a v2 payload. See
+/// [`decode_command_payload_full`].
+const COMMAND_PAYLOAD_V2_SENTINEL: usize = 0xFFFF;
+
+fn read_len(payload: &[u8], off: &mut usize, what: &str) -> Result<usize, Error> {
+    if *off + 2 > payload.len() {
+        return Err(Error(format!("command payload truncated reading {what}")));
+    }
+    let v = (payload[*off] as usize) << 8 | payload[*off + 1] as usize;
+    *off += 2;
+    Ok(v)
+}
+
+fn read_slice<'a>(
+    payload: &'a [u8],
+    off: &mut usize,
+    len: usize,
+    what: &str,
+) -> Result<&'a [u8], Error> {
+    if *off + len > payload.len() {
+        return Err(Error(format!(
+            "command {what} length {len} exceeds payload size {}",
+            payload.len()
+        )));
+    }
+    let s = &payload[*off..*off + len];
+    *off += len;
+    Ok(s)
+}
+
+fn decode_command_payload_v1(payload: &[u8]) -> Result<(String, &[u8]), Error> {
     if payload.len() < 2 {
         return Err(Error(format!(
             "command payload too short: {} bytes",

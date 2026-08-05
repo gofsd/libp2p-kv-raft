@@ -203,6 +203,14 @@ func SubmitCommand(commandID, inputsJSON string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("kvctl: submit command: decode %s: %w", commandID, err)
 	}
+	// A command may be defined before it is bound to a station (see
+	// PutCommandWithSpec), so this is where "not bound yet" has to be caught
+	// -- dispatch is the first operation that genuinely needs a target, and
+	// the only layer that can tell the difference between a definition still
+	// being written and one that is broken.
+	if len(targetPeerID) == 0 {
+		return "", fmt.Errorf("kvctl: command %s has no target peer; set one with `mage updatecommand %s <name> <peerID>`", commandID, commandID)
+	}
 
 	instanceID, err := newInstanceID()
 	if err != nil {
