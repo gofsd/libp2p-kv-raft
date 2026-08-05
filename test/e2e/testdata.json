@@ -9,27 +9,27 @@
   "nodes": {
     "1": {
       "platform": "desktop",
-      "peer_id": "12D3KooWHgBS5FV28A7yeMyriiZcP3tMpxkCXrwmQkdexYceB5Hi",
-      "public_key": "74c4b5c5b777e80da362a2c6c36c9cc956ed1039e7938798165a0ef1c44eea59",
-      "private_key": "7028dce51d2d917d76a579f2f912ee150292be75d0398d97864ce6d68d15d7f874c4b5c5b777e80da362a2c6c36c9cc956ed1039e7938798165a0ef1c44eea59"
+      "peer_id": "12D3KooWD66sq69Ejex1aehGCVTnPUZxcvL9RiMZ1a6WDLzxUn9e",
+      "public_key": "309b103c861650321d19a34b9601dd866b59c68e099fc9498835db8c1fe32a51",
+      "private_key": "6645c92ff12bdc6f215047f62c059aff3e924b177f72ac416de17916e316ce92309b103c861650321d19a34b9601dd866b59c68e099fc9498835db8c1fe32a51"
     },
     "2": {
       "platform": "android",
-      "peer_id": "12D3KooWNUtKRSHUwoxKAWhynp6YYUrmhTKx6xgXXUMjcDczY8db",
-      "public_key": "bc2a6775b0c3c0b82e968772706498073cc92ccc4441cac7eb58aacc5494150e",
-      "private_key": "4c8a447b73e7d8e9d4a871be44e29cb23ecc31bd9966c70f67ed9b57f6ae08f1bc2a6775b0c3c0b82e968772706498073cc92ccc4441cac7eb58aacc5494150e"
+      "peer_id": "12D3KooWQnGmTeZWtfdCcVxtATsyHLAawuBGZZH6pBqjANnCy6cP",
+      "public_key": "de5608eb0932a0f5bc29251a3e12df7a37beccaf34599288c225deda91dc5b08",
+      "private_key": "5dce1126d2f3c72d69131b4349f61f51ef39aa6967b5b48b4fcb2c4bba658cd4de5608eb0932a0f5bc29251a3e12df7a37beccaf34599288c225deda91dc5b08"
     },
     "3": {
       "platform": "web",
-      "peer_id": "12D3KooWQe8nt5XLBCwbPxxcbNTffB4UYUBQV7pHaHX9ztv1tmEL",
-      "public_key": "dc405ed53e26a37ba4e1ee6f33ce3c28077a5447a3182cc440cbe5fb1525668d",
-      "private_key": "2cac2fd01884f767e9737d628fc1ba3cfe840adf96b06f25d81d5d139872b062dc405ed53e26a37ba4e1ee6f33ce3c28077a5447a3182cc440cbe5fb1525668d"
+      "peer_id": "12D3KooWGoahKtAfiERBE6aKXWg4jgr2QnYY5bnwnzwofBRs7DAp",
+      "public_key": "67ce646e6b02504a29282351bd4771ba523c07fa133bfd5bb0f34889bcce5479",
+      "private_key": "aa737353af94fde0077c4a6bb0796307d720131dc23b60728df7e3b586bebb5667ce646e6b02504a29282351bd4771ba523c07fa133bfd5bb0f34889bcce5479"
     },
     "4": {
       "platform": "remote",
-      "peer_id": "12D3KooWMpt1osz7Qbx7EszRpSBx4Pge5AwiUdYVveEHD8foudTk",
-      "public_key": "b26dfd729f55eebdcb321bd1bbdb05b278e84b0208b866e0864c95c8b228a59f",
-      "private_key": "befefd708417634cc54ded9263a34d9058b1e6fffec4312409ad7cd8dd7d66cfb26dfd729f55eebdcb321bd1bbdb05b278e84b0208b866e0864c95c8b228a59f"
+      "peer_id": "12D3KooWMxTdbQ3kxM6b8v9pcvrkpqf1KxdQUWG8PZn5uhecij4g",
+      "public_key": "b45f110855d445b44eb54c44aa551f0fb01f30a11a2e7984373373ee0132b475",
+      "private_key": "b8fe60e6d678d4c2c9a3f0d68f89db555445a927175eb4af96d286a463445fe3b45f110855d445b44eb54c44aa551f0fb01f30a11a2e7984373373ee0132b475"
     }
   },
   "rows": [
@@ -799,7 +799,7 @@
     }
   },
   "android_ui_result": {
-    "ran_at": "2026-08-05T03:34:35.817786826+03:00",
+    "ran_at": "2026-08-05T03:43:51.868340167+03:00",
     "status": 0,
     "cases": [
       {
@@ -847,12 +847,12 @@
       {
         "command": "Cluster: GetOwnAddr",
         "pass": true,
-        "output": "/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWMpt1osz7Qbx7EszRpSBx4Pge5AwiUdYVveEHD8foudTk/p2p-circuit/p2p/12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ"
+        "output": "/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWMxTdbQ3kxM6b8v9pcvrkpqf1KxdQUWG8PZn5uhecij4g/p2p-circuit/p2p/12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ"
       },
       {
         "command": "Cluster: CreateJoinRequest",
         "pass": true,
-        "output": "1f1271a7741764aba8e43918feb2e6b5"
+        "output": "9f368fca693c92cd00c3e6ef5ec7d83d"
       },
       {
         "command": "Cluster: CancelJoinRequest",
@@ -909,12 +909,12 @@
       {
         "command": "Cluster: ListClusters",
         "pass": true,
-        "output": "[{\"cluster_id\":\"12D3KooWMpt1osz7Qbx7EszRpSBx4Pge5AwiUdYVveEHD8foudTk\",\"peer_id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\"}]"
+        "output": "[{\"cluster_id\":\"12D3KooWMxTdbQ3kxM6b8v9pcvrkpqf1KxdQUWG8PZn5uhecij4g\",\"peer_id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\"}]"
       },
       {
         "command": "Cluster: ListClusterMembers",
         "pass": true,
-        "output": "[{\"peer_id\":\"12D3KooWMpt1osz7Qbx7EszRpSBx4Pge5AwiUdYVveEHD8foudTk\",\"role\":\"leader\"},{\"peer_id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"role\":\"learner\"}]"
+        "output": "[{\"peer_id\":\"12D3KooWMxTdbQ3kxM6b8v9pcvrkpqf1KxdQUWG8PZn5uhecij4g\",\"role\":\"leader\"},{\"peer_id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"role\":\"learner\"}]"
       },
       {
         "command": "Cluster: PeerID",
@@ -934,12 +934,12 @@
       {
         "command": "KV: Get",
         "pass": true,
-        "output": "e2e-ui-test-value-1785889610783"
+        "output": "e2e-ui-test-value-1785890393917"
       },
       {
         "command": "KV: RangeScan",
         "pass": true,
-        "output": "[{\"key\":\"e2e-ui-test-key\",\"value\":\"e2e-ui-test-value-1785889610783\"}]"
+        "output": "[{\"key\":\"e2e-ui-test-key\",\"value\":\"e2e-ui-test-value-1785890393917\"}]"
       },
       {
         "command": "Permits: RequestPermit",
@@ -956,8 +956,7 @@
       },
       {
         "command": "Execute: Execute",
-        "pass": true,
-        "output": "OK"
+        "pass": true
       },
       {
         "command": "Execute: PollExecute",
@@ -976,8 +975,7 @@
       },
       {
         "command": "Channel: OpenChannel",
-        "pass": true,
-        "output": "Opened 4834cb7a615184ba -- incoming data appears below as it arrives"
+        "pass": true
       },
       {
         "command": "Channel: ListenChannel",
@@ -1015,7 +1013,7 @@
       {
         "command": "Log records: LogQuery",
         "pass": true,
-        "output": "[{\"kind\":\"e2e-ui-test\",\"unit_id\":\"ui-test-unit\",\"timestamp\":\"2026-08-05T00:27:53.037826406Z\",\"author_peer_id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"narrative\":\"ui e2e test\"}]"
+        "output": "[{\"kind\":\"e2e-ui-test\",\"unit_id\":\"ui-test-unit\",\"timestamp\":\"2026-08-05T00:40:53.300752396Z\",\"author_peer_id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"narrative\":\"ui e2e test\"}]"
       },
       {
         "command": "Group: CreateGroup",
@@ -1036,7 +1034,7 @@
       {
         "command": "Group: ListGroups",
         "pass": true,
-        "output": "[{\"id\":\"12D3KooWMpt1osz7Qbx7EszRpSBx4Pge5AwiUdYVveEHD8foudTk\",\"name\":\"12D3KooWMpt1osz7Qbx7EszRpSBx4Pge5AwiUdYVveEHD8foudTk\",\"public\":false},{\"id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"name\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"public\":false},{\"id\":\"channel\",\"name\":\"channel\",\"public\":false},{\"id\":\"cluster\",\"name\":\"cluster\",\"public\":false},{\"id\":\"execute\",\"name\":\"execute\",\"public\":false},{\"id\":\"learner\",\"name\":\"learner\",\"public\":false},{\"id\":\"public\",\"name\":\"public\",\"public\":true},{\"id\":\"relay\",\"name\":\"relay\",\"public\":false},{\"id\":\"remote\",\"name\":\"remote\",\"public\":false},{\"id\":\"voter\",\"name\":\"voter\",\"public\":false}]"
+        "output": "[{\"id\":\"12D3KooWMxTdbQ3kxM6b8v9pcvrkpqf1KxdQUWG8PZn5uhecij4g\",\"name\":\"12D3KooWMxTdbQ3kxM6b8v9pcvrkpqf1KxdQUWG8PZn5uhecij4g\",\"public\":false},{\"id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"name\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"public\":false},{\"id\":\"channel\",\"name\":\"channel\",\"public\":false},{\"id\":\"cluster\",\"name\":\"cluster\",\"public\":false},{\"id\":\"execute\",\"name\":\"execute\",\"public\":false},{\"id\":\"learner\",\"name\":\"learner\",\"public\":false},{\"id\":\"public\",\"name\":\"public\",\"public\":true},{\"id\":\"relay\",\"name\":\"relay\",\"public\":false},{\"id\":\"remote\",\"name\":\"remote\",\"public\":false},{\"id\":\"voter\",\"name\":\"voter\",\"public\":false}]"
       },
       {
         "command": "Command: CreateCommand",
@@ -1105,16 +1103,18 @@
       },
       {
         "command": "Dispatch: AppendCommandLog",
-        "pass": true
+        "pass": true,
+        "output": "OK"
       },
       {
         "command": "Dispatch: QueryCommandLog",
         "pass": true,
-        "output": "[]"
+        "output": "[{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-05T00:41:26.50585136Z\",\"author_peer_id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"narrative\":\"ui e2e test\"}]"
       },
       {
         "command": "Dispatch: LatestCommandLog",
-        "pass": true
+        "pass": true,
+        "output": "{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-05T00:41:26.50585136Z\",\"author_peer_id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"narrative\":\"ui e2e test\"}"
       },
       {
         "command": "Dispatch: WatchCommandLog",
@@ -1159,7 +1159,7 @@
       {
         "command": "Raw: SendEvent",
         "pass": true,
-        "output": "{\"event\":\"get_public_key\",\"value\":\"0xe0379675fd5c73fd31c330ea8db67a3a94db7b57bc675dad2e1de39fe9eb77cd\",\"id\":12403}"
+        "output": "{\"event\":\"get_public_key\",\"value\":\"0xe0379675fd5c73fd31c330ea8db67a3a94db7b57bc675dad2e1de39fe9eb77cd\",\"id\":49850}"
       },
       {
         "command": "Test: SleepMillis",
