@@ -422,7 +422,7 @@ The interesting case for `recruitpeer` is two phones, or a phone and a laptop �
 dialable, both reachable only through a relay (see [Node connectivity
 policy](#node-connectivity-policy)). Every hop is then a relayed one: the recruiter dials the
 device's `/p2p-circuit` address to hand over the invite, and the device dials the recruiter's
-`/p2p-circuit` address to join. Three things have to hold for that to work, and each was broken
+`/p2p-circuit` address to join. Five things have to hold for that to work, and each was broken
 until it was fixed (see also **Relay list and failover** under [Follower on
 Android](#follower-on-android) for how a device picks which relays to try):
 
@@ -443,6 +443,26 @@ Android](#follower-on-android) for how a device picks which relays to try):
    a NATed peer will never provide, and the dial dies on its context deadline with nothing pointing
    at the relay. `join`, `dialAndPushRecruit` and `dialAndRedeemExecInvite` all pass it now, the
    same way `dialForward` and `rafttransport.Dial` already did.
+4. **A device must not forget the relay's address.** `forgetTransientPeer` drops a peer's whole
+   peerstore entry once its last connection closes, exempting only current raft members — and a
+   relay is never one. AutoRelay refreshes a reservation by bare peer id, reading addresses from
+   the peerstore, so the first time that connection churned the device could no longer reach its
+   own relay: the circuit address vanished from `host.Addrs()` and the relay dropped the
+   reservation, leaving the device advertising an address that answered `NO_RESERVATION` to
+   everyone. Relay candidates are exempt now, alongside raft members.
+5. **An explicit dial must not inherit AutoRelay's dial backoff.** libp2p charges dial backoff per
+   *peer*, not per caller, so AutoRelay's doomed startup attempts (made before any standing exists)
+   silenced the device's own `RequestRelayAccess` — the one call that would have granted that
+   standing — with a bare "dial backoff". `clearDialBackoff` clears it for the target *and* for the
+   relay named in a `/p2p-circuit` address, since dialing through a relay dials that hop first.
+
+`requestpublicaccess`/`RequestRelayAccess` waits, before returning, until the reservation it
+enables actually exists — and reports an error if it never does. Asking a relay for standing *is*
+asking to become reachable through it, and the next thing any caller does (hand out its own
+address, let a peer dial it) is wrong until that holds; leaving the caller to poll-and-hope is what
+made this flow so hard to get right. A node that AutoNAT has confirmed directly reachable is
+exempt: go-libp2p deliberately stops advertising relay addresses for such a node, so the same
+silence there means the relay isn't needed, not that anything failed.
 
 `handleRecruitStream` also extends its own stream deadline for the duration of the join it
 performs: that join can spend up to 45s waiting for this device's own relay reservation (see
@@ -1535,6 +1555,20 @@ mage e2e:all                                                            # run ev
 mage e2e:deletenode <nodeID>                                            # tear down a node's real process/data and remove it
 mage e2e:destroyall                                                     # tear down every node at once
 ```
+
+The two-device pairing scenario (`pkg/e2erun/android_pair.go`, driven from `e2e:all`) is the one
+part of this that is a *sequence* rather than a sweep, and that distinction is load-bearing. The
+cases handed to `UiCommandE2ETest` are a map keyed by command label, and the device-side runner
+originally walked whatever it was given in its own catalog order, category by category — so a step
+built as "resume this daemon, wait, then read its address" silently executed as "resume, read,
+wait", because the sleep lives in a later category than the command it was meant to precede. That
+scenario had therefore never actually waited for anything it thought it was waiting for.
+`e2edata.UICase.Order` fixes it: a caller that stamps every case with its position gets those cases
+run in exactly that order (`runOrderedWalk`), re-entering each command's own category per step;
+callers that stamp nothing keep the original unordered sweep. The scenario also prints each step's
+elapsed time to stderr, because its remaining failure mode is entirely about *when* things happen
+relative to each other — a receiver's hold ending before the sender, three invocations later, gets
+around to dialing it.
 
 `eventName` is one of `set_key`, `set_field`, `get_key`, `get_field`, `get_public_key`,
 `get_private_key`, `add` (see `pkg/shmevent.EventName`). Deployed nodes are never torn down

@@ -268,6 +268,34 @@ extending its own stream deadline past `streamRequestTimeout` for the duration o
 performs. `go run ./cmd/relaytool -mode=pair` walks the whole flow against the real deployed relay;
 `go test ./pkg/daemon/ -run TestPairThroughRelayCluster` is its hermetic equivalent.
 
+**Same feature on two real devices, 2026-08-05:** getting `pkg/e2erun/android_pair.go`'s
+two-emulator Join/RecruitPeer/Leave scenario green needed three more fixes, all in the same
+"a device cannot stay reachable through its relay" family, plus one in the harness:
+
+- `forgetTransientPeer` used to drop the peerstore entry of any peer that wasn't a *current raft
+  member* once its last connection closed — and a relay never is one. AutoRelay refreshes a
+  reservation by bare peer id, reading addresses from the peerstore, so the first connection churn
+  left the device unable to reach its own relay: its `/p2p-circuit` address vanished and the relay
+  dropped the reservation, while the device went on handing that address out. Relay candidates are
+  exempt now.
+- `clearDialBackoff`: libp2p charges dial backoff per peer, so AutoRelay's doomed startup dials
+  (made before any standing exists) silenced the device's own `RequestRelayAccess` — the call that
+  would have granted that standing. Cleared for the target and for the relay hop of a
+  `/p2p-circuit` address, since dialing through a relay dials that hop first.
+- `dialAndSubmitPublicAccess` now waits for the reservation its grant enables and reports an error
+  if it never lands, so "relay access granted" means "reachable". Skipped for a relay with no
+  public address, which can never yield a published circuit address at all.
+- `e2edata.UICase.Order`: the device-side UI runner walked its own catalog order, so the
+  scenario's settle-sleeps ran *after* the commands they were meant to precede — it had never
+  waited for anything. `UiCommandE2ETest.runOrderedWalk` honors an explicit order when every case
+  carries one.
+
+Verified by running that scenario against two emulators and the deployed VPS relay end to end
+(`MANUAL_PAIR_VERIFY_SERIALS=<a>,<b> MANUAL_PAIR_VERIFY_BOOTSTRAP=<relay> go test ./pkg/e2erun
+-run TestManualPairVerify`), which now passes all 14 steps. It is slow by construction (~11
+minutes): every step is a fresh app process that has to obtain its own relay reservation, and each
+cross-device dial holds the receiver up for the sender's whole start-up.
+
 ## Testing conventions
 
 - `mage e2e:current` is the pre-push gate once `mage githooks:install` is run; it only re-runs rows

@@ -137,6 +137,11 @@ class UiCommandE2ETest {
         // lag window E2ETest.kt's own sendWithRetry already retries around
         // for get_field/get_key. Zero (the default) means no retry.
         val retryBudgetMs: Long = 0,
+        // 1-based position in a caller-defined sequence -- see
+        // e2edata.UICase.Order and [runOrderedWalk]. Zero (the default)
+        // means this case belongs to an unordered sweep, which is what
+        // every caller but pkg/e2erun/android_pair.go runs.
+        val order: Int = 0,
     )
 
     private companion object {
@@ -163,7 +168,14 @@ class UiCommandE2ETest {
         // (and OpenChannel/RedeemExecInvite's own up-to-60s internal
         // timeouts, see kvmobile's callTimeout) without hanging the whole
         // suite forever if something is genuinely stuck.
-        const val RUN_TIMEOUT_MS = 65_000L
+        //
+        // Raised from 65s once two commands legitimately outgrew it:
+        // RequestRelayAccess, which waits on a real relay reservation
+        // (measured ~30-40s on an emulator through the deployed VPS
+        // relay), and pkg/e2erun/android_pair.go's hold sleep, which has
+        // to keep this device's daemon alive for the whole of another
+        // device's own start-up-and-reserve before it can dial in.
+        const val RUN_TIMEOUT_MS = 180_000L
         const val POLL_INTERVAL_MS = 250L
     }
 
@@ -214,6 +226,24 @@ class UiCommandE2ETest {
         Assert.assertTrue("catalog is unexpectedly empty", allCommands.isNotEmpty())
         val commandsToWalk = if (onlyListedCases) allCommands.filter { cases.containsKey(it.label) } else allCommands
 
+        // A caller that stamped every one of its cases with an `order`
+        // (pkg/e2erun/android_pair.go, via e2edata.UICase.Order) is asking
+        // for a *sequence*, not a sweep: run them in exactly that order,
+        // re-entering the right category for each one, instead of the
+        // catalog's own category-by-category walk. Without this the walk
+        // order silently won, and a step's own settle-sleep -- being in the
+        // "Test" category, walked after "Cluster" -- ran after the command
+        // it was supposed to precede, so a scenario built on "resume, wait,
+        // then act" never actually waited. The sweep path (no order stamped,
+        // every other caller) is untouched.
+        val orderedWalk = commandsToWalk
+            .filter { (cases[it.label]?.order ?: 0) > 0 }
+            .sortedBy { cases[it.label]!!.order }
+        if (orderedWalk.size == commandsToWalk.size && orderedWalk.isNotEmpty()) {
+            runOrderedWalk(orderedWalk, cases, context)
+            return
+        }
+
         val failures = mutableListOf<String>()
         val results = JSONArray()
 
@@ -223,55 +253,9 @@ class UiCommandE2ETest {
             clickListItem(category)
             val commandsInCategory = commandsToWalk.filter { it.category == category }
             for (spec in commandsInCategory) {
-                val label = spec.label
-                val case = cases[label] ?: Case()
-                val entry = JSONObject().put("command", label)
-                try {
-                    clickListItem(spec.name)
-                    val detail = currentActivity()
-                    verifyDetailScreen(detail, spec)
-                    if (case.execute) {
-                        Assert.assertEquals(
-                            "$label: Case.inputs size must match spec.params size",
-                            spec.params.size,
-                            case.inputs.size,
-                        )
-                        val output = runCommandWithRetry(detail, case.inputs, case.retryBudgetMs)
-                        case.expect(output)
-                        // Surface the command's real return value back to
-                        // the Go harness -- CommandDetailActivity.onRun's
-                        // success format is "$label(args) ->\n$result", so
-                        // strip that fixed prefix to recover $result alone
-                        // (e.g. GetOwnAddr's address, CreateJoinRequest's
-                        // token, ListClusterMembers' JSON) -- needed by
-                        // pkg/e2erun/android_pair.go's cross-device
-                        // orchestration, unused by the flat per-label sweep.
-                        val prefix = "$label(${case.inputs.joinToString(", ")}) ->\n"
-                        if (output.startsWith(prefix)) {
-                            entry.put("output", output.removePrefix(prefix))
-                        }
-                    }
-                    entry.put("pass", true)
-                } catch (e: Throwable) {
-                    entry.put("pass", false)
-                    entry.put("error", e.message ?: e.toString())
-                    failures += "$label: ${e.message}"
-                } finally {
-                    pressBack()
-                }
+                val entry = runOneCase(spec, cases[spec.label] ?: Case(), failures)
                 results.put(entry)
-                // Written after every entry, not just once at the very end
-                // (an earlier version of this file did that): lets
-                // pkg/e2erun/android_pair.go's runUIStepsBackgroundPeek pull
-                // and observe an early op's own result (e.g. CreateJoinRequest's
-                // token) via `adb pull` while this SAME instrumentation
-                // invocation is still running a later op (e.g. a trailing
-                // "Test: SleepMillis" hold keeping this process -- and so its
-                // daemon's listener -- alive for a concurrently-dialing peer
-                // on a different device). The last entry's own write already
-                // covers the final steady-state content, so there's no
-                // separate write after the loop.
-                File(context.getExternalFilesDir(null), "ui_e2e_results.json").writeText(results.toString())
+                writeResults(context, results)
             }
             pressBack()
         }
@@ -279,6 +263,95 @@ class UiCommandE2ETest {
         if (failures.isNotEmpty()) {
             Assert.fail("${failures.size} of ${results.length()} command(s) failed:\n" + failures.joinToString("\n"))
         }
+    }
+
+    /**
+     * Runs [ordered] one at a time, in exactly the order the caller asked
+     * for (see [Case.order]), re-entering each command's own category for
+     * every step rather than walking a category's commands together. That
+     * costs one extra back-navigation per step and is the whole point: a
+     * sequence like "resume this daemon, wait 20s, then read its address"
+     * spans two categories, and grouping by category reorders it into
+     * nonsense.
+     */
+    private fun runOrderedWalk(ordered: List<CommandSpec>, cases: Map<String, Case>, context: android.content.Context) {
+        val failures = mutableListOf<String>()
+        val results = JSONArray()
+
+        launchMainActivity()
+        for (spec in ordered) {
+            clickListItem(spec.category)
+            val entry = runOneCase(spec, cases[spec.label] ?: Case(), failures)
+            results.put(entry)
+            writeResults(context, results)
+            // Back out of the category list too, so the next step starts
+            // from the same main screen this one did.
+            pressBack()
+        }
+
+        if (failures.isNotEmpty()) {
+            Assert.fail("${failures.size} of ${results.length()} command(s) failed:\n" + failures.joinToString("\n"))
+        }
+    }
+
+    /**
+     * Navigates into [spec] from its category list, optionally runs it, and
+     * returns the result entry -- shared by the ordered walk and the flat
+     * per-category sweep so both report identically. Leaves the UI back on
+     * the category list (the `finally` press-back), whichever way it went.
+     */
+    private fun runOneCase(spec: CommandSpec, case: Case, failures: MutableList<String>): JSONObject {
+        val label = spec.label
+        val entry = JSONObject().put("command", label)
+        try {
+            clickListItem(spec.name)
+            val detail = currentActivity()
+            verifyDetailScreen(detail, spec)
+            if (case.execute) {
+                Assert.assertEquals(
+                    "$label: Case.inputs size must match spec.params size",
+                    spec.params.size,
+                    case.inputs.size,
+                )
+                val output = runCommandWithRetry(detail, case.inputs, case.retryBudgetMs)
+                case.expect(output)
+                // Surface the command's real return value back to the Go
+                // harness -- CommandDetailActivity.onRun's success format is
+                // "$label(args) ->\n$result", so strip that fixed prefix to
+                // recover $result alone (e.g. GetOwnAddr's address,
+                // CreateJoinRequest's token, ListClusterMembers' JSON) --
+                // needed by pkg/e2erun/android_pair.go's cross-device
+                // orchestration, unused by the flat per-label sweep.
+                val prefix = "$label(${case.inputs.joinToString(", ")}) ->\n"
+                if (output.startsWith(prefix)) {
+                    entry.put("output", output.removePrefix(prefix))
+                }
+            }
+            entry.put("pass", true)
+        } catch (e: Throwable) {
+            entry.put("pass", false)
+            entry.put("error", e.message ?: e.toString())
+            failures += "$label: ${e.message}"
+        } finally {
+            pressBack()
+        }
+        return entry
+    }
+
+    /**
+     * Writes the results file after every entry, not just once at the very
+     * end (an earlier version of this file did that): lets
+     * pkg/e2erun/android_pair.go's runUIStepsBackgroundPeek pull and observe
+     * an early op's own result (e.g. CreateJoinRequest's token) via `adb
+     * pull` while this SAME instrumentation invocation is still running a
+     * later op (e.g. a trailing "Test: SleepMillis" hold keeping this
+     * process -- and so its daemon's listener -- alive for a
+     * concurrently-dialing peer on a different device). The last entry's own
+     * write already covers the final steady-state content, so there is no
+     * separate write after the loop.
+     */
+    private fun writeResults(context: android.content.Context, results: JSONArray) {
+        File(context.getExternalFilesDir(null), "ui_e2e_results.json").writeText(results.toString())
     }
 
     // ActivityScenario (not a raw Intent + FLAG_ACTIVITY_NEW_TASK) is what
@@ -427,6 +500,7 @@ class UiCommandE2ETest {
                 execute = obj.optBoolean("execute", false),
                 expect = expectFor(obj.optString("expect", "succeeded")),
                 retryBudgetMs = obj.optLong("retry_budget_ms", 0L),
+                order = obj.optInt("order", 0),
             )
         }
         return cases

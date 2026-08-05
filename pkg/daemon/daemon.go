@@ -38,6 +38,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-libp2p/p2p/host/autorelay"
 	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
+	"github.com/libp2p/go-libp2p/p2p/net/swarm"
 	v2relay "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	"github.com/multiformats/go-multiaddr"
 	manet "github.com/multiformats/go-multiaddr/net"
@@ -1657,9 +1658,9 @@ func (n *Node) advertisedAddrs() []string {
 // completed -- to appear in n.host.Addrs(). A no-op that returns
 // immediately when there are no candidates at all, since there's then
 // nothing to wait for.
-func (n *Node) awaitRelayAddr(timeout time.Duration) {
+func (n *Node) awaitRelayAddr(timeout time.Duration) bool {
 	if len(relayCandidates(n.cfg, n.store)) == 0 {
-		return
+		return true
 	}
 	deadline := time.After(timeout)
 	ticker := time.NewTicker(200 * time.Millisecond)
@@ -1667,12 +1668,12 @@ func (n *Node) awaitRelayAddr(timeout time.Duration) {
 	for {
 		for _, a := range n.host.Addrs() {
 			if strings.Contains(a.String(), "/p2p-circuit") {
-				return
+				return true
 			}
 		}
 		select {
 		case <-deadline:
-			return
+			return false
 		case <-ticker.C:
 		}
 	}
@@ -1775,6 +1776,24 @@ func remoteCaller(s network.Stream) (callerIdentity, error) {
 // needs to redial it, and dialForward already re-adds its address on
 // every forwarded call regardless, so removing it here costs nothing
 // except a redial's address lookup that would otherwise be a cache hit.
+//
+// So must a relay this node reserves through, and for a much less
+// forgiving reason: nothing re-adds its address. AutoRelay refreshes a
+// reservation by peer id alone (relayFinder.refreshRelayReservation
+// passes a bare peer.AddrInfo{ID}), so it reads the addresses straight
+// out of the peerstore -- wipe them and the refresh cannot dial, the
+// relay drops out of the finder's set, this node's /p2p-circuit address
+// disappears from host.Addrs(), and the relay itself drops the
+// reservation as soon as the connection is gone. The device is then
+// unreachable while still believing it asked for and received relay
+// standing. That is exactly what the two-device pair scenario kept
+// hitting: a device reported a real circuit address one moment and a bare
+// loopback one seconds later, and any peer dialing the address it had
+// handed out got NO_RESERVATION from the relay. Relay candidates are a
+// small configured set (Config.RelayPeers plus confirmed
+// KindBootstrapNode records), not the unbounded stream of strangers this
+// function exists to forget, so exempting them costs nothing this was
+// built to save.
 func (n *Node) forgetTransientPeer(id peer.ID) {
 	if n.host.Network().Connectedness(id) == network.Connected {
 		// Another connection to this same peer is still open (or one
@@ -1789,6 +1808,9 @@ func (n *Node) forgetTransientPeer(id peer.ID) {
 				}
 			}
 		}
+	}
+	if n.isRelayCandidate(id) {
+		return
 	}
 	n.host.Peerstore().RemovePeer(id)
 }
@@ -3028,7 +3050,7 @@ func (n *Node) join(ctx context.Context, leaderAddr string, suffrage raft.Server
 	// (swarm.waitForDirectConn), so the join dies on ctx's deadline with no
 	// hint that a relay was the problem.
 	relayCtx := network.WithAllowLimitedConn(ctx, "join")
-	if err := n.host.Connect(relayCtx, *info); err != nil {
+	if err := connectWithRetry(relayCtx, n.host, *info); err != nil {
 		return "", fmt.Errorf("connect to leader %s: %w", info.ID, err)
 	}
 
@@ -3263,7 +3285,7 @@ func (n *Node) dialAndRedeemExecInvite(ctx context.Context, sourceAddr string, t
 	// a /p2p-circuit address -- see join's comment on why a relayed dial
 	// needs to be allowed explicitly on both the connect and the stream.
 	relayCtx := network.WithAllowLimitedConn(ctx, "exec_invite_redeem")
-	if err := n.host.Connect(relayCtx, *info); err != nil {
+	if err := connectWithRetry(relayCtx, n.host, *info); err != nil {
 		return "", fmt.Errorf("connect to %s: %w", info.ID, err)
 	}
 
@@ -3338,17 +3360,76 @@ const connectRetryAttempts = 3
 
 const connectRetryDelay = 500 * time.Millisecond
 
-// connectWithRetry calls h.Connect(ctx, info), retrying up to
+// clearDialBackoff drops go-libp2p's own per-peer dial backoff for pid, so
+// the very next dial actually reaches the network instead of being refused
+// locally with "dial backoff".
+//
+// That backoff exists to stop a host hammering a peer that keeps failing,
+// and it is right for the *background* dialing libp2p does on its own --
+// but it is charged per peer, not per caller, so a background failure
+// silences an unrelated, explicitly requested dial to the same peer for
+// the next 5+ seconds. This project hits that constantly on a fresh
+// device: AutoRelay starts dialing the baked-in relay the instant the
+// daemon comes up, before any standing exists for it to succeed, and the
+// operator's own RequestRelayAccess call moments later -- the very call
+// that would grant that standing -- fails with "dial backoff" against a
+// peer this process never consciously dialed itself. Caught live on both
+// emulators running the two-device pair scenario, and the reason
+// pkg/e2erun/android_pair.go grew per-step retries whose only real effect
+// was to get a fresh process with an empty backoff table.
+//
+// Every caller here is an explicit, operator- or protocol-initiated
+// request with a target it was handed deliberately (a relay to escalate
+// against, a leader to join, a device that just showed its ticket), so
+// none of them should inherit a background subsystem's opinion about that
+// peer. The type assertion keeps this soft: a host whose network isn't a
+// *swarm.Swarm simply skips it.
+func clearDialBackoff(h lp2phost.Host, info peer.AddrInfo) {
+	type backoffClearer interface{ Backoff() *swarm.DialBackoff }
+	sw, ok := h.Network().(backoffClearer)
+	if !ok {
+		return
+	}
+	sw.Backoff().Clear(info.ID)
+	// A /p2p-circuit address is dialed by first dialing the relay named in
+	// its own left-hand side, and that hop carries its own backoff entry.
+	// Clearing only the destination therefore fixes nothing for the case
+	// this exists for: caught live on device A of the two-device pair
+	// scenario, whose recruit dial to a relayed peer failed with "error
+	// opening hop stream to relay: ... dial backoff" -- backoff against the
+	// relay, armed by AutoRelay moments earlier, while the destination's
+	// own entry was clean.
+	for _, addr := range info.Addrs {
+		multiaddr.ForEach(addr, func(c multiaddr.Component) bool {
+			if c.Protocol().Code != multiaddr.P_P2P {
+				return true
+			}
+			if hop, err := peer.IDFromBytes(c.RawValue()); err == nil && hop != info.ID {
+				sw.Backoff().Clear(hop)
+			}
+			return true
+		})
+	}
+}
+
+// connectWithRetry calls h.Connect(ctx, info), clearing any stale dial
+// backoff first (see clearDialBackoff) and retrying up to
 // connectRetryAttempts times on failure -- see connectRetryAttempts' own
-// doc comment. Used by dialAndSubmitPublicAccess, whose caller (a fresh
-// device with no standing anywhere yet) has nothing else to fall back on
-// if this one dial has a bad moment: caught live, running this project's
-// own e2e pair scenario, a plain unretried Connect intermittently failed
-// with a bare TCP dial timeout to a real, otherwise-reachable remote
-// target.
+// doc comment. Used by every explicitly-requested dial in this file
+// (dialAndSubmitPublicAccess, join, dialAndPushRecruit,
+// dialAndRedeemExecInvite), whose callers -- a fresh device with no
+// standing anywhere yet, a device redeeming a ticket someone physically
+// handed it -- have nothing else to fall back on if this one dial has a
+// bad moment: caught live, running this project's own e2e pair scenario, a
+// plain unretried Connect intermittently failed with a bare TCP dial
+// timeout to a real, otherwise-reachable remote target.
 func connectWithRetry(ctx context.Context, h lp2phost.Host, info peer.AddrInfo) error {
 	var lastErr error
 	for attempt := 1; attempt <= connectRetryAttempts; attempt++ {
+		// Cleared on every attempt, not just the first: a failed attempt of
+		// our own re-arms it, and the delay below is deliberately shorter
+		// than the backoff would be.
+		clearDialBackoff(h, info)
 		if err := h.Connect(ctx, info); err == nil {
 			return nil
 		} else {
@@ -3466,7 +3547,104 @@ func (n *Node) dialAndSubmitPublicAccess(ctx context.Context, targetAddr, note s
 	if resp.EventType == shmevent.EventError {
 		return "", fmt.Errorf("public_access rejected by %s: %s", info.ID, resp.Value)
 	}
+
+	// The grant is committed, but standing alone doesn't make this node
+	// reachable -- AutoRelay still has to notice and land a reservation,
+	// which it does on its own schedule (relayReserveBackoff), tens of
+	// seconds later on a slow device. A caller asking a relay for standing
+	// is asking to become reachable *through that relay*, and the only
+	// thing it can usefully do next -- hand out its own address -- is wrong
+	// until that reservation exists. So wait for it here, rather than
+	// returning success and leaving every caller to invent its own
+	// poll-and-hope loop: pkg/e2erun/android_pair.go had exactly that, with
+	// per-step retries and fixed multi-second settles that were still
+	// sometimes too short, and a phone's UI would need the same.
+	//
+	// Only when the target actually is one of this node's own relay
+	// candidates: EventPublicAccess can name any cluster at all, and
+	// waiting for a relay address after a grant from a cluster this node
+	// doesn't relay through would be waiting for something that call was
+	// never going to cause. awaitRelayAddr itself returns immediately if a
+	// circuit address is already there, or if this node has no relay
+	// candidates configured.
+	//
+	// A wait that runs out is reported as an error, not swallowed. The
+	// grant did commit, but the caller asked to become reachable and
+	// isn't: returning success there means the next thing it does --
+	// handing out an address that is still only loopback, or letting a
+	// peer dial it -- fails somewhere far less legible. Caught exactly
+	// that way live: the two-device pair scenario's recruit dial came back
+	// "NO_RESERVATION" from the relay, with nothing to say the recruited
+	// device's own earlier "relay access granted" had never actually
+	// produced a reservation.
+	if n.isRelayCandidate(info.ID) && hasPublicAddr(info.Addrs) {
+		if !n.awaitRelayAddr(relayAccessAwaitTimeout) && !n.hasConfirmedReachableAddr() {
+			return "", fmt.Errorf("public_access: %s granted relay standing, but no relay reservation appeared within %s -- this node is still not reachable through it", info.ID, relayAccessAwaitTimeout)
+		}
+	}
 	return instanceID, nil
+}
+
+// hasPublicAddr reports whether any of addrs is internet-routable. It
+// gates the reservation wait above entirely: go-libp2p only advertises
+// circuit addresses built on a relay's *public* addresses, so a relay
+// reachable only on a LAN or loopback address can never produce one
+// however well the reservation itself went -- waiting for one would be
+// waiting forever, and failing on its absence would be reporting a
+// problem that isn't. That is the ordinary case on a single machine,
+// including this project's own hermetic relay tests, where the
+// reservation demonstrably works (a peer dials the circuit address by
+// hand) while no address is ever published.
+func hasPublicAddr(addrs []multiaddr.Multiaddr) bool {
+	for _, a := range addrs {
+		if manet.IsPublicAddr(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasConfirmedReachableAddr reports whether go-libp2p has verified (via
+// AutoNAT) that some address of this node is reachable from the outside.
+// When it has, this node advertises those addresses and deliberately does
+// *not* advertise relay ones (go-libp2p's address manager drops relay
+// addresses once any address is confirmed reachable) -- so "no circuit
+// address appeared" means the relay isn't needed here, not that anything
+// failed. That is the ordinary case for a node on a machine that really is
+// directly dialable, including this project's own same-machine tests (see
+// TestJoinThroughRelay's note on the same behavior); a phone behind
+// carrier NAT never confirms one, which is why it must treat the same
+// silence as a failure.
+func (n *Node) hasConfirmedReachableAddr() bool {
+	type confirmedAddrs interface {
+		ConfirmedAddrs() (reachable, unreachable, unknown []multiaddr.Multiaddr)
+	}
+	h, ok := n.host.(confirmedAddrs)
+	if !ok {
+		return false
+	}
+	reachable, _, _ := h.ConfirmedAddrs()
+	return len(reachable) > 0
+}
+
+// relayAccessAwaitTimeout bounds the reservation wait dialAndSubmitPublicAccess
+// does after a successful grant. Generous because the wait is the useful
+// part of the call on a fresh device (see that call site's comment) and
+// because a real phone through a real relay was measured taking ~30-40s
+// from grant to reservation, several times longer than the same sequence
+// on a desktop; short enough that a caller whose reservation is never
+// going to land still gets its answer back.
+const relayAccessAwaitTimeout = 90 * time.Second
+
+// isRelayCandidate reports whether pid is one of the relays this node
+// would actually reserve a circuit through (see relayCandidates).
+func (n *Node) isRelayCandidate(pid peer.ID) bool {
+	for _, candidate := range relayCandidates(n.cfg, n.store) {
+		if candidate.ID == pid {
+			return true
+		}
+	}
+	return false
 }
 
 // recruitJoinTimeout bounds handleRecruitStream's in-process call to
@@ -3516,6 +3694,15 @@ func (n *Node) dialAndPushRecruit(ctx context.Context, ticket string, suffrage b
 	if len(correlationToken) == 0 {
 		return "", fmt.Errorf("recruit: ticket %q missing a correlation token", ticket)
 	}
+	// Checked before anything else is spent on this ticket (a join invite
+	// gets minted just below, and a minted invite is a real raft record):
+	// a ticket whose address half is empty is a caller-side assembly bug --
+	// "<addr>#<token>" built from an address that was never obtained -- and
+	// without this it surfaced as a confusing failure much further down,
+	// inside address resolution, naming neither the ticket nor the reason.
+	if deviceAddr == "" {
+		return "", fmt.Errorf("recruit: ticket %q has no device address -- expected \"<multiaddr>#<tokenHex>\"", ticket)
+	}
 
 	inviteToken, err := n.mintJoinInvite(ctx, suffrage)
 	if err != nil {
@@ -3524,14 +3711,23 @@ func (n *Node) dialAndPushRecruit(ctx context.Context, ticket string, suffrage b
 
 	addr := deviceAddr
 	if !registry.IsMultiaddr(addr) {
-		reg, err := registry.Open()
-		if err != nil {
-			return "", err
+		// A bare peer id is only resolvable against this machine's own
+		// local registry, which is a desktop notion: on Android there is
+		// no registry (and no writable home directory to put one in --
+		// registry.Open there fails with a bare "mkdir /sdcard/...:
+		// permission denied", which tells a caller nothing about the
+		// ticket it actually passed). Say what was wrong with the ticket
+		// instead, and keep the resolution path for the desktop callers
+		// that genuinely have a registry.
+		reg, regErr := registry.Open()
+		if regErr != nil {
+			return "", fmt.Errorf("recruit: ticket address %q is not a multiaddr, and this device has no local registry to resolve a bare peer id against: %w", deviceAddr, regErr)
 		}
-		addr, err = reg.ResolveAddress(addr)
-		if err != nil {
-			return "", err
+		resolved, resolveErr := reg.ResolveAddress(addr)
+		if resolveErr != nil {
+			return "", fmt.Errorf("recruit: resolve ticket address %q: %w", deviceAddr, resolveErr)
 		}
+		addr = resolved
 	}
 
 	maddr, err := multiaddr.NewMultiaddr(addr)
@@ -3548,7 +3744,7 @@ func (n *Node) dialAndPushRecruit(ctx context.Context, ticket string, suffrage b
 	// over a limited connection. See join's identical comment for why both
 	// calls have to allow it.
 	relayCtx := network.WithAllowLimitedConn(ctx, "recruit")
-	if err := n.host.Connect(relayCtx, *info); err != nil {
+	if err := connectWithRetry(relayCtx, n.host, *info); err != nil {
 		return "", fmt.Errorf("connect to %s: %w", info.ID, err)
 	}
 

@@ -19,54 +19,16 @@ import (
 // loopbackTCPAddrRe matches GetOwnAddr's own last-resort fallback shape,
 // "/ip4/127.0.0.1/tcp/<port>/p2p/<peerid>" -- what either of this
 // scenario's throwaway devices falls back to advertising if its relay
-// reservation through the VPS (see the RequestRelayAccess midOps ahead of
-// every GetOwnAddr call) hasn't completed yet, since an emulator has no
-// real public address of its own either.
+// reservation through the VPS (see the RequestRelayAccess steps ahead of
+// every GetOwnAddr call) hasn't completed yet. Both GetOwnAddr steps'
+// validate callbacks treat a match as a retriable failure, not something
+// to work around: this project's own adb-forward-through-10.0.2.2 bridge
+// (what an earlier version of this scenario used instead) fundamentally
+// cannot work in this project's own e2e environment -- confirmed directly,
+// 100% ping loss to the emulator's own QEMU gateway from inside it -- so
+// silently accepting a loopback address here would only defer this exact
+// failure to a much less legible spot later (Join's own dial).
 var loopbackTCPAddrRe = regexp.MustCompile(`^/ip4/127\.0\.0\.1/tcp/(\d+)/p2p/(.+)$`)
-
-// forwardLoopbackAddr rewrites addr (serial's own GetOwnAddr result) into
-// one a *different* emulator can actually dial. Two separate Android
-// emulator instances are network-isolated from each other by default --
-// serial's own 127.0.0.1 means nothing to any other emulator -- but every
-// emulator can reach the host machine via the fixed alias 10.0.2.2, so
-// `adb forward tcp:0 tcp:<devicePort>` (letting adb allocate a free host
-// port) plus rewriting the address to 10.0.2.2:<that host port> bridges
-// the two emulators' otherwise-separate networks through the host
-// running this very process. Returns the rewritten address and a cleanup
-// func that removes the forward once this scenario is done with it.
-func forwardLoopbackAddr(serial, addr string) (string, func(), error) {
-	m := loopbackTCPAddrRe.FindStringSubmatch(addr)
-	if m == nil {
-		return "", nil, fmt.Errorf("address %q is not a /ip4/127.0.0.1/tcp/<port>/p2p/<peerid> loopback address this scenario knows how to bridge between emulators", addr)
-	}
-	devicePort, peerID := m[1], m[2]
-	out, err := exec.Command("adb", "-s", serial, "forward", "tcp:0", "tcp:"+devicePort).Output()
-	if err != nil {
-		return "", nil, fmt.Errorf("adb -s %s forward tcp:0 tcp:%s: %w", serial, devicePort, err)
-	}
-	hostPort := strings.TrimSpace(string(out))
-	cleanup := func() {
-		_ = exec.Command("adb", "-s", serial, "forward", "--remove", "tcp:"+hostPort).Run()
-	}
-	return fmt.Sprintf("/ip4/10.0.2.2/tcp/%s/p2p/%s", hostPort, peerID), cleanup, nil
-}
-
-// resolvePairAddr turns serial's own GetOwnAddr result into an address the
-// *other* device in this scenario can actually dial. Preferred path: addr
-// is already a real, internet-routable /p2p-circuit address through the
-// VPS relay (this scenario's own RequestRelayAccess midOps, ahead of every
-// GetOwnAddr call, is what makes that reservation possible at all -- see
-// GetOwnAddr's "public first, then a relay reservation, then anything
-// else, loopback last" doc comment) -- returned unchanged, no bridging
-// needed, cleanup nil. Fallback: addr is still the bare loopback shape
-// (the reservation hadn't completed by the time GetOwnAddr ran), bridged
-// via forwardLoopbackAddr the same way this scenario always used to.
-func resolvePairAddr(serial, addr string) (resolved string, cleanup func(), err error) {
-	if !loopbackTCPAddrRe.MatchString(addr) {
-		return addr, nil, nil
-	}
-	return forwardLoopbackAddr(serial, addr)
-}
 
 // androidPairApp mirrors android.go's androidAppID constant -- kept as a
 // separate name here only so this file reads self-contained about which
@@ -140,15 +102,24 @@ type uiOp struct {
 type pairStep struct {
 	reportAs string
 	resumeOp *uiOp
-	// settleMillis, when non-zero, inserts a "Test: SleepMillis" op right
-	// after resumeOp and before action, within the same invocation -- see
-	// relaySettleMillis's own doc comment for why GetOwnAddr specifically
-	// needs this: a freshly restarted device isn't just waiting on
-	// AutoRelay, it may also (for a device that's already a real solo raft
-	// leader with persisted state, unlike a still-"pending" one) be mid
-	// raft re-election, and GetOwnAddr's own relay-address preference only
-	// reflects whatever's actually settled by the moment it runs.
+	// settleMillis, when non-zero, inserts a "Test: SleepMillis" op after
+	// resumeOp/ensureRelay and before action, within the same invocation.
+	// No step needs it any more -- the waits it used to approximate are
+	// now waited on properly (see ensureRelay) -- but it stays as the one
+	// way to express "this device needs a moment for something this
+	// scenario cannot observe directly".
 	settleMillis string
+	// ensureRelay inserts a "Cluster: RequestRelayAccess" op right after
+	// resumeOp and before action, in the same invocation. That call blocks
+	// until this device actually holds a relay reservation (see
+	// pkg/daemon's dialAndSubmitPublicAccess), so it is how a step says
+	// "this device has to be genuinely reachable through the relay before
+	// my action runs" -- for GetOwnAddr, whose whole output is that
+	// address, and for any device about to be dialed. It replaces the
+	// fixed settle-sleeps this scenario used to guess with: the grant is
+	// idempotent and cheap when standing already exists, and unlike a
+	// sleep it cannot be too short.
+	ensureRelay bool
 	// action is built lazily -- called only once this step actually runs,
 	// since several steps' own inputs (a ticket string) are only known
 	// once an *earlier* step's validate callback has captured it. A
@@ -166,6 +137,16 @@ type pairStep struct {
 	// entry in this slice gets) can never satisfy that for a dial
 	// specifically.
 	dialHold *pairHold
+	// retries bounds how many additional times runStep re-runs this step,
+	// fresh resume and all, after a failure. Kept small and deliberate:
+	// the failures this scenario used to paper over with retries (a
+	// device's explicit relay dial refused by libp2p's own dial backoff,
+	// armed by AutoRelay moments earlier in the same process; a settle
+	// that was too short for a reservation that had not landed yet) are
+	// fixed at their source now -- see pkg/daemon's clearDialBackoff and
+	// dialAndSubmitPublicAccess -- so a retry here is a hedge against a
+	// genuinely flaky emulator, not the mechanism the scenario relies on.
+	retries int
 }
 
 // pairHold names the device (and its resume op) a dial step's own action
@@ -305,12 +286,6 @@ func runAndroidPairScenarioOn(repoRoot, bootstrapMultiaddr, serialA, serialB str
 		inviteA, addrA, ticketA string
 		peerIDB                 string
 	)
-	var cleanupForwards []func()
-	defer func() {
-		for _, cleanup := range cleanupForwards {
-			cleanup()
-		}
-	}()
 
 	stepsBeforeRecruit := []pairStep{
 		{
@@ -318,24 +293,25 @@ func runAndroidPairScenarioOn(repoRoot, bootstrapMultiaddr, serialA, serialB str
 			action: func() uiOp { return *resumeA },
 		},
 		{
-			// Granted this early -- before A ever touches the relay for
-			// any other reason -- because every build now bakes
-			// relayMultiaddr in (see buildAndroidPairAAR), so A's own
-			// daemon automatically attempts an AutoRelay dial to the VPS
-			// on *every* resume, including this device's very next step
-			// (RecruitPeer (sender), which dials *through* the same relay
-			// peer as its hop). Without standing in place before that
-			// automatic dial, it fails and puts the relay peer into
-			// libp2p's own dial-backoff state within this process --
-			// caught live: RecruitPeer's own explicit dial-through-relay
-			// then immediately failed with "dial backoff" against a peer
-			// it had never consciously dialed itself, moments after this
-			// device's fresh resume silently tried and failed the same
-			// dial on AutoRelay's behalf.
-			reportAs: "Cluster: RequestRelayAccess (A, prep)", serial: serialA, resumeOp: resumeA,
-			action: func() uiOp {
-				return uiOp{label: "Cluster: RequestRelayAccess", inputs: []string{"e2e pair scenario"}}
-			},
+			// Granted before A touches the relay for anything else. Every
+			// build bakes relayMultiaddr in (see buildAndroidPairAAR), so
+			// A's daemon starts dialing the relay on its own the moment it
+			// resumes -- and until standing exists that dial cannot
+			// succeed. Doing this first means A holds a reservation for the
+			// rest of the scenario, and (see pkg/daemon's clearDialBackoff)
+			// its own later dials are no longer hostage to whatever
+			// AutoRelay's background attempts did to libp2p's per-peer dial
+			// backoff.
+			//
+			// retries: 1 because this specific step is where a WAN hiccup
+			// actually costs something. Observed live: a bare "dial tcp4
+			// ... i/o timeout" to the relay failed this step, and every
+			// later step needing A to be reachable failed with it -- A
+			// ended up paying for its first grant in the middle of the
+			// recruit invocation instead, while the other device's hold
+			// was already running down.
+			reportAs: "Cluster: RequestRelayAccess (A, prep)", serial: serialA, resumeOp: resumeA, retries: 1,
+			action: func() uiOp { return relayAccessOp },
 		},
 		{
 			reportAs: "Cluster: StartPendingWithKey (B, prep)", serial: serialB,
@@ -343,32 +319,27 @@ func runAndroidPairScenarioOn(repoRoot, bootstrapMultiaddr, serialA, serialB str
 			validate: func(output string) error { peerIDB = output; return nil },
 		},
 		{
-			// Its own step, one full daemon restart before GetOwnAddr below
-			// -- not bundled into the same invocation -- so that when
-			// GetOwnAddr's own fresh daemon starts up, go-libp2p's AutoRelay
-			// makes its *first* reservation attempt with standing already
-			// in place on the VPS, rather than racing it: standing granted
-			// mid-invocation (the same process AutoRelay already made its
-			// one startup attempt in) was observed live to not get picked
-			// up by a later retry within that same process, regardless of
-			// how long a "Test: SleepMillis" in between waited.
-			reportAs: "Cluster: RequestRelayAccess (B, prep)", serial: serialB, resumeOp: resumeB,
-			action: func() uiOp {
-				return uiOp{label: "Cluster: RequestRelayAccess", inputs: []string{"e2e pair scenario"}}
-			},
+			// retries: 1 -- see the identical step for A above.
+			reportAs: "Cluster: RequestRelayAccess (B, prep)", serial: serialB, resumeOp: resumeB, retries: 1,
+			action: func() uiOp { return relayAccessOp },
 		},
 		{
-			reportAs: "Cluster: GetOwnAddr (B, prep)", serial: serialB, resumeOp: resumeB, settleMillis: relaySettleMillis,
+			// ensureRelay, not a settle-sleep: RequestRelayAccess returns
+			// only once this device actually holds a reservation, so the
+			// address read straight after it is the real relayed one. A
+			// loopback answer here is still treated as a hard failure --
+			// two emulators have no way to reach each other directly (this
+			// project's own environment: 100% packet loss to the emulator's
+			// own QEMU gateway), so accepting one would only defer the same
+			// failure to Join's dial, where it reads as a connectivity bug
+			// instead of a missing reservation.
+			reportAs: "Cluster: GetOwnAddr (B, prep)", serial: serialB, resumeOp: resumeB, ensureRelay: true,
 			action: func() uiOp { return uiOp{label: "Cluster: GetOwnAddr"} },
 			validate: func(output string) error {
-				resolved, cleanup, err := resolvePairAddr(serialB, output)
-				if err != nil {
-					return err
+				if loopbackTCPAddrRe.MatchString(output) {
+					return fmt.Errorf("GetOwnAddr returned a bare loopback address (%q) even after RequestRelayAccess reported a reservation", output)
 				}
-				if cleanup != nil {
-					cleanupForwards = append(cleanupForwards, cleanup)
-				}
-				addrB = resolved
+				addrB = output
 				return nil
 			},
 		},
@@ -386,28 +357,30 @@ func runAndroidPairScenarioOn(repoRoot, bootstrapMultiaddr, serialA, serialB str
 			validate: func(output string) error { inviteA = output; return nil },
 		},
 		{
-			// A's own RequestRelayAccess already ran, before RecruitPeer
-			// (sender) up in stepsBeforeRecruit -- see that step's own doc
-			// comment for why it has to run that early. Nothing further to
-			// grant here; this step is just GetOwnAddr, one full restart
-			// past that grant.
-			reportAs: "Cluster: GetOwnAddr (A, prep)", serial: serialA, resumeOp: resumeA, settleMillis: relaySettleMillis,
+			// Same shape as B's own GetOwnAddr step above: this is a fresh
+			// process, so it needs its own reservation before it can report
+			// a relayed address, and RequestRelayAccess is what waits for
+			// one.
+			reportAs: "Cluster: GetOwnAddr (A, prep)", serial: serialA, resumeOp: resumeA, ensureRelay: true,
 			action: func() uiOp { return uiOp{label: "Cluster: GetOwnAddr"} },
 			validate: func(output string) error {
-				resolved, cleanup, err := resolvePairAddr(serialA, output)
-				if err != nil {
-					return err
+				if loopbackTCPAddrRe.MatchString(output) {
+					return fmt.Errorf("GetOwnAddr returned a bare loopback address (%q) even after RequestRelayAccess reported a reservation", output)
 				}
-				if cleanup != nil {
-					cleanupForwards = append(cleanupForwards, cleanup)
-				}
-				addrA = resolved
+				addrA = output
 				ticketA = addrA + "#" + inviteA
 				return nil
 			},
 		},
 		{
-			reportAs: "Cluster: Join (sender)", serial: serialB, resumeOp: resumeB,
+			// ensureRelay on the *sender* too, not just the receiver: a
+			// join sends this device's own advertised address for the
+			// leader to store in raft permanently (see pkg/daemon's join),
+			// so B joining before its own reservation exists would enrol a
+			// loopback address nobody can ever reach. join() would
+			// otherwise discover that itself and stall up to 45s inside
+			// awaitRelayAddr, which is time A's hold would have to cover.
+			reportAs: "Cluster: Join (sender)", serial: serialB, resumeOp: resumeB, ensureRelay: true,
 			action:   func() uiOp { return uiOp{label: "Cluster: Join", inputs: []string{ticketA}} },
 			dialHold: &pairHold{serial: serialA, resume: *resumeA},
 		},
@@ -429,8 +402,21 @@ func runAndroidPairScenarioOn(repoRoot, bootstrapMultiaddr, serialA, serialB str
 	// trailing resume for B.
 	stepsAfterLeave := []pairStep{
 		{
-			reportAs: "Cluster: Leave (B)", serial: serialB, resumeOp: resumeB,
-			action: func() uiOp { return uiOp{label: "Cluster: Leave"} },
+			// A dial step, like Join before it: leaving is a forwarded
+			// raft.RemoveServer to whoever leads the cluster (see
+			// pkg/daemon's ForwardLeaveProtocolID), so the *other* voter
+			// has to be up and reachable at that exact moment. Every other
+			// step here only needs its own device. Caught live: with A's
+			// process not running, B -- one voter of two, freshly resumed
+			// and with nobody to hear a heartbeat from -- failed with
+			// "not leader and no leader known", which reads like a
+			// membership bug and is really nobody being home.
+			//
+			// ensureRelay because A's address in raft's configuration is a
+			// /p2p-circuit one, so B needs its own reservation to dial it.
+			reportAs: "Cluster: Leave (B)", serial: serialB, resumeOp: resumeB, ensureRelay: true,
+			action:   func() uiOp { return uiOp{label: "Cluster: Leave"} },
+			dialHold: &pairHold{serial: serialA, resume: *resumeA},
 		},
 		{
 			reportAs: "Cluster: Leave (verify via A)", serial: serialA, resumeOp: resumeA,
@@ -441,18 +427,23 @@ func runAndroidPairScenarioOn(repoRoot, bootstrapMultiaddr, serialA, serialB str
 
 	var cases []e2edata.AndroidPairCaseResult
 	overallErr := error(nil)
-	runStep := func(step pairStep) {
-		entry := e2edata.AndroidPairCaseResult{Command: step.reportAs}
+	// attemptStep runs step exactly once: build+run its ops, then validate.
+	// Factored out of runStep so retries (see pairStep.retries) can call it
+	// repeatedly, each time from a fresh resume -- a fresh Swarm, with none
+	// of a prior attempt's own libp2p dial-backoff state.
+	attemptStep := func(step pairStep) (output string, err error) {
 		action := step.action()
-		ops := []uiOp{action}
+		var ops []uiOp
 		if step.resumeOp != nil {
-			ops = []uiOp{*step.resumeOp, action}
-			if step.settleMillis != "" {
-				ops = []uiOp{*step.resumeOp, {label: "Test: SleepMillis", inputs: []string{step.settleMillis}}, action}
-			}
+			ops = append(ops, *step.resumeOp)
 		}
-		var output string
-		var err error
+		if step.ensureRelay {
+			ops = append(ops, relayAccessOp)
+		}
+		if step.settleMillis != "" {
+			ops = append(ops, uiOp{label: "Test: SleepMillis", inputs: []string{step.settleMillis}})
+		}
+		ops = append(ops, action)
 		if step.dialHold != nil {
 			output, err = runDialStep(step.dialHold.serial, step.dialHold.resume, step.serial, ops)
 		} else {
@@ -461,6 +452,25 @@ func runAndroidPairScenarioOn(repoRoot, bootstrapMultiaddr, serialA, serialB str
 		if err == nil && step.validate != nil {
 			err = step.validate(output)
 		}
+		return output, err
+	}
+
+	runStep := func(step pairStep) {
+		entry := e2edata.AndroidPairCaseResult{Command: step.reportAs}
+		var err error
+		start := time.Now()
+		for attempt := 0; attempt <= step.retries; attempt++ {
+			_, err = attemptStep(step)
+			if err == nil {
+				break
+			}
+		}
+		// Elapsed time per step, on stderr: this scenario's failures are
+		// overwhelmingly about *when* things happened relative to each
+		// other (a hold that ended before the other device dialed, a
+		// reservation that had not landed yet), and a bare pass/fail list
+		// cannot show that.
+		logStep(step.reportAs, start, err)
 		if err != nil {
 			entry.Pass = false
 			entry.Error = err.Error()
@@ -493,8 +503,14 @@ func runAndroidPairScenarioOn(repoRoot, bootstrapMultiaddr, serialA, serialB str
 	// waiting for the whole invocation to exit -- that it actually minted
 	// a token.
 	runRecruitDance := func() {
+		danceStart := time.Now()
 		tokenEntry := e2edata.AndroidPairCaseResult{Command: "Cluster: CreateJoinRequest (B, prep)"}
-		holdOps := []uiOp{*resumeB, {label: "Cluster: CreateJoinRequest"}, {label: "Test: SleepMillis", inputs: []string{dialHoldMillis}}}
+		// relayAccessOp first: A is about to dial B through the relay, so B
+		// has to hold a reservation before that dial -- and since the peek
+		// below waits for CreateJoinRequest, which the device-side runner
+		// now genuinely runs *after* it (see e2edata.UICase.Order), a token
+		// in hand also means B is reachable.
+		holdOps := []uiOp{*resumeB, relayAccessOp, {label: "Cluster: CreateJoinRequest"}, {label: "Test: SleepMillis", inputs: []string{dialHoldMillis}}}
 		token, wait, err := runUIStepsBackgroundPeek(serialB, holdOps, "Cluster: CreateJoinRequest", createJoinRequestPeekTimeout)
 		if err != nil {
 			tokenEntry.Pass = false
@@ -506,12 +522,19 @@ func runAndroidPairScenarioOn(repoRoot, bootstrapMultiaddr, serialA, serialB str
 			return
 		}
 		tokenEntry.Pass = true
+		logStep(tokenEntry.Command, danceStart, nil)
 		cases = append(cases, tokenEntry)
 		tokenB = token
 		ticketB = addrB + "#" + tokenB
 
+		recruitStart := time.Now()
 		recruitEntry := e2edata.AndroidPairCaseResult{Command: "Cluster: RecruitPeer (sender)"}
-		recruitOps := []uiOp{*resumeA, {label: "Cluster: RecruitPeer", inputs: []string{ticketB, "learner"}}}
+		// relayAccessOp before the recruit for the same reason the Join
+		// step needs it: RecruitProtocolID hands the recruited device this
+		// device's own advertised address to join back to, so A must hold
+		// its reservation before it recruits, or B is handed a loopback
+		// address to join.
+		recruitOps := []uiOp{*resumeA, relayAccessOp, {label: "Cluster: RecruitPeer", inputs: []string{ticketB, "learner"}}}
 		_, recruitErr := runUISteps(serialA, recruitOps)
 		if waitErr := wait(); recruitErr == nil && waitErr != nil {
 			recruitErr = fmt.Errorf("receiver hold on %s: %w", serialB, waitErr)
@@ -525,6 +548,7 @@ func runAndroidPairScenarioOn(repoRoot, bootstrapMultiaddr, serialA, serialB str
 		} else {
 			recruitEntry.Pass = true
 		}
+		logStep(recruitEntry.Command, recruitStart, recruitErr)
 		cases = append(cases, recruitEntry)
 	}
 
@@ -549,6 +573,17 @@ func runAndroidPairScenarioOn(repoRoot, bootstrapMultiaddr, serialA, serialB str
 	return result
 }
 
+// logStep prints one step's outcome and how long it took, to stderr --
+// see runStep's own call site for why elapsed time specifically is what
+// this scenario needs reported.
+func logStep(name string, start time.Time, err error) {
+	status := "ok"
+	if err != nil {
+		status = "FAIL"
+	}
+	fmt.Fprintf(os.Stderr, "e2erun: android pair: %-42s %-4s %s\n", name, status, time.Since(start).Round(time.Second))
+}
+
 // freshKeyHex generates a new throwaway ed25519 identity and returns its
 // StartSoloWithKey/StartPendingWithKey-ready hex form (see pairKeyHex).
 func freshKeyHex() (string, error) {
@@ -559,77 +594,86 @@ func freshKeyHex() (string, error) {
 	return pairKeyHex(priv)
 }
 
-// dialHoldMillis is how long recvSerial's freshly (re-)resumed daemon
-// stays up, via a synthetic "Test: SleepMillis" op appended after its own
-// resume, while runDialStep's sender concurrently dials in from a
-// different physical device -- generous enough to comfortably cover
-// dialStartupStagger plus a real emulator's own dial + libp2p security
-// handshake round trip.
-const dialHoldMillis = "25000"
+// dialHoldMillis is how long recvSerial's daemon stays up, via a synthetic
+// "Test: SleepMillis" op at the end of its hold, while runDialStep's
+// sender dials in from a different physical device.
+//
+// It has to cover the sender's *entire* invocation, not just its dial:
+// the sender is a fresh process too, so before it can dial it has to
+// start up, resume its own daemon and obtain its own relay reservation
+// (tens of seconds -- see relayAccessOp). If the hold ends first, the
+// receiver's process exits, the relay drops its reservation on that
+// disconnect, and the sender's dial fails with NO_RESERVATION -- a
+// failure that reads exactly like a relay problem and is really a
+// scheduling one. Sized just under UiCommandE2ETest's own per-op ceiling
+// (RUN_TIMEOUT_MS), the most a single sleep op can ask for.
+const dialHoldMillis = "170000"
 
-// relaySettleMillis is how long each GetOwnAddr step's own "Test:
-// SleepMillis" (see pairStep.settleMillis) waits, right after that
-// device's resume and before GetOwnAddr itself runs, for two things to
-// settle: go-libp2p's AutoRelay completing its own reservation handshake
-// through the VPS (RequestRelayAccess, a fully separate prior step with
-// its own restart, has already granted the standing that reservation
-// needs -- see that step's own doc comment on why it's split out at all),
-// and -- specifically for device A, already a real solo raft leader with
-// persisted state by this point, unlike B's still-"pending" one -- raft
-// re-establishing its own leadership post-restart (mirrors
-// dialStartupStagger's identical reasoning below, just for this device's
-// own local startup rather than a concurrently-dialing peer). Caught
-// live: without this, A's GetOwnAddr consistently still returned a bare
-// loopback address even on the very next invocation after a successful
-// RequestRelayAccess.
-const relaySettleMillis = "20000"
+// relayAccessOp asks this device's own daemon for relay standing and --
+// since pkg/daemon's dialAndSubmitPublicAccess waits for the reservation
+// it enables -- returns only once this device is genuinely reachable
+// through the relay. Cheap to repeat: the grant itself is idempotent, and
+// on a device that already holds a reservation the wait returns
+// immediately.
+//
+// Every step that needs this device to be dialable, or to be able to
+// report its own real address, runs this first. It replaced a pair of
+// fixed settle-sleeps (20s after a resume, hoping AutoRelay had finished)
+// that were both unreliable and, as it turned out, not even running when
+// they were supposed to: the device-side runner walked ops in catalog
+// order until e2edata.UICase.Order existed, so a "Test" category sleep
+// always ran *after* the "Cluster" command it was meant to precede.
+var relayAccessOp = uiOp{label: "Cluster: RequestRelayAccess", inputs: []string{"e2e pair scenario"}}
 
-// dialStartupStagger is how long runDialStep waits after starting
-// recvSerial's hold before starting senderSerial's own dial --
-// recvResume's instrumentation invocation needs a moment to actually be
-// up before the dial can succeed at all (process spin-up, gomobile
-// daemon init, listen socket bind), and -- confirmed live, via the Join
-// direction's own "leader rejected join: ERR: not leader" failure at a
-// 5s stagger -- when recvSerial already has a *real*, persisted raft
-// voter identity (e.g. runAndroidPairScenarioOn's device A, restarted
-// here to redeem CreateJoinInvite's own invite), it isn't enough merely
-// to be listening: a freshly restarted single-voter raft instance only
-// re-establishes itself as leader after its own election timeout
-// (mobile/kvmobile's raftElectionTimeout, 4s) elapses with no
-// heartbeat -- so the stagger needs real headroom past that, not just
-// past process startup, or a dial arriving before re-election completes
-// gets legitimately rejected as premature, not a connectivity failure.
-// Fixed, not polled: nothing in this scenario's UI-command plumbing
-// surfaces "am I listening yet"/"am I leader yet" as a queryable signal.
-const dialStartupStagger = 12 * time.Second
+// relayReadyPeekTimeout bounds how long a cross-device step waits for the
+// device being dialed to report that it holds a relay reservation (its own
+// "Cluster: RequestRelayAccess" result). Generous because that call
+// deliberately blocks on the reservation itself (see pkg/daemon's
+// dialAndSubmitPublicAccess), and a real emulator through a real VPS relay
+// was measured taking ~30-40s from grant to reservation -- several times
+// what the same sequence costs on a desktop.
+const relayReadyPeekTimeout = 120 * time.Second
 
-// runDialStep runs a genuine cross-device dial: recvSerial's resume op is
-// kept alive concurrently (via a "Test: SleepMillis" hold, started first)
-// while senderOps -- senderSerial's own resume-prefixed dial action --
-// runs after a short startup stagger. Every step in this scenario only
-// stays "up" for the duration of its own single `adb shell am instrument`
-// invocation (see pairStep's doc comment on resumeOp) -- confirmed live
-// (via a tcpdump capture on the host loopback interface: the
-// adb-forwarded TCP handshake completed, but the far end sent a bare FIN
-// within ~2.5ms, before any bytes were exchanged) that a plain serial
-// sequence of single-device steps can never satisfy a dial -- by the time
-// the sender's own step ran, the receiver's *prior* step's instrumentation
-// process, and with it its daemon's listen socket, had already exited.
+// runDialStep runs a genuine cross-device dial: recvSerial's daemon is
+// resumed and kept alive concurrently (via a trailing "Test: SleepMillis"
+// hold) while senderOps -- senderSerial's own resume-prefixed dial action
+// -- runs against it. Every step in this scenario only stays "up" for the
+// duration of its own single `adb shell am instrument` invocation (see
+// pairStep's doc comment on resumeOp) -- confirmed live (via a tcpdump
+// capture on the host loopback interface: the TCP handshake completed, but
+// the far end sent a bare FIN within ~2.5ms, before any bytes were
+// exchanged) that a plain serial sequence of single-device steps can never
+// satisfy a dial: by the time the sender's own step ran, the receiver's
+// prior step's process, and with it its daemon's listener, had already
+// exited.
+//
+// The receiver's hold begins with relayAccessOp, and the sender's dial
+// does not start until that op has actually completed -- observed through
+// the receiver's own incrementally-written results file, not guessed at.
+// That is the entire startup-coordination mechanism now: it replaced a
+// fixed 12s stagger that was really standing in for three different waits
+// at once (process spin-up, a relay reservation, and a restarted
+// single-voter raft instance re-electing itself), any of which could be
+// slower than the guess. Waiting on the reservation subsumes all three:
+// it takes tens of seconds and cannot complete before the daemon is up,
+// which is far past raft's own 4s election timeout (mobile/kvmobile's
+// raftElectionTimeout).
+//
 // Blocks until both the hold and the dial finish (not just the dial) so
-// the *next* step's own instrumentation invocation against recvSerial
-// never overlaps this one still winding down. Returns senderOps' own
-// captured output (see runUISteps); a hold failure only surfaces if the
-// dial itself otherwise succeeded, since the dial's own error is always
-// the more direct signal when both fail together.
+// the next step's own invocation against recvSerial never overlaps this
+// one still winding down. Returns senderOps' own captured output (see
+// runUISteps); a hold failure only surfaces if the dial itself otherwise
+// succeeded, since the dial's own error is always the more direct signal
+// when both fail together.
 func runDialStep(recvSerial string, recvResume uiOp, senderSerial string, senderOps []uiOp) (string, error) {
-	holdDone := make(chan error, 1)
-	go func() {
-		_, err := runUISteps(recvSerial, []uiOp{recvResume, {label: "Test: SleepMillis", inputs: []string{dialHoldMillis}}})
-		holdDone <- err
-	}()
-	time.Sleep(dialStartupStagger)
+	recvOps := []uiOp{recvResume, relayAccessOp, {label: "Test: SleepMillis", inputs: []string{dialHoldMillis}}}
+	_, wait, err := runUIStepsBackgroundPeek(recvSerial, recvOps, relayAccessOp.label, relayReadyPeekTimeout)
+	if err != nil {
+		return "", fmt.Errorf("receiver %s never became reachable through the relay: %w", recvSerial, err)
+	}
+
 	output, dialErr := runUISteps(senderSerial, senderOps)
-	if holdErr := <-holdDone; dialErr == nil && holdErr != nil {
+	if holdErr := wait(); dialErr == nil && holdErr != nil {
 		dialErr = fmt.Errorf("receiver hold on %s: %w", recvSerial, holdErr)
 	}
 	return output, dialErr
@@ -637,11 +681,12 @@ func runDialStep(recvSerial string, recvResume uiOp, senderSerial string, sender
 
 // createJoinRequestPeekTimeout bounds how long runUIStepsBackgroundPeek
 // waits, in runRecruitDance's own use of it, for B's CreateJoinRequest op
-// to complete and appear in its own incrementally-written results file --
-// generous enough to cover a real emulator's own process spin-up,
-// StartPendingWithKeyAndPort resume, and the CreateJoinRequest round trip
-// itself.
-const createJoinRequestPeekTimeout = 20 * time.Second
+// to complete and appear in its own incrementally-written results file.
+// Sized for what actually precedes that op in the same invocation: a real
+// emulator's process spin-up, a StartPendingWithKeyAndPort resume, and --
+// the long pole -- relayAccessOp waiting on a relay reservation (see
+// relayReadyPeekTimeout).
+const createJoinRequestPeekTimeout = 150 * time.Second
 
 // peekPollInterval is how often runUIStepsBackgroundPeek re-pulls serial's
 // results file while waiting for peekLabel's own entry to appear.
@@ -666,10 +711,7 @@ const peekPollInterval = 300 * time.Millisecond
 // exit and folding in every op's own pass/fail the same way runUISteps
 // itself does.
 func runUIStepsBackgroundPeek(serial string, ops []uiOp, peekLabel string, peekTimeout time.Duration) (output string, wait func() error, err error) {
-	cases := make(map[string]e2edata.UICase, len(ops))
-	for _, op := range ops {
-		cases[op.label] = e2edata.UICase{Inputs: op.inputs, Execute: true, Expect: e2edata.UIExpectSucceeded}
-	}
+	cases := orderedCases(ops)
 	casesJSON, err := json.Marshal(cases)
 	if err != nil {
 		return "", nil, fmt.Errorf("encode ops: %w", err)
@@ -748,11 +790,25 @@ func runUIStepsBackgroundPeek(serial string, ops []uiOp, peekLabel string, peekT
 // Every op must pass; returns the *last* op's captured Output (see
 // UICaseResult's doc comment) -- ops before it are resume/prep calls
 // whose own output is never needed, only that they succeeded.
-func runUISteps(serial string, ops []uiOp) (output string, err error) {
+// orderedCases turns ops into the device-side runner's case map, stamping
+// each with its own 1-based position -- see e2edata.UICase.Order for why a
+// map alone cannot express "run these in this order", and what that cost
+// this scenario before that field existed.
+func orderedCases(ops []uiOp) map[string]e2edata.UICase {
 	cases := make(map[string]e2edata.UICase, len(ops))
-	for _, op := range ops {
-		cases[op.label] = e2edata.UICase{Inputs: op.inputs, Execute: true, Expect: e2edata.UIExpectSucceeded}
+	for i, op := range ops {
+		cases[op.label] = e2edata.UICase{
+			Inputs:  op.inputs,
+			Execute: true,
+			Expect:  e2edata.UIExpectSucceeded,
+			Order:   i + 1,
+		}
 	}
+	return cases
+}
+
+func runUISteps(serial string, ops []uiOp) (output string, err error) {
+	cases := orderedCases(ops)
 	casesJSON, err := json.Marshal(cases)
 	if err != nil {
 		return "", fmt.Errorf("encode ops: %w", err)

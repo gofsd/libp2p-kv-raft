@@ -237,6 +237,23 @@ type UICase struct {
 	Execute       bool     `json:"execute,omitempty"`
 	Expect        string   `json:"expect,omitempty"`
 	RetryBudgetMs int64    `json:"retry_budget_ms,omitempty"`
+
+	// Order, when non-zero, is this case's 1-based position in a sequence
+	// the caller needs run in exactly that order. It exists because this
+	// map is a *map*: without it the device-side runner (UiCommandE2ETest)
+	// walks whatever it was given in its own catalog order, category by
+	// category, which is fine for the flat per-label sweep this structure
+	// was built for and silently wrong for anything with real ordering --
+	// pkg/e2erun/android_pair.go's cross-device steps, where a "resume this
+	// daemon" op has to run before the action it enables and a settle-sleep
+	// has to run between them. Caught live: every settle in that scenario
+	// was executing *after* the command it was supposed to precede (the
+	// sleep is in the "Test" category, walked after "Cluster"), so the
+	// scenario had effectively never waited for anything.
+	//
+	// Set on every case in a sequence or on none: the runner only honors
+	// ordering when every listed case carries it.
+	Order int `json:"order,omitempty"`
 }
 
 // StatusPass/StatusFail/StatusSkipped are the Row.Status conventions this
