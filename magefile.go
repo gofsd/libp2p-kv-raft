@@ -150,21 +150,31 @@ func Lint() error {
 	return cmd.Run()
 }
 
-// Test runs only the fast unit tests (ignoring integration and e2e)
+// Test runs only the fast unit tests (ignoring integration and e2e). -race
+// is on unconditionally: this is a raft/libp2p codebase with heavy
+// goroutine/channel concurrency (transport read loops, raft's own FSM
+// apply loop, relay reservation refresh, ...), exactly the kind of code
+// where a data race is the failure mode -- rare, environment-dependent
+// corruption -- you least want to discover for the first time in
+// production. Requires CGO_ENABLED=1 (the race detector's runtime
+// support needs cgo); this repo already builds with cgo enabled for
+// pkg/ipc's desktop shm transport, so no environment already running
+// `mage test` needs a new toolchain to pick this up.
 func Test() error {
 	fmt.Println("Running Unit Tests...")
 	// We pass -short flag so you can optionally skip longer unit tests if needed
-	cmd := exec.Command("go", "test", "-v", "-short", "./...")
+	cmd := exec.Command("go", "test", "-v", "-race", "-short", "./...")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 
-// Integration runs both unit tests and integration tests
+// Integration runs both unit tests and integration tests. See Test's doc
+// comment for why -race is unconditional here too.
 func Integration() error {
 	fmt.Println("Running Integration Tests...")
 	// -tags=integration tells Go to include files with the '//go:build integration' tag
-	cmd := exec.Command("go", "test", "-v", "-tags=integration", "./...")
+	cmd := exec.Command("go", "test", "-v", "-race", "-tags=integration", "./...")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
