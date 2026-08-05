@@ -6,7 +6,7 @@
     "4": "0.0.0",
     "5": "0.4.2"
   },
-  "published_version": 4,
+  "published_version": 5,
   "nodes": {
     "1": {
       "platform": "desktop",
@@ -938,18 +938,18 @@
     }
   },
   "android_ui_result": {
-    "ran_at": "2026-08-05T20:25:33.89980214+03:00",
+    "ran_at": "2026-08-05T21:04:19.186119507+03:00",
     "status": 0,
     "cases": [
       {
         "command": "Cluster: Start",
         "pass": true,
-        "output": "12D3KooWFVkMex8gYhsm4hJXP4SVwU2UYLXMpY6hQaA7ysyEUgEu"
+        "output": "12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf"
       },
       {
         "command": "Cluster: StartWithKey",
         "pass": true,
-        "output": "12D3KooWFVkMex8gYhsm4hJXP4SVwU2UYLXMpY6hQaA7ysyEUgEu"
+        "output": "12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf"
       },
       {
         "command": "Cluster: Join",
@@ -986,12 +986,12 @@
       {
         "command": "Cluster: GetOwnAddr",
         "pass": true,
-        "output": "/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWRRR76xMRF4zB9gFFqyEoschjL8xDhkNgdWVX8dmmcoon/p2p-circuit/p2p/12D3KooWFVkMex8gYhsm4hJXP4SVwU2UYLXMpY6hQaA7ysyEUgEu"
+        "output": "/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWRRR76xMRF4zB9gFFqyEoschjL8xDhkNgdWVX8dmmcoon/p2p-circuit/p2p/12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf"
       },
       {
         "command": "Cluster: CreateJoinRequest",
         "pass": true,
-        "output": "ab6c3029e5c7c236a306a7ce8af3e1b1"
+        "output": "424a8e03f101a2bf08baa5ffb8baf0e8"
       },
       {
         "command": "Cluster: CancelJoinRequest",
@@ -1008,312 +1008,11 @@
       {
         "command": "Cluster: RedeemJoinRequestTicket",
         "pass": true
-      },
-      {
-        "command": "Cluster: CreateJoinInvite",
-        "pass": true
-      },
-      {
-        "command": "Cluster: RevokeJoinInvite",
-        "pass": true
-      },
-      {
-        "command": "Cluster: CreateJoinInviteTicket",
-        "pass": true
-      },
-      {
-        "command": "Cluster: VerifyJoinInviteTicket",
-        "pass": true
-      },
-      {
-        "command": "Cluster: Stop",
-        "pass": true
-      },
-      {
-        "command": "Cluster: Delete",
-        "pass": true
-      },
-      {
-        "command": "Cluster: Leave",
-        "pass": true
-      },
-      {
-        "command": "Cluster: Rm",
-        "pass": true
-      },
-      {
-        "command": "Cluster: Kick",
-        "pass": true
-      },
-      {
-        "command": "Cluster: ListClusters",
-        "pass": true,
-        "output": "[{\"cluster_id\":\"12D3KooWRRR76xMRF4zB9gFFqyEoschjL8xDhkNgdWVX8dmmcoon\",\"peer_id\":\"12D3KooWFVkMex8gYhsm4hJXP4SVwU2UYLXMpY6hQaA7ysyEUgEu\"}]"
-      },
-      {
-        "command": "Cluster: ListClusterMembers",
-        "pass": true,
-        "output": "[{\"peer_id\":\"12D3KooWBLdH8wy4aRUg6AeRfph238xKC9nFu2AvHN9SU9HhbkEx\",\"role\":\"voter\"},{\"peer_id\":\"12D3KooWBRCCSL4pDY6B829eR1Y3JFYf7Dm8dG9GwgbhnPX2kNvx\",\"role\":\"learner\"},{\"peer_id\":\"12D3KooWDZLfeHs7UwjidYvgB8iMPuGh1WtERhVuv1zcF88vCoZN\",\"role\":\"learner\"},{\"peer_id\":\"12D3KooWFVkMex8gYhsm4hJXP4SVwU2UYLXMpY6hQaA7ysyEUgEu\",\"role\":\"learner\"},{\"peer_id\":\"12D3KooWG2yJZ4fWR2jrr6Z5wrxfHJVdv6eb36yRVjMmwH8MFa4U\",\"role\":\"learner\"},{\"peer_id\":\"12D3KooWNqwisgN1rCqshwVDi4vqdKzCe9xxNkrW34jUBCTCM57P\",\"role\":\"learner\"},{\"peer_id\":\"12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf\",\"role\":\"learner\"},{\"peer_id\":\"12D3KooWQ79ncpDnwbjE1j53LVmodsyBCKDpkAUCfneRFEohe4vS\",\"role\":\"learner\"},{\"peer_id\":\"12D3KooWRRR76xMRF4zB9gFFqyEoschjL8xDhkNgdWVX8dmmcoon\",\"role\":\"leader\"}]"
-      },
-      {
-        "command": "Cluster: PeerID",
-        "pass": true,
-        "output": "12D3KooWFVkMex8gYhsm4hJXP4SVwU2UYLXMpY6hQaA7ysyEUgEu"
-      },
-      {
-        "command": "Cluster: AccessToken",
-        "pass": true,
-        "output": "66c6f5ae7ba638ceb5f54b89c2acdd4df7a54cf68b2d043df587ba8d764aea84"
-      },
-      {
-        "command": "Cluster: RequestRelayAccess",
-        "pass": true
-      },
-      {
-        "command": "KV: Submit",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "KV: Get",
-        "pass": true,
-        "output": "e2e-ui-test-value-1785950564838"
-      },
-      {
-        "command": "KV: RangeScan",
-        "pass": true,
-        "output": "[{\"key\":\"e2e-ui-test-key\",\"value\":\"e2e-ui-test-value-1785950564838\"}]"
-      },
-      {
-        "command": "Permits: RequestPermit",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Permits: ConfirmPermit",
-        "pass": true
-      },
-      {
-        "command": "Permits: RevokePermit",
-        "pass": true
-      },
-      {
-        "command": "Execute: Execute",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Execute: PollExecute",
-        "pass": true,
-        "output": "{\"pending\":false}"
-      },
-      {
-        "command": "Execute: WatchExecute",
-        "pass": true,
-        "output": "Watching -- notifications appear below as they arrive"
-      },
-      {
-        "command": "Execute: StopWatchExecute",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Channel: OpenChannel",
-        "pass": true,
-        "output": "Opened 3e69efef52c7bab1 -- incoming data appears below as it arrives"
-      },
-      {
-        "command": "Channel: ListenChannel",
-        "pass": true
-      },
-      {
-        "command": "Channel: StopListenChannel",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Channel: SendChannelData",
-        "pass": true
-      },
-      {
-        "command": "Channel: CloseChannelWrite",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Channel: CloseChannel",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Channel: StopChannel",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Log records: LogAppend",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Log records: LogQuery",
-        "pass": true,
-        "output": "[{\"kind\":\"e2e-ui-test\",\"unit_id\":\"ui-test-unit\",\"timestamp\":\"2026-08-05T09:16:48.459544929Z\",\"author_peer_id\":\"12D3KooWG2yJZ4fWR2jrr6Z5wrxfHJVdv6eb36yRVjMmwH8MFa4U\",\"narrative\":\"ui e2e test\"},{\"kind\":\"e2e-ui-test\",\"unit_id\":\"ui-test-unit\",\"timestamp\":\"2026-08-05T14:03:53.119547575Z\",\"author_peer_id\":\"12D3KooWDZLfeHs7UwjidYvgB8iMPuGh1WtERhVuv1zcF88vCoZN\",\"narrative\":\"ui e2e test\"},{\"kind\":\"e2e-ui-test\",\"unit_id\":\"ui-test-unit\",\"timestamp\":\"2026-08-05T15:11:59.007186412Z\",\"author_peer_id\":\"12D3KooWBRCCSL4pDY6B829eR1Y3JFYf7Dm8dG9GwgbhnPX2kNvx\",\"narrative\":\"ui e2e test\"},{\"kind\":\"e2e-ui-test\",\"unit_id\":\"ui-test-unit\",\"timestamp\":\"2026-08-05T15:38:03.319892369Z\",\"author_peer_id\":\"12D3KooWNqwisgN1rCqshwVDi4vqdKzCe9xxNkrW34jUBCTCM57P\",\"narrative\":\"ui e2e test\"},{\"kind\":\"e2e-ui-test\",\"unit_id\":\"ui-test-unit\",\"timestamp\":\"2026-08-05T17:23:47.840575142Z\",\"author_peer_id\":\"12D3KooWFVkMex8gYhsm4hJXP4SVwU2UYLXMpY6hQaA7ysyEUgEu\",\"narrative\":\"ui e2e test\"}]"
-      },
-      {
-        "command": "Group: CreateGroup",
-        "pass": true
-      },
-      {
-        "command": "Group: UpdateGroup",
-        "pass": true
-      },
-      {
-        "command": "Group: DeleteGroup",
-        "pass": true
-      },
-      {
-        "command": "Group: GetGroup",
-        "pass": true
-      },
-      {
-        "command": "Group: ListGroups",
-        "pass": true,
-        "output": "[{\"id\":\"12D3KooWBLdH8wy4aRUg6AeRfph238xKC9nFu2AvHN9SU9HhbkEx\",\"name\":\"12D3KooWBLdH8wy4aRUg6AeRfph238xKC9nFu2AvHN9SU9HhbkEx\",\"public\":false},{\"id\":\"12D3KooWBRCCSL4pDY6B829eR1Y3JFYf7Dm8dG9GwgbhnPX2kNvx\",\"name\":\"12D3KooWBRCCSL4pDY6B829eR1Y3JFYf7Dm8dG9GwgbhnPX2kNvx\",\"public\":false},{\"id\":\"12D3KooWDZLfeHs7UwjidYvgB8iMPuGh1WtERhVuv1zcF88vCoZN\",\"name\":\"12D3KooWDZLfeHs7UwjidYvgB8iMPuGh1WtERhVuv1zcF88vCoZN\",\"public\":false},{\"id\":\"12D3KooWFVkMex8gYhsm4hJXP4SVwU2UYLXMpY6hQaA7ysyEUgEu\",\"name\":\"12D3KooWFVkMex8gYhsm4hJXP4SVwU2UYLXMpY6hQaA7ysyEUgEu\",\"public\":false},{\"id\":\"12D3KooWG2yJZ4fWR2jrr6Z5wrxfHJVdv6eb36yRVjMmwH8MFa4U\",\"name\":\"12D3KooWG2yJZ4fWR2jrr6Z5wrxfHJVdv6eb36yRVjMmwH8MFa4U\",\"public\":false},{\"id\":\"12D3KooWNqwisgN1rCqshwVDi4vqdKzCe9xxNkrW34jUBCTCM57P\",\"name\":\"12D3KooWNqwisgN1rCqshwVDi4vqdKzCe9xxNkrW34jUBCTCM57P\",\"public\":false},{\"id\":\"12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf\",\"name\":\"12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf\",\"public\":false},{\"id\":\"12D3KooWQ79ncpDnwbjE1j53LVmodsyBCKDpkAUCfneRFEohe4vS\",\"name\":\"12D3KooWQ79ncpDnwbjE1j53LVmodsyBCKDpkAUCfneRFEohe4vS\",\"public\":false},{\"id\":\"12D3KooWRRR76xMRF4zB9gFFqyEoschjL8xDhkNgdWVX8dmmcoon\",\"name\":\"12D3KooWRRR76xMRF4zB9gFFqyEoschjL8xDhkNgdWVX8dmmcoon\",\"public\":false},{\"id\":\"channel\",\"name\":\"channel\",\"public\":false},{\"id\":\"cluster\",\"name\":\"cluster\",\"public\":false},{\"id\":\"execute\",\"name\":\"execute\",\"public\":false},{\"id\":\"learner\",\"name\":\"learner\",\"public\":false},{\"id\":\"public\",\"name\":\"public\",\"public\":true},{\"id\":\"relay\",\"name\":\"relay\",\"public\":false},{\"id\":\"remote\",\"name\":\"remote\",\"public\":false},{\"id\":\"voter\",\"name\":\"voter\",\"public\":false}]"
-      },
-      {
-        "command": "Command: CreateCommand",
-        "pass": true
-      },
-      {
-        "command": "Command: UpdateCommand",
-        "pass": true
-      },
-      {
-        "command": "Command: DeleteCommand",
-        "pass": true
-      },
-      {
-        "command": "Command: GetCommand",
-        "pass": true
-      },
-      {
-        "command": "Command: ListCommands",
-        "pass": true,
-        "output": "[{\"id\":\"public-access\",\"name\":\"public-access\",\"target_peer_id\":\"\"}]"
-      },
-      {
-        "command": "Links: AddCommandToGroup",
-        "pass": true
-      },
-      {
-        "command": "Links: RemoveCommandFromGroup",
-        "pass": true
-      },
-      {
-        "command": "Links: ListGroupsForCommand",
-        "pass": true,
-        "output": "[]"
-      },
-      {
-        "command": "Links: AddPeerToGroup",
-        "pass": true
-      },
-      {
-        "command": "Links: RemovePeerFromGroup",
-        "pass": true
-      },
-      {
-        "command": "Links: ListGroupsForPeer",
-        "pass": true,
-        "output": "[\"channel\",\"cluster\",\"learner\",\"relay\"]"
-      },
-      {
-        "command": "Dispatch: SubmitCommand",
-        "pass": true
-      },
-      {
-        "command": "Dispatch: GetCommandRequest",
-        "pass": true
-      },
-      {
-        "command": "Dispatch: ListCommandRequests",
-        "pass": true,
-        "output": "[]"
-      },
-      {
-        "command": "Dispatch: ListExecutionsByPeer",
-        "pass": true,
-        "output": "[]"
-      },
-      {
-        "command": "Dispatch: AppendCommandLog",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Dispatch: QueryCommandLog",
-        "pass": true,
-        "output": "[{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-05T09:17:20.841167614Z\",\"author_peer_id\":\"12D3KooWG2yJZ4fWR2jrr6Z5wrxfHJVdv6eb36yRVjMmwH8MFa4U\",\"narrative\":\"ui e2e test\"},{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-05T14:04:43.987404692Z\",\"author_peer_id\":\"12D3KooWDZLfeHs7UwjidYvgB8iMPuGh1WtERhVuv1zcF88vCoZN\",\"narrative\":\"ui e2e test\"},{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-05T15:12:35.974652367Z\",\"author_peer_id\":\"12D3KooWBRCCSL4pDY6B829eR1Y3JFYf7Dm8dG9GwgbhnPX2kNvx\",\"narrative\":\"ui e2e test\"},{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-05T15:38:40.95934787Z\",\"author_peer_id\":\"12D3KooWNqwisgN1rCqshwVDi4vqdKzCe9xxNkrW34jUBCTCM57P\",\"narrative\":\"ui e2e test\"},{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-05T17:24:20.90243917Z\",\"author_peer_id\":\"12D3KooWFVkMex8gYhsm4hJXP4SVwU2UYLXMpY6hQaA7ysyEUgEu\",\"narrative\":\"ui e2e test\"}]"
-      },
-      {
-        "command": "Dispatch: LatestCommandLog",
-        "pass": true,
-        "output": "{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-05T17:24:20.90243917Z\",\"author_peer_id\":\"12D3KooWFVkMex8gYhsm4hJXP4SVwU2UYLXMpY6hQaA7ysyEUgEu\",\"narrative\":\"ui e2e test\"}"
-      },
-      {
-        "command": "Dispatch: WatchCommandLog",
-        "pass": true,
-        "output": "Watching -- new records appear below as they arrive"
-      },
-      {
-        "command": "Dispatch: StopWatchCommandLog",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Dispatch: RunCommandDispatcher",
-        "pass": true,
-        "output": "Dispatching -- requests for no-such-command are handled as they arrive, logged below"
-      },
-      {
-        "command": "Dispatch: StopCommandDispatcher",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "ExecInvite: CreateExecInvite",
-        "pass": true
-      },
-      {
-        "command": "ExecInvite: RevokeExecInvite",
-        "pass": true
-      },
-      {
-        "command": "ExecInvite: RedeemExecInvite",
-        "pass": true
-      },
-      {
-        "command": "ExecInvite: CreateExecInviteTicket",
-        "pass": true
-      },
-      {
-        "command": "ExecInvite: RedeemExecInviteTicket",
-        "pass": true
-      },
-      {
-        "command": "Raw: SendEvent",
-        "pass": true,
-        "output": "{\"event\":\"get_public_key\",\"value\":\"0x54612ca35b74a3e770030c8ec5af2864b3c1bccd5106401b3fdef55eeb065b2a\",\"id\":42505}"
-      },
-      {
-        "command": "Test: SleepMillis",
-        "pass": true
       }
     ]
   },
   "android_ui_pair_result": {
-    "ran_at": "2026-08-05T20:25:33.9029049+03:00",
+    "ran_at": "2026-08-05T21:04:19.189968171+03:00",
     "status": 0,
     "cases": [
       {
