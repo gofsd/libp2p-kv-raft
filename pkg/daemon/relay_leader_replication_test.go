@@ -110,7 +110,12 @@ func TestRelayLeaderReplicatesToPeerBehindItself(t *testing.T) {
 	// into and this test would "fail" for a reason having nothing to do
 	// with relays. That join enrolls it at whatever address it advertises,
 	// which on one machine is a direct one.
-	if _, err := follower.handleAdd(ctx, leaderAddr); err != nil {
+	// " learner", not a plain join: the peer this models (a browser tab, a
+	// phone) is always a non-voter, and a voter here would make the
+	// cluster two-voter, so severing its connection below would cost
+	// quorum and fail the write for a reason unrelated to what this test
+	// is about.
+	if _, err := follower.handleAdd(ctx, leaderAddr+" learner"); err != nil {
 		t.Fatalf("follower join: %v", err)
 	}
 
@@ -121,6 +126,22 @@ func TestRelayLeaderReplicatesToPeerBehindItself(t *testing.T) {
 	// reach this follower through its own relay service.
 	if _, err := leader.handleAddLearner(ctx, follower.peerID, followerCircuit); err != nil {
 		t.Fatalf("re-enrol follower at its circuit address: %v", err)
+	}
+
+	// Force the circuit to be the *only* way the leader can reach the
+	// follower. On one machine they can always talk directly, so without
+	// this the leader keeps using a direct connection and the circuit is
+	// never exercised -- an earlier version of this test passed for
+	// exactly that reason while the deployed cluster was failing. Dropping
+	// the direct addresses and the connections built from them leaves the
+	// follower reachable only as a peer reserved on this very host, which
+	// is the real topology.
+	leader.host.Peerstore().ClearAddrs(info.ID)
+	leader.host.Peerstore().AddAddrs(info.ID, info.Addrs, time.Hour)
+	for _, c := range leader.host.Network().ConnsToPeer(info.ID) {
+		if !c.Stat().Limited {
+			_ = c.Close()
+		}
 	}
 
 	if err := leader.handleSetForward(ctx, []byte("relay-leader-key"), []byte("replicated"), true); err != nil {
