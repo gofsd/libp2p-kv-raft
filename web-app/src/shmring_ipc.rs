@@ -31,12 +31,16 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{MessageEvent, Worker};
 
-use crate::shmevent::{self, Msg};
+use crate::shmevent::{self, Msg, IPC_RING_CAPACITY};
 
-/// Ring buffer payload size -- matches `pkg/ipc`'s `capacity` constant
-/// (comfortably fits an encoded request/response; see
-/// `shmevent::VALUE_SIZE`).
-const CAPACITY: u64 = 4096;
+/// Ring buffer payload size. Defined as `shmevent::IPC_RING_CAPACITY`, not
+/// here, so a host-side unit test can pin it against the value ceilings it
+/// must keep up with -- this module is wasm-only and never compiled by
+/// `cargo test`. See that constant's doc comment for what going stale cost
+/// (a full-size KV message is 4208 bytes encoded, and a ring that cannot
+/// hold a message deadlocks rather than rejecting it: both writers below
+/// fill the ring before the other side exists to drain it).
+const CAPACITY: u64 = IPC_RING_CAPACITY;
 
 /// shmring's own header is `pub(crate)` (currently 64 bytes as of 0.3.0,
 /// not part of its public API), so this over-allocates rather than
@@ -84,6 +88,19 @@ async fn poll_write_all(
     w: &mut Writer<SharedArrayBufferStorage>,
     data: &[u8],
 ) -> Result<(), Error> {
+    // Both users of this write the whole message before there is any
+    // reader on the other end (see `MainChannel::call` and `serve`), so a
+    // message larger than the ring can never drain and this loop would
+    // spin forever -- a hung tab with no error anywhere. Fail loudly
+    // instead: it means CAPACITY has fallen behind whatever
+    // `shmevent::value_size_for` now allows.
+    if data.len() as u64 > CAPACITY {
+        return Err(Error(format!(
+            "encoded message is {} bytes, larger than the {}-byte IPC ring -- CAPACITY is too small for shmevent's current value ceiling",
+            data.len(),
+            CAPACITY
+        )));
+    }
     let mut written = 0usize;
     let mut wait_ms = MIN_POLL_MS;
     while written < data.len() {

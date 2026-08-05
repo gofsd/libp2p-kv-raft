@@ -123,6 +123,9 @@ func runWebNode(webDir string, node e2edata.Node, bootstrapWebTransportAddr stri
 			resolved := ResolveBootstrapPlaceholder(string(ev.Value()), bootstrapWebTransportAddr)
 			ev = e2edata.NewEvent(ev.EventType, ev.SourceID, ev.DestinationID, []byte(resolved), ev.ID)
 		}
+		if expanded := ExpandRowValue(string(ev.Value())); expanded != string(ev.Value()) {
+			ev = e2edata.NewEvent(ev.EventType, ev.SourceID, ev.DestinationID, []byte(expanded), ev.ID)
+		}
 		data, err := json.Marshal(ev)
 		if err != nil {
 			return fail(fmt.Errorf("e2erun: encode web row event: %w", err))

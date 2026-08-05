@@ -264,6 +264,9 @@ func runAndroidNode(repoRoot string, node e2edata.Node, bootstrapMultiaddr strin
 				resolved := ResolveBootstrapPlaceholder(string(ev.Value()), bootstrapMultiaddr) + " learner"
 				ev = e2edata.NewEvent(ev.EventType, ev.SourceID, ev.DestinationID, []byte(resolved), ev.ID)
 			}
+			if expanded := ExpandRowValue(string(ev.Value())); expanded != string(ev.Value()) {
+				ev = e2edata.NewEvent(ev.EventType, ev.SourceID, ev.DestinationID, []byte(expanded), ev.ID)
+			}
 			data, err := json.Marshal(ev)
 			if err != nil {
 				return fail(fmt.Errorf("e2erun: encode android row event: %w", err))
@@ -403,10 +406,19 @@ func summarizeFailure(out string) string {
 // (E2ETest.fail()s if any row failed) without that being treated as a Go
 // error here -- the results file, not the instrumentation exit status, is
 // authoritative for per-row pass/fail.
+//
+// rowsArgJSON is base64-encoded for the same reason runUICommandTest
+// base64s its own "cases" value (see that function's doc comment): raw
+// JSON's quotes and braces get mangled somewhere between `adb shell` and
+// the device's `am` argument parser. That went unnoticed here for as long
+// as every recorded row carried a short value -- a row carrying a value at
+// shmevent.KVValueSize (see LargeValueToken) arrives truncated instead,
+// and E2ETest fails parsing it with a JSONException naming a stray
+// fragment rather than anything about size.
 func runInstrumentedTest(rowsArgJSON string, serial string) ([]byte, error) {
 	cmd := exec.Command("adb", "shell", "am", "instrument", "-w",
 		"-e", "class", androidTestClass,
-		"-e", "rows", rowsArgJSON,
+		"-e", "rows", base64.StdEncoding.EncodeToString([]byte(rowsArgJSON)),
 		androidTestRunner,
 	)
 	withSerial(cmd, serial)

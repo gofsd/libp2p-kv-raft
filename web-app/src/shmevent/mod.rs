@@ -193,6 +193,20 @@ fn canonical_width(event: u8, value_len: usize) -> usize {
     }
     value_size_for(event)
 }
+/// Payload size of the main-thread <-> Worker IPC rings
+/// (`shmring_ipc::CAPACITY`). It lives here, beside the value ceilings it
+/// has to keep up with, rather than in that module, for one reason: that
+/// module is `cfg(target_arch = "wasm32")` and so cannot be unit-tested on
+/// the host, and this constant is exactly the kind that goes stale
+/// silently. `ipc_ring_fits_largest_encoded_message` pins it against every
+/// tier `value_size_for` defines.
+///
+/// It was last found stale at 4096 -- the same number `KV_VALUE_SIZE` had
+/// just been raised to -- which made a full-size KV message 4208 bytes
+/// encoded and unable to fit its own transport. That is a hang, not an
+/// error: both writers fill the ring before any reader exists.
+pub const IPC_RING_CAPACITY: u64 = 32 * 1024;
+
 pub const SIGNATURE_SIZE: usize = 64;
 pub const PUBLIC_KEY_SIZE: usize = 32;
 pub const PRIVATE_KEY_SIZE: usize = 32; // ed25519-dalek's SigningKey seed length
@@ -912,6 +926,41 @@ mod tests {
     #[test]
     fn execute_notification_too_short_rejected() {
         assert!(decode_execute_notification(&[0u8]).is_err());
+    }
+
+    /// The IPC rings this crate talks to its own Worker over must fit the
+    /// largest message the protocol lets anyone build, for every event.
+    /// They are single-use rings written in full before the other side
+    /// exists, so "too small" does not surface as a rejected message --
+    /// it is a tab that stops responding.
+    #[test]
+    fn ipc_ring_fits_largest_encoded_message() {
+        let signing_key = test_key();
+        for event in [
+            EVENT_SET_KEY,
+            EVENT_SET_FIELD,
+            EVENT_SET,
+            EVENT_GET_FIELD,
+            EVENT_TXN,
+            EVENT_LOG_APPEND,
+            EVENT_COMMAND_PUT,
+            EVENT_STATION_PUT,
+            EVENT_ADD,
+            EVENT_PUBLIC_ACCESS,
+        ] {
+            let m = Msg {
+                event_type: event,
+                value: vec![0u8; value_size_for(event)],
+                ..Default::default()
+            };
+            let encoded = encode(&m, Some(&signing_key)).unwrap();
+            assert!(
+                encoded.len() as u64 <= IPC_RING_CAPACITY,
+                "event {event}: a full-size value encodes to {} bytes, over the {}-byte IPC ring -- raise IPC_RING_CAPACITY",
+                encoded.len(),
+                IPC_RING_CAPACITY,
+            );
+        }
     }
 
     /// Mirrors Go's TestCanonicalWidthKeepsHistoricalWidthForSmallValues.

@@ -1,5 +1,6 @@
 package com.gofsd.kvdemo
 
+import android.util.Base64
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import kvmobile.Kvmobile
@@ -35,7 +36,19 @@ class E2ETest {
     fun runRows() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val args = InstrumentationRegistry.getArguments()
-        val rows = JSONArray(args.getString("rows") ?: "[]")
+        // Base64, not raw JSON: `adb shell`/`am` mangle quote- and
+        // brace-heavy argument values, which stayed invisible while every
+        // recorded row carried a short value and showed up as a
+        // JSONException about a stray fragment the moment one carried a
+        // multi-kilobyte one. UiCommandE2ETest's own "cases" argument has
+        // been encoded this way for the same reason; see
+        // pkg/e2erun.runInstrumentedTest. A value that is not valid base64
+        // (or absent) falls back to an empty row list rather than
+        // crashing, matching how that class treats its own argument.
+        val rowsJson = args.getString("rows")?.let {
+            runCatching { String(Base64.decode(it, Base64.DEFAULT)) }.getOrNull()
+        } ?: "[]"
+        val rows = JSONArray(rowsJson)
 
         Kvmobile.start(context.filesDir.absolutePath)
 
