@@ -156,28 +156,29 @@ func EnsureBootstrap(repoRoot, path string, f *e2edata.File) (multiaddr, webTran
 // is always the sole voter of its own cluster, so it's always authorized to
 // author this PeerGroup record for anyone.
 //
-// This exists because a web/browser row can only ever reach the bootstrap
-// through a real circuit-relay v2 reservation (see p2p.rs's do_reserve --
-// unlike desktop/remote, a browser sandbox can't dial the bootstrap's raw
-// TCP/QUIC address directly), and relayACL unconditionally gates that
-// reservation on this exact group (see pkg/daemon.relayACL's doc comment).
-// Android needs the identical grant for the identical reason -- an emulator
-// with no port forwarding is just as unreachable-without-relay as a browser
-// tab, and buildAndroidAAR bakes the live bootstrapMultiaddr in as both
-// leaderMultiaddr *and* relayMultiaddr. A brand-new bootstrap identity
-// (freshly provisioned after `mage e2e:destroyall`/`e2e:release` wiped the
-// previous one's whole store, group memberships included) starts with none
-// of that standing granted to anyone, so a web/Android row's very first
-// "add" would otherwise hang for the full RELAY_RESERVATION_TIMEOUT_MS (web)
-// or its own AutoRelay reservation retry loop (Android) and fail -- caught
-// by exactly that happening against a freshly redeployed bootstrap (web
-// first, then Android again once e2e:release's real destroyAllFirst
-// actually exercised this path for it). Called unconditionally for every
-// known web/Android node identity on every Run, not just after a fresh
-// bootstrap: PutPeerGroup is a plain idempotent set-membership write, so
-// re-granting standing that's already there is harmless, and this also
-// naturally covers a node identity that itself got reprovisioned (new peer
-// id) against an *existing* bootstrap.
+// This exists because an Android e2e row can only ever reach the bootstrap
+// through a real circuit-relay v2 reservation once relayMultiaddr is baked
+// in (see buildAndroidAAR's own ldflags) -- an emulator with no port
+// forwarding is unreachable without one, the same reason a browser sandbox
+// needs one too (see p2p.rs's do_reserve) -- and relayACL unconditionally
+// gates that reservation on this exact group (see pkg/daemon.relayACL's
+// doc comment). A brand-new bootstrap identity (freshly provisioned after
+// `mage e2e:destroyall`/`e2e:release` wiped the previous one's whole
+// store, group memberships included) starts with none of that standing
+// granted to anyone, so an Android row's very first "add" would otherwise
+// hang out its own AutoRelay reservation retry loop and fail -- caught by
+// exactly that happening against a freshly redeployed bootstrap.
+//
+// Web/desktop no longer need this: both now request their own standing
+// self-service instead (runWebNode's synthetic row 0, runRow's
+// PlatformDesktop branch), the way a real, standing-less device is meant
+// to -- see run.go's own call site for why Android's regular rows can't
+// do the same without restructuring E2ETest.kt's setup. Called
+// unconditionally for every known Android node identity on every Run, not
+// just after a fresh bootstrap: PutPeerGroup is a plain idempotent
+// set-membership write, so re-granting standing that's already there is
+// harmless, and this also naturally covers a node identity that itself
+// got reprovisioned (new peer id) against an *existing* bootstrap.
 func GrantRelayAccess(bootstrapPeerID, targetPeerID string) error {
 	payload, err := shmevent.EncodePeerGroupPayload([]byte(targetPeerID), []byte(shmevent.ReservedGroupRelay))
 	if err != nil {

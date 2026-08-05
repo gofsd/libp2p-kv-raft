@@ -123,6 +123,17 @@ pub const EVENT_PEER_GROUP_DELETE: u8 = 27;
 /// Not sent by this client, but defined so `value_size_for` can name it:
 /// its width has to match Go's whether or not this client ever uses it.
 pub const EVENT_TXN: u8 = 44;
+/// Local-only self-service escalation: dials `Value`'s target address
+/// directly (no relay reservation -- see `p2p::Handle::connect`) and
+/// submits the always-public `public-access` command there under this
+/// tab's own identity, granting it real `ReservedGroupChannel`/
+/// `ReservedGroupRelay` standing on that cluster in one raft-committed
+/// write. `Value` is `target_addr` or `target_addr#note` (see
+/// `app::do_public_access`) -- matches `pkg/shmevent.EventPublicAccess`
+/// and `pkg/shmclient.Session.PublicAccess`'s identical `#`-separated
+/// convention. Response `Value` is a hex instance id, mirroring
+/// `dialAndSubmitPublicAccess`'s return.
+pub const EVENT_PUBLIC_ACCESS: u8 = 47;
 /// Creates/updates a device's station description -- see
 /// `pkg/shmevent.EventStationPut`. Defined here for the same reason as
 /// `EVENT_TXN`.
@@ -380,6 +391,7 @@ pub fn event_name(event_type: u8) -> &'static str {
         EVENT_GROUP_COMMAND_DELETE => "group_command_delete",
         EVENT_PEER_GROUP_PUT => "peer_group_put",
         EVENT_PEER_GROUP_DELETE => "peer_group_delete",
+        EVENT_PUBLIC_ACCESS => "public_access",
         EVENT_ERROR => "error",
         _ => "unknown",
     }
@@ -415,6 +427,7 @@ pub fn event_from_name(name: &str) -> Option<u8> {
         "group_command_delete" => Some(EVENT_GROUP_COMMAND_DELETE),
         "peer_group_put" => Some(EVENT_PEER_GROUP_PUT),
         "peer_group_delete" => Some(EVENT_PEER_GROUP_DELETE),
+        "public_access" => Some(EVENT_PUBLIC_ACCESS),
         "error" => Some(EVENT_ERROR),
         _ => None,
     }
@@ -754,6 +767,7 @@ mod tests {
             EVENT_GROUP_COMMAND_DELETE,
             EVENT_PEER_GROUP_PUT,
             EVENT_PEER_GROUP_DELETE,
+            EVENT_PUBLIC_ACCESS,
             EVENT_ERROR,
         ] {
             let name = event_name(e);

@@ -145,6 +145,14 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     // `mage accesstoken <peerID>` counterpart, e.g. to hand a desktop
     // operator this device's token for a kvhttp routing rule.
     add("Cluster", "AccessToken", emptyList()) { Kvmobile.accessToken() }
+    // Self-service escalation: asks the relay baked in at build time (see
+    // relayMultiaddr) for Channel + circuit-relay standing under this
+    // device's own identity -- see Kvmobile.requestRelayAccess's own doc
+    // comment for why a freshly installed app needs this at all (its own
+    // relay reservation attempts are unconditionally ACL-denied without
+    // it). Safe to call more than once; each call just re-asserts the
+    // grant.
+    add("Cluster", "RequestRelayAccess", listOf("note")) { a -> Kvmobile.requestRelayAccess(a[0]) }
 
     // KV
     add("KV", "Submit", listOf("key", "value")) { a -> Kvmobile.submit(a[0], a[1]); ok() }

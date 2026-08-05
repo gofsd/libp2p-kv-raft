@@ -135,6 +135,12 @@ enum Command {
     /// address. Only ever sent once per `Node` lifetime in practice (a tab
     /// connects to one target), but nothing here assumes that.
     ReserveRelaySlot(Multiaddr, oneshot::Sender<Result<Multiaddr, Error>>),
+    /// Dials `Multiaddr` directly -- no relay reservation, unlike
+    /// `ReserveRelaySlot` -- replying with the connected peer's id. This is
+    /// what [`Handle::connect`] sends; see that method's doc comment for
+    /// why public-access specifically needs a plain dial with no
+    /// reservation attached.
+    Connect(Multiaddr, oneshot::Sender<Result<PeerId, Error>>),
 }
 
 /// The sole owner of the `Swarm`; see the module doc comment's "Task
@@ -208,6 +214,18 @@ impl Node {
                                 _ = gloo_timers::future::TimeoutFuture::new(RELAY_RESERVATION_TIMEOUT_MS).fuse() => {
                                     Err(Error(format!(
                                         "relay reservation timed out after {}s -- the reservation handshake itself never completed, most likely a slow/unreachable path to the relay target rather than a bug here (see RELAY_RESERVATION_TIMEOUT_MS's doc comment)",
+                                        RELAY_RESERVATION_TIMEOUT_MS / 1000
+                                    )))
+                                }
+                            };
+                            let _ = reply.send(result);
+                        }
+                        Some(Command::Connect(addr, reply)) => {
+                            let result = futures::select! {
+                                result = self.dial_with_retry(addr).fuse() => result,
+                                _ = gloo_timers::future::TimeoutFuture::new(RELAY_RESERVATION_TIMEOUT_MS).fuse() => {
+                                    Err(Error(format!(
+                                        "connect timed out after {}s",
                                         RELAY_RESERVATION_TIMEOUT_MS / 1000
                                     )))
                                 }
@@ -324,6 +342,28 @@ impl Handle {
         self.commands
             .clone()
             .send(Command::ReserveRelaySlot(addr, tx))
+            .await
+            .map_err(|_| Error("node task no longer running".into()))?;
+        rx.await
+            .map_err(|_| Error("node task no longer running".into()))?
+    }
+
+    /// Dials `addr` directly and returns the connected peer's id -- no
+    /// relay reservation, unlike [`Handle::reserve_relay_slot`]. This is
+    /// what public-access needs and `reserve_relay_slot` can't provide:
+    /// reserving a slot itself requires `shmevent::ReservedGroupRelay`
+    /// standing on the target (see `pkg/daemon.relayACL`), which is
+    /// exactly the standing a caller with none yet is trying to *obtain*
+    /// by requesting public access in the first place -- reusing
+    /// `reserve_relay_slot` here would be circular. A plain outbound dial
+    /// carries no such gate: the target's `ClientProtocolID` handler (not
+    /// its relay service) decides whether to honor the request that
+    /// follows.
+    pub async fn connect(&self, addr: Multiaddr) -> Result<PeerId, Error> {
+        let (tx, rx) = oneshot::channel();
+        self.commands
+            .clone()
+            .send(Command::Connect(addr, tx))
             .await
             .map_err(|_| Error("node task no longer running".into()))?;
         rx.await

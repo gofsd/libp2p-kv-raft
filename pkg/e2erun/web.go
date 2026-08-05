@@ -101,7 +101,22 @@ func runWebNode(webDir string, node e2edata.Node, bootstrapWebTransportAddr stri
 		return out
 	}
 
-	eventJSONs := make([]string, len(rowIdxs))
+	// Self-service, not the admin-side grant GrantRelayAccess gives this
+	// same node -- prepended ahead of every real row as its own synthetic
+	// event 0, never mapped into rowIdxs itself (see the re-indexing
+	// below), so a fresh identity's relay reservation (needed for row 0's
+	// own "add" -- a browser tab can only ever be dialed back through a
+	// relay circuit, see p2p.rs's module doc comment) has standing to
+	// succeed on the very first attempt, the same reasoning
+	// runRow's desktop branch documents for why it can request this
+	// before the row loop rather than needing a GrantRelayAccess-style
+	// admin grant beforehand.
+	publicAccessJSON, err := json.Marshal(e2edata.NewEvent(shmevent.EventPublicAccess, 0, 0, []byte(bootstrapWebTransportAddr), 0))
+	if err != nil {
+		return fail(fmt.Errorf("e2erun: encode web public_access event: %w", err))
+	}
+	eventJSONs := make([]string, len(rowIdxs)+1)
+	eventJSONs[0] = string(publicAccessJSON)
 	for i, idx := range rowIdxs {
 		ev := f.Rows[idx].Event
 		if ev.EventType == shmevent.EventAdd {
@@ -112,7 +127,7 @@ func runWebNode(webDir string, node e2edata.Node, bootstrapWebTransportAddr stri
 		if err != nil {
 			return fail(fmt.Errorf("e2erun: encode web row event: %w", err))
 		}
-		eventJSONs[i] = string(data)
+		eventJSONs[i+1] = string(data)
 	}
 	rowsArg, err := json.Marshal(eventJSONs)
 	if err != nil {
@@ -150,9 +165,48 @@ func runWebNode(webDir string, node e2edata.Node, bootstrapWebTransportAddr stri
 	if err != nil {
 		return fail(fmt.Errorf("e2erun: read web results %s: %w", resultsPath, err))
 	}
-	out, err := parseRowResults(resultsJSON, rowIdxs, "web e2e.spec.js")
+	rowResultsJSON, err := splitOffFirstResult(resultsJSON, "public_access")
+	if err != nil {
+		return fail(err)
+	}
+	out, err := parseRowResults(rowResultsJSON, rowIdxs, "web e2e.spec.js")
 	if err != nil {
 		return fail(err)
 	}
 	return out
+}
+
+// splitOffFirstResult pulls resultsJSON's own index-0 entry (the synthetic
+// event runWebNode prepends ahead of every real row, see its own doc
+// comment on why) out of the batch, failing outright if it didn't pass --
+// label is purely for that error message, e2e.spec.js's own results shape
+// (see platformRowResult) carries no command name of its own the way
+// UiCommandE2ETest.kt's does. Returns the remaining entries re-encoded
+// with every index shifted down by one, ready for parseRowResults to match
+// against rowIdxs exactly as if the synthetic entry had never been there.
+func splitOffFirstResult(resultsJSON []byte, label string) ([]byte, error) {
+	var parsed []platformRowResult
+	if err := json.Unmarshal(resultsJSON, &parsed); err != nil {
+		return nil, fmt.Errorf("e2erun: parse web results: %w (raw: %s)", err, resultsJSON)
+	}
+	rest := make([]platformRowResult, 0, len(parsed))
+	found := false
+	for _, r := range parsed {
+		if r.Index == 0 {
+			found = true
+			if !r.Pass {
+				return nil, fmt.Errorf("e2erun: %s: %s", label, r.Error)
+			}
+			continue
+		}
+		rest = append(rest, platformRowResult{Index: r.Index - 1, Pass: r.Pass, Error: r.Error})
+	}
+	if !found {
+		return nil, fmt.Errorf("e2erun: %s: no result reported for this row", label)
+	}
+	out, err := json.Marshal(rest)
+	if err != nil {
+		return nil, fmt.Errorf("e2erun: re-encode web results: %w", err)
+	}
+	return out, nil
 }

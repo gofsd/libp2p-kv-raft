@@ -313,6 +313,26 @@ async fn handle_request(
             }
         }
 
+        // Value is "target_addr" or "target_addr#note" -- matches
+        // pkg/shmclient.Session.PublicAccess's identical `#`-separated
+        // convention (see do_public_access's doc comment).
+        shmevent::EVENT_PUBLIC_ACCESS => {
+            let raw = String::from_utf8_lossy(&req.value).into_owned();
+            let (target_addr, note) = match raw.split_once('#') {
+                Some((addr, note)) => (addr.to_string(), note.to_string()),
+                None => (raw, String::new()),
+            };
+            match do_public_access(&state, &target_addr, &note).await {
+                Ok(instance_id) => Msg {
+                    event_type: shmevent::EVENT_PUBLIC_ACCESS,
+                    id: req_id,
+                    value: instance_id.into_bytes(),
+                    ..Default::default()
+                },
+                Err(e) => Msg::error(req_id, e.to_string()),
+            }
+        }
+
         // Generic proxy for every remaining single-round-trip event that's
         // actually reachable from a non-voting learner (see
         // crate::client's doc comment for the twelve voter-gated events
@@ -502,6 +522,94 @@ async fn do_connect(
     reject_if_error(&add_resp)?;
 
     Ok(self_id)
+}
+
+/// Dials `target_addr` directly (no relay reservation -- see
+/// `p2p::Handle::connect`'s doc comment on why reserving one here would be
+/// circular) and submits the always-public `public-access` command there
+/// under this tab's own identity, over a signed `EVENT_LOG_APPEND` carrying
+/// a `pkg/logrecord` record keyed `cmdreq:public-access` -- byte-for-byte
+/// what `pkg/daemon.dialAndSubmitPublicAccess` builds and sends, just from
+/// this tab's own Rust/WASM side rather than a co-resident Go daemon.
+/// Returns the request's own instance id (a fresh random hex string),
+/// mirroring that Go function's return value. Refuses `target_addr ==
+/// this tab's own peer id` for the same reason `dialAndSubmitPublicAccess`
+/// does: a node already has every standing in its own cluster.
+async fn do_public_access(
+    state: &Rc<RefCell<WorkerState>>,
+    target_addr: &str,
+    note: &str,
+) -> Result<String, p2p::Error> {
+    let addr: Multiaddr = target_addr
+        .parse()
+        .map_err(|e: libp2p::multiaddr::Error| p2p::Error(e.to_string()))?;
+    let target_peer = addr
+        .iter()
+        .find_map(|p| match p {
+            Protocol::P2p(id) => Some(id),
+            _ => None,
+        })
+        .ok_or_else(|| p2p::Error("multiaddr missing /p2p/<peer-id>".into()))?;
+
+    let handle = state.borrow().handle.clone();
+    let self_id = handle.local_peer_id();
+    if target_peer == self_id {
+        return Err(p2p::Error(format!(
+            "public_access: {self_id} is this node itself -- a node already has every standing in its own cluster"
+        )));
+    }
+
+    crate::p2p::debug_log("kv-raft-web: do_public_access: connecting");
+    handle.connect(addr).await?;
+    crate::p2p::debug_log(&format!("kv-raft-web: do_public_access: connected to {target_peer}"));
+
+    let mut raw = [0u8; 16];
+    getrandom::fill(&mut raw)
+        .map_err(|e| p2p::Error(format!("public_access: generate instance id: {e}")))?;
+    let instance_id = shmevent::hex_encode(&raw);
+
+    let kind = "cmdreq:public-access";
+    let ts = client::now();
+    let rnd = crate::logrecord::new_rand()
+        .map_err(|e| p2p::Error(format!("public_access: {e}")))?;
+    let key = crate::logrecord::build_key(kind, &instance_id, ts, rnd)
+        .map_err(|e| p2p::Error(format!("public_access: {e}")))?;
+
+    let mut fields = HashMap::new();
+    fields.insert("command_id".to_string(), "public-access".to_string());
+    if !note.is_empty() {
+        fields.insert("note".to_string(), note.to_string());
+    }
+    let record = crate::logrecord::Record {
+        kind: kind.to_string(),
+        unit_id: instance_id.clone(),
+        timestamp: ts,
+        author_peer_id: self_id.to_string(),
+        fields,
+        narrative: String::new(),
+    };
+    let value = record
+        .encode()
+        .map_err(|e| p2p::Error(format!("public_access: encode record: {e}")))?;
+    let payload = shmevent::encode_set_payload(&key, &value)
+        .map_err(|e| p2p::Error(format!("public_access: encode payload: {e}")))?;
+
+    let signing_key = state.borrow().signing_key.clone();
+    let mut handle = handle;
+    let resp = call_remote(
+        &mut handle,
+        target_peer,
+        Msg {
+            event_type: shmevent::EVENT_LOG_APPEND,
+            value: payload,
+            id: new_id(),
+            ..Default::default()
+        },
+        Some(&signing_key),
+    )
+    .await?;
+    reject_if_error(&resp)?;
+    Ok(instance_id)
 }
 
 async fn call_remote(

@@ -3282,6 +3282,42 @@ func resolveDialAddr(addr string) (*peer.AddrInfo, error) {
 	return info, nil
 }
 
+// connectRetryAttempts/connectRetryDelay bound connectWithRetry -- mirrors
+// web-app/src/p2p.rs's DIAL_RETRY_ATTEMPTS/DIAL_RETRY_DELAY_MS and its own
+// reasoning: a single lost TCP handshake on a real WAN link is ordinary
+// packet loss on that one attempt, not systemic unreachability, so it's
+// worth one immediate retry or two before surfacing an error.
+const connectRetryAttempts = 3
+
+const connectRetryDelay = 500 * time.Millisecond
+
+// connectWithRetry calls h.Connect(ctx, info), retrying up to
+// connectRetryAttempts times on failure -- see connectRetryAttempts' own
+// doc comment. Used by dialAndSubmitPublicAccess, whose caller (a fresh
+// device with no standing anywhere yet) has nothing else to fall back on
+// if this one dial has a bad moment: caught live, running this project's
+// own e2e pair scenario, a plain unretried Connect intermittently failed
+// with a bare TCP dial timeout to a real, otherwise-reachable remote
+// target.
+func connectWithRetry(ctx context.Context, h lp2phost.Host, info peer.AddrInfo) error {
+	var lastErr error
+	for attempt := 1; attempt <= connectRetryAttempts; attempt++ {
+		if err := h.Connect(ctx, info); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if attempt < connectRetryAttempts {
+			select {
+			case <-time.After(connectRetryDelay):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+	return lastErr
+}
+
 // dialAndSubmitPublicAccess is EventPublicAccess's local-only handler (see
 // that event's doc comment). It dials targetAddr's ClientProtocolID -- the
 // remote-client surface, not a local ipc.Call -- and sends one signed
@@ -3313,7 +3349,7 @@ func (n *Node) dialAndSubmitPublicAccess(ctx context.Context, targetAddr, note s
 	if info.ID.String() == n.peerID {
 		return "", fmt.Errorf("public_access: %s is this node itself -- a node already has every standing in its own cluster", n.peerID)
 	}
-	if err := n.host.Connect(ctx, *info); err != nil {
+	if err := connectWithRetry(ctx, n.host, *info); err != nil {
 		return "", fmt.Errorf("connect to %s: %w", info.ID, err)
 	}
 

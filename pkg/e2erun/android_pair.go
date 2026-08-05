@@ -17,10 +17,11 @@ import (
 )
 
 // loopbackTCPAddrRe matches GetOwnAddr's own last-resort fallback shape,
-// "/ip4/127.0.0.1/tcp/<port>/p2p/<peerid>" -- the only address either of
-// this scenario's throwaway devices ever has, since neither is configured
-// with any relay peers (see runAndroidPairScenarioOn's AAR-build comment)
-// and an emulator has no real public address of its own either.
+// "/ip4/127.0.0.1/tcp/<port>/p2p/<peerid>" -- what either of this
+// scenario's throwaway devices falls back to advertising if its relay
+// reservation through the VPS (see the RequestRelayAccess midOps ahead of
+// every GetOwnAddr call) hasn't completed yet, since an emulator has no
+// real public address of its own either.
 var loopbackTCPAddrRe = regexp.MustCompile(`^/ip4/127\.0\.0\.1/tcp/(\d+)/p2p/(.+)$`)
 
 // forwardLoopbackAddr rewrites addr (serial's own GetOwnAddr result) into
@@ -50,10 +51,49 @@ func forwardLoopbackAddr(serial, addr string) (string, func(), error) {
 	return fmt.Sprintf("/ip4/10.0.2.2/tcp/%s/p2p/%s", hostPort, peerID), cleanup, nil
 }
 
+// resolvePairAddr turns serial's own GetOwnAddr result into an address the
+// *other* device in this scenario can actually dial. Preferred path: addr
+// is already a real, internet-routable /p2p-circuit address through the
+// VPS relay (this scenario's own RequestRelayAccess midOps, ahead of every
+// GetOwnAddr call, is what makes that reservation possible at all -- see
+// GetOwnAddr's "public first, then a relay reservation, then anything
+// else, loopback last" doc comment) -- returned unchanged, no bridging
+// needed, cleanup nil. Fallback: addr is still the bare loopback shape
+// (the reservation hadn't completed by the time GetOwnAddr ran), bridged
+// via forwardLoopbackAddr the same way this scenario always used to.
+func resolvePairAddr(serial, addr string) (resolved string, cleanup func(), err error) {
+	if !loopbackTCPAddrRe.MatchString(addr) {
+		return addr, nil, nil
+	}
+	return forwardLoopbackAddr(serial, addr)
+}
+
 // androidPairApp mirrors android.go's androidAppID constant -- kept as a
 // separate name here only so this file reads self-contained about which
 // app it's driving.
 const androidPairApp = androidAppID
+
+// buildAndroidPairAAR is buildAndroidAAR's pair-scenario counterpart:
+// leaderMultiaddr stays empty (neither StartSoloWithKey nor
+// StartPendingWithKey ever reference it -- see
+// runAndroidPairScenarioOn's own build-site comment), but relayMultiaddr
+// is set to relayMultiaddr so every kvmobile Start variant's shared
+// daemon.Config{RelayPeers: relayPeers()} wiring picks it up regardless of
+// which one actually runs -- what makes RequestRelayAccess (this
+// scenario's own midOps ahead of every GetOwnAddr call) have a real target
+// to ask standing from.
+func buildAndroidPairAAR(repoRoot, relayMultiaddr, serial string) error {
+	aarPath := filepath.Join(repoRoot, "android-app", "app", "libs", "kvmobile.aar")
+	if err := os.MkdirAll(filepath.Dir(aarPath), 0o755); err != nil {
+		return err
+	}
+	ldflags := fmt.Sprintf("-X %[1]s.relayMultiaddr=%[2]s", androidGoPackage, relayMultiaddr)
+	cmd := exec.Command("gomobile", "bind", "-target=android", "-androidapi", "26",
+		"-ldflags", ldflags, "-o", aarPath, "./mobile/kvmobile")
+	cmd.Dir = repoRoot
+	withSerial(cmd, serial)
+	return runCaptured(cmd, "gomobile bind")
+}
 
 // pairKeyHex converts a freshly generated e2edata identity's raw ed25519
 // private key into the hex-encoded, libp2p-marshaled format
@@ -100,6 +140,15 @@ type uiOp struct {
 type pairStep struct {
 	reportAs string
 	resumeOp *uiOp
+	// settleMillis, when non-zero, inserts a "Test: SleepMillis" op right
+	// after resumeOp and before action, within the same invocation -- see
+	// relaySettleMillis's own doc comment for why GetOwnAddr specifically
+	// needs this: a freshly restarted device isn't just waiting on
+	// AutoRelay, it may also (for a device that's already a real solo raft
+	// leader with persisted state, unlike a still-"pending" one) be mid
+	// raft re-election, and GetOwnAddr's own relay-address preference only
+	// reflects whatever's actually settled by the moment it runs.
+	settleMillis string
 	// action is built lazily -- called only once this step actually runs,
 	// since several steps' own inputs (a ticket string) are only known
 	// once an *earlier* step's validate callback has captured it. A
@@ -153,7 +202,7 @@ type pairHold struct {
 // self-healing reprovision path a deleted node identity already goes
 // through, see run.go's own reprovision loop) rather than resuming prior
 // state.
-func runAndroidPairScenario(repoRoot string) *e2edata.AndroidPairResult {
+func runAndroidPairScenario(repoRoot, bootstrapMultiaddr string) *e2edata.AndroidPairResult {
 	serials, err := connectedAndroidSerials()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "e2erun: android pair scenario: skipped: %v\n", err)
@@ -161,10 +210,10 @@ func runAndroidPairScenario(repoRoot string) *e2edata.AndroidPairResult {
 	}
 	switch {
 	case len(serials) >= 3:
-		return runAndroidPairScenarioOn(repoRoot, serials[1], serials[2])
+		return runAndroidPairScenarioOn(repoRoot, bootstrapMultiaddr, serials[1], serials[2])
 	case len(serials) == 2:
 		fmt.Fprintln(os.Stderr, "e2erun: android pair scenario: only 2 device(s)/emulator(s) connected -- reusing device 0 (normally reserved for the shared android node); its installed app and persisted data will be wiped by this scenario's own uninstall step")
-		return runAndroidPairScenarioOn(repoRoot, serials[0], serials[1])
+		return runAndroidPairScenarioOn(repoRoot, bootstrapMultiaddr, serials[0], serials[1])
 	default:
 		fmt.Fprintf(os.Stderr, "e2erun: android pair scenario: skipped: needs at least 2 connected devices/emulators, found %d\n", len(serials))
 		return nil
@@ -181,7 +230,7 @@ func runAndroidPairScenario(repoRoot string) *e2edata.AndroidPairResult {
 // device exists, rather than never running this scenario at all -- a
 // developer with only two spare devices/emulators of their own can drive
 // this the same way, by naming them directly.
-func runAndroidPairScenarioOn(repoRoot string, serialA, serialB string) *e2edata.AndroidPairResult {
+func runAndroidPairScenarioOn(repoRoot, bootstrapMultiaddr, serialA, serialB string) *e2edata.AndroidPairResult {
 	result := &e2edata.AndroidPairResult{RanAt: time.Now()}
 	fail := func(err error) *e2edata.AndroidPairResult {
 		result.Status = e2edata.StatusFail
@@ -210,13 +259,17 @@ func runAndroidPairScenarioOn(repoRoot string, serialA, serialB string) *e2edata
 	}
 
 	// One build, installed onto both devices -- neither StartSoloWithKey
-	// nor StartPendingWithKey reference build-time identity/leader at
-	// all, so this AAR's own bootstrapMultiaddr/identity are irrelevant;
-	// left empty deliberately (see UiCommandE2ETest.kt's preamble
-	// comment on why an empty leaderMultiaddr, not a real one, is what
-	// keeps this build from provisioning some *other* identity before
-	// this scenario's own explicit-keyHex calls ever run).
-	if err := buildAndroidAAR(repoRoot, e2edata.Node{PrivateKey: ""}, "", ""); err != nil {
+	// nor StartPendingWithKey reference build-time leaderMultiaddr at all,
+	// so it stays empty deliberately (see UiCommandE2ETest.kt's preamble
+	// comment on why that, not a real leader, is what keeps this build
+	// from provisioning some *other* identity before this scenario's own
+	// explicit-keyHex calls ever run) -- but relayMultiaddr is set to the
+	// live bootstrap, since every kvmobile Start variant's shared
+	// daemon.Config{RelayPeers: relayPeers()} wiring reads that same
+	// build-time value regardless of which one actually runs, and this
+	// scenario's own RequestRelayAccess midOps (ahead of every GetOwnAddr
+	// call below) need a real relay target to ask standing from.
+	if err := buildAndroidPairAAR(repoRoot, bootstrapMultiaddr, ""); err != nil {
 		return fail(fmt.Errorf("build AAR: %w", err))
 	}
 	if err := gradleInstall(repoRoot, serialA); err != nil {
@@ -265,20 +318,57 @@ func runAndroidPairScenarioOn(repoRoot string, serialA, serialB string) *e2edata
 			action: func() uiOp { return *resumeA },
 		},
 		{
+			// Granted this early -- before A ever touches the relay for
+			// any other reason -- because every build now bakes
+			// relayMultiaddr in (see buildAndroidPairAAR), so A's own
+			// daemon automatically attempts an AutoRelay dial to the VPS
+			// on *every* resume, including this device's very next step
+			// (RecruitPeer (sender), which dials *through* the same relay
+			// peer as its hop). Without standing in place before that
+			// automatic dial, it fails and puts the relay peer into
+			// libp2p's own dial-backoff state within this process --
+			// caught live: RecruitPeer's own explicit dial-through-relay
+			// then immediately failed with "dial backoff" against a peer
+			// it had never consciously dialed itself, moments after this
+			// device's fresh resume silently tried and failed the same
+			// dial on AutoRelay's behalf.
+			reportAs: "Cluster: RequestRelayAccess (A, prep)", serial: serialA, resumeOp: resumeA,
+			action: func() uiOp {
+				return uiOp{label: "Cluster: RequestRelayAccess", inputs: []string{"e2e pair scenario"}}
+			},
+		},
+		{
 			reportAs: "Cluster: StartPendingWithKey (B, prep)", serial: serialB,
 			action:   func() uiOp { return *resumeB },
 			validate: func(output string) error { peerIDB = output; return nil },
 		},
 		{
-			reportAs: "Cluster: GetOwnAddr (B, prep)", serial: serialB, resumeOp: resumeB,
+			// Its own step, one full daemon restart before GetOwnAddr below
+			// -- not bundled into the same invocation -- so that when
+			// GetOwnAddr's own fresh daemon starts up, go-libp2p's AutoRelay
+			// makes its *first* reservation attempt with standing already
+			// in place on the VPS, rather than racing it: standing granted
+			// mid-invocation (the same process AutoRelay already made its
+			// one startup attempt in) was observed live to not get picked
+			// up by a later retry within that same process, regardless of
+			// how long a "Test: SleepMillis" in between waited.
+			reportAs: "Cluster: RequestRelayAccess (B, prep)", serial: serialB, resumeOp: resumeB,
+			action: func() uiOp {
+				return uiOp{label: "Cluster: RequestRelayAccess", inputs: []string{"e2e pair scenario"}}
+			},
+		},
+		{
+			reportAs: "Cluster: GetOwnAddr (B, prep)", serial: serialB, resumeOp: resumeB, settleMillis: relaySettleMillis,
 			action: func() uiOp { return uiOp{label: "Cluster: GetOwnAddr"} },
 			validate: func(output string) error {
-				bridged, cleanup, err := forwardLoopbackAddr(serialB, output)
+				resolved, cleanup, err := resolvePairAddr(serialB, output)
 				if err != nil {
 					return err
 				}
-				cleanupForwards = append(cleanupForwards, cleanup)
-				addrB = bridged
+				if cleanup != nil {
+					cleanupForwards = append(cleanupForwards, cleanup)
+				}
+				addrB = resolved
 				return nil
 			},
 		},
@@ -296,15 +386,22 @@ func runAndroidPairScenarioOn(repoRoot string, serialA, serialB string) *e2edata
 			validate: func(output string) error { inviteA = output; return nil },
 		},
 		{
-			reportAs: "Cluster: GetOwnAddr (A, prep)", serial: serialA, resumeOp: resumeA,
+			// A's own RequestRelayAccess already ran, before RecruitPeer
+			// (sender) up in stepsBeforeRecruit -- see that step's own doc
+			// comment for why it has to run that early. Nothing further to
+			// grant here; this step is just GetOwnAddr, one full restart
+			// past that grant.
+			reportAs: "Cluster: GetOwnAddr (A, prep)", serial: serialA, resumeOp: resumeA, settleMillis: relaySettleMillis,
 			action: func() uiOp { return uiOp{label: "Cluster: GetOwnAddr"} },
 			validate: func(output string) error {
-				bridged, cleanup, err := forwardLoopbackAddr(serialA, output)
+				resolved, cleanup, err := resolvePairAddr(serialA, output)
 				if err != nil {
 					return err
 				}
-				cleanupForwards = append(cleanupForwards, cleanup)
-				addrA = bridged
+				if cleanup != nil {
+					cleanupForwards = append(cleanupForwards, cleanup)
+				}
+				addrA = resolved
 				ticketA = addrA + "#" + inviteA
 				return nil
 			},
@@ -350,6 +447,9 @@ func runAndroidPairScenarioOn(repoRoot string, serialA, serialB string) *e2edata
 		ops := []uiOp{action}
 		if step.resumeOp != nil {
 			ops = []uiOp{*step.resumeOp, action}
+			if step.settleMillis != "" {
+				ops = []uiOp{*step.resumeOp, {label: "Test: SleepMillis", inputs: []string{step.settleMillis}}, action}
+			}
 		}
 		var output string
 		var err error
@@ -466,6 +566,23 @@ func freshKeyHex() (string, error) {
 // dialStartupStagger plus a real emulator's own dial + libp2p security
 // handshake round trip.
 const dialHoldMillis = "25000"
+
+// relaySettleMillis is how long each GetOwnAddr step's own "Test:
+// SleepMillis" (see pairStep.settleMillis) waits, right after that
+// device's resume and before GetOwnAddr itself runs, for two things to
+// settle: go-libp2p's AutoRelay completing its own reservation handshake
+// through the VPS (RequestRelayAccess, a fully separate prior step with
+// its own restart, has already granted the standing that reservation
+// needs -- see that step's own doc comment on why it's split out at all),
+// and -- specifically for device A, already a real solo raft leader with
+// persisted state by this point, unlike B's still-"pending" one -- raft
+// re-establishing its own leadership post-restart (mirrors
+// dialStartupStagger's identical reasoning below, just for this device's
+// own local startup rather than a concurrently-dialing peer). Caught
+// live: without this, A's GetOwnAddr consistently still returned a bare
+// loopback address even on the very next invocation after a successful
+// RequestRelayAccess.
+const relaySettleMillis = "20000"
 
 // dialStartupStagger is how long runDialStep waits after starting
 // recvSerial's hold before starting senderSerial's own dial --

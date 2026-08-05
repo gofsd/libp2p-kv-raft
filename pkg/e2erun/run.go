@@ -150,11 +150,11 @@ func Run(repoRoot, path string, f *e2edata.File, rowIndices []int, types Types) 
 		}
 	}
 
-	// Every known web *and* Android node identity needs relay standing on
-	// the bootstrap before any of its rows can ever reach it -- see
+	// Every known Android node identity needs relay standing on the
+	// bootstrap before any of its rows can ever reach it -- see
 	// GrantRelayAccess's doc comment on why a browser's very first "add"
 	// otherwise hangs out the full relay-reservation timeout against a
-	// freshly (re)provisioned bootstrap. Android needs the identical grant
+	// freshly (re)provisioned bootstrap; Android needs the identical grant
 	// for the identical reason: buildAndroidAAR bakes this same live
 	// bootstrapMultiaddr in as *both* leaderMultiaddr and relayMultiaddr
 	// (see that function's own ldflags), and an emulator with no port
@@ -164,11 +164,26 @@ func Run(repoRoot, path string, f *e2edata.File, rowIndices []int, types Types) 
 	// "context deadline exceeded" (the whole app stuck retrying its own
 	// AutoRelay reservation, never even answering local IPC calls) even
 	// though desktop/remote rows, which dial the bootstrap directly, kept
-	// passing. Granted unconditionally here (not gated on "did the
-	// bootstrap just get reprovisioned") since it's a cheap, idempotent
-	// no-op against a bootstrap that already has this standing recorded.
+	// passing.
+	//
+	// Android stays on this admin-side grant rather than the self-service
+	// request web (runWebNode's own synthetic row 0) and desktop (runRow's
+	// PlatformDesktop branch) now make for themselves: both of those have
+	// an explicit window to request standing *before* the row that needs
+	// it dials anything, but Android's regular rows run through
+	// Kvmobile.start()'s baked-in, fully automatic join -- there's no
+	// point in that sequence to slot an explicit RequestPublicAccess call
+	// in ahead of it without restructuring E2ETest.kt's setup itself (the
+	// same restructuring the pair scenario's own explicit
+	// StartSoloWithKeyAndPort/StartPendingWithKeyAndPort calls *do* have
+	// room for, and does use self-service -- see
+	// runAndroidPairScenarioOn's own RequestRelayAccess steps).
+	//
+	// Granted unconditionally here (not gated on "did the bootstrap just
+	// get reprovisioned") since it's a cheap, idempotent no-op against a
+	// bootstrap that already has this standing recorded.
 	for _, node := range f.Nodes {
-		if node.Platform != e2edata.PlatformWeb && node.Platform != e2edata.PlatformAndroid {
+		if node.Platform != e2edata.PlatformAndroid {
 			continue
 		}
 		if err := GrantRelayAccess(bootstrapPeerID, node.PeerID); err != nil {
@@ -272,7 +287,7 @@ func Run(repoRoot, path string, f *e2edata.File, rowIndices []int, types Types) 
 	}
 
 	if types.AndroidUI {
-		if pairResult := runAndroidPairScenario(repoRoot); pairResult != nil {
+		if pairResult := runAndroidPairScenario(repoRoot, bootstrapMultiaddr); pairResult != nil {
 			if pairResult.Status == e2edata.StatusFail {
 				fmt.Fprintf(os.Stderr, "e2erun: android join/recruit pair scenario: FAIL: %s\n", pairResult.Error)
 				failures++
@@ -321,6 +336,27 @@ func runRow(kvnodeBin, kvctlBin string, nodeID int, node e2edata.Node, bootstrap
 	case e2edata.PlatformDesktop:
 		if err := EnsureLocalDesktopNode(kvnodeBin, nodeID, node, bootstrapMultiaddr); err != nil {
 			return e2edata.StatusFail, err.Error()
+		}
+		// Self-service, not the admin-side grant GrantRelayAccess gives
+		// web/Android: a desktop e2e node already runs with -relay-peer
+		// set to the same bootstrap (see EnsureLocalDesktopNode's own doc
+		// comment on why -- a desktop dialing in over a real WAN link
+		// needs exactly the same relay reservation web/Android do, this
+		// sandbox's own direct-reachable path just happens not to
+		// exercise that need). Requesting standing itself needs none, so
+		// this can run before the row's own "add" ever does -- unlike
+		// web/Android's regular flow, where the equivalent request would
+		// have to happen *before* Start()'s own automatic join, and
+		// nothing in that flow offers a window to do so without
+		// restructuring it (see GrantRelayAccess's own doc comment).
+		// Idempotent (PutPeerGroup is a plain set-membership write), so
+		// calling it again for every row of an already-granted identity
+		// is harmless -- matches GrantRelayAccess's own "unconditional,
+		// not gated" reasoning.
+		if bootstrapMultiaddr != "" {
+			if status, errMsg := sendEventLocal(kvctlBin, node.PeerID, e2edata.NewEvent(shmevent.EventPublicAccess, 0, 0, []byte(bootstrapMultiaddr), 0)); status != e2edata.StatusPass {
+				return e2edata.StatusFail, fmt.Sprintf("request public access: %s", errMsg)
+			}
 		}
 		return retryReadsIfNeeded(ev, func() (int, string) { return sendEventLocal(kvctlBin, node.PeerID, ev) })
 	default:

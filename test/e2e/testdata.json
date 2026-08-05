@@ -9,27 +9,27 @@
   "nodes": {
     "1": {
       "platform": "desktop",
-      "peer_id": "12D3KooWD66sq69Ejex1aehGCVTnPUZxcvL9RiMZ1a6WDLzxUn9e",
-      "public_key": "309b103c861650321d19a34b9601dd866b59c68e099fc9498835db8c1fe32a51",
-      "private_key": "6645c92ff12bdc6f215047f62c059aff3e924b177f72ac416de17916e316ce92309b103c861650321d19a34b9601dd866b59c68e099fc9498835db8c1fe32a51"
+      "peer_id": "12D3KooWRRQwAn8VQcY9GNeAVVwnPJ2j5ER5Gu66HURseXvbtjk9",
+      "public_key": "e7d9c27a5eb32eef7659133a9491d5010177e7cc8df8a1206de58554def5dbe6",
+      "private_key": "335d730dd84346ad36f5508eb4d06ba448aed8c4e5c93194d5337aacc844d698e7d9c27a5eb32eef7659133a9491d5010177e7cc8df8a1206de58554def5dbe6"
     },
     "2": {
       "platform": "android",
-      "peer_id": "12D3KooWQnGmTeZWtfdCcVxtATsyHLAawuBGZZH6pBqjANnCy6cP",
-      "public_key": "de5608eb0932a0f5bc29251a3e12df7a37beccaf34599288c225deda91dc5b08",
-      "private_key": "5dce1126d2f3c72d69131b4349f61f51ef39aa6967b5b48b4fcb2c4bba658cd4de5608eb0932a0f5bc29251a3e12df7a37beccaf34599288c225deda91dc5b08"
+      "peer_id": "12D3KooWJkZtTZjJk2ZAXQojM6dJZnfdnaU6U9oKr2FBdZqGYPxL",
+      "public_key": "84c01c2cbc4e169a77f08065afa99ad8c67ee4016f2a7179b21753687bf80e69",
+      "private_key": "0ed60ab83932dd6bf146ec0d2abbb80a1b1576a3440ea7b405faf6609c1059cb84c01c2cbc4e169a77f08065afa99ad8c67ee4016f2a7179b21753687bf80e69"
     },
     "3": {
       "platform": "web",
-      "peer_id": "12D3KooWGoahKtAfiERBE6aKXWg4jgr2QnYY5bnwnzwofBRs7DAp",
-      "public_key": "67ce646e6b02504a29282351bd4771ba523c07fa133bfd5bb0f34889bcce5479",
-      "private_key": "aa737353af94fde0077c4a6bb0796307d720131dc23b60728df7e3b586bebb5667ce646e6b02504a29282351bd4771ba523c07fa133bfd5bb0f34889bcce5479"
+      "peer_id": "12D3KooWPFk3xSgcpVy96KJBZ9qptcSUwhwjivZWWjQ1xYFLQ7Yk",
+      "public_key": "c7a83184292084fe15139500196b26343711a44eab4567143e12dc3838edcfd1",
+      "private_key": "67baabada3fc5a667bc4e5775fcb75ae53bde67bb558f7e7b0038ef699028c1ac7a83184292084fe15139500196b26343711a44eab4567143e12dc3838edcfd1"
     },
     "4": {
       "platform": "remote",
-      "peer_id": "12D3KooWMxTdbQ3kxM6b8v9pcvrkpqf1KxdQUWG8PZn5uhecij4g",
-      "public_key": "b45f110855d445b44eb54c44aa551f0fb01f30a11a2e7984373373ee0132b475",
-      "private_key": "b8fe60e6d678d4c2c9a3f0d68f89db555445a927175eb4af96d286a463445fe3b45f110855d445b44eb54c44aa551f0fb01f30a11a2e7984373373ee0132b475"
+      "peer_id": "12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz",
+      "public_key": "3417c98ded31b3743d4555f003f792ca64b8bc956e41b606a37d2b01be701af7",
+      "private_key": "c8330cd4af538d1401419761dcd70ef4e84a833fd917cd5ac7d51369e837b0343417c98ded31b3743d4555f003f792ca64b8bc956e41b606a37d2b01be701af7"
     }
   },
   "rows": [
@@ -91,7 +91,8 @@
         "event": "add",
         "value": "BOOTSTRAP"
       },
-      "status": 0,
+      "status": 1,
+      "error": "e2erun: pull android results (instrument output: \ncom.gofsd.kvdemo.E2ETest:\nError in runRows(com.gofsd.kvdemo.E2ETest):\ngo.Universe$proxyerror: kvmobile: join cluster: shmclient: add: join: connect to leader 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: failed to dial: failed to dial 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] dial tcp4 0.0.0.0:42777-\u003e63.250.47.155:4101: i/o timeout\n\tat kvmobile.Kvmobile.start(Native Method)\n\tat com.gofsd.kvdemo.E2ETest.runRows(E2ETest.kt:40)\n\n\nTime: 50.073\nThere was 1 failure:\n1) runRows(com.gofsd.kvdemo.E2ETest)\ngo.Universe$proxyerror: kvmobile: join cluster: shmclient: add: join: connect to leader 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: failed to dial: failed to dial 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] dial tcp4 0.0.0.0:42777-\u003e63.250.47.155:4101: i/o timeout\n\tat kvmobile.Kvmobile.start(Native Method)\n\tat com.gofsd.kvdemo.E2ETest.runRows(E2ETest.kt:40)\n\nFAILURES!!!\nTests run: 1,  Failures: 1\n\n\n): exit status 1: adb: error: failed to stat remote object '/sdcard/Android/data/com.gofsd.kvdemo/files/e2e_results.json': No such file or directory\n",
       "platform": "android"
     },
     {
@@ -100,7 +101,8 @@
       "event": {
         "event": "get_public_key"
       },
-      "status": 0,
+      "status": 1,
+      "error": "e2erun: pull android results (instrument output: \ncom.gofsd.kvdemo.E2ETest:\nError in runRows(com.gofsd.kvdemo.E2ETest):\ngo.Universe$proxyerror: kvmobile: join cluster: shmclient: add: join: connect to leader 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: failed to dial: failed to dial 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] dial tcp4 0.0.0.0:42777-\u003e63.250.47.155:4101: i/o timeout\n\tat kvmobile.Kvmobile.start(Native Method)\n\tat com.gofsd.kvdemo.E2ETest.runRows(E2ETest.kt:40)\n\n\nTime: 50.073\nThere was 1 failure:\n1) runRows(com.gofsd.kvdemo.E2ETest)\ngo.Universe$proxyerror: kvmobile: join cluster: shmclient: add: join: connect to leader 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: failed to dial: failed to dial 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] dial tcp4 0.0.0.0:42777-\u003e63.250.47.155:4101: i/o timeout\n\tat kvmobile.Kvmobile.start(Native Method)\n\tat com.gofsd.kvdemo.E2ETest.runRows(E2ETest.kt:40)\n\nFAILURES!!!\nTests run: 1,  Failures: 1\n\n\n): exit status 1: adb: error: failed to stat remote object '/sdcard/Android/data/com.gofsd.kvdemo/files/e2e_results.json': No such file or directory\n",
       "platform": "android"
     },
     {
@@ -111,7 +113,8 @@
         "value": "hello-android",
         "id": 200
       },
-      "status": 0,
+      "status": 1,
+      "error": "e2erun: pull android results (instrument output: \ncom.gofsd.kvdemo.E2ETest:\nError in runRows(com.gofsd.kvdemo.E2ETest):\ngo.Universe$proxyerror: kvmobile: join cluster: shmclient: add: join: connect to leader 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: failed to dial: failed to dial 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] dial tcp4 0.0.0.0:42777-\u003e63.250.47.155:4101: i/o timeout\n\tat kvmobile.Kvmobile.start(Native Method)\n\tat com.gofsd.kvdemo.E2ETest.runRows(E2ETest.kt:40)\n\n\nTime: 50.073\nThere was 1 failure:\n1) runRows(com.gofsd.kvdemo.E2ETest)\ngo.Universe$proxyerror: kvmobile: join cluster: shmclient: add: join: connect to leader 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: failed to dial: failed to dial 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] dial tcp4 0.0.0.0:42777-\u003e63.250.47.155:4101: i/o timeout\n\tat kvmobile.Kvmobile.start(Native Method)\n\tat com.gofsd.kvdemo.E2ETest.runRows(E2ETest.kt:40)\n\nFAILURES!!!\nTests run: 1,  Failures: 1\n\n\n): exit status 1: adb: error: failed to stat remote object '/sdcard/Android/data/com.gofsd.kvdemo/files/e2e_results.json': No such file or directory\n",
       "platform": "android"
     },
     {
@@ -122,7 +125,8 @@
         "source_id": 200,
         "value": "world-android"
       },
-      "status": 0,
+      "status": 1,
+      "error": "e2erun: pull android results (instrument output: \ncom.gofsd.kvdemo.E2ETest:\nError in runRows(com.gofsd.kvdemo.E2ETest):\ngo.Universe$proxyerror: kvmobile: join cluster: shmclient: add: join: connect to leader 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: failed to dial: failed to dial 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] dial tcp4 0.0.0.0:42777-\u003e63.250.47.155:4101: i/o timeout\n\tat kvmobile.Kvmobile.start(Native Method)\n\tat com.gofsd.kvdemo.E2ETest.runRows(E2ETest.kt:40)\n\n\nTime: 50.073\nThere was 1 failure:\n1) runRows(com.gofsd.kvdemo.E2ETest)\ngo.Universe$proxyerror: kvmobile: join cluster: shmclient: add: join: connect to leader 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: failed to dial: failed to dial 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] dial tcp4 0.0.0.0:42777-\u003e63.250.47.155:4101: i/o timeout\n\tat kvmobile.Kvmobile.start(Native Method)\n\tat com.gofsd.kvdemo.E2ETest.runRows(E2ETest.kt:40)\n\nFAILURES!!!\nTests run: 1,  Failures: 1\n\n\n): exit status 1: adb: error: failed to stat remote object '/sdcard/Android/data/com.gofsd.kvdemo/files/e2e_results.json': No such file or directory\n",
       "platform": "android"
     },
     {
@@ -132,7 +136,8 @@
         "event": "get_field",
         "value": "hello-android"
       },
-      "status": 0,
+      "status": 1,
+      "error": "e2erun: pull android results (instrument output: \ncom.gofsd.kvdemo.E2ETest:\nError in runRows(com.gofsd.kvdemo.E2ETest):\ngo.Universe$proxyerror: kvmobile: join cluster: shmclient: add: join: connect to leader 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: failed to dial: failed to dial 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] dial tcp4 0.0.0.0:42777-\u003e63.250.47.155:4101: i/o timeout\n\tat kvmobile.Kvmobile.start(Native Method)\n\tat com.gofsd.kvdemo.E2ETest.runRows(E2ETest.kt:40)\n\n\nTime: 50.073\nThere was 1 failure:\n1) runRows(com.gofsd.kvdemo.E2ETest)\ngo.Universe$proxyerror: kvmobile: join cluster: shmclient: add: join: connect to leader 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: failed to dial: failed to dial 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] dial tcp4 0.0.0.0:42777-\u003e63.250.47.155:4101: i/o timeout\n\tat kvmobile.Kvmobile.start(Native Method)\n\tat com.gofsd.kvdemo.E2ETest.runRows(E2ETest.kt:40)\n\nFAILURES!!!\nTests run: 1,  Failures: 1\n\n\n): exit status 1: adb: error: failed to stat remote object '/sdcard/Android/data/com.gofsd.kvdemo/files/e2e_results.json': No such file or directory\n",
       "platform": "android"
     },
     {
@@ -244,7 +249,8 @@
         "event": "add",
         "value": "BOOTSTRAP"
       },
-      "status": 0,
+      "status": 1,
+      "error": "e2erun: pull android results (instrument output: \ncom.gofsd.kvdemo.E2ETest:\nError in runRows(com.gofsd.kvdemo.E2ETest):\ngo.Universe$proxyerror: kvmobile: join cluster: shmclient: add: join: connect to leader 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: failed to dial: failed to dial 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] dial tcp4 0.0.0.0:42777-\u003e63.250.47.155:4101: i/o timeout\n\tat kvmobile.Kvmobile.start(Native Method)\n\tat com.gofsd.kvdemo.E2ETest.runRows(E2ETest.kt:40)\n\n\nTime: 50.073\nThere was 1 failure:\n1) runRows(com.gofsd.kvdemo.E2ETest)\ngo.Universe$proxyerror: kvmobile: join cluster: shmclient: add: join: connect to leader 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: failed to dial: failed to dial 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] dial tcp4 0.0.0.0:42777-\u003e63.250.47.155:4101: i/o timeout\n\tat kvmobile.Kvmobile.start(Native Method)\n\tat com.gofsd.kvdemo.E2ETest.runRows(E2ETest.kt:40)\n\nFAILURES!!!\nTests run: 1,  Failures: 1\n\n\n): exit status 1: adb: error: failed to stat remote object '/sdcard/Android/data/com.gofsd.kvdemo/files/e2e_results.json': No such file or directory\n",
       "platform": "android"
     },
     {
@@ -253,7 +259,8 @@
       "event": {
         "event": "get_public_key"
       },
-      "status": 0,
+      "status": 1,
+      "error": "e2erun: pull android results (instrument output: \ncom.gofsd.kvdemo.E2ETest:\nError in runRows(com.gofsd.kvdemo.E2ETest):\ngo.Universe$proxyerror: kvmobile: join cluster: shmclient: add: join: connect to leader 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: failed to dial: failed to dial 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] dial tcp4 0.0.0.0:42777-\u003e63.250.47.155:4101: i/o timeout\n\tat kvmobile.Kvmobile.start(Native Method)\n\tat com.gofsd.kvdemo.E2ETest.runRows(E2ETest.kt:40)\n\n\nTime: 50.073\nThere was 1 failure:\n1) runRows(com.gofsd.kvdemo.E2ETest)\ngo.Universe$proxyerror: kvmobile: join cluster: shmclient: add: join: connect to leader 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: failed to dial: failed to dial 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] dial tcp4 0.0.0.0:42777-\u003e63.250.47.155:4101: i/o timeout\n\tat kvmobile.Kvmobile.start(Native Method)\n\tat com.gofsd.kvdemo.E2ETest.runRows(E2ETest.kt:40)\n\nFAILURES!!!\nTests run: 1,  Failures: 1\n\n\n): exit status 1: adb: error: failed to stat remote object '/sdcard/Android/data/com.gofsd.kvdemo/files/e2e_results.json': No such file or directory\n",
       "platform": "android"
     },
     {
@@ -264,7 +271,8 @@
         "value": "hello-android",
         "id": 200
       },
-      "status": 0,
+      "status": 1,
+      "error": "e2erun: pull android results (instrument output: \ncom.gofsd.kvdemo.E2ETest:\nError in runRows(com.gofsd.kvdemo.E2ETest):\ngo.Universe$proxyerror: kvmobile: join cluster: shmclient: add: join: connect to leader 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: failed to dial: failed to dial 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] dial tcp4 0.0.0.0:42777-\u003e63.250.47.155:4101: i/o timeout\n\tat kvmobile.Kvmobile.start(Native Method)\n\tat com.gofsd.kvdemo.E2ETest.runRows(E2ETest.kt:40)\n\n\nTime: 50.073\nThere was 1 failure:\n1) runRows(com.gofsd.kvdemo.E2ETest)\ngo.Universe$proxyerror: kvmobile: join cluster: shmclient: add: join: connect to leader 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: failed to dial: failed to dial 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] dial tcp4 0.0.0.0:42777-\u003e63.250.47.155:4101: i/o timeout\n\tat kvmobile.Kvmobile.start(Native Method)\n\tat com.gofsd.kvdemo.E2ETest.runRows(E2ETest.kt:40)\n\nFAILURES!!!\nTests run: 1,  Failures: 1\n\n\n): exit status 1: adb: error: failed to stat remote object '/sdcard/Android/data/com.gofsd.kvdemo/files/e2e_results.json': No such file or directory\n",
       "platform": "android"
     },
     {
@@ -275,7 +283,8 @@
         "source_id": 200,
         "value": "world-android"
       },
-      "status": 0,
+      "status": 1,
+      "error": "e2erun: pull android results (instrument output: \ncom.gofsd.kvdemo.E2ETest:\nError in runRows(com.gofsd.kvdemo.E2ETest):\ngo.Universe$proxyerror: kvmobile: join cluster: shmclient: add: join: connect to leader 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: failed to dial: failed to dial 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] dial tcp4 0.0.0.0:42777-\u003e63.250.47.155:4101: i/o timeout\n\tat kvmobile.Kvmobile.start(Native Method)\n\tat com.gofsd.kvdemo.E2ETest.runRows(E2ETest.kt:40)\n\n\nTime: 50.073\nThere was 1 failure:\n1) runRows(com.gofsd.kvdemo.E2ETest)\ngo.Universe$proxyerror: kvmobile: join cluster: shmclient: add: join: connect to leader 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: failed to dial: failed to dial 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] dial tcp4 0.0.0.0:42777-\u003e63.250.47.155:4101: i/o timeout\n\tat kvmobile.Kvmobile.start(Native Method)\n\tat com.gofsd.kvdemo.E2ETest.runRows(E2ETest.kt:40)\n\nFAILURES!!!\nTests run: 1,  Failures: 1\n\n\n): exit status 1: adb: error: failed to stat remote object '/sdcard/Android/data/com.gofsd.kvdemo/files/e2e_results.json': No such file or directory\n",
       "platform": "android"
     },
     {
@@ -285,7 +294,8 @@
         "event": "get_field",
         "value": "hello-android"
       },
-      "status": 0,
+      "status": 1,
+      "error": "e2erun: pull android results (instrument output: \ncom.gofsd.kvdemo.E2ETest:\nError in runRows(com.gofsd.kvdemo.E2ETest):\ngo.Universe$proxyerror: kvmobile: join cluster: shmclient: add: join: connect to leader 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: failed to dial: failed to dial 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] dial tcp4 0.0.0.0:42777-\u003e63.250.47.155:4101: i/o timeout\n\tat kvmobile.Kvmobile.start(Native Method)\n\tat com.gofsd.kvdemo.E2ETest.runRows(E2ETest.kt:40)\n\n\nTime: 50.073\nThere was 1 failure:\n1) runRows(com.gofsd.kvdemo.E2ETest)\ngo.Universe$proxyerror: kvmobile: join cluster: shmclient: add: join: connect to leader 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: failed to dial: failed to dial 12D3KooWDKiQYTzqJCnhXwgHLKceSBq7zNvBt7mwuZvXnADwunSz: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] dial tcp4 0.0.0.0:42777-\u003e63.250.47.155:4101: i/o timeout\n\tat kvmobile.Kvmobile.start(Native Method)\n\tat com.gofsd.kvdemo.E2ETest.runRows(E2ETest.kt:40)\n\nFAILURES!!!\nTests run: 1,  Failures: 1\n\n\n): exit status 1: adb: error: failed to stat remote object '/sdcard/Android/data/com.gofsd.kvdemo/files/e2e_results.json': No such file or directory\n",
       "platform": "android"
     },
     {
@@ -799,370 +809,73 @@
     }
   },
   "android_ui_result": {
-    "ran_at": "2026-08-05T03:43:51.868340167+03:00",
-    "status": 0,
+    "ran_at": "2026-08-05T05:57:05.217957992+03:00",
+    "status": 0
+  },
+  "android_ui_pair_result": {
+    "ran_at": "2026-08-05T05:57:05.220575255+03:00",
+    "status": 1,
+    "error": "Cluster: RecruitPeer (sender): Cluster: RecruitPeer: expected success, got: Cluster: RecruitPeer(/ip4/10.0.2.2/tcp/44457/p2p/12D3KooWKXFo65uS3eUYLXWxr7jkheEak4hGWobxyKhhqC2VGpQQ#f17c982c7d4d3b83c3c96a361336323e, learner) FAILED: kvmobile: recruit peer: shmclient: recruit: recruit: read response from 12D3KooWKXFo65uS3eUYLXWxr7jkheEak4hGWobxyKhhqC2VGpQQ: stream reset: stream reset: connection closed: read tcp4 10.0.2.16:47101-\u003e10.0.2.2:44457: read: connection reset by peer",
     "cases": [
       {
-        "command": "Cluster: Start",
-        "pass": true,
-        "output": "12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ"
-      },
-      {
-        "command": "Cluster: StartWithKey",
-        "pass": true,
-        "output": "12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ"
-      },
-      {
-        "command": "Cluster: Join",
+        "command": "Cluster: StartSoloWithKey (A, prep)",
         "pass": true
       },
       {
-        "command": "Cluster: JoinWithKey",
+        "command": "Cluster: RequestRelayAccess (A, prep)",
         "pass": true
       },
       {
-        "command": "Cluster: StartSolo",
+        "command": "Cluster: StartPendingWithKey (B, prep)",
         "pass": true
       },
       {
-        "command": "Cluster: StartSoloWithKey",
+        "command": "Cluster: RequestRelayAccess (B, prep)",
         "pass": true
       },
       {
-        "command": "Cluster: StartSoloWithKeyAndPort",
+        "command": "Cluster: GetOwnAddr (B, prep)",
         "pass": true
       },
       {
-        "command": "Cluster: StartPending",
+        "command": "Cluster: CreateJoinRequest (B, prep)",
         "pass": true
       },
       {
-        "command": "Cluster: StartPendingWithKey",
+        "command": "Cluster: RecruitPeer (sender)",
+        "pass": false,
+        "error": "Cluster: RecruitPeer: expected success, got: Cluster: RecruitPeer(/ip4/10.0.2.2/tcp/44457/p2p/12D3KooWKXFo65uS3eUYLXWxr7jkheEak4hGWobxyKhhqC2VGpQQ#f17c982c7d4d3b83c3c96a361336323e, learner) FAILED: kvmobile: recruit peer: shmclient: recruit: recruit: read response from 12D3KooWKXFo65uS3eUYLXWxr7jkheEak4hGWobxyKhhqC2VGpQQ: stream reset: stream reset: connection closed: read tcp4 10.0.2.16:47101-\u003e10.0.2.2:44457: read: connection reset by peer"
+      },
+      {
+        "command": "Cluster: RecruitPeer (receiver)",
+        "pass": false,
+        "error": "ListClusterMembers = 0 member(s), want 2 ([])"
+      },
+      {
+        "command": "Cluster: CreateJoinInvite (A, prep)",
         "pass": true
       },
       {
-        "command": "Cluster: StartPendingWithKeyAndPort",
+        "command": "Cluster: GetOwnAddr (A, prep)",
         "pass": true
       },
       {
-        "command": "Cluster: GetOwnAddr",
-        "pass": true,
-        "output": "/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWMxTdbQ3kxM6b8v9pcvrkpqf1KxdQUWG8PZn5uhecij4g/p2p-circuit/p2p/12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ"
+        "command": "Cluster: Join (sender)",
+        "pass": false,
+        "error": "Cluster: Join: expected success, got: Cluster: Join(/ip4/10.0.2.2/tcp/35477/p2p/12D3KooWRfkCqkHLYzwfKHkp5izXMWXXHpWJ71aepTU3y5zmnqsd#691e969832c91347795d01c37718fe30) FAILED: kvmobile: join cluster: shmclient: add: join: connect to leader 12D3KooWRfkCqkHLYzwfKHkp5izXMWXXHpWJ71aepTU3y5zmnqsd: failed to dial: failed to dial 12D3KooWRfkCqkHLYzwfKHkp5izXMWXXHpWJ71aepTU3y5zmnqsd: all dials failed\n  * [/ip4/10.0.2.2/tcp/35477] dial tcp4 0.0.0.0:41261-\u003e10.0.2.2:35477: i/o timeout"
       },
       {
-        "command": "Cluster: CreateJoinRequest",
-        "pass": true,
-        "output": "9f368fca693c92cd00c3e6ef5ec7d83d"
+        "command": "Cluster: Join (receiver)",
+        "pass": false,
+        "error": "ListClusterMembers = 1 member(s), want 2 ([{\"peer_id\":\"12D3KooWRfkCqkHLYzwfKHkp5izXMWXXHpWJ71aepTU3y5zmnqsd\",\"role\":\"leader\"}])"
       },
       {
-        "command": "Cluster: CancelJoinRequest",
-        "pass": true
+        "command": "Cluster: Leave (B)",
+        "pass": false,
+        "error": "Cluster: Leave: expected success, got: Cluster: Leave() FAILED: kvmobile: leave: shmclient: leave: node has not been added to a cluster yet"
       },
       {
-        "command": "Cluster: RecruitPeer",
-        "pass": true
-      },
-      {
-        "command": "Cluster: CreateJoinRequestTicket",
-        "pass": true
-      },
-      {
-        "command": "Cluster: RedeemJoinRequestTicket",
-        "pass": true
-      },
-      {
-        "command": "Cluster: CreateJoinInvite",
-        "pass": true
-      },
-      {
-        "command": "Cluster: RevokeJoinInvite",
-        "pass": true
-      },
-      {
-        "command": "Cluster: CreateJoinInviteTicket",
-        "pass": true
-      },
-      {
-        "command": "Cluster: VerifyJoinInviteTicket",
-        "pass": true
-      },
-      {
-        "command": "Cluster: Stop",
-        "pass": true
-      },
-      {
-        "command": "Cluster: Delete",
-        "pass": true
-      },
-      {
-        "command": "Cluster: Leave",
-        "pass": true
-      },
-      {
-        "command": "Cluster: Rm",
-        "pass": true
-      },
-      {
-        "command": "Cluster: Kick",
-        "pass": true
-      },
-      {
-        "command": "Cluster: ListClusters",
-        "pass": true,
-        "output": "[{\"cluster_id\":\"12D3KooWMxTdbQ3kxM6b8v9pcvrkpqf1KxdQUWG8PZn5uhecij4g\",\"peer_id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\"}]"
-      },
-      {
-        "command": "Cluster: ListClusterMembers",
-        "pass": true,
-        "output": "[{\"peer_id\":\"12D3KooWMxTdbQ3kxM6b8v9pcvrkpqf1KxdQUWG8PZn5uhecij4g\",\"role\":\"leader\"},{\"peer_id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"role\":\"learner\"}]"
-      },
-      {
-        "command": "Cluster: PeerID",
-        "pass": true,
-        "output": "12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ"
-      },
-      {
-        "command": "Cluster: AccessToken",
-        "pass": true,
-        "output": "dd78168b830eae132ab394564ae7d02fe18926f945210d5dc0159576e4262801"
-      },
-      {
-        "command": "KV: Submit",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "KV: Get",
-        "pass": true,
-        "output": "e2e-ui-test-value-1785890393917"
-      },
-      {
-        "command": "KV: RangeScan",
-        "pass": true,
-        "output": "[{\"key\":\"e2e-ui-test-key\",\"value\":\"e2e-ui-test-value-1785890393917\"}]"
-      },
-      {
-        "command": "Permits: RequestPermit",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Permits: ConfirmPermit",
-        "pass": true
-      },
-      {
-        "command": "Permits: RevokePermit",
-        "pass": true
-      },
-      {
-        "command": "Execute: Execute",
-        "pass": true
-      },
-      {
-        "command": "Execute: PollExecute",
-        "pass": true,
-        "output": "{\"pending\":false}"
-      },
-      {
-        "command": "Execute: WatchExecute",
-        "pass": true,
-        "output": "Watching -- notifications appear below as they arrive"
-      },
-      {
-        "command": "Execute: StopWatchExecute",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Channel: OpenChannel",
-        "pass": true
-      },
-      {
-        "command": "Channel: ListenChannel",
-        "pass": true
-      },
-      {
-        "command": "Channel: StopListenChannel",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Channel: SendChannelData",
-        "pass": true
-      },
-      {
-        "command": "Channel: CloseChannelWrite",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Channel: CloseChannel",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Channel: StopChannel",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Log records: LogAppend",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Log records: LogQuery",
-        "pass": true,
-        "output": "[{\"kind\":\"e2e-ui-test\",\"unit_id\":\"ui-test-unit\",\"timestamp\":\"2026-08-05T00:40:53.300752396Z\",\"author_peer_id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"narrative\":\"ui e2e test\"}]"
-      },
-      {
-        "command": "Group: CreateGroup",
-        "pass": true
-      },
-      {
-        "command": "Group: UpdateGroup",
-        "pass": true
-      },
-      {
-        "command": "Group: DeleteGroup",
-        "pass": true
-      },
-      {
-        "command": "Group: GetGroup",
-        "pass": true
-      },
-      {
-        "command": "Group: ListGroups",
-        "pass": true,
-        "output": "[{\"id\":\"12D3KooWMxTdbQ3kxM6b8v9pcvrkpqf1KxdQUWG8PZn5uhecij4g\",\"name\":\"12D3KooWMxTdbQ3kxM6b8v9pcvrkpqf1KxdQUWG8PZn5uhecij4g\",\"public\":false},{\"id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"name\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"public\":false},{\"id\":\"channel\",\"name\":\"channel\",\"public\":false},{\"id\":\"cluster\",\"name\":\"cluster\",\"public\":false},{\"id\":\"execute\",\"name\":\"execute\",\"public\":false},{\"id\":\"learner\",\"name\":\"learner\",\"public\":false},{\"id\":\"public\",\"name\":\"public\",\"public\":true},{\"id\":\"relay\",\"name\":\"relay\",\"public\":false},{\"id\":\"remote\",\"name\":\"remote\",\"public\":false},{\"id\":\"voter\",\"name\":\"voter\",\"public\":false}]"
-      },
-      {
-        "command": "Command: CreateCommand",
-        "pass": true
-      },
-      {
-        "command": "Command: UpdateCommand",
-        "pass": true
-      },
-      {
-        "command": "Command: DeleteCommand",
-        "pass": true
-      },
-      {
-        "command": "Command: GetCommand",
-        "pass": true
-      },
-      {
-        "command": "Command: ListCommands",
-        "pass": true,
-        "output": "[{\"id\":\"public-access\",\"name\":\"public-access\",\"target_peer_id\":\"\"}]"
-      },
-      {
-        "command": "Links: AddCommandToGroup",
-        "pass": true
-      },
-      {
-        "command": "Links: RemoveCommandFromGroup",
-        "pass": true
-      },
-      {
-        "command": "Links: ListGroupsForCommand",
-        "pass": true,
-        "output": "[]"
-      },
-      {
-        "command": "Links: AddPeerToGroup",
-        "pass": true
-      },
-      {
-        "command": "Links: RemovePeerFromGroup",
-        "pass": true
-      },
-      {
-        "command": "Links: ListGroupsForPeer",
-        "pass": true,
-        "output": "[\"cluster\",\"learner\"]"
-      },
-      {
-        "command": "Dispatch: SubmitCommand",
-        "pass": true
-      },
-      {
-        "command": "Dispatch: GetCommandRequest",
-        "pass": true
-      },
-      {
-        "command": "Dispatch: ListCommandRequests",
-        "pass": true,
-        "output": "[]"
-      },
-      {
-        "command": "Dispatch: ListExecutionsByPeer",
-        "pass": true,
-        "output": "[]"
-      },
-      {
-        "command": "Dispatch: AppendCommandLog",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Dispatch: QueryCommandLog",
-        "pass": true,
-        "output": "[{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-05T00:41:26.50585136Z\",\"author_peer_id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"narrative\":\"ui e2e test\"}]"
-      },
-      {
-        "command": "Dispatch: LatestCommandLog",
-        "pass": true,
-        "output": "{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-05T00:41:26.50585136Z\",\"author_peer_id\":\"12D3KooWQucexJKKyAA3EH5DRh49qa7d7PdevjJkLc9GW455t8NQ\",\"narrative\":\"ui e2e test\"}"
-      },
-      {
-        "command": "Dispatch: WatchCommandLog",
-        "pass": true,
-        "output": "Watching -- new records appear below as they arrive"
-      },
-      {
-        "command": "Dispatch: StopWatchCommandLog",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Dispatch: RunCommandDispatcher",
-        "pass": true,
-        "output": "Dispatching -- requests for no-such-command are handled as they arrive, logged below"
-      },
-      {
-        "command": "Dispatch: StopCommandDispatcher",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "ExecInvite: CreateExecInvite",
-        "pass": true
-      },
-      {
-        "command": "ExecInvite: RevokeExecInvite",
-        "pass": true
-      },
-      {
-        "command": "ExecInvite: RedeemExecInvite",
-        "pass": true
-      },
-      {
-        "command": "ExecInvite: CreateExecInviteTicket",
-        "pass": true
-      },
-      {
-        "command": "ExecInvite: RedeemExecInviteTicket",
-        "pass": true
-      },
-      {
-        "command": "Raw: SendEvent",
-        "pass": true,
-        "output": "{\"event\":\"get_public_key\",\"value\":\"0xe0379675fd5c73fd31c330ea8db67a3a94db7b57bc675dad2e1de39fe9eb77cd\",\"id\":49850}"
-      },
-      {
-        "command": "Test: SleepMillis",
+        "command": "Cluster: Leave (verify via A)",
         "pass": true
       }
     ]
