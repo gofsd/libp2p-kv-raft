@@ -23,6 +23,14 @@
 # Set SKIP_E2E=1 to bypass this for a push that genuinely can't reach the
 # e2e infrastructure (e.g. no network to the SSH bootstrap host) -- deliberate,
 # so the escape hatch is visible in the command line, not a silent --no-verify.
+#
+# To narrow either gate to specific test targets instead of skipping
+# entirely, set ONLY or EXCLUDE (both propagate through this hook's
+# inherited environment to whichever `mage e2e:*` target runs above, no
+# separate flag needed here) -- e.g. `EXCLUDE=3,4 git push --tags` runs
+# e2e:release against everything except web/androidui. See
+# pkg/e2erun.EnvOnly's doc comment for the full 1=desktop/2=android/
+# 3=web/4=androidui numbering and E2E_TYPES for the by-name equivalent.
 
 e2e_target="e2e:current"
 while read -r local_ref local_sha remote_ref remote_sha; do

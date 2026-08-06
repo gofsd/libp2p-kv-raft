@@ -527,10 +527,17 @@ func (E2E) BootstrapAll() error {
 // E2E_TYPES (comma-separated: desktop, web, android, androidui) to run
 // only some test types instead of everything -- see
 // pkg/e2erun.ParseTypes's doc comment; unset/empty runs everything, same
-// as before this existed.
+// as before this existed. ONLY/EXCLUDE are numeric alternatives to
+// E2E_TYPES -- 1=desktop, 2=android, 3=web, 4=androidui (see
+// pkg/e2erun.EnvOnly's doc comment) -- ONLY=1,2 runs exactly
+// desktop+android, EXCLUDE=2,3 runs everything except android+web (so
+// desktop+androidui here). Setting more than one of E2E_TYPES/ONLY/
+// EXCLUDE at once is an error, not a silently-resolved precedence.
 //
 // Usage: mage e2e:current
 // Usage: E2E_TYPES=web,androidui mage e2e:current
+// Usage: ONLY=1,2 mage e2e:current
+// Usage: EXCLUDE=2,3 mage e2e:current
 func (E2E) Current() error {
 	return runE2ERows(func(f *e2edata.File) []int { return f.PendingRows() }, e2eRunOptions{
 		markPublishedOnSuccess: true,
@@ -544,11 +551,13 @@ func (E2E) Current() error {
 // tears down existing nodes first (unlike Release below), so running it
 // manually for a spot check neither changes what the next e2e:current
 // considers "new" nor destroys whatever nodes are already sitting around
-// from prior runs. Set E2E_TYPES the same way Current does to narrow which
-// test types actually run.
+// from prior runs. Set E2E_TYPES (or numeric ONLY/EXCLUDE) the same way
+// Current does to narrow which test types actually run.
 //
 // Usage: mage e2e:all
 // Usage: E2E_TYPES=androidui mage e2e:all
+// Usage: ONLY=1 mage e2e:all
+// Usage: EXCLUDE=3,4 mage e2e:all
 func (E2E) All() error {
 	return runE2ERows(func(f *e2edata.File) []int { return f.AllRowIndices() }, e2eRunOptions{
 		alwaysRunAndroidUI: true,
@@ -569,10 +578,17 @@ func (E2E) All() error {
 // under a fresh identity before it runs (see e2erun.Run's reprovision
 // step, the same recovery path `mage e2e:deletenode`/`destroyall` already
 // rely on) -- there is no separate `mage e2e:destroyall` step to run by
-// hand first. Set E2E_TYPES the same way Current/All do.
+// hand first. Set E2E_TYPES (or numeric ONLY/EXCLUDE) the same way
+// Current/All do -- e.g. `ONLY=1,2 mage patch && git push --tags` runs the
+// version-tag release gate against just desktop+android, skipping
+// web/androidui for that push. This is the one place a caller reaching
+// for "skip some targets on this particular push" most likely lands, but
+// the variables work identically across Current/All/Release.
 //
 // Usage: mage e2e:release
 // Usage: E2E_TYPES=androidui mage e2e:release
+// Usage: ONLY=1,2 mage e2e:release
+// Usage: EXCLUDE=2,3 mage e2e:release
 func (E2E) Release() error {
 	return runE2ERows(func(f *e2edata.File) []int { return f.AllRowIndices() }, e2eRunOptions{
 		markPublishedOnSuccess: true,

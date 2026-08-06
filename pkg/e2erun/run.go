@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,7 +28,32 @@ import (
 // targets take no optional/variadic args); this is additive filtering
 // layered on top via the environment, the same pattern EnvE2EHome already
 // uses for local desktop node isolation.
+//
+// EnvOnly/EnvExclude below are numeric alternatives to this same
+// selection, for a caller who'd rather type `ONLY=1,2` than
+// `E2E_TYPES=desktop,android` -- e.g. scripting a push-tag release against
+// a fixed target list without hand-typing names. All three ultimately
+// produce the same Types value; SelectedTypes rejects setting more than
+// one of them at once rather than picking a silent precedence order (see
+// its own doc comment).
 const EnvTypes = "E2E_TYPES"
+
+// EnvOnly/EnvExclude are EnvTypes' numeric counterparts: 1-based target
+// numbers instead of names, in a fixed order (1=desktop, 2=android,
+// 3=web, 4=androidui -- see targetNumber) chosen to match how these are
+// usually talked about (the three platforms, then the UI-walk variant of
+// android), not Types' own field declaration order. `ONLY=1,2` runs
+// exactly desktop+android and nothing else; `EXCLUDE=2,3` runs everything
+// except android and web (desktop+androidui here, since EXCLUDE starts
+// from AllTypes and subtracts). Neither accepts an empty value the way
+// EnvTypes does ("run everything") -- an empty ONLY/EXCLUDE is ambiguous
+// (did the caller mean "no targets" or "forgot to set it"?), so
+// SelectedTypes only ever consults them when actually non-empty and
+// ParseOnly/ParseExclude reject an empty/all-whitespace value outright.
+const (
+	EnvOnly    = "ONLY"
+	EnvExclude = "EXCLUDE"
+)
 
 // Types selects which of this pipeline's test types a Run actually
 // executes. Desktop covers both PlatformDesktop and PlatformRemote rows --
@@ -84,10 +110,121 @@ func ParseTypes(s string) (Types, error) {
 	return t, nil
 }
 
-// SelectedTypes reads and parses EnvTypes from the environment -- the
-// entry point magefile.go's E2E targets use.
+// targetNumber maps one of ONLY/EXCLUDE's 1-based target numbers to the
+// same type name ParseTypes/EnvTypes already accepts -- see EnvOnly's own
+// doc comment for the chosen ordering and why it differs from Types'
+// field order.
+func targetNumber(n int) (string, bool) {
+	switch n {
+	case 1:
+		return "desktop", true
+	case 2:
+		return "android", true
+	case 3:
+		return "web", true
+	case 4:
+		return "androidui", true
+	default:
+		return "", false
+	}
+}
+
+// parseNumericTargets parses a comma-separated ONLY/EXCLUDE value ("1,2",
+// "3", ...) into the type names targetNumber maps each entry to --
+// case/whitespace handling matches ParseTypes. varName is EnvOnly or
+// EnvExclude, used only to make an error message name the actual
+// offending variable.
+func parseNumericTargets(varName, s string) ([]string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, fmt.Errorf("e2erun: %s must name at least one target number (1=desktop, 2=android, 3=web, 4=androidui)", varName)
+	}
+	var names []string
+	for part := range strings.SplitSeq(s, ",") {
+		part = strings.TrimSpace(part)
+		n, err := strconv.Atoi(part)
+		if err != nil {
+			return nil, fmt.Errorf("e2erun: %s: %q is not a target number (want 1-4: 1=desktop, 2=android, 3=web, 4=androidui)", varName, part)
+		}
+		name, ok := targetNumber(n)
+		if !ok {
+			return nil, fmt.Errorf("e2erun: %s: %d is not a valid target number (want 1-4: 1=desktop, 2=android, 3=web, 4=androidui)", varName, n)
+		}
+		names = append(names, name)
+	}
+	return names, nil
+}
+
+// ParseOnly parses EnvOnly's numeric value into a Types selection --
+// exactly the named targets, nothing else. Unlike ParseTypes, an
+// empty/all-whitespace value is rejected rather than treated as "run
+// everything" -- see EnvOnly's own doc comment.
+func ParseOnly(s string) (Types, error) {
+	names, err := parseNumericTargets(EnvOnly, s)
+	if err != nil {
+		return Types{}, err
+	}
+	return ParseTypes(strings.Join(names, ","))
+}
+
+// ParseExclude parses EnvExclude's numeric value into a Types selection --
+// AllTypes() with the named targets subtracted out.
+func ParseExclude(s string) (Types, error) {
+	names, err := parseNumericTargets(EnvExclude, s)
+	if err != nil {
+		return Types{}, err
+	}
+	excluded, err := ParseTypes(strings.Join(names, ","))
+	if err != nil {
+		return Types{}, err
+	}
+	all := AllTypes()
+	return Types{
+		Desktop:   all.Desktop && !excluded.Desktop,
+		Web:       all.Web && !excluded.Web,
+		Android:   all.Android && !excluded.Android,
+		AndroidUI: all.AndroidUI && !excluded.AndroidUI,
+	}, nil
+}
+
+// SelectedTypes reads and parses EnvTypes/EnvOnly/EnvExclude from the
+// environment -- the entry point magefile.go's E2E targets use. Exactly
+// one of the three may be set (non-empty) at a time; setting more than
+// one is rejected outright, naming which variables conflict, rather than
+// silently picking one to win -- which one "wins" wouldn't be obvious
+// from either variable's own value, and a caller who set two by mistake
+// (e.g. a leftover E2E_TYPES from a previous run alongside a new ONLY)
+// should find out before a real e2e pass runs against the wrong set, not
+// after.
 func SelectedTypes() (Types, error) {
-	return ParseTypes(os.Getenv(EnvTypes))
+	typesVal := strings.TrimSpace(os.Getenv(EnvTypes))
+	onlyVal := strings.TrimSpace(os.Getenv(EnvOnly))
+	excludeVal := strings.TrimSpace(os.Getenv(EnvExclude))
+
+	var conflicting []string
+	if typesVal != "" {
+		conflicting = append(conflicting, EnvTypes)
+	}
+	if onlyVal != "" {
+		conflicting = append(conflicting, EnvOnly)
+	}
+	if excludeVal != "" {
+		conflicting = append(conflicting, EnvExclude)
+	}
+	if len(conflicting) > 1 {
+		return Types{}, fmt.Errorf("e2erun: %s are mutually exclusive -- set only one", strings.Join(conflicting, " and "))
+	}
+
+	switch {
+	case typesVal != "":
+		return ParseTypes(typesVal)
+	case onlyVal != "":
+		return ParseOnly(onlyVal)
+	case excludeVal != "":
+		return ParseExclude(excludeVal)
+	default:
+		return AllTypes(), nil
+	}
 }
 
 // Run executes every row in rowIndices (indices into f.Rows -- see
