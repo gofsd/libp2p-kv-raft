@@ -49,6 +49,18 @@ build, not "does a real cluster replicate"). If you're adding a
 CI-friendly self-hosted runner with emulator/SSH access, that's a welcome
 contribution on its own.
 
+Since the real gate is local-only, it's also skippable -- an uninstalled
+hook or a `SKIP_E2E=1` push leaves e2e-relevant code changed with nothing
+having actually re-run against it. CI's `check-e2e-gate` job
+(`scripts/ci/check-e2e-gate.sh`) is a narrow, credential-free backstop for
+exactly that: it fails a PR that touches e2e-relevant paths (the wire
+protocol, daemon, transport/relay, or a client bridge) without also
+touching `test/e2e/testdata.json`. It can't replay e2e itself for the same
+infra reason above -- it only catches "this needed a recorded row and
+didn't get one." Add `SKIP_E2E_CHECK` to the PR title or HEAD commit
+message for a change that genuinely doesn't need one (e.g. e2e
+harness/tooling changes themselves).
+
 ## Code style
 
 - Comments explain *why*, not *what* -- see this repo's existing doc

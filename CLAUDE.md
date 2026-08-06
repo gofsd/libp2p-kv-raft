@@ -40,6 +40,8 @@ mage resumenode <peerID>                        # restart a node from persisted 
 mage rejoinnode <leaderAddr> <peerID>            # restart + re-send the join request
 mage use <peerID>                                # select the active node for set/get
 mage deletenode <peerID>                         # permanently delete a (stopped) node's data + registry entry
+mage backup <peerID> <destArchive>               # tar.gz a (stopped) node's whole data dir -- see README's "Backup and restore"
+mage restore <archive> <destDir>                 # extract a backup archive back out (no registry changes)
 mage listclusters                                # show every raft cluster known to this machine's registry
 mage listnodes <peerID>                          # query a running node for its cluster's full live peer id list
 mage set <key> <value>
@@ -158,6 +160,8 @@ mage e2e:all         # run every recorded row
 mage e2e:bootstrap   # deploy/confirm the shared SSH leader
 mage e2e:deletenode <nodeID>
 mage e2e:destroyall
+mage e2e:gc <keepVersions> ""     # dry run: list desktop/android/web nodes unreferenced in the last N versions
+mage e2e:gc <keepVersions> yes    # actually prune them (never touches the shared PlatformRemote leader)
 mage githooks:install   # points core.hooksPath at scripts/git-hooks/pre-push (runs e2e:current)
 ```
 
@@ -305,6 +309,14 @@ cross-device dial holds the receiver up for the sender's whole start-up.
   newer than `published_version` in `test/e2e/testdata.json`, not the whole history.
 - Deployed e2e nodes are **never torn down automatically** by any e2e command — that's deliberate,
   so a human can inspect them after a run. Use `mage e2e:deletenode <nodeID>` /
-  `mage e2e:destroyall` explicitly when a node is no longer wanted.
+  `mage e2e:destroyall` explicitly when a node is no longer wanted, or `mage e2e:gc <keepVersions>
+  ""` to list (and, with a trailing `yes`, actually prune) desktop/android/web nodes no row from
+  the last N versions still references — still explicit and human-invoked, just no longer requiring
+  a human to work out by hand which node ids are actually stale. Never prunes the shared
+  `PlatformRemote` bootstrap leader.
 - An `add` (raft join) row is inherently one-time; re-running `mage e2e:all` against an
   already-joined node produces an expected "not leader" rejection on that row, not a real failure.
+- CI's `check-e2e-gate` job (`scripts/ci/check-e2e-gate.sh`) fails a PR that touches e2e-relevant
+  paths without also touching `test/e2e/testdata.json` — a credential-free backstop for the
+  pre-push hook being local-only and skippable, not a replacement for actually running
+  `mage e2e:current`. See CONTRIBUTING.md's "Why full e2e isn't in CI".

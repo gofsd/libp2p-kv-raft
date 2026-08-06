@@ -844,6 +844,73 @@ relay-only leader no longer breaks forwarded writes outright. It's still sensibl
 leadership on a bootstrap-nodes.json host when one is available (direct dials are cheaper/faster
 than a relay hop), just no longer a correctness requirement.
 
+## Backup and restore
+
+A node's entire on-disk state lives under one directory — `Config.DataDir`, which
+`registry.NodeDataDir`/`ClusterDataDir` compute deterministically from its peer id (`mage
+deletenode`'s doc comment describes the same three pieces it deletes): `identity.key` (the raw
+Ed25519 identity, hex-encoded), `sqlite/` (the replicated state machine's actual data —
+`modernc.org/sqlite`, no CGO), and `raft/` (BoltDB's `raft.db` log/stable store plus
+`raft.NewFileSnapshotStore`'s periodic FSM snapshots — see `kvfsm.FSM.Snapshot`/`Restore`, which
+just dump/reload the whole SQLite store through `store.DumpAll`/`LoadAll`). Backing up that one
+directory backs up everything a node knows, including its identity — anyone holding it can act as
+that peer.
+
+**`mage backup <peerID> <destArchive>`** writes a `tar.gz` of exactly that directory, and **`mage
+restore <archive> <destDir>`** extracts one back out (see `pkg/kvctl/backup.go`'s doc comments for
+the full mechanics). Both are plain file operations — no daemon involvement, no registry changes:
+
+- `backup` refuses while the node's daemon process still appears to be running, the same liveness
+  check `deletenode`/`resumenode` use — archiving `sqlite`/`raft.db` out from under a live process
+  risks catching them mid-write and producing a torn, unusable backup. On a multi-voter cluster
+  this only ever costs that one node's own availability while it's stopped, not the cluster's —
+  raft keeps committing through the remaining voters, and a stopped follower rejoins replication
+  automatically once resumed (`mage resumenode`), the same as after any other restart.
+- If a node was created via `addnodewithkey`/`addfollowerwithkey` (an identity key stored *outside*
+  its data directory), that external key file is not included — back it up the same way you'd back
+  up any other file you manage outside this project, same asymmetry `deletenode` already has.
+- `restore` is deliberately just an extract: it never touches `registry.json` or starts anything.
+  Restoring into the *exact* path `registry.NodeDataDir(peerID)`/`ClusterDataDir(peerID,
+  remotePeerID)` would compute is what lets a plain `mage resumenode <peerID>` afterward pick the
+  restored data back up as that node again — no registry surgery needed, since that path is a pure
+  function of the peer id, not something stored per-node. Restoring under a different path instead
+  is how to recover the data under a deliberately fresh registry entry (e.g. onto a new machine).
+  Either way, `restore` refuses to extract into a non-empty directory, so it can never interleave a
+  backup's files with whatever (possibly live) data is already there.
+
+**A live voter you can't take down** (e.g. the only currently-reachable node) can still be backed
+up without stopping it: `raft.NewFileSnapshotStore` writes each completed snapshot to its own
+finalized directory under `<DataDir>/raft/snapshots/<id>/` — copying the most recent one (not the
+in-progress one, if a snapshot happens to be running) is a point-in-time, self-contained capture of
+the entire FSM state as of that snapshot's index, the same guarantee raft itself relies on to
+restore a *new* node from nothing but a snapshot. There's no `mage` command for this yet (it needs
+picking the right snapshot dir and knowing raft won't be mid-write to it, both easy to get wrong by
+hand) — `mage backup` on a stopped node is the supported path; treat a live snapshot-dir copy as an
+expert escape hatch, not routine practice.
+
+**Restoring after total data loss on a single node** is the `backup`/`restore` pair above, followed
+by `mage resumenode`. **Restoring after the whole cluster loses quorum** (enough voters gone that
+no majority remains to commit anything, so raft itself can't recover) is a different, harder
+problem this project already has a dedicated tool for — `cmd/kvrecover`'s offline
+`raft.RecoverCluster`, wrapped as `mage kvrecover <dataDir> <keyPath> "<voterMultiaddr>..."` (see
+this file's "Cluster-membership lifecycle" section above and `cmd/kvrecover`'s own doc comment for
+the full mechanics). A `mage backup` archive is exactly what you'd want on hand *before* reaching
+for `kvrecover` — recovery forces a node into a new configuration from whatever log/snapshot state
+is already on disk, so a recent independent backup is the fallback if that on-disk state turns out
+to be unusable too (corrupted disk, deleted directory) rather than just stale.
+
+**Upgrading**: this project has never yet had to change the raft log entry format or the SQLite
+schema `kvfsm`/`pkg/store` write across a version bump, so upgrading today is just: stop the
+daemon, replace the binary, restart — the existing resume-on-existing-state path in `daemon.Run`
+picks its data back up with no migration step. There is deliberately no rolling/mixed-version
+upgrade support: nothing in this codebase negotiates a wire or on-disk version between two
+different builds, so running mismatched binaries across voters mid-upgrade is unsupported and
+untested, not merely undocumented. If a future change ever does need to alter either on-disk
+format, treat it the same way as any other breaking raft configuration change: stop the whole
+cluster, upgrade every node's binary, then restart — take a `mage backup` of every voter
+immediately beforehand, the same as before any operation that rewrites on-disk state instead of
+just appending to it.
+
 ### Client in a browser
 
 Unlike the desktop CLI and the Android app, a browser tab can never be a raft *voter*: a voter's

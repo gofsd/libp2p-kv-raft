@@ -9,6 +9,23 @@ tracks *changes*, not a full feature description).
 ## [Unreleased]
 
 ### Added
+- **`mage backup <peerID> <destArchive>` / `mage restore <archive> <destDir>`**, a `tar.gz` of a
+  stopped node's entire data directory (identity key, sqlite store, raft log/snapshots) and its
+  exact inverse (`pkg/kvctl/backup.go`). `restore` never touches the registry — extracting into the
+  same deterministic path `registry.NodeDataDir`/`ClusterDataDir` would compute for a peer id is
+  what lets a plain `mage resumenode` afterward pick the data back up as that node again. See
+  README's new "Backup and restore" section for the full runbook, including the live-voter and
+  whole-cluster-quorum-loss (`kvrecover`) cases this doesn't cover.
+- **`mage e2e:gc <keepVersions> ""|yes`**, a dry-run-by-default prune for desktop/android/web e2e
+  nodes no row from the last N versions still references (never the shared `PlatformRemote`
+  bootstrap leader) — `mage e2e:deletenode`/`destroyall` already existed but left "which nodes are
+  actually stale" entirely to a human reading rows by hand.
+- **CI `check-e2e-gate` job** (`scripts/ci/check-e2e-gate.sh`): fails a PR that touches e2e-relevant
+  paths (wire protocol, daemon, transport/relay, client bridges) without also touching
+  `test/e2e/testdata.json` — a credential-free backstop for the real `mage e2e:current` gate being
+  local-only (`scripts/git-hooks/pre-push`) and therefore skippable if never installed or bypassed
+  with `SKIP_E2E=1`. Escape hatch: `SKIP_E2E_CHECK` in the PR title or HEAD commit message.
+
 - **Compare-and-swap**, as preconditions inside the existing atomic
   transaction rather than a separate mechanism: `shmevent.TxnOpCompare`
   ("key holds exactly this") and `TxnOpCompareAbsent` ("key does not

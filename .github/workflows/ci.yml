@@ -6,6 +6,14 @@ name: CI
 # targets). The real cross-platform e2e pipeline (mage e2e:all/e2e:current)
 # needs a real SSH-reachable bootstrap host and a real Android emulator,
 # and stays a local pre-push gate (mage githooks:install) instead.
+#
+# check-e2e-gate below doesn't replay that real e2e pipeline -- it can't,
+# for the same reason -- but it's a hard, non-optional backstop for the one
+# specific way that local-only gate silently gets skipped: a PR that
+# touches e2e-relevant code (see scripts/ci/check-e2e-gate.sh's own path
+# list) but never touched test/e2e/testdata.json, which the pre-push hook
+# alone can't catch if it was never installed or was bypassed with
+# SKIP_E2E=1.
 
 on:
   push:
@@ -18,6 +26,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  check-e2e-gate:
+    name: Check e2e gate
+    runs-on: ubuntu-latest
+    # PR-only: needs a base/head to diff, which a plain push to main doesn't
+    # have in the same sense (main pushes are ~always already-reviewed
+    # merges). See scripts/ci/check-e2e-gate.sh's own doc comment for what
+    # this catches and doesn't.
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: check e2e gate
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: scripts/ci/check-e2e-gate.sh "$BASE_SHA" "$HEAD_SHA" "$PR_TITLE"
+
   go:
     name: Go build/vet/lint/test
     runs-on: ubuntu-latest

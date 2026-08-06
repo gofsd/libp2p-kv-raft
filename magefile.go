@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -360,6 +361,91 @@ func (E2E) DestroyAll() error {
 		return destroyErr
 	}
 	fmt.Println("✅ all nodes destroyed")
+	return nil
+}
+
+// GC prunes desktop/android/web e2e nodes that no row from the last
+// keepVersions versions (default 3 if <=0) references -- the "which nodes
+// are actually stale" judgment call DeleteNode/DestroyAll leave entirely to
+// a human today, with no way to answer it short of reading every row by
+// hand. Never touches the PlatformRemote node: it's the one shared
+// long-lived bootstrap leader every other node joins (see BootstrapHost's
+// doc comment), not a per-run artifact, so it's never a GC candidate
+// regardless of which versions still reference it.
+//
+// Dry-run by default -- prints the candidate node ids and returns without
+// deleting anything. Pass "yes" as the second argument to actually tear
+// them down (the same real teardown DeleteNode performs), matching this
+// pipeline's existing rule that node teardown is always explicit and
+// human-invoked, never silently automatic.
+//
+// Usage: mage e2e:gc <keepVersions> ""     (dry run: lists what would be pruned)
+// Usage: mage e2e:gc <keepVersions> yes    (actually deletes)
+//
+// mage requires every positional argument on the command line (no true
+// optional trailing args -- confirmed against this repo's own
+// e2e:channelfiletransfer, whose doc comment reads "[sizeBytes]" but still
+// errors "not enough arguments" if the CLI call omits it entirely), so the
+// dry-run call must pass "" explicitly rather than being invoked with just
+// keepVersions.
+func (E2E) GC(keepVersions int, confirm string) error {
+	if keepVersions <= 0 {
+		keepVersions = 3
+	}
+	path, err := testdataPath()
+	if err != nil {
+		return err
+	}
+	f, err := e2edata.Load(path)
+	if err != nil {
+		return err
+	}
+
+	cutoff := f.CurrentVersion() - keepVersions
+	keep := make(map[int]bool)
+	for _, r := range f.Rows {
+		if r.Version > cutoff {
+			keep[r.Node] = true
+		}
+	}
+
+	var candidates []int
+	for id, node := range f.Nodes {
+		if node.Platform == e2edata.PlatformRemote || keep[id] {
+			continue
+		}
+		candidates = append(candidates, id)
+	}
+	sort.Ints(candidates)
+
+	if len(candidates) == 0 {
+		fmt.Println("✅ no stale nodes (nothing outside the last", keepVersions, "version(s))")
+		return nil
+	}
+
+	if confirm != "yes" {
+		fmt.Printf("e2e:gc: %d node(s) referenced by no row newer than version %d:\n", len(candidates), cutoff)
+		for _, id := range candidates {
+			fmt.Printf("  node %d (%s): %s\n", id, f.Nodes[id].Platform, f.Nodes[id].PeerID)
+		}
+		fmt.Println("dry run -- re-run as `mage e2e:gc", keepVersions, "yes` to actually delete these")
+		return nil
+	}
+
+	var errs []string
+	for _, id := range candidates {
+		if err := e2erun.DeleteNode(f, id); err != nil {
+			errs = append(errs, fmt.Sprintf("node %d: %v", id, err))
+			continue
+		}
+		fmt.Printf("✅ node %d pruned\n", id)
+	}
+	if err := f.Save(path); err != nil {
+		return err
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("e2e:gc: failed to prune %d node(s):\n%s", len(errs), strings.Join(errs, "\n"))
+	}
 	return nil
 }
 
@@ -1357,6 +1443,41 @@ func DeleteNode(peerID string) error {
 		return err
 	}
 	fmt.Printf("🗑️  node %s deleted\n", peerID)
+	return nil
+}
+
+// Backup writes a tar.gz snapshot of a stopped node's entire data
+// directory (identity key, sqlite store, raft log/snapshots) to
+// destArchive. Refuses while the node's daemon process still appears to be
+// running -- see kvctl.BackupNode's doc comment on why a live copy risks
+// being torn, and README's "Backup and restore" section for the full
+// runbook (including how to back up a *running* voter without taking it
+// down, using raft's own periodic snapshot files instead of this command).
+//
+// Usage: mage backup <peerID> <destArchive>
+func Backup(peerID, destArchive string) error {
+	if err := kvctl.BackupNode(peerID, destArchive); err != nil {
+		return err
+	}
+	fmt.Printf("✅ %s backed up to %s\n", peerID, destArchive)
+	return nil
+}
+
+// Restore extracts a `mage backup` archive to destDir, verbatim -- it does
+// not touch the registry or start anything. Restoring into the exact
+// directory registry.NodeDataDir/ClusterDataDir would compute for this
+// node's peer id (see kvctl.RestoreNode's doc comment) is what lets a
+// later `mage resumenode <peerID>` pick this data back up as that node
+// again; see README's "Backup and restore" section for the full
+// walkthrough of both that path and restoring under a fresh identity
+// instead.
+//
+// Usage: mage restore <archive> <destDir>
+func Restore(archivePath, destDir string) error {
+	if err := kvctl.RestoreNode(archivePath, destDir); err != nil {
+		return err
+	}
+	fmt.Printf("✅ %s extracted to %s\n", archivePath, destDir)
 	return nil
 }
 
