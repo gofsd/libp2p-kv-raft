@@ -26,6 +26,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/hashicorp/raft"
@@ -2212,7 +2213,7 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		// those two actions -- see isExemptPermitLifecycleWrite's own
 		// doc comment on why this can't just be a blanket EventType
 		// exemption the way the other two are.
-		!(m.EventType == shmevent.EventLifecycleWrite && isExemptPermitLifecycleWrite(m.Value)) &&
+		(m.EventType != shmevent.EventLifecycleWrite || !isExemptPermitLifecycleWrite(m.Value)) &&
 		// EventSetKey/EventGetKey never touch the store or any privileged
 		// state -- just a per-connection numeric-id relay of a value the
 		// caller itself already supplied (see EventSet's own doc comment on
@@ -3620,6 +3621,30 @@ func isRetriableRelayCircuitError(err error) bool {
 		strings.Contains(msg, pbv2.Status_CONNECTION_FAILED.String())
 }
 
+// isRetriableDialResetError reports whether err is (or wraps) a bare
+// ECONNRESET surfacing anywhere in a dial attempt -- including mid
+// security-protocol negotiation, before either side has said anything
+// meaningful yet. Caught live running this project's own e2e:all against
+// the real deployed bootstrap host, on a *direct* dial (not a
+// /p2p-circuit hop, so isRetriableRelayCircuitError's own statuses never
+// match it): "failed to negotiate security protocol: read tcp4
+// ...->host:4101: read: connection reset by peer", reproduced twice in a
+// row, on an independently confirmed-healthy destination (no firewall/
+// rate-limit/resource pressure on the remote host, and 5/5 plain TCP
+// connects from elsewhere succeeded instantly) -- meaning the reset
+// happened somewhere on the path itself, not because either endpoint
+// refused anything.
+//
+// Deliberately as narrow as isRetriableRelayCircuitError is, for the
+// identical reason: ECONNRESET is a live, transient network-layer event
+// (the multi-round-trip equivalent of one lost packet), not a decision
+// either side made -- unlike ECONNREFUSED (nothing listening at all) or
+// an actual security-protocol/authentication mismatch, neither of which
+// a longer wait ever fixes, so neither should be swept into this.
+func isRetriableDialResetError(err error) bool {
+	return err != nil && errors.Is(err, syscall.ECONNRESET)
+}
+
 // clearDialBackoff drops go-libp2p's own per-peer dial backoff for pid, so
 // the very next dial actually reaches the network instead of being refused
 // locally with "dial backoff".
@@ -3685,13 +3710,14 @@ func clearDialBackoff(h lp2phost.Host, info peer.AddrInfo) {
 // timeout to a real, otherwise-reachable remote target.
 //
 // If every attempt in that first, short budget fails with a retriable
-// relay-circuit status (see isRetriableRelayCircuitError), one more, much
-// longer round runs on top of it (see connectRetryReservationAttempts' own
-// doc comment) rather than surfacing the error immediately -- neither
-// status it matches means the destination is actually unreachable.
+// relay-circuit status (see isRetriableRelayCircuitError) or a bare
+// connection reset (see isRetriableDialResetError), one more, much longer
+// round runs on top of it (see connectRetryReservationAttempts' own doc
+// comment) rather than surfacing the error immediately -- none of those
+// cases mean the destination is actually unreachable.
 func connectWithRetry(ctx context.Context, h lp2phost.Host, info peer.AddrInfo) error {
 	lastErr := dialAttempts(ctx, h, info, connectRetryAttempts, connectRetryDelay)
-	if lastErr == nil || !isRetriableRelayCircuitError(lastErr) {
+	if lastErr == nil || (!isRetriableRelayCircuitError(lastErr) && !isRetriableDialResetError(lastErr)) {
 		return lastErr
 	}
 	return dialAttempts(ctx, h, info, connectRetryReservationAttempts, connectRetryReservationDelay)

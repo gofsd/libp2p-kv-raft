@@ -3,7 +3,10 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -506,5 +509,36 @@ func TestIsRetriableRelayCircuitErrorMatchesRelayStatusText(t *testing.T) {
 
 	if isRetriableRelayCircuitError(nil) {
 		t.Error("isRetriableRelayCircuitError(nil) = true, want false")
+	}
+}
+
+// isRetriableDialResetError has to unwrap through however many layers a
+// real dial failure wraps ECONNRESET in -- this pins that against a chain
+// shaped like the one caught live running e2e:all against the real
+// deployed bootstrap host (security-protocol negotiation wrapping a raw
+// tcp read wrapping the syscall errno), and against errors that must NOT
+// retry (ECONNREFUSED -- nothing listening, which a longer budget cannot
+// fix; a plain unrelated error) to confirm the match doesn't fire on
+// every dial failure the way a bare string-contains check would.
+func TestIsRetriableDialResetErrorUnwrapsThroughWrappedLayers(t *testing.T) {
+	reset := fmt.Errorf("failed to negotiate security protocol: %w",
+		fmt.Errorf("read tcp4 10.0.2.16:47102->63.250.47.155:4101: %w",
+			os.NewSyscallError("read", syscall.ECONNRESET)))
+	if !isRetriableDialResetError(reset) {
+		t.Error("isRetriableDialResetError(wrapped ECONNRESET) = false, want true")
+	}
+
+	refused := fmt.Errorf("dial tcp4 63.250.47.155:4101: %w",
+		os.NewSyscallError("connect", syscall.ECONNREFUSED))
+	if isRetriableDialResetError(refused) {
+		t.Error("isRetriableDialResetError(ECONNREFUSED) = true, want false -- nothing listening isn't a transient blip")
+	}
+
+	if isRetriableDialResetError(errors.New("some unrelated dial error")) {
+		t.Error("isRetriableDialResetError(unrelated error) = true, want false")
+	}
+
+	if isRetriableDialResetError(nil) {
+		t.Error("isRetriableDialResetError(nil) = true, want false")
 	}
 }

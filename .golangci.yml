@@ -72,3 +72,17 @@ linters:
           - errcheck
         path: pkg/daemon/daemon.go
         source: 'writeChannelAccept\('
+      # pkg/shmevent's 17 collapsed catalog/lifecycle Event* constants
+      # (EventGroupPut et al -- see EventCatalogPut/EventLifecycleWrite's
+      # own doc comments) are marked Deprecated as part of an intentionally
+      # additive rollout: they stay fully functional, and pkg/daemon's own
+      # dispatch still has to switch on them (that's the whole point -- an
+      # already-deployed caller using the old wire byte must keep working),
+      # so staticcheck's SA1019 fires on the package that defines and still
+      # implements them, not just on some caller that should have already
+      # migrated. Scoped to exactly these 17 constants by name, not a
+      # blanket path/linter exclusion, so SA1019 still catches a genuinely
+      # stale reference to anything else marked Deprecated in the future.
+      - linters:
+          - staticcheck
+        text: 'SA1019: shmevent\.Event(GroupPut|GroupDelete|CommandPut|CommandDelete|GroupCommandPut|GroupCommandDelete|PeerGroupPut|PeerGroupDelete|StationPut|StationDelete|PermitRequest|PermitConfirm|PermitRevoke|JoinInviteCreate|JoinInviteRevoke|ExecInviteCreate|ExecInviteRevoke) is deprecated'
