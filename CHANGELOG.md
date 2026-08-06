@@ -141,6 +141,30 @@ tracks *changes*, not a full feature description).
   are tight, since a reservation event is inherently rare regardless of
   workload.
 
+### Fixed
+- A dead first relay candidate stalled failover to a working second one for
+  a full **3 minutes**. `newHost` wires `Config.RelayPeers`/confirmed
+  `KindBootstrapNode` records through `libp2p.EnableAutoRelayWithStaticRelays`,
+  which sets go-libp2p autorelay's `minCandidates` to the length of that
+  list -- but a candidate only counts toward it once it actually answers a
+  live connect-and-probe (`relay_finder.go`'s `handleNewNode`/`tryNode`), so
+  an unreachable entry (exactly the case a multi-candidate list exists to
+  tolerate) never clears that bar, and the real candidate count permanently
+  fell short of `minCandidates`. AutoRelay's response to that shortfall is
+  to wait out `bootDelay` -- 3 minutes by default, never overridden here --
+  before trying the reservations it already has anyway, so a node with one
+  dead relay and one perfectly good one got zero relay connectivity for
+  those 3 minutes on every startup. Reproduced directly (measured exactly
+  3m0s) while writing `pkg/daemon/nat_edge_cases_test.go`'s
+  `TestRelayFailoverToSecondCandidateWhenFirstIsDown`; fixed by adding
+  `autorelay.WithBootDelay(relayReserveBackoff)` alongside the existing
+  backoff/interval overrides, matching the ~10s cadence those already use.
+  That same test file also adds direct coverage for `forgetTransientPeer`'s
+  relay-candidate exemption, `clearDialBackoff`'s relay-hop clearing,
+  `hasPublicAddr`, and `dialAndRedeemExecInvite` over an actual
+  `/p2p-circuit` hop -- none of which had a test anywhere in the package
+  before.
+
 ### Added
 - A default bootstrapped public `Group`/`Command` pair
   (`shmevent.DefaultPublicGroupID`/`DefaultPublicCommandID`,
