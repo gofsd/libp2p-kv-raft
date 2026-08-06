@@ -25,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gofsd/libp2p-kv-raft/pkg/bootstrapnodes"
 	"github.com/gofsd/libp2p-kv-raft/pkg/daemon"
 	"github.com/gofsd/libp2p-kv-raft/pkg/e2edata"
 	"github.com/gofsd/libp2p-kv-raft/pkg/registry"
@@ -32,11 +33,34 @@ import (
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
 
-// prodRelayAddr is configs/bootstrap-nodes.json's "primary" entry -- the
-// real, already-deployed -relay-service node. -mode=debug joins/reserves
-// through this by default; -relay overrides it (e.g. to point at a
-// -mode=local instance's own printed address instead).
-const prodRelayAddr = "/ip4/63.250.47.155/tcp/4001/p2p/12D3KooWRKy6WzDdgruaFjgH7LMXCwmhd6wYSLvRYU7LhMMY73n8"
+// prodRelayAddr is loaded from configs/bootstrap-nodes.json's first
+// relay_service entry (pkg/bootstrapnodes.PrimaryRelayAddr) at startup,
+// not hardcoded -- a hardcoded copy of that address only ever a literal
+// copy-paste away from drifting out of sync with the catalog it's meant to
+// mirror. -mode=debug/pair join/reserve through this by default; -relay
+// overrides it (e.g. to point at a -mode=local instance's own printed
+// address instead). Left empty if the catalog can't be found or parsed --
+// e.g. running a compiled relaytool binary outside the repo checkout, or a
+// checkout with no bootstrap nodes configured yet -- in which case
+// -mode=debug/pair require -relay to be passed explicitly instead of
+// silently falling back to a stale address.
+var prodRelayAddr string
+
+func init() {
+	root, err := bootstrapnodes.FindRepoRoot("")
+	if err != nil {
+		return
+	}
+	f, err := bootstrapnodes.Load(filepath.Join(root, bootstrapnodes.RelativePath))
+	if err != nil {
+		return
+	}
+	addr, err := f.PrimaryRelayAddr()
+	if err != nil {
+		return
+	}
+	prodRelayAddr = addr
+}
 
 var verbose bool
 
@@ -47,9 +71,13 @@ func vlogf(format string, args ...any) {
 }
 
 func main() {
+	relayDefaultDesc := prodRelayAddr
+	if relayDefaultDesc == "" {
+		relayDefaultDesc = "none found -- -relay is required"
+	}
 	mode := flag.String("mode", "debug", `"prod": run this process as a real, deployable circuit-relay-v2 service node (fixed port 4001 by default, identity persisted so restarts keep the same peer id); "local": the same relay-service capability tuned for local/offline testing (ephemeral port, throwaway identity each run); "debug": reproduce the join-ticket-over-relay flow (leader+follower daemons, a follower Join against a "<relayAddr>#<tokenHex>" ticket) through a relay named by -relay; "pair": the full two-device pairing flow (both devices self-service relay standing, then recruit/join each other over the relay)`)
 	verboseFlag := flag.Bool("verbose", false, "print step-by-step progress (relay reservation polling, daemon readiness waits, etc.) instead of just each mode's final result")
-	relayAddr := flag.String("relay", "", "mode=debug/pair only: multiaddr of the circuit-relay-v2 node to join/reserve through (default: the real deployed production relay, "+prodRelayAddr+")")
+	relayAddr := flag.String("relay", "", "mode=debug/pair only: multiaddr of the circuit-relay-v2 node to join/reserve through (default: the deployed production relay from configs/bootstrap-nodes.json, "+relayDefaultDesc+")")
 	port := flag.Int("port", 0, "mode=prod/local only: listen port for the relay-service daemon (0 = ephemeral; mode=prod defaults to 4001 when left unset)")
 	dataDir := flag.String("data-dir", "", "mode=prod/local only: identity/state directory for the relay-service daemon (default: a stable path under the OS temp dir for mode=prod so restarts keep the same peer id; a fresh temp dir each run for mode=local)")
 	flag.Parse()
@@ -65,20 +93,29 @@ func main() {
 	case "local":
 		runRelayService(*port, *dataDir, false)
 	case "debug":
-		addr := *relayAddr
-		if addr == "" {
-			addr = prodRelayAddr
-		}
+		addr := resolveRelayAddr(*relayAddr)
 		runDebugRepro(addr)
 	case "pair":
-		addr := *relayAddr
-		if addr == "" {
-			addr = prodRelayAddr
-		}
+		addr := resolveRelayAddr(*relayAddr)
 		runPairRepro(addr)
 	default:
 		log.Fatalf("relaytool: unknown -mode %q (want prod, local, debug, or pair)", *mode)
 	}
+}
+
+// resolveRelayAddr returns explicit (an operator-supplied -relay) unchanged
+// when set; otherwise falls back to prodRelayAddr, the address
+// pkg/bootstrapnodes loaded from configs/bootstrap-nodes.json at startup --
+// failing loudly rather than silently proceeding with an empty address if
+// that load never found a catalog entry to fall back to.
+func resolveRelayAddr(explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	if prodRelayAddr == "" {
+		log.Fatal("relaytool: no -relay given and configs/bootstrap-nodes.json has no relay_service entry to default to (run from within the repo checkout, or pass -relay explicitly)")
+	}
+	return prodRelayAddr
 }
 
 func setupSignalContext() (context.Context, context.CancelFunc) {
