@@ -21,6 +21,22 @@ import (
 // Event type bytes -- the wire values of Msg.EventType. See
 // api/shmevent.capnp and this package's doc comment for the
 // SetKey/SetField/GetKey/GetField relational pattern.
+//
+// Before adding a new constant here: every raft node in the mesh --
+// including long-lived bootstrap nodes and Android devices nobody
+// force-upgrades -- has to agree on what it means, forever, and it needs a
+// hand-duplicated codec/dispatch/wrapper added across pkg/daemon,
+// web-app/src/shmevent.rs (a hand-ported mirror, not generated), and
+// pkg/kvctl/mobile/kvmobile. If what's being added is a new *task* --
+// typed inputs, ACL, durable request/response logging, a low-latency
+// "ready" poke -- register it as a Command through
+// pkg/kvctl/dispatch.go's SubmitCommand/Group-Command catalog instead
+// (see that file's doc comment and CommandRequestLogKind below): it
+// already dispatches generically over EventGet/EventLogAppend/
+// EventListRange/EventExecute, with zero new wire bytes needed per task
+// type. Reserve new constants here for genuinely new wire-level
+// primitives -- a new relational shape, a new stream/session protocol --
+// not new task types.
 const (
 	// EventSetKey registers Value under this message's own ID in the
 	// node's key registry (see registry.go) -- generic, not KV-specific:
@@ -77,6 +93,11 @@ const (
 	// exactly like EventSet, via handleSetForward's existing one-hop
 	// forward-to-leader path) -- see EventPermitConfirm's doc comment for
 	// the second stage, which is restricted.
+	//
+	// Deprecated: still fully supported (additive rollout, see
+	// EventLifecycleWrite's own doc comment), but new callers should send
+	// EventLifecycleWrite{kind, action: LifecycleActionRequest, ...}
+	// instead.
 	EventPermitRequest uint8 = 9
 	// EventPermitConfirm promotes a pending EventPermitRequest record from
 	// pending to confirmed (see SystemKey's Status* values). Value is
@@ -90,6 +111,10 @@ const (
 	// leader's live raft configuration before applying -- the per-message
 	// Ed25519 signature alone does not prove this (see pkg/daemon's
 	// handleForwardConfirmStream doc comment).
+	//
+	// Deprecated: still fully supported, but new callers should send
+	// EventLifecycleWrite{kind, action: LifecycleActionConfirm, ...}
+	// instead -- see EventLifecycleWrite's own doc comment.
 	EventPermitConfirm uint8 = 10
 	// EventExecute is a direct, unreplicated peer-to-peer notification: it
 	// never touches the store or the raft FSM (unlike every event above),
@@ -135,6 +160,10 @@ const (
 	// only a peer that is currently a raft *voter* may revoke, enforced
 	// the identical way (see EventPermitConfirm's doc comment and
 	// pkg/daemon's handleForwardConfirmStream, which handles both).
+	//
+	// Deprecated: still fully supported, but new callers should send
+	// EventLifecycleWrite{kind, action: LifecycleActionRevoke, ...}
+	// instead -- see EventLifecycleWrite's own doc comment.
 	EventPermitRevoke uint8 = 13
 	// EventListRange answers a bounded key range scan against the local
 	// store directly -- pkg/store.Store.ScanRange -- unlike every Set/Get
@@ -211,14 +240,26 @@ const (
 	// deleted id is removed in the same raft Apply (see
 	// pkg/kvfsm.OpCascadeDelete), so a delete never leaves a dangling
 	// relation behind.
-	EventGroupPut           uint8 = 20
-	EventGroupDelete        uint8 = 21
-	EventCommandPut         uint8 = 22
-	EventCommandDelete      uint8 = 23
-	EventGroupCommandPut    uint8 = 24
+	//
+	// Deprecated: all ten of these (through EventPeerGroupDelete below)
+	// are still fully supported, but new callers should send
+	// EventCatalogPut/EventCatalogDelete{kind: Kind*, ...} instead -- see
+	// EventCatalogPut's own doc comment.
+	EventGroupPut uint8 = 20
+	// Deprecated: see EventGroupPut's doc comment.
+	EventGroupDelete uint8 = 21
+	// Deprecated: see EventGroupPut's doc comment.
+	EventCommandPut uint8 = 22
+	// Deprecated: see EventGroupPut's doc comment.
+	EventCommandDelete uint8 = 23
+	// Deprecated: see EventGroupPut's doc comment.
+	EventGroupCommandPut uint8 = 24
+	// Deprecated: see EventGroupPut's doc comment.
 	EventGroupCommandDelete uint8 = 25
-	EventPeerGroupPut       uint8 = 26
-	EventPeerGroupDelete    uint8 = 27
+	// Deprecated: see EventGroupPut's doc comment.
+	EventPeerGroupPut uint8 = 26
+	// Deprecated: see EventGroupPut's doc comment.
+	EventPeerGroupDelete uint8 = 27
 	// EventJoinInviteCreate lodges a one-time shmevent.KindJoinInvite
 	// record (Value: EncodeJoinInviteCreatePayload) -- a direct write, no
 	// pending/confirmed lifecycle, same as EventGroupPut, gated on the
@@ -228,7 +269,13 @@ const (
 	// actually admits a new device -- that happens inside handleJoinStream
 	// when a join request presents a still-valid token (see
 	// pkg/kvfsm.OpConsumeInvite), entirely outside this event pair.
+	//
+	// Deprecated: both of these are still fully supported, but new callers
+	// should send EventLifecycleWrite{kind: KindJoinInvite, action:
+	// LifecycleActionRequest or LifecycleActionRevoke, ...} instead -- see
+	// EventLifecycleWrite's own doc comment.
 	EventJoinInviteCreate uint8 = 28
+	// Deprecated: see EventJoinInviteCreate's doc comment.
 	EventJoinInviteRevoke uint8 = 29
 	// EventExecInviteCreate/EventExecInviteRevoke are
 	// EventJoinInviteCreate/EventJoinInviteRevoke's counterpart for a
@@ -238,7 +285,13 @@ const (
 	// Value is EncodeExecInviteCreatePayload, Revoke's is
 	// EncodeExecInviteRevokePayload. Neither actually triggers execution --
 	// that's EventExecInviteRedeem below.
+	//
+	// Deprecated: both of these are still fully supported, but new callers
+	// should send EventLifecycleWrite{kind: KindExecInvite, action:
+	// LifecycleActionRequest or LifecycleActionRevoke, ...} instead -- see
+	// EventLifecycleWrite's own doc comment.
 	EventExecInviteCreate uint8 = 30
+	// Deprecated: see EventExecInviteCreate's doc comment.
 	EventExecInviteRevoke uint8 = 31
 	// EventExecInviteRedeem is local-only (pkg/daemon rejects it from a
 	// remote/ClientProtocolID caller -- see handleShmEvent): it tells this
@@ -583,8 +636,67 @@ const (
 	// device's cluster membership (KindClusterMember), group memberships
 	// and any command targeting it are untouched, since none of them
 	// depend on a station record existing.
-	EventStationPut    uint8 = 51
+	//
+	// Deprecated: both of these are still fully supported, but new callers
+	// should send EventCatalogPut/EventCatalogDelete{kind: KindStation,
+	// ...} instead -- see EventCatalogPut's own doc comment.
+	EventStationPut uint8 = 51
+	// Deprecated: see EventStationPut's doc comment.
 	EventStationDelete uint8 = 52
+	// EventCatalogPut/EventCatalogDelete are one generic envelope pair
+	// covering the same ground as EventGroupPut/Delete, EventCommandPut/
+	// Delete, EventGroupCommandPut/Delete, EventPeerGroupPut/Delete, and
+	// EventStationPut/Delete above -- added additively, alongside those
+	// ten (unchanged, still fully functional) events, not in place of
+	// them; see this const block's own doc comment on why new catalog
+	// kinds belong here going forward. Value is
+	// EncodeCatalogPayload(kind, inner): kind is one of KindGroup/
+	// KindCommand/KindGroupCommand/KindPeerGroup/KindStation (the same
+	// byte each record's own SystemKey already carries), inner is that
+	// kind's existing Put/Delete payload, completely unchanged --
+	// EncodeGroupPutPayload/EncodeCommandPutPayloadWithSpec/
+	// EncodeStationPutPayload/EncodeGroupCommandPayload/
+	// EncodePeerGroupPayload for EventCatalogPut, and whatever each kind's
+	// own Delete case already used as Msg.Value for EventCatalogDelete.
+	// Voter-gated and forwarded through handleConfirmForward exactly like
+	// the ten events it generalizes -- pkg/daemon's catalogPutSpecs/
+	// catalogDeleteSpecs select the right existing decode/key/op by kind,
+	// so no per-kind logic is duplicated, only dispatched to.
+	EventCatalogPut    uint8 = 53
+	EventCatalogDelete uint8 = 54
+	// EventLifecycleWrite is one generic envelope covering
+	// EventPermitRequest/Confirm/Revoke, EventJoinInviteCreate/Revoke, and
+	// EventExecInviteCreate/Revoke -- seven events sharing the identical
+	// "decode payload, build one or two SystemKey-shaped keys, apply via
+	// handleSetForward or handleConfirmForward" reduction -- added
+	// additively, alongside those seven (unchanged, still fully
+	// functional) events, not in place of them. EventJoinRequestCreate/
+	// Cancel and EventExecInviteRedeem are deliberately NOT folded in
+	// here: the first two are local in-memory ticket ops with no key and
+	// no raft write at all, and the third is a network dial to another
+	// node, not a decode-key-op reduction -- forcing them into this
+	// envelope would blur a real semantic difference for no duplication
+	// savings.
+	//
+	// Value is EncodeLifecycleWritePayload(kind, action, inner): kind is
+	// KindJoinInvite, KindExecInvite, or (for the Permit-style family,
+	// which is generic over kind the same way EventPermitRequest already
+	// is) any other kind byte such as KindBootstrapNode/KindClusterJoin;
+	// action is LifecycleActionRequest (also doubling as "Create" for
+	// JoinInvite/ExecInvite, which have no separate confirm stage),
+	// LifecycleActionConfirm (Permit-style only), or
+	// LifecycleActionRevoke. inner is that (kind, action) pair's existing
+	// payload, completely unchanged -- EncodePermitRequestPayload/
+	// EncodePermitConfirmPayload/EncodeJoinInviteCreatePayload/
+	// EncodeJoinInviteRevokePayload/EncodeExecInviteCreatePayload/
+	// EncodeExecInviteRevokePayload. pkg/daemon's permitLifecycleSpecs/
+	// inviteLifecycleSpecs select the right existing decode/key/op by
+	// (kind, action), including which of the two forwarding paths
+	// applies: EventPermitRequest's own "any raft node may relay, no
+	// voter check anywhere" (handleSetForward) for Permit-style Request,
+	// versus the voter-gated handleConfirmForward every other action
+	// here already used.
+	EventLifecycleWrite uint8 = 55
 	// EventError is response-only: Value carries a UTF-8 error message,
 	// ID echoes the failed request's ID. Not part of the fields the
 	// protocol was specified with -- added because the struct has no
@@ -695,6 +807,12 @@ func EventName(e uint8) string {
 		return "join_ticket"
 	case EventJoinRequestTicket:
 		return "join_request_ticket"
+	case EventCatalogPut:
+		return "catalog_put"
+	case EventCatalogDelete:
+		return "catalog_delete"
+	case EventLifecycleWrite:
+		return "lifecycle_write"
 	case EventError:
 		return "error"
 	default:
@@ -807,6 +925,12 @@ func EventFromName(name string) (uint8, bool) {
 		return EventJoinTicket, true
 	case "join_request_ticket":
 		return EventJoinRequestTicket, true
+	case "catalog_put":
+		return EventCatalogPut, true
+	case "catalog_delete":
+		return EventCatalogDelete, true
+	case "lifecycle_write":
+		return EventLifecycleWrite, true
 	case "error":
 		return EventError, true
 	default:
@@ -904,6 +1028,19 @@ func valueSizeFor(e uint8) int {
 		// spec, a station's attributes -- rather than fields this package
 		// defines, so they belong with the plain-KV events rather than with
 		// the fixed-shape system records they otherwise resemble.
+		return KVValueSize
+	case EventCatalogPut:
+		// EventCatalogPut's payload can be any of EventGroupPut/
+		// EventCommandPut/EventGroupCommandPut/EventPeerGroupPut/
+		// EventStationPut's own payloads (see EventCatalogPut's doc
+		// comment), including the two above -- it has to offer their
+		// widest ceiling, not the narrowest, or a Command-with-spec/Station
+		// put that fit under EventCommandPut/EventStationPut directly would
+		// silently stop fitting once routed through this envelope instead.
+		// EventCatalogDelete needs no equivalent case: every kind's own
+		// Delete payload (a bare id, or the two relation kinds' small
+		// fixed-shape keys) already fit ValueSize before this envelope
+		// existed.
 		return KVValueSize
 	case EventLogAppend:
 		// A journal entry is the durable record of something that happened

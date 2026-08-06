@@ -143,6 +143,65 @@ func TestStationPayloadRoundTrip(t *testing.T) {
 	}
 }
 
+// EventCatalogPut/EventCatalogDelete's whole point is carrying every
+// existing per-kind payload unchanged behind one extra leading kind byte --
+// this pins that round trip for all five kinds, including that the wrapped
+// bytes come back byte-identical to what the kind's own existing encoder
+// produced.
+func TestCatalogPayloadRoundTrip(t *testing.T) {
+	groupInner, err := EncodeGroupPutPayload("g1", "infantry", true)
+	if err != nil {
+		t.Fatalf("EncodeGroupPutPayload: %v", err)
+	}
+	commandInner, err := EncodeCommandPutPayload("c1", "resupply", []byte("peer1"))
+	if err != nil {
+		t.Fatalf("EncodeCommandPutPayload: %v", err)
+	}
+	stationInner, err := EncodeStationPutPayload([]byte("peer1"), "Assembly 1", []byte("attrs"))
+	if err != nil {
+		t.Fatalf("EncodeStationPutPayload: %v", err)
+	}
+	groupCommandInner, err := EncodeGroupCommandPayload([]byte("c1"), []byte("g1"))
+	if err != nil {
+		t.Fatalf("EncodeGroupCommandPayload: %v", err)
+	}
+	peerGroupInner, err := EncodePeerGroupPayload([]byte("peer1"), []byte("g1"))
+	if err != nil {
+		t.Fatalf("EncodePeerGroupPayload: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		kind  byte
+		inner []byte
+	}{
+		{"group", KindGroup, groupInner},
+		{"command", KindCommand, commandInner},
+		{"station", KindStation, stationInner},
+		{"group_command", KindGroupCommand, groupCommandInner},
+		{"peer_group", KindPeerGroup, peerGroupInner},
+		{"empty inner", KindGroup, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wrapped := EncodeCatalogPayload(tc.kind, tc.inner)
+			gotKind, gotInner, err := DecodeCatalogPayload(wrapped)
+			if err != nil {
+				t.Fatalf("DecodeCatalogPayload: %v", err)
+			}
+			if gotKind != tc.kind {
+				t.Fatalf("got kind %d, want %d", gotKind, tc.kind)
+			}
+			if !bytes.Equal(gotInner, tc.inner) {
+				t.Fatalf("got inner %x, want %x", gotInner, tc.inner)
+			}
+		})
+	}
+
+	if _, _, err := DecodeCatalogPayload(nil); err == nil {
+		t.Fatal("DecodeCatalogPayload unexpectedly accepted an empty payload")
+	}
+}
+
 // A station key has to be distinguishable from every other catalog key, or a
 // listing would return records of the wrong kind.
 func TestStationKeyBoundsCoverOnlyStations(t *testing.T) {

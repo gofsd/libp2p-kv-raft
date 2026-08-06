@@ -410,3 +410,43 @@ func DecodePermitConfirmPayload(payload []byte) (kind byte, peerID []byte, err e
 	}
 	return payload[0], payload[1:], nil
 }
+
+// LifecycleActionRequest/Confirm/Revoke are EventLifecycleWrite's action
+// byte -- see that event's doc comment. Request also stands for "Create"
+// for KindJoinInvite/KindExecInvite, which have no separate
+// pending/confirmed stage; LifecycleActionConfirm is meaningful only for
+// Permit-style kinds (anything other than KindJoinInvite/KindExecInvite).
+const (
+	LifecycleActionRequest byte = 1
+	LifecycleActionConfirm byte = 2
+	LifecycleActionRevoke  byte = 3
+)
+
+// EncodeLifecycleWritePayload wraps kind and action around inner -- an
+// existing per-(kind,action) payload, exactly as its own predecessor event
+// already produced it (EncodePermitRequestPayload/EncodePermitConfirmPayload/
+// EncodeJoinInviteCreatePayload/EncodeJoinInviteRevokePayload/
+// EncodeExecInviteCreatePayload/EncodeExecInviteRevokePayload) -- into a
+// single EventLifecycleWrite Msg.Value: kind first, action second (both
+// fixed size), inner verbatim after. Permit-style inner payloads already
+// carry their own kind byte internally (EncodePermitRequestPayload/
+// EncodePermitConfirmPayload's own first field) -- that's harmless
+// redundancy with the envelope's own kind byte, not a conflict, and lets
+// every existing Decode function be reused completely unchanged. See
+// pkg/daemon's permitLifecycleSpecs/inviteLifecycleSpecs, which select the
+// right existing decode/key/op by (kind, action).
+func EncodeLifecycleWritePayload(kind, action byte, inner []byte) []byte {
+	buf := make([]byte, 2+len(inner))
+	buf[0] = kind
+	buf[1] = action
+	copy(buf[2:], inner)
+	return buf
+}
+
+// DecodeLifecycleWritePayload is the inverse of EncodeLifecycleWritePayload.
+func DecodeLifecycleWritePayload(payload []byte) (kind, action byte, inner []byte, err error) {
+	if len(payload) < 2 {
+		return 0, 0, nil, fmt.Errorf("shmevent: lifecycle write payload too short: %d bytes", len(payload))
+	}
+	return payload[0], payload[1], payload[2:], nil
+}

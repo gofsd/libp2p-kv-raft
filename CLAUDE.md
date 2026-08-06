@@ -180,6 +180,21 @@ correlation `id`. A `Set` decomposes into a linked `SetKey`+`SetField` pair, a `
 key the node itself holds. Understanding this struct is prerequisite to touching almost any client
 or transport code here — see `api/shmevent.capnp`'s doc comment for the full design.
 
+**Adding a new capability should almost never mean adding a new top-level `Event*` byte.** Every
+raft node in the mesh — including long-lived bootstrap nodes and Android devices nobody
+force-upgrades — has to agree on what an `Event`/`kvfsm.OpType` byte means, so each one is a
+permanent, hand-duplicated commitment across `pkg/shmevent` (the Go codec), `pkg/daemon`'s dispatch
+switch, `web-app/src/shmevent.rs` (a hand-ported, not generated, Rust mirror), and the
+`pkg/kvctl`/`mobile/kvmobile` wrapper layers. A new *task* — some operation with typed inputs, ACL,
+durable request/response logging, and a low-latency "it's ready" poke — should instead be
+registered as a `Command` through `pkg/kvctl/dispatch.go`'s `SubmitCommand`/Group-Command catalog
+mechanism (see that file's doc comment and `pkg/shmevent/commandrequest.go`): it already dispatches
+generically over just four existing primitives (`EventGet`, `EventLogAppend`, `EventListRange`,
+`EventExecute`), is independently ported to `mobile/kvmobile/dispatch.go` and
+`web-app/src/dispatch.rs`, and needs zero new wire bytes per task type. Reserve new `Event*`
+constants for genuinely new wire-level primitives — a new relational shape, a new stream/session
+protocol — not new task types.
+
 - `pkg/daemon` (`cmd/kvnode`) — the long-running node process: libp2p host, raft instance backed by
   `pkg/kvfsm`/`pkg/store`, and a `pkg/ipc` server for local control. A node has no leader/follower
   role until it gets an `EventAdd`: bootstrap as sole leader, or join an existing one.

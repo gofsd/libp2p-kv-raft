@@ -1167,6 +1167,16 @@ trigger regardless of standing (e.g. a status/health check) — `addpeertogroup`
 `removepeerfromgroup` become no-ops for authorization purposes on a public group, since membership
 was never what was granting access.
 
+**This is the intended extension point for a new capability, not `api/shmevent.capnp`.** A
+`Command` targets one existing capability's plumbing (`SubmitCommand`/`QueryCommandLog`/the
+`Execute` poke — see `pkg/kvctl/dispatch.go`'s doc comment) without adding a single new wire
+`Event*` byte: `id`/`name`/`peer_id` identify it, the optional `spec` below describes its inputs to
+a caller, and everything about *how* it dispatches, gets ACL-checked, and gets durably logged is
+already generic. Every raft node — including long-lived bootstrap nodes and Android devices no one
+force-upgrades — has to agree on any new `Event*`/`kvfsm.OpType` byte forever, so that's reserved
+for genuinely new wire-level primitives (a new relational shape, a new stream/session protocol),
+not for new task types, which almost always fit here instead.
+
 ### Commands carry their own form definition
 
 A `Command` record holds a third, optional field beyond `name`/`peer_id`: `spec`, an opaque string

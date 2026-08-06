@@ -106,6 +106,52 @@ func TestPermitConfirmPayloadRoundTrip(t *testing.T) {
 	}
 }
 
+// EventLifecycleWrite's whole point is carrying every existing
+// per-(kind,action) payload unchanged behind two extra leading bytes --
+// this pins that round trip, reusing the exact inner payloads
+// EventPermitRequest/Confirm and EventJoinInviteCreate/Revoke already
+// produce.
+func TestLifecycleWritePayloadRoundTrip(t *testing.T) {
+	permitInner, err := EncodePermitRequestPayload(KindBootstrapNode, []byte("peer-123"), []byte("meta"))
+	if err != nil {
+		t.Fatalf("EncodePermitRequestPayload: %v", err)
+	}
+	joinInviteInner, err := EncodeJoinInviteCreatePayload(make([]byte, JoinInviteTokenSize), SuffrageVoter)
+	if err != nil {
+		t.Fatalf("EncodeJoinInviteCreatePayload: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		kind   byte
+		action byte
+		inner  []byte
+	}{
+		{"permit request", KindBootstrapNode, LifecycleActionRequest, permitInner},
+		{"permit revoke", KindClusterJoin, LifecycleActionRevoke, EncodePermitConfirmPayload(KindClusterJoin, []byte("peer-9"))},
+		{"join invite create", KindJoinInvite, LifecycleActionRequest, joinInviteInner},
+		{"empty inner", KindExecInvite, LifecycleActionRevoke, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wrapped := EncodeLifecycleWritePayload(tc.kind, tc.action, tc.inner)
+			gotKind, gotAction, gotInner, err := DecodeLifecycleWritePayload(wrapped)
+			if err != nil {
+				t.Fatalf("DecodeLifecycleWritePayload: %v", err)
+			}
+			if gotKind != tc.kind || gotAction != tc.action {
+				t.Fatalf("got kind=%d action=%d, want kind=%d action=%d", gotKind, gotAction, tc.kind, tc.action)
+			}
+			if !bytes.Equal(gotInner, tc.inner) {
+				t.Fatalf("got inner %x, want %x", gotInner, tc.inner)
+			}
+		})
+	}
+
+	if _, _, _, err := DecodeLifecycleWritePayload([]byte{1}); err == nil {
+		t.Fatal("DecodeLifecycleWritePayload unexpectedly accepted a payload shorter than kind+action")
+	}
+}
+
 func TestEventPermitRequestConfirmEncodeDecodeRoundTrip(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {

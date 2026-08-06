@@ -140,6 +140,27 @@ pub const EVENT_PUBLIC_ACCESS: u8 = 47;
 pub const EVENT_STATION_PUT: u8 = 51;
 /// Removes a station description -- `pkg/shmevent.EventStationDelete`.
 pub const EVENT_STATION_DELETE: u8 = 52;
+/// Generic envelope covering `EVENT_GROUP_PUT`/`EVENT_COMMAND_PUT`/
+/// `EVENT_GROUP_COMMAND_PUT`/`EVENT_PEER_GROUP_PUT`/`EVENT_STATION_PUT` --
+/// see `pkg/shmevent.EventCatalogPut`'s doc comment. Defined here for wire
+/// -table completeness only, same reasoning as `EVENT_TXN`/
+/// `EVENT_GROUP_PUT`: this client is a non-voting learner and none of the
+/// events it generalizes were ever reachable from one.
+pub const EVENT_CATALOG_PUT: u8 = 53;
+/// `EVENT_CATALOG_PUT`'s delete counterpart -- see
+/// `pkg/shmevent.EventCatalogDelete`.
+pub const EVENT_CATALOG_DELETE: u8 = 54;
+/// Generic envelope covering `EVENT_PERMIT_REQUEST`/`EVENT_PERMIT_CONFIRM`/
+/// `EVENT_PERMIT_REVOKE` and the (unported, see `shmevent::system`'s doc
+/// comment) `EVENT_JOIN_INVITE_CREATE`/`REVOKE` and
+/// `EVENT_EXEC_INVITE_CREATE`/`REVOKE` -- see
+/// `pkg/shmevent.EventLifecycleWrite`'s doc comment. `Value` is
+/// [`system::encode_lifecycle_write_payload`]; `app::request_permit` is
+/// this client's one real caller, sending a Permit-style
+/// `system::LIFECYCLE_ACTION_REQUEST`, the exact case
+/// `EVENT_PERMIT_REQUEST` was already reachable from a non-voting learner
+/// for.
+pub const EVENT_LIFECYCLE_WRITE: u8 = 55;
 /// Response-only; see `pkg/shmevent.EventError`'s doc comment for why
 /// this exists even though it isn't part of `api/shmevent.capnp`'s
 /// originally specified field set.
@@ -172,7 +193,12 @@ pub const KV_VALUE_SIZE: usize = 4 * 1024;
 pub fn value_size_for(event: u8) -> usize {
     match event {
         EVENT_SET_KEY | EVENT_SET_FIELD | EVENT_SET | EVENT_GET_FIELD | EVENT_TXN
-        | EVENT_LOG_APPEND | EVENT_COMMAND_PUT | EVENT_STATION_PUT => KV_VALUE_SIZE,
+        | EVENT_LOG_APPEND | EVENT_COMMAND_PUT | EVENT_STATION_PUT
+        // EVENT_CATALOG_PUT's payload can be EVENT_COMMAND_PUT/
+        // EVENT_STATION_PUT's own (see that constant's doc comment) --
+        // matches pkg/shmevent.valueSizeFor's identical EventCatalogPut
+        // case.
+        | EVENT_CATALOG_PUT => KV_VALUE_SIZE,
         _ => VALUE_SIZE,
     }
 }
@@ -428,6 +454,9 @@ pub fn event_name(event_type: u8) -> &'static str {
         EVENT_PEER_GROUP_PUT => "peer_group_put",
         EVENT_PEER_GROUP_DELETE => "peer_group_delete",
         EVENT_PUBLIC_ACCESS => "public_access",
+        EVENT_CATALOG_PUT => "catalog_put",
+        EVENT_CATALOG_DELETE => "catalog_delete",
+        EVENT_LIFECYCLE_WRITE => "lifecycle_write",
         EVENT_ERROR => "error",
         _ => "unknown",
     }
@@ -464,6 +493,9 @@ pub fn event_from_name(name: &str) -> Option<u8> {
         "peer_group_put" => Some(EVENT_PEER_GROUP_PUT),
         "peer_group_delete" => Some(EVENT_PEER_GROUP_DELETE),
         "public_access" => Some(EVENT_PUBLIC_ACCESS),
+        "catalog_put" => Some(EVENT_CATALOG_PUT),
+        "catalog_delete" => Some(EVENT_CATALOG_DELETE),
+        "lifecycle_write" => Some(EVENT_LIFECYCLE_WRITE),
         "error" => Some(EVENT_ERROR),
         _ => None,
     }
@@ -782,6 +814,17 @@ mod tests {
         assert!(!too_long(EVENT_SET_KEY, VALUE_SIZE + 1));
         assert!(!too_long(EVENT_SET_KEY, KV_VALUE_SIZE));
         assert!(too_long(EVENT_SET_KEY, KV_VALUE_SIZE + 1));
+
+        // EVENT_CATALOG_PUT's payload can be EVENT_COMMAND_PUT/
+        // EVENT_STATION_PUT's own -- it must inherit their wider
+        // KV_VALUE_SIZE ceiling, not fall back to plain VALUE_SIZE. Pins
+        // the same regression pkg/shmevent's identical test does on the Go
+        // side.
+        assert!(!too_long(EVENT_CATALOG_PUT, VALUE_SIZE + 1));
+        assert!(!too_long(EVENT_CATALOG_PUT, KV_VALUE_SIZE));
+        assert!(too_long(EVENT_CATALOG_PUT, KV_VALUE_SIZE + 1));
+        assert!(too_long(EVENT_CATALOG_DELETE, VALUE_SIZE + 1));
+        assert!(too_long(EVENT_LIFECYCLE_WRITE, VALUE_SIZE + 1));
     }
 
     #[test]
@@ -815,6 +858,9 @@ mod tests {
             EVENT_PEER_GROUP_PUT,
             EVENT_PEER_GROUP_DELETE,
             EVENT_PUBLIC_ACCESS,
+            EVENT_CATALOG_PUT,
+            EVENT_CATALOG_DELETE,
+            EVENT_LIFECYCLE_WRITE,
             EVENT_ERROR,
         ] {
             let name = event_name(e);

@@ -341,6 +341,7 @@ async fn handle_request(
         // the shape RemoteSession::call already is.
         shmevent::EVENT_SET
         | shmevent::EVENT_PERMIT_REQUEST
+        | shmevent::EVENT_LIFECYCLE_WRITE
         | shmevent::EVENT_LOG_APPEND
         | shmevent::EVENT_LOG_PERMIT_REQUEST
         | shmevent::EVENT_POLL_EXECUTE => {
@@ -1002,14 +1003,19 @@ impl MainHandle {
     ) -> Result<(), JsValue> {
         let kind_byte = shmevent::system::kind_from_name(&kind)
             .ok_or_else(|| JsValue::from_str(&format!("unknown permit kind {kind:?}")))?;
-        let payload = shmevent::system::encode_permit_request_payload(
+        let inner = shmevent::system::encode_permit_request_payload(
             kind_byte,
             target_peer_id.as_bytes(),
             metadata.as_bytes(),
         )
         .map_err(js_shmevent_err)?;
+        let payload = shmevent::system::encode_lifecycle_write_payload(
+            kind_byte,
+            shmevent::system::LIFECYCLE_ACTION_REQUEST,
+            &inner,
+        );
         self.inner
-            .call_signed(shmevent::EVENT_PERMIT_REQUEST, payload)
+            .call_signed(shmevent::EVENT_LIFECYCLE_WRITE, payload)
             .await?;
         Ok(())
     }

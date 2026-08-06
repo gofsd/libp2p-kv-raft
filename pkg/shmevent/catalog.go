@@ -692,6 +692,32 @@ func DecodePeerGroupPayload(payload []byte) (peerID, groupID []byte, err error) 
 	return payload[off : off+idLen], payload[off+idLen:], nil
 }
 
+// EncodeCatalogPayload wraps kind (one of KindGroup/KindCommand/
+// KindGroupCommand/KindPeerGroup/KindStation) and inner -- an existing
+// per-kind payload, exactly as its own Encode<Kind>PutPayload produces it
+// for a Put, or exactly as its own Delete case already used as Msg.Value
+// (a bare id for Group/Command/Station, EncodeGroupCommandPayload/
+// EncodePeerGroupPayload's output for the two relation kinds) -- into a
+// single EventCatalogPut/EventCatalogDelete Msg.Value: kind first (fixed
+// size), inner verbatim after it. Both events share this one framing since
+// neither needs anything beyond "which kind, then that kind's own existing
+// payload" -- see pkg/daemon's catalogPutSpecs/catalogDeleteSpecs, which
+// select the right existing Decode/Key function by kind.
+func EncodeCatalogPayload(kind byte, inner []byte) []byte {
+	buf := make([]byte, 1+len(inner))
+	buf[0] = kind
+	copy(buf[1:], inner)
+	return buf
+}
+
+// DecodeCatalogPayload is the inverse of EncodeCatalogPayload.
+func DecodeCatalogPayload(payload []byte) (kind byte, inner []byte, err error) {
+	if len(payload) < 1 {
+		return 0, nil, fmt.Errorf("shmevent: catalog payload empty")
+	}
+	return payload[0], payload[1:], nil
+}
+
 // Reserved Group ids that pkg/daemon creates once, at cluster bootstrap,
 // and keeps current automatically from then on -- see that package's
 // syncMemberGroups/clearMemberGroups/ensureReservedGroups. Every current

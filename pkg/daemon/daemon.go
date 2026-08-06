@@ -2207,6 +2207,12 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 	}
 	if caller.remotePeer != "" &&
 		m.EventType != shmevent.EventPermitRequest && m.EventType != shmevent.EventPermitConfirm &&
+		// EventLifecycleWrite carries EventPermitRequest/Confirm's own
+		// exemption too, when its payload actually decodes to one of
+		// those two actions -- see isExemptPermitLifecycleWrite's own
+		// doc comment on why this can't just be a blanket EventType
+		// exemption the way the other two are.
+		!(m.EventType == shmevent.EventLifecycleWrite && isExemptPermitLifecycleWrite(m.Value)) &&
 		// EventSetKey/EventGetKey never touch the store or any privileged
 		// state -- just a per-connection numeric-id relay of a value the
 		// caller itself already supplied (see EventSet's own doc comment on
@@ -2592,6 +2598,98 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 			return errorMsg(m.ID, err)
 		}
 		return shmevent.Msg{EventType: shmevent.EventPeerGroupDelete, ID: m.ID}
+
+	// EventCatalogPut/EventCatalogDelete are one generic envelope pair
+	// covering the same ten kind-specific events immediately above --
+	// added additively, alongside them, not in place of them; see
+	// EventCatalogPut's own doc comment in pkg/shmevent/event.go.
+	// catalogPutSpecs/catalogDeleteSpecs (pkg/daemon/catalog_envelope.go)
+	// select the right existing decode/key/validation/op by kind, so the
+	// voter guard is the only thing done once here instead of ten times.
+	case shmevent.EventCatalogPut:
+		if caller.remotePeer != "" {
+			rf := n.getRaft()
+			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
+				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
+			}
+		}
+		kind, inner, err := shmevent.DecodeCatalogPayload(m.Value)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		spec, ok := catalogPutSpecs[kind]
+		if !ok {
+			return errorMsg(m.ID, fmt.Errorf("catalog_put: unrecognized entity kind %d", kind))
+		}
+		key, value, err := spec.build(inner)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		if err := n.handleConfirmForward(ctx, spec.op, key, value, true); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventCatalogPut, ID: m.ID}
+
+	case shmevent.EventCatalogDelete:
+		if caller.remotePeer != "" {
+			rf := n.getRaft()
+			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
+				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
+			}
+		}
+		kind, inner, err := shmevent.DecodeCatalogPayload(m.Value)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		spec, ok := catalogDeleteSpecs[kind]
+		if !ok {
+			return errorMsg(m.ID, fmt.Errorf("catalog_delete: unrecognized entity kind %d", kind))
+		}
+		key, err := spec.build(inner)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		if err := n.handleConfirmForward(ctx, spec.op, key, nil, true); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventCatalogDelete, ID: m.ID}
+
+	// EventLifecycleWrite is one generic envelope covering
+	// EventPermitRequest/Confirm/Revoke and EventJoinInviteCreate/Revoke/
+	// EventExecInviteCreate/Revoke immediately below -- added additively,
+	// alongside them, not in place of them; see EventLifecycleWrite's own
+	// doc comment in pkg/shmevent/event.go. lookupLifecycleWriteSpec
+	// (pkg/daemon/lifecycle_envelope.go) selects the right existing
+	// decode/key/op/forwarding-path by (kind, action), including
+	// EventPermitRequest's deliberately-ungated handleSetForward path --
+	// see that spec's own voterGated/viaSetForward fields.
+	case shmevent.EventLifecycleWrite:
+		kind, action, inner, err := shmevent.DecodeLifecycleWritePayload(m.Value)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		spec, ok := lookupLifecycleWriteSpec(kind, action)
+		if !ok {
+			return errorMsg(m.ID, unrecognizedLifecycleWriteError(kind, action))
+		}
+		if spec.voterGated && caller.remotePeer != "" {
+			rf := n.getRaft()
+			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
+				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
+			}
+		}
+		key1, key2, err := spec.build(inner)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		if spec.viaSetForward {
+			if err := n.handleSetForward(ctx, key1, key2, true); err != nil {
+				return errorMsg(m.ID, err)
+			}
+		} else if err := n.handleConfirmForward(ctx, spec.op, key1, key2, true); err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventLifecycleWrite, ID: m.ID}
 
 	// EventJoinInviteCreate/Revoke are direct writes gated the identical
 	// "only a raft voter may act" way EventGroupPut/Delete are (see that

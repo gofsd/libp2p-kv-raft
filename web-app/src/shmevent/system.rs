@@ -138,6 +138,32 @@ pub fn decode_permit_confirm_payload(payload: &[u8]) -> Result<(u8, &[u8]), Erro
     Ok((payload[0], &payload[1..]))
 }
 
+/// `EVENT_LIFECYCLE_WRITE`'s action byte -- matches
+/// `pkg/shmevent.LifecycleAction*`. Only `LIFECYCLE_ACTION_REQUEST` is
+/// actually sent by this client (see [`encode_lifecycle_write_payload`]'s
+/// doc comment); `CONFIRM`/`REVOKE` are defined for wire-table
+/// completeness the same way `EVENT_PERMIT_CONFIRM`/`EVENT_PERMIT_REVOKE`
+/// already are.
+pub const LIFECYCLE_ACTION_REQUEST: u8 = 1;
+pub const LIFECYCLE_ACTION_CONFIRM: u8 = 2;
+pub const LIFECYCLE_ACTION_REVOKE: u8 = 3;
+
+/// Wraps `kind` and `action` around `inner` -- an existing per-(kind,
+/// action) payload, exactly as its own predecessor event already produced
+/// it ([`encode_permit_request_payload`]/[`encode_permit_confirm_payload`])
+/// -- into a single `EVENT_LIFECYCLE_WRITE` `Msg.value`. Matches
+/// `pkg/shmevent.EncodeLifecycleWritePayload`. This client only ever
+/// builds a Permit-style Request (`request_permit` in `app.rs`), the one
+/// case `EVENT_PERMIT_REQUEST` was already reachable from a non-voting
+/// learner for -- see that function's own doc comment.
+pub fn encode_lifecycle_write_payload(kind: u8, action: u8, inner: &[u8]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(2 + inner.len());
+    buf.push(kind);
+    buf.push(action);
+    buf.extend_from_slice(inner);
+    buf
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,5 +226,30 @@ mod tests {
     #[test]
     fn permit_confirm_payload_too_short_rejected() {
         assert!(decode_permit_confirm_payload(&[]).is_err());
+    }
+
+    #[test]
+    fn lifecycle_write_payload_layout() {
+        let inner = encode_permit_request_payload(KIND_BOOTSTRAP_NODE, b"peer-123", b"meta")
+            .unwrap();
+        let wrapped =
+            encode_lifecycle_write_payload(KIND_BOOTSTRAP_NODE, LIFECYCLE_ACTION_REQUEST, &inner);
+        assert_eq!(wrapped[0], KIND_BOOTSTRAP_NODE);
+        assert_eq!(wrapped[1], LIFECYCLE_ACTION_REQUEST);
+        assert_eq!(&wrapped[2..], inner.as_slice());
+
+        // The inner payload must still decode correctly once the two
+        // envelope bytes are stripped -- pinning that this is a pure
+        // prepend, not a reinterpretation of the existing payload.
+        let (kind, peer_id, metadata) = decode_permit_request_payload(&wrapped[2..]).unwrap();
+        assert_eq!(kind, KIND_BOOTSTRAP_NODE);
+        assert_eq!(peer_id, b"peer-123");
+        assert_eq!(metadata, b"meta");
+    }
+
+    #[test]
+    fn lifecycle_write_payload_empty_inner() {
+        let wrapped = encode_lifecycle_write_payload(KIND_CLUSTER_JOIN, LIFECYCLE_ACTION_REVOKE, &[]);
+        assert_eq!(wrapped, vec![KIND_CLUSTER_JOIN, LIFECYCLE_ACTION_REVOKE]);
     }
 }

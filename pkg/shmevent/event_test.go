@@ -125,7 +125,7 @@ func TestGetPublicPrivateKeyEventsSignWithNilKey(t *testing.T) {
 }
 
 func TestEventNameRoundTrip(t *testing.T) {
-	for _, e := range []uint8{EventSetKey, EventSetField, EventGetKey, EventGetField, EventGetPublicKey, EventGetPrivateKey, EventAdd, EventSet, EventPermitRequest, EventPermitConfirm, EventExecute, EventPollExecute, EventPermitRevoke, EventListRange, EventLogAppend, EventError} {
+	for _, e := range []uint8{EventSetKey, EventSetField, EventGetKey, EventGetField, EventGetPublicKey, EventGetPrivateKey, EventAdd, EventSet, EventPermitRequest, EventPermitConfirm, EventExecute, EventPollExecute, EventPermitRevoke, EventListRange, EventLogAppend, EventCatalogPut, EventCatalogDelete, EventLifecycleWrite, EventError} {
 		name := EventName(e)
 		got, ok := EventFromName(name)
 		if !ok {
@@ -256,6 +256,16 @@ func TestValueTooLongRejected(t *testing.T) {
 		{"a set gets KVValueSize", EventSet, KVValueSize},
 		{"a txn gets KVValueSize", EventTxn, KVValueSize},
 		{"a channel chunk gets ChannelValueSize", EventChannelSend, ChannelValueSize},
+		// EventCatalogPut's payload can be a Command-with-spec or a
+		// Station's attrs -- both EventCommandPut/EventStationPut's own
+		// KVValueSize tier -- routed through one extra kind-byte wrapper.
+		// Pinned here because it's exactly the kind of regression that's
+		// silent until a real caller's payload is big enough to hit it:
+		// EventCatalogPut defaulting to plain ValueSize would still encode
+		// every *test* fixture (which tend to be small) without error.
+		{"catalog put inherits its widest wrapped kind's KVValueSize", EventCatalogPut, KVValueSize},
+		{"catalog delete keeps ValueSize (every wrapped kind's delete payload is small)", EventCatalogDelete, ValueSize},
+		{"lifecycle write keeps ValueSize (none of its wrapped kinds needed more)", EventLifecycleWrite, ValueSize},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := Encode(Msg{EventType: tc.event, Value: make([]byte, tc.limit), ID: 1}, priv); err != nil {

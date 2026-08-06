@@ -309,22 +309,12 @@ func (s *Session) Kick(ctx context.Context, targetPeerID string) error {
 // multiaddr for KindBootstrapNode). See shmevent.EventPermitRequest's doc
 // comment: any raft node may receive and relay this.
 func (s *Session) RequestPermit(ctx context.Context, kind byte, peerID, metadata []byte) error {
-	payload, err := shmevent.EncodePermitRequestPayload(kind, peerID, metadata)
+	inner, err := shmevent.EncodePermitRequestPayload(kind, peerID, metadata)
 	if err != nil {
 		return fmt.Errorf("shmclient: permit_request: %w", err)
 	}
-	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventPermitRequest,
-		Value:     payload,
-		ID:        newID(),
-	}, s.priv)
-	if err != nil {
-		return fmt.Errorf("shmclient: permit_request: %w", err)
-	}
-	if resp.EventType == shmevent.EventError {
-		return fmt.Errorf("shmclient: permit_request: %s", resp.Value)
-	}
-	return nil
+	payload := shmevent.EncodeLifecycleWritePayload(kind, shmevent.LifecycleActionRequest, inner)
+	return s.catalogCallNamed(ctx, shmevent.EventLifecycleWrite, "permit_request", payload)
 }
 
 // ConfirmPermit promotes a pending permit request for peerID (of the
@@ -334,18 +324,9 @@ func (s *Session) RequestPermit(ctx context.Context, kind byte, peerID, metadata
 // this (surfaced as an error here) if it forwards to a leader that
 // determines the confirming node isn't one.
 func (s *Session) ConfirmPermit(ctx context.Context, kind byte, peerID []byte) error {
-	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventPermitConfirm,
-		Value:     shmevent.EncodePermitConfirmPayload(kind, peerID),
-		ID:        newID(),
-	}, s.priv)
-	if err != nil {
-		return fmt.Errorf("shmclient: permit_confirm: %w", err)
-	}
-	if resp.EventType == shmevent.EventError {
-		return fmt.Errorf("shmclient: permit_confirm: %s", resp.Value)
-	}
-	return nil
+	inner := shmevent.EncodePermitConfirmPayload(kind, peerID)
+	payload := shmevent.EncodeLifecycleWritePayload(kind, shmevent.LifecycleActionConfirm, inner)
+	return s.catalogCallNamed(ctx, shmevent.EventLifecycleWrite, "permit_confirm", payload)
 }
 
 // RevokePermit deletes a confirmed permit record for peerID (of the given
@@ -355,37 +336,38 @@ func (s *Session) ConfirmPermit(ctx context.Context, kind byte, peerID []byte) e
 // leader that determines the revoking node isn't one, the same as
 // ConfirmPermit.
 func (s *Session) RevokePermit(ctx context.Context, kind byte, peerID []byte) error {
-	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventPermitRevoke,
-		Value:     shmevent.EncodePermitConfirmPayload(kind, peerID),
-		ID:        newID(),
-	}, s.priv)
-	if err != nil {
-		return fmt.Errorf("shmclient: permit_revoke: %w", err)
-	}
-	if resp.EventType == shmevent.EventError {
-		return fmt.Errorf("shmclient: permit_revoke: %s", resp.Value)
-	}
-	return nil
+	inner := shmevent.EncodePermitConfirmPayload(kind, peerID)
+	payload := shmevent.EncodeLifecycleWritePayload(kind, shmevent.LifecycleActionRevoke, inner)
+	return s.catalogCallNamed(ctx, shmevent.EventLifecycleWrite, "permit_revoke", payload)
 }
 
-// catalogCall is the shared round trip behind every group-based ACL
-// catalog Session method below (PutGroup, DeleteGroupCommand, etc.) --
-// each of the eight just builds its own payload and event type, then
-// reduces to this one send-and-check-for-EventError call.
-func (s *Session) catalogCall(ctx context.Context, eventType uint8, payload []byte) error {
+// catalogCallNamed is catalogCall's underlying implementation, taking an
+// explicit name for error text instead of deriving one from eventType --
+// needed once more than one Session method can share the same wire
+// eventType (EventCatalogPut/EventCatalogDelete, see below), where
+// shmevent.EventName would otherwise report every one of them as just
+// "catalog_put"/"catalog_delete".
+func (s *Session) catalogCallNamed(ctx context.Context, eventType uint8, name string, payload []byte) error {
 	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
 		EventType: eventType,
 		Value:     payload,
 		ID:        newID(),
 	}, s.priv)
 	if err != nil {
-		return fmt.Errorf("shmclient: %s: %w", shmevent.EventName(eventType), err)
+		return fmt.Errorf("shmclient: %s: %w", name, err)
 	}
 	if resp.EventType == shmevent.EventError {
-		return fmt.Errorf("shmclient: %s: %s", shmevent.EventName(eventType), resp.Value)
+		return fmt.Errorf("shmclient: %s: %s", name, resp.Value)
 	}
 	return nil
+}
+
+// catalogCall is the shared round trip behind every group-based ACL
+// catalog Session method below (PutGroup, DeleteGroupCommand, etc.) --
+// each just builds its own payload and event type, then reduces to this
+// one send-and-check-for-EventError call.
+func (s *Session) catalogCall(ctx context.Context, eventType uint8, payload []byte) error {
+	return s.catalogCallNamed(ctx, eventType, shmevent.EventName(eventType), payload)
 }
 
 // PutGroup creates or updates (single-step, no separate create/update --
@@ -399,14 +381,14 @@ func (s *Session) PutGroup(ctx context.Context, id, name string, public bool) er
 	if err != nil {
 		return fmt.Errorf("shmclient: group_put: %w", err)
 	}
-	return s.catalogCall(ctx, shmevent.EventGroupPut, payload)
+	return s.catalogCallNamed(ctx, shmevent.EventCatalogPut, "group_put", shmevent.EncodeCatalogPayload(shmevent.KindGroup, payload))
 }
 
 // DeleteGroup deletes the Group record id, cascading to every
 // GroupCommand/PeerGroup record referencing it (see
 // kvfsm.OpCascadeDelete). Only a current raft voter may do this.
 func (s *Session) DeleteGroup(ctx context.Context, id string) error {
-	return s.catalogCall(ctx, shmevent.EventGroupDelete, []byte(id))
+	return s.catalogCallNamed(ctx, shmevent.EventCatalogDelete, "group_delete", shmevent.EncodeCatalogPayload(shmevent.KindGroup, []byte(id)))
 }
 
 // PutCommand creates or updates the Command record id={name, peerID}
@@ -430,7 +412,7 @@ func (s *Session) PutCommandWithSpec(ctx context.Context, id, name string, peerI
 	if err != nil {
 		return fmt.Errorf("shmclient: command_put: %w", err)
 	}
-	return s.catalogCall(ctx, shmevent.EventCommandPut, payload)
+	return s.catalogCallNamed(ctx, shmevent.EventCatalogPut, "command_put", shmevent.EncodeCatalogPayload(shmevent.KindCommand, payload))
 }
 
 // ClearCommandSpec rewrites command id with an explicitly empty spec,
@@ -445,7 +427,8 @@ func (s *Session) ClearCommandSpec(ctx context.Context, id, name string, peerID 
 	// Trim the one placeholder byte: the encoder treats an empty spec as
 	// "no spec" and would emit v1, which is exactly the payload that means
 	// "preserve" rather than "clear".
-	return s.catalogCall(ctx, shmevent.EventCommandPut, payload[:len(payload)-1])
+	payload = payload[:len(payload)-1]
+	return s.catalogCallNamed(ctx, shmevent.EventCatalogPut, "command_put", shmevent.EncodeCatalogPayload(shmevent.KindCommand, payload))
 }
 
 // PutStation creates or updates the KindStation record describing the device
@@ -456,21 +439,21 @@ func (s *Session) PutStation(ctx context.Context, peerID []byte, name string, at
 	if err != nil {
 		return fmt.Errorf("shmclient: station_put: %w", err)
 	}
-	return s.catalogCall(ctx, shmevent.EventStationPut, payload)
+	return s.catalogCallNamed(ctx, shmevent.EventCatalogPut, "station_put", shmevent.EncodeCatalogPayload(shmevent.KindStation, payload))
 }
 
 // DeleteStation removes the station description for peerID. The device's
 // cluster membership and group memberships are untouched -- this deletes
 // what it's *called*, not what it *is*.
 func (s *Session) DeleteStation(ctx context.Context, peerID []byte) error {
-	return s.catalogCall(ctx, shmevent.EventStationDelete, peerID)
+	return s.catalogCallNamed(ctx, shmevent.EventCatalogDelete, "station_delete", shmevent.EncodeCatalogPayload(shmevent.KindStation, peerID))
 }
 
 // DeleteCommand deletes the Command record id, cascading to every
 // GroupCommand record referencing it. Only a current raft voter may do
 // this.
 func (s *Session) DeleteCommand(ctx context.Context, id string) error {
-	return s.catalogCall(ctx, shmevent.EventCommandDelete, []byte(id))
+	return s.catalogCallNamed(ctx, shmevent.EventCatalogDelete, "command_delete", shmevent.EncodeCatalogPayload(shmevent.KindCommand, []byte(id)))
 }
 
 // PutGroupCommand links commandID to groupID -- peers in groupID (see
@@ -481,7 +464,7 @@ func (s *Session) PutGroupCommand(ctx context.Context, commandID, groupID []byte
 	if err != nil {
 		return fmt.Errorf("shmclient: group_command_put: %w", err)
 	}
-	return s.catalogCall(ctx, shmevent.EventGroupCommandPut, payload)
+	return s.catalogCallNamed(ctx, shmevent.EventCatalogPut, "group_command_put", shmevent.EncodeCatalogPayload(shmevent.KindGroupCommand, payload))
 }
 
 // DeleteGroupCommand unlinks commandID from groupID. Only a current raft
@@ -491,7 +474,7 @@ func (s *Session) DeleteGroupCommand(ctx context.Context, commandID, groupID []b
 	if err != nil {
 		return fmt.Errorf("shmclient: group_command_delete: %w", err)
 	}
-	return s.catalogCall(ctx, shmevent.EventGroupCommandDelete, payload)
+	return s.catalogCallNamed(ctx, shmevent.EventCatalogDelete, "group_command_delete", shmevent.EncodeCatalogPayload(shmevent.KindGroupCommand, payload))
 }
 
 // PutPeerGroup adds peerID as a member of groupID -- see PutGroupCommand
@@ -501,7 +484,7 @@ func (s *Session) PutPeerGroup(ctx context.Context, peerID, groupID []byte) erro
 	if err != nil {
 		return fmt.Errorf("shmclient: peer_group_put: %w", err)
 	}
-	return s.catalogCall(ctx, shmevent.EventPeerGroupPut, payload)
+	return s.catalogCallNamed(ctx, shmevent.EventCatalogPut, "peer_group_put", shmevent.EncodeCatalogPayload(shmevent.KindPeerGroup, payload))
 }
 
 // DeletePeerGroup removes peerID from groupID. Only a current raft voter
@@ -511,24 +494,27 @@ func (s *Session) DeletePeerGroup(ctx context.Context, peerID, groupID []byte) e
 	if err != nil {
 		return fmt.Errorf("shmclient: peer_group_delete: %w", err)
 	}
-	return s.catalogCall(ctx, shmevent.EventPeerGroupDelete, payload)
+	return s.catalogCallNamed(ctx, shmevent.EventCatalogDelete, "peer_group_delete", shmevent.EncodeCatalogPayload(shmevent.KindPeerGroup, payload))
 }
 
 // CreateJoinInvite lodges a one-time shmevent.KindJoinInvite record for
 // token, granting suffrage, on the session's node. Only a current raft
 // voter may do this -- see shmevent.EventJoinInviteCreate's doc comment.
 func (s *Session) CreateJoinInvite(ctx context.Context, token []byte, suffrage byte) error {
-	payload, err := shmevent.EncodeJoinInviteCreatePayload(token, suffrage)
+	inner, err := shmevent.EncodeJoinInviteCreatePayload(token, suffrage)
 	if err != nil {
 		return fmt.Errorf("shmclient: join_invite_create: %w", err)
 	}
-	return s.catalogCall(ctx, shmevent.EventJoinInviteCreate, payload)
+	payload := shmevent.EncodeLifecycleWritePayload(shmevent.KindJoinInvite, shmevent.LifecycleActionRequest, inner)
+	return s.catalogCallNamed(ctx, shmevent.EventLifecycleWrite, "join_invite_create", payload)
 }
 
 // RevokeJoinInvite deletes the KindJoinInvite record for token outright,
 // before it's ever redeemed. Only a current raft voter may do this.
 func (s *Session) RevokeJoinInvite(ctx context.Context, token []byte) error {
-	return s.catalogCall(ctx, shmevent.EventJoinInviteRevoke, shmevent.EncodeJoinInviteRevokePayload(token))
+	inner := shmevent.EncodeJoinInviteRevokePayload(token)
+	payload := shmevent.EncodeLifecycleWritePayload(shmevent.KindJoinInvite, shmevent.LifecycleActionRevoke, inner)
+	return s.catalogCallNamed(ctx, shmevent.EventLifecycleWrite, "join_invite_revoke", payload)
 }
 
 // CreateJoinRequest mints a fresh join-request ticket on the session's own
@@ -581,17 +567,20 @@ func (s *Session) Recruit(ctx context.Context, ticket string, suffrage byte) (st
 // current raft voter may do this -- see shmevent.EventExecInviteCreate's
 // doc comment.
 func (s *Session) CreateExecInvite(ctx context.Context, token []byte, commandID, inputsJSON string) error {
-	payload, err := shmevent.EncodeExecInviteCreatePayload(token, commandID, inputsJSON)
+	inner, err := shmevent.EncodeExecInviteCreatePayload(token, commandID, inputsJSON)
 	if err != nil {
 		return fmt.Errorf("shmclient: exec_invite_create: %w", err)
 	}
-	return s.catalogCall(ctx, shmevent.EventExecInviteCreate, payload)
+	payload := shmevent.EncodeLifecycleWritePayload(shmevent.KindExecInvite, shmevent.LifecycleActionRequest, inner)
+	return s.catalogCallNamed(ctx, shmevent.EventLifecycleWrite, "exec_invite_create", payload)
 }
 
 // RevokeExecInvite deletes the KindExecInvite record for token outright,
 // before it's ever redeemed. Only a current raft voter may do this.
 func (s *Session) RevokeExecInvite(ctx context.Context, token []byte) error {
-	return s.catalogCall(ctx, shmevent.EventExecInviteRevoke, shmevent.EncodeExecInviteRevokePayload(token))
+	inner := shmevent.EncodeExecInviteRevokePayload(token)
+	payload := shmevent.EncodeLifecycleWritePayload(shmevent.KindExecInvite, shmevent.LifecycleActionRevoke, inner)
+	return s.catalogCallNamed(ctx, shmevent.EventLifecycleWrite, "exec_invite_revoke", payload)
 }
 
 // RedeemExecInvite tells the session's own node to dial sourceAddr and
