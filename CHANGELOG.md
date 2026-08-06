@@ -159,6 +159,22 @@ tracks *changes*, not a full feature description).
   workload.
 
 ### Fixed
+- A `Join` through a relay circuit (`connect to leader ...: error opening relay circuit:
+  NO_RESERVATION (204)`) could fail outright even though the leader was genuinely reachable,
+  reproduced twice pairing two Android devices over the deployed relay. `NO_RESERVATION` means
+  the relay had no active reservation on file for the leader at the moment of the dial -- which
+  happens whenever the leader's own AutoRelay is still re-establishing its reservation (observed
+  taking 24-46s against the same relay, in the same run, via the equivalent `RequestRelayAccess`
+  step), not evidence the leader is actually unreachable. `connectWithRetry`'s existing budget
+  (`connectRetryAttempts`/`connectRetryDelay`, ~1.5s total) is deliberately short -- sized for
+  ordinary packet loss, not a real in-progress reconnect on the *other* end -- so it gave up long
+  before that reservation could land. `connectWithRetry` now falls back to a dedicated, much
+  longer retry budget (`connectRetryReservationAttempts`/`connectRetryReservationDelay`, ~48s)
+  specifically when every attempt in the short budget fails with `NO_RESERVATION`
+  (`isNoReservationError`), leaving every other dial-failure case's fast-fail behavior unchanged.
+  Covered by `TestIsNoReservationErrorMatchesRelayStatusText` in
+  `pkg/daemon/nat_edge_cases_test.go`.
+
 - A dead first relay candidate stalled failover to a working second one for
   a full **3 minutes**. `newHost` wires `Config.RelayPeers`/confirmed
   `KindBootstrapNode` records through `libp2p.EnableAutoRelayWithStaticRelays`,

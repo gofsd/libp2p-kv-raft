@@ -39,6 +39,7 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/host/autorelay"
 	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
 	"github.com/libp2p/go-libp2p/p2p/net/swarm"
+	pbv2 "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/pb"
 	v2relay "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	"github.com/multiformats/go-multiaddr"
 	manet "github.com/multiformats/go-multiaddr/net"
@@ -3457,6 +3458,34 @@ const connectRetryAttempts = 3
 
 const connectRetryDelay = 500 * time.Millisecond
 
+// connectRetryReservationAttempts/connectRetryReservationDelay bound the
+// extended retry connectWithRetry falls back to when every attempt above
+// fails with NO_RESERVATION specifically (see isNoReservationError) --
+// caught live pairing two Android devices through the deployed relay: the
+// destination's own AutoRelay was still (re-)establishing its relay
+// reservation at the moment of the dial, and that reservation round trip
+// was independently observed taking 24-46s against the same relay in the
+// same run (this project's own RequestRelayAccess step does the identical
+// underlying work) -- far past connectRetryAttempts/connectRetryDelay's
+// ~1.5s budget, which exists for ordinary packet loss, not a real
+// in-progress reconnect on the *other* end. NO_RESERVATION is the relay's
+// own explicit "not yet" answer, not evidence the peer is unreachable, so
+// it is worth riding out with a dedicated, longer budget instead of
+// failing the join/recruit/exec-invite outright.
+const connectRetryReservationAttempts = 6
+
+const connectRetryReservationDelay = 8 * time.Second
+
+// isNoReservationError reports whether err is (or wraps) a circuitv2
+// client dial failure whose relay-reported status is NO_RESERVATION.
+// go-libp2p's own relayError type (p2p/protocol/circuitv2/client/dial.go)
+// is unexported with no status accessor, so matching the status's own
+// wire name in the formatted error text is the only way to distinguish
+// this specific, recoverable case from an ordinary dial failure.
+func isNoReservationError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), pbv2.Status_NO_RESERVATION.String())
+}
+
 // clearDialBackoff drops go-libp2p's own per-peer dial backoff for pid, so
 // the very next dial actually reaches the network instead of being refused
 // locally with "dial backoff".
@@ -3520,9 +3549,27 @@ func clearDialBackoff(h lp2phost.Host, info peer.AddrInfo) {
 // bad moment: caught live, running this project's own e2e pair scenario, a
 // plain unretried Connect intermittently failed with a bare TCP dial
 // timeout to a real, otherwise-reachable remote target.
+//
+// If every attempt in that first, short budget fails with NO_RESERVATION
+// specifically, one more, much longer round runs on top of it (see
+// connectRetryReservationAttempts' doc comment) rather than surfacing the
+// error immediately -- that status means the destination's own relay
+// reservation is still being established, not that it's unreachable.
 func connectWithRetry(ctx context.Context, h lp2phost.Host, info peer.AddrInfo) error {
+	lastErr := dialAttempts(ctx, h, info, connectRetryAttempts, connectRetryDelay)
+	if lastErr == nil || !isNoReservationError(lastErr) {
+		return lastErr
+	}
+	return dialAttempts(ctx, h, info, connectRetryReservationAttempts, connectRetryReservationDelay)
+}
+
+// dialAttempts is connectWithRetry's shared retry loop, parameterized on
+// attempt count/delay so the same clearDialBackoff-then-Connect sequence
+// backs both its short default budget and its longer NO_RESERVATION
+// fallback.
+func dialAttempts(ctx context.Context, h lp2phost.Host, info peer.AddrInfo, attempts int, delay time.Duration) error {
 	var lastErr error
-	for attempt := 1; attempt <= connectRetryAttempts; attempt++ {
+	for attempt := 1; attempt <= attempts; attempt++ {
 		// Cleared on every attempt, not just the first: a failed attempt of
 		// our own re-arms it, and the delay below is deliberately shorter
 		// than the backoff would be.
@@ -3532,9 +3579,9 @@ func connectWithRetry(ctx context.Context, h lp2phost.Host, info peer.AddrInfo) 
 		} else {
 			lastErr = err
 		}
-		if attempt < connectRetryAttempts {
+		if attempt < attempts {
 			select {
-			case <-time.After(connectRetryDelay):
+			case <-time.After(delay):
 			case <-ctx.Done():
 				return ctx.Err()
 			}
