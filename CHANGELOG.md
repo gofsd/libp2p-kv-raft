@@ -169,10 +169,14 @@ tracks *changes*, not a full feature description).
   (`connectRetryAttempts`/`connectRetryDelay`, ~1.5s total) is deliberately short -- sized for
   ordinary packet loss, not a real in-progress reconnect on the *other* end -- so it gave up long
   before that reservation could land. `connectWithRetry` now falls back to a dedicated, much
-  longer retry budget (`connectRetryReservationAttempts`/`connectRetryReservationDelay`, ~48s)
+  longer retry budget (`connectRetryReservationAttempts`/`connectRetryReservationDelay`, 90s --
+  matching `recruitJoinTimeout`, this codebase's existing budget for the identical class of wait)
   specifically when every attempt in the short budget fails with `NO_RESERVATION`
   (`isNoReservationError`), leaving every other dial-failure case's fast-fail behavior unchanged.
-  Covered by `TestIsNoReservationErrorMatchesRelayStatusText` in
+  A first pass at ~48s fixed the reported `Join` failure outright (previously reproduced 3/3
+  times) but lost the same race once more at a sibling call site (`dialAndPushRecruit`) in the
+  very next verification run -- 24-46s was the observed *range*, not a ceiling, so a 90s budget
+  replaced it. Covered by `TestIsNoReservationErrorMatchesRelayStatusText` in
   `pkg/daemon/nat_edge_cases_test.go`.
 
 - A dead first relay candidate stalled failover to a working second one for

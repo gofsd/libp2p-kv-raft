@@ -3472,9 +3472,17 @@ const connectRetryDelay = 500 * time.Millisecond
 // own explicit "not yet" answer, not evidence the peer is unreachable, so
 // it is worth riding out with a dedicated, longer budget instead of
 // failing the join/recruit/exec-invite outright.
-const connectRetryReservationAttempts = 6
+//
+// A first pass at 6 attempts/8s (~48s total) fixed join() outright
+// (previously reproduced 3/3 times) but still lost the same race once at
+// a sibling call site (dialAndPushRecruit) in the very next verification
+// run -- 24-46s was this project's own observed *range*, not a ceiling,
+// so a ~48s budget had no margin left for a slower instance. 90s matches
+// recruitJoinTimeout, this codebase's own existing budget for the
+// identical class of wait (handleRecruitStream's in-process join call).
+const connectRetryReservationAttempts = 11
 
-const connectRetryReservationDelay = 8 * time.Second
+const connectRetryReservationDelay = 9 * time.Second
 
 // isNoReservationError reports whether err is (or wraps) a circuitv2
 // client dial failure whose relay-reported status is NO_RESERVATION.
