@@ -171,13 +171,25 @@ tracks *changes*, not a full feature description).
   before that reservation could land. `connectWithRetry` now falls back to a dedicated, much
   longer retry budget (`connectRetryReservationAttempts`/`connectRetryReservationDelay`, 90s --
   matching `recruitJoinTimeout`, this codebase's existing budget for the identical class of wait)
-  specifically when every attempt in the short budget fails with `NO_RESERVATION`
-  (`isNoReservationError`), leaving every other dial-failure case's fast-fail behavior unchanged.
-  A first pass at ~48s fixed the reported `Join` failure outright (previously reproduced 3/3
-  times) but lost the same race once more at a sibling call site (`dialAndPushRecruit`) in the
-  very next verification run -- 24-46s was the observed *range*, not a ceiling, so a 90s budget
-  replaced it. Covered by `TestIsNoReservationErrorMatchesRelayStatusText` in
+  specifically when every attempt in the short budget fails with a retriable relay-circuit status
+  (`isRetriableRelayCircuitError`), leaving every other dial-failure case's fast-fail behavior
+  unchanged. A first pass at ~48s fixed the reported `Join` failure outright (previously
+  reproduced 3/3 times) but lost the same race once more at a sibling call site
+  (`dialAndPushRecruit`) in the very next verification run -- 24-46s was the observed *range*, not
+  a ceiling, so a 90s budget replaced it. `CONNECTION_FAILED (203)` -- the relay having a valid
+  reservation but its own hop-connect attempt to the destination failing -- turned out to be the
+  same class of live, momentary relay-hop issue and was folded into the same retriable check after
+  it surfaced (on an otherwise healthy relay/destination pair) in the run right after
+  `NO_RESERVATION` stopped reproducing. Covered by
+  `TestIsRetriableRelayCircuitErrorMatchesRelayStatusText` in
   `pkg/daemon/nat_edge_cases_test.go`.
+
+- **Separately, found investigating the above**: the project's own deployed relay VPS was running
+  a stray `kvnode` process (`/root/kvstore-release`, not part of any tracked deployment) that
+  predated the memory-leak fix two entries below and had been consuming ~4GB/67% of the box's
+  total RAM for ~12 days, intermittently starving the real e2e bootstrap/relay node it shared the
+  host with. Killed manually; not a code change, noted here since it was the direct cause of one
+  round of relay-handshake flakiness during this fix's own verification.
 
 - A dead first relay candidate stalled failover to a working second one for
   a full **3 minutes**. `newHost` wires `Config.RelayPeers`/confirmed

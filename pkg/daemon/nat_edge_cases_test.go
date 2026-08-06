@@ -472,31 +472,39 @@ func TestExecInviteRedeemOverRelay(t *testing.T) {
 	}
 }
 
-// TestIsNoReservationErrorMatchesRelayStatusText is a regression test for
-// connectWithRetry's extended NO_RESERVATION retry budget (see
+// TestIsRetriableRelayCircuitErrorMatchesRelayStatusText is a regression
+// test for connectWithRetry's extended retry budget (see
 // connectRetryReservationAttempts' doc comment): go-libp2p's own
 // relayError type is unexported with no status accessor, so
-// isNoReservationError has to match the status's wire name inside the
-// formatted error text -- this pins that match against the exact wrapped
-// shape swarm.DialError produces (multiple joined per-address failures,
-// caught live pairing two Android devices over the deployed relay) and
-// against a sibling status name (CONNECTION_FAILED, seen in the same live
-// run on a different attempt) to confirm the match doesn't accidentally
-// fire on every relay dial failure.
-func TestIsNoReservationErrorMatchesRelayStatusText(t *testing.T) {
+// isRetriableRelayCircuitError has to match the status's wire name inside
+// the formatted error text -- this pins that match against the exact
+// wrapped shape swarm.DialError produces (multiple joined per-address
+// failures) for both statuses caught live pairing two Android devices
+// over the deployed relay (NO_RESERVATION on one verification run,
+// CONNECTION_FAILED on the very next one), and against a status that must
+// NOT retry (PERMISSION_DENIED -- the relay flatly refusing standing,
+// which a longer budget cannot fix) to confirm the match doesn't
+// accidentally fire on every relay dial failure.
+func TestIsRetriableRelayCircuitErrorMatchesRelayStatusText(t *testing.T) {
 	noReservation := errors.New(`failed to dial 12D3KooWC7gZatVt7QUAKaWob3QfG8APzpHQqMVCwbY56sx8EjSB: all dials failed
   * [/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWSgMvzBBGHU9odXuWNvEUtVy11MGhVFU4J7u2KYwCkXhF/p2p-circuit] error opening relay circuit: NO_RESERVATION (204)`)
-	if !isNoReservationError(noReservation) {
-		t.Error("isNoReservationError(NO_RESERVATION dial error) = false, want true")
+	if !isRetriableRelayCircuitError(noReservation) {
+		t.Error("isRetriableRelayCircuitError(NO_RESERVATION dial error) = false, want true")
 	}
 
-	connectionFailed := errors.New(`failed to dial 12D3KooWMXQ5sWh46tFCdmhSTw9eeaCxW3yAvP26GKgfxGX8ziCd: all dials failed
-  * [/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWSTknz5nszojzBauWghFQBeTVkD75rEiZgWhCLYPwi6hh/p2p-circuit] error opening relay circuit: CONNECTION_FAILED (203)`)
-	if isNoReservationError(connectionFailed) {
-		t.Error("isNoReservationError(CONNECTION_FAILED dial error) = true, want false -- must not fire on every relay dial failure")
+	connectionFailed := errors.New(`failed to dial 12D3KooWD6jvAjEuAi4gcZdiYpQVVCh98pZUMgsN5strYboQBBvE: all dials failed
+  * [/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWPDauGKeJ2EaggfE3zQZQRedzUFSANXvorw33tXNK9SFZ/p2p-circuit] error opening relay circuit: CONNECTION_FAILED (203)`)
+	if !isRetriableRelayCircuitError(connectionFailed) {
+		t.Error("isRetriableRelayCircuitError(CONNECTION_FAILED dial error) = false, want true")
 	}
 
-	if isNoReservationError(nil) {
-		t.Error("isNoReservationError(nil) = true, want false")
+	permissionDenied := errors.New(`failed to dial 12D3KooWMXQ5sWh46tFCdmhSTw9eeaCxW3yAvP26GKgfxGX8ziCd: all dials failed
+  * [/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWSTknz5nszojzBauWghFQBeTVkD75rEiZgWhCLYPwi6hh/p2p-circuit] error opening relay circuit: PERMISSION_DENIED (202)`)
+	if isRetriableRelayCircuitError(permissionDenied) {
+		t.Error("isRetriableRelayCircuitError(PERMISSION_DENIED dial error) = true, want false -- a flat refusal must keep failing fast")
+	}
+
+	if isRetriableRelayCircuitError(nil) {
+		t.Error("isRetriableRelayCircuitError(nil) = true, want false")
 	}
 }

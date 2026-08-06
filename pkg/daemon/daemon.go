@@ -3460,18 +3460,20 @@ const connectRetryDelay = 500 * time.Millisecond
 
 // connectRetryReservationAttempts/connectRetryReservationDelay bound the
 // extended retry connectWithRetry falls back to when every attempt above
-// fails with NO_RESERVATION specifically (see isNoReservationError) --
-// caught live pairing two Android devices through the deployed relay: the
-// destination's own AutoRelay was still (re-)establishing its relay
-// reservation at the moment of the dial, and that reservation round trip
-// was independently observed taking 24-46s against the same relay in the
-// same run (this project's own RequestRelayAccess step does the identical
-// underlying work) -- far past connectRetryAttempts/connectRetryDelay's
-// ~1.5s budget, which exists for ordinary packet loss, not a real
-// in-progress reconnect on the *other* end. NO_RESERVATION is the relay's
-// own explicit "not yet" answer, not evidence the peer is unreachable, so
-// it is worth riding out with a dedicated, longer budget instead of
-// failing the join/recruit/exec-invite outright.
+// fails with a retriable relay-circuit status (see
+// isRetriableRelayCircuitError) -- caught live pairing two Android devices
+// through the deployed relay: the destination's own AutoRelay was still
+// (re-)establishing its relay reservation at the moment of the dial, and
+// that reservation round trip was independently observed taking 24-46s
+// against the same relay in the same run (this project's own
+// RequestRelayAccess step does the identical underlying work) -- far past
+// connectRetryAttempts/connectRetryDelay's ~1.5s budget, which exists for
+// ordinary packet loss, not a real in-progress reconnect on the *other*
+// end. Neither NO_RESERVATION nor CONNECTION_FAILED is evidence the peer
+// is unreachable -- both are the relay's own explicit "not right now"
+// answers (see isRetriableRelayCircuitError's own doc comment on the
+// difference between them) -- so it is worth riding out with a dedicated,
+// longer budget instead of failing the join/recruit/exec-invite outright.
 //
 // A first pass at 6 attempts/8s (~48s total) fixed join() outright
 // (previously reproduced 3/3 times) but still lost the same race once at
@@ -3480,18 +3482,44 @@ const connectRetryDelay = 500 * time.Millisecond
 // so a ~48s budget had no margin left for a slower instance. 90s matches
 // recruitJoinTimeout, this codebase's own existing budget for the
 // identical class of wait (handleRecruitStream's in-process join call).
+// CONNECTION_FAILED was added to isRetriableRelayCircuitError after a
+// live verification run hit it (not NO_RESERVATION) on an otherwise
+// healthy relay/destination pair -- see that function's own doc comment.
 const connectRetryReservationAttempts = 11
 
 const connectRetryReservationDelay = 9 * time.Second
 
-// isNoReservationError reports whether err is (or wraps) a circuitv2
-// client dial failure whose relay-reported status is NO_RESERVATION.
+// isRetriableRelayCircuitError reports whether err is (or wraps) a
+// circuitv2 client dial failure whose relay-reported status is one this
+// project has caught live, against its own real deployed relay, as a
+// transient "not right now" rather than genuine unreachability:
+//
+//   - NO_RESERVATION: the destination has no active reservation on file at
+//     the relay -- its own AutoRelay may simply not have (re-)established
+//     one yet (see connectRetryReservationAttempts' doc comment).
+//   - CONNECTION_FAILED: the relay *does* have a reservation for the
+//     destination, but its own attempt to open the hop connection to it
+//     (relay.go's Stop-protocol dial, after the reservation check already
+//     passed) failed or timed out -- a live, momentary hop failure between
+//     relay and destination, not evidence the destination is actually
+//     unreachable. Caught live in the very next verification run after
+//     NO_RESERVATION was fixed, on an otherwise fully healthy relay and
+//     destination.
+//
+// Deliberately narrow: a status like PERMISSION_DENIED or
+// RESERVATION_REFUSED means the relay flatly refuses this peer standing,
+// which a longer retry budget cannot fix and should keep failing fast on.
 // go-libp2p's own relayError type (p2p/protocol/circuitv2/client/dial.go)
 // is unexported with no status accessor, so matching the status's own
 // wire name in the formatted error text is the only way to distinguish
-// this specific, recoverable case from an ordinary dial failure.
-func isNoReservationError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), pbv2.Status_NO_RESERVATION.String())
+// these specific, recoverable cases from any other dial failure.
+func isRetriableRelayCircuitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, pbv2.Status_NO_RESERVATION.String()) ||
+		strings.Contains(msg, pbv2.Status_CONNECTION_FAILED.String())
 }
 
 // clearDialBackoff drops go-libp2p's own per-peer dial backoff for pid, so
@@ -3558,14 +3586,14 @@ func clearDialBackoff(h lp2phost.Host, info peer.AddrInfo) {
 // plain unretried Connect intermittently failed with a bare TCP dial
 // timeout to a real, otherwise-reachable remote target.
 //
-// If every attempt in that first, short budget fails with NO_RESERVATION
-// specifically, one more, much longer round runs on top of it (see
-// connectRetryReservationAttempts' doc comment) rather than surfacing the
-// error immediately -- that status means the destination's own relay
-// reservation is still being established, not that it's unreachable.
+// If every attempt in that first, short budget fails with a retriable
+// relay-circuit status (see isRetriableRelayCircuitError), one more, much
+// longer round runs on top of it (see connectRetryReservationAttempts' own
+// doc comment) rather than surfacing the error immediately -- neither
+// status it matches means the destination is actually unreachable.
 func connectWithRetry(ctx context.Context, h lp2phost.Host, info peer.AddrInfo) error {
 	lastErr := dialAttempts(ctx, h, info, connectRetryAttempts, connectRetryDelay)
-	if lastErr == nil || !isNoReservationError(lastErr) {
+	if lastErr == nil || !isRetriableRelayCircuitError(lastErr) {
 		return lastErr
 	}
 	return dialAttempts(ctx, h, info, connectRetryReservationAttempts, connectRetryReservationDelay)
