@@ -1357,12 +1357,12 @@ func newHost(priv crypto.PrivKey, cfg Config, st *store.Store, selfPeerID string
 		// address join()'s awaitRelayAddr waits for -- contingent on
 		// AutoNAT.
 		//
-		// The two autorelay options are what make a *fresh* device able to
-		// get a reservation at all without being restarted. Every relay in
-		// this project gates reservations unconditionally (relayACL), and a
-		// device that has never asked for standing yet has none -- so
-		// AutoRelay's very first reservation attempt, fired within
-		// milliseconds of this host coming up, is refused with
+		// The first two autorelay options are what make a *fresh* device
+		// able to get a reservation at all without being restarted. Every
+		// relay in this project gates reservations unconditionally
+		// (relayACL), and a device that has never asked for standing yet
+		// has none -- so AutoRelay's very first reservation attempt, fired
+		// within milliseconds of this host coming up, is refused with
 		// PERMISSION_DENIED, long before its owner can run the
 		// EventPublicAccess self-service escalation that would grant it
 		// (see dialAndSubmitPublicAccess). AutoRelay's own defaults then
@@ -1374,11 +1374,30 @@ func newHost(priv crypto.PrivKey, cfg Config, st *store.Store, selfPeerID string
 		// that skipped that restart only ever advertised loopback. Shrinking
 		// both intervals makes the retry land ~10s after the grant instead,
 		// so requesting access and then pairing works in one session.
+		//
+		// WithBootDelay closes a second, independent gap in the same
+		// family, caught writing TestRelayFailoverToSecondCandidateWhenFirstIsDown:
+		// WithStaticRelays sets AutoRelay's minCandidates to len(candidates),
+		// but a candidate only counts once it actually answers a live
+		// connect-and-probe (relay_finder.go's handleNewNode/tryNode) --  a
+		// down or unreachable entry (the exact case this multi-candidate
+		// list exists to tolerate, see Config.RelayPeers' doc comment on
+		// failover) never clears that bar, so the real candidate count
+		// permanently falls short of minCandidates whenever any one entry
+		// is down. AutoRelay's default response to "fewer real candidates
+		// than minCandidates" is to wait out bootDelay -- 3 minutes,
+		// unmodified by anything above -- before trying the reservations it
+		// already has anyway. A device with a dead first relay and a
+		// perfectly good second one therefore got zero relay connectivity
+		// for a full 3 minutes on startup. Matching relayReserveBackoff
+		// here means it tries what it's already found instead of waiting
+		// out that window.
 		opts = append(opts,
 			libp2p.ForceReachabilityPrivate(),
 			libp2p.EnableAutoRelayWithStaticRelays(candidates,
 				autorelay.WithBackoff(relayReserveBackoff),
 				autorelay.WithMinInterval(relayReserveBackoff),
+				autorelay.WithBootDelay(relayReserveBackoff),
 			),
 		)
 	}
