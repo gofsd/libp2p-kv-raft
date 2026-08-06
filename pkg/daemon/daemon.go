@@ -1567,7 +1567,68 @@ func (n *Node) watchLeadership(rf *raft.Raft, ch chan raft.Observation) {
 				fmt.Fprintf(os.Stderr, "daemon: sync own reserved groups: %v\n", err)
 			}
 		}
+		if role == shmevent.RoleLeader {
+			n.transferLeadershipToStableVoter(rf)
+		}
 	}
+}
+
+// transferLeadershipToStableVoter implements CLAUDE.md's connectivity
+// policy that leadership belongs on a node with a real, stable address
+// rather than one only reachable through a relay circuit: direct dials are
+// cheaper and faster, and it keeps the cluster's single point of forwarding
+// off a device (phone, laptop behind NAT) that can vanish at any time. It's
+// an offer, not a requirement -- see (*raft.Raft).LeadershipTransferToServer
+// -- so an unreachable or uncooperative target just leaves this node
+// leading, same as today.
+func (n *Node) transferLeadershipToStableVoter(rf *raft.Raft) {
+	cfgFuture := rf.GetConfiguration()
+	if err := cfgFuture.Error(); err != nil {
+		return
+	}
+	id, addr, ok := preferredLeaderTransferTarget(cfgFuture.Configuration(), raft.ServerID(n.peerID))
+	if !ok {
+		return
+	}
+	if err := rf.LeadershipTransferToServer(id, addr).Error(); err != nil {
+		fmt.Fprintf(os.Stderr, "daemon: transfer leadership to stable voter %s: %v\n", id, err)
+	}
+}
+
+// preferredLeaderTransferTarget picks a voter to hand leadership to when
+// self currently holds it but self's own address only routes through a
+// relay circuit (see isRelayServerAddress) while some other voter's
+// doesn't. ok is false when self is already stable, or when no other voter
+// is any more stable than self -- nothing would be gained by moving.
+func preferredLeaderTransferTarget(cfg raft.Configuration, self raft.ServerID) (id raft.ServerID, addr raft.ServerAddress, ok bool) {
+	var selfAddr raft.ServerAddress
+	for _, srv := range cfg.Servers {
+		if srv.ID == self {
+			selfAddr = srv.Address
+			break
+		}
+	}
+	if !isRelayServerAddress(selfAddr) {
+		return "", "", false
+	}
+	for _, srv := range cfg.Servers {
+		if srv.ID == self || srv.Suffrage != raft.Voter {
+			continue
+		}
+		if !isRelayServerAddress(srv.Address) {
+			return srv.ID, srv.Address, true
+		}
+	}
+	return "", "", false
+}
+
+// isRelayServerAddress reports whether a raft.ServerAddress (always a full
+// libp2p multiaddr over this project's transport, see
+// pkg/rafttransport.Transport's doc comment) is a /p2p-circuit relay
+// address rather than a direct one -- the same check advertisedAddrs and
+// awaitRelayAddr use for this node's own addresses.
+func isRelayServerAddress(addr raft.ServerAddress) bool {
+	return strings.Contains(string(addr), "/p2p-circuit")
 }
 
 // ownCurrentRole determines this node's own current role: RoleLeader if
@@ -4263,6 +4324,16 @@ func (n *Node) addServerLine(ctx context.Context, rf *raft.Raft, joinPeerID, joi
 	}
 	if err := n.syncMemberGroups(ctx, joinPeerID, role); err != nil {
 		fmt.Fprintf(os.Stderr, "daemon: sync reserved groups for %s: %v\n", joinPeerID, err)
+	}
+	// watchLeadership only re-evaluates transferLeadershipToStableVoter on a
+	// leadership *change* -- irrelevant here, since admitting a server
+	// doesn't produce one. This is the other half: a relay-only leader with
+	// no stable voter yet has nothing to hand off to when it self-elects,
+	// but a newly admitted voter is exactly the moment that stops being
+	// true. Only Voter matters -- a learner can never receive leadership,
+	// and preferredLeaderTransferTarget would just skip it anyway.
+	if suffrage != raft.Nonvoter {
+		n.transferLeadershipToStableVoter(rf)
 	}
 	return "OK"
 }
