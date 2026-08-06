@@ -1,44 +1,118 @@
-package kvctl_test
+package genealogy_test
 
 import (
+	"os"
+	"path/filepath"
+	"runtime"
 	"sort"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/gofsd/libp2p-kv-raft/examples/genealogy"
 	"github.com/gofsd/libp2p-kv-raft/pkg/kvctl"
 	"github.com/gofsd/libp2p-kv-raft/pkg/registry"
 )
 
-// TestRecordGenealogyRequiresAtLeastOneUnit and
-// TestRecordGenealogyRejectsCommaInUnitID exercise RecordGenealogy's
-// argument validation, which runs before any registry/IPC access -- so
-// these need no running node at all, unlike every other test in this file.
-func TestRecordGenealogyRequiresAtLeastOneUnit(t *testing.T) {
-	if err := kvctl.RecordGenealogy("instance-1", nil, nil, nil, ""); err == nil {
+// repoRoot/killAllRegistered/fastRaftArgs/pollUntilTrue are local copies of
+// the identical helpers pkg/kvctl's own tests use (see e.g.
+// pkg/kvctl/kvctl_test.go, pkg/kvctl/catalog_test.go) -- duplicated on
+// purpose rather than imported: this package is a standalone worked
+// example (see genealogy.go's own doc comment), not a consumer of
+// pkg/kvctl's internal test infrastructure.
+
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot determine test file path")
+	}
+	return filepath.Join(filepath.Dir(file), "..", "..")
+}
+
+func killAllRegistered(t *testing.T, reg *registry.Registry) {
+	t.Helper()
+	nodes, err := reg.List()
+	if err != nil {
+		return
+	}
+	var wg sync.WaitGroup
+	for _, info := range nodes {
+		if info.PID == 0 {
+			continue
+		}
+		proc, err := os.FindProcess(info.PID)
+		if err != nil {
+			continue
+		}
+		wg.Add(1)
+		go func(proc *os.Process) {
+			defer wg.Done()
+			_ = proc.Signal(syscall.SIGTERM)
+			done := make(chan struct{})
+			go func() {
+				proc.Wait()
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+				_ = proc.Kill()
+			}
+		}(proc)
+	}
+	wg.Wait()
+}
+
+var fastRaftArgs = []string{
+	"-raft-heartbeat-timeout", "300ms",
+	"-raft-election-timeout", "300ms",
+	"-raft-leader-lease-timeout", "250ms",
+}
+
+func pollUntilTrue(t *testing.T, timeout time.Duration, check func() (bool, error)) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		ok, err := check()
+		if err != nil {
+			lastErr = err
+		} else if ok {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("condition not met within %s (last error: %v)", timeout, lastErr)
+}
+
+func TestRecordRequiresAtLeastOneUnit(t *testing.T) {
+	if err := genealogy.Record("instance-1", nil, nil, nil, ""); err == nil {
 		t.Fatal("expected an error when both inputUnits and outputUnits are empty")
 	}
 }
 
-func TestRecordGenealogyRejectsCommaInUnitID(t *testing.T) {
-	if err := kvctl.RecordGenealogy("instance-1", []string{"a,b"}, nil, nil, ""); err == nil {
+func TestRecordRejectsCommaInUnitID(t *testing.T) {
+	if err := genealogy.Record("instance-1", []string{"a,b"}, nil, nil, ""); err == nil {
 		t.Fatal("expected an error for a unit id containing a comma")
 	}
-	if err := kvctl.RecordGenealogy("instance-1", nil, []string{"c,d"}, nil, ""); err == nil {
+	if err := genealogy.Record("instance-1", nil, []string{"c,d"}, nil, ""); err == nil {
 		t.Fatal("expected an error for a unit id containing a comma")
 	}
 }
 
-func TestRecordGenealogyRequiresInstanceID(t *testing.T) {
-	if err := kvctl.RecordGenealogy("", []string{"u1"}, []string{"u2"}, nil, ""); err == nil {
+func TestRecordRequiresInstanceID(t *testing.T) {
+	if err := genealogy.Record("", []string{"u1"}, []string{"u2"}, nil, ""); err == nil {
 		t.Fatal("expected an error for an empty instance id")
 	}
 }
 
-// TestRecordGenealogyAndQueryBothDirections drives one two-input,
-// one-output execution (u1+u2 -> u3) and checks QueryGenealogy surfaces
-// both directions: u3's own entry names u1/u2 as its inputs, and each of
-// u1/u2's own entries names u3 as what it was consumed into.
-func TestRecordGenealogyAndQueryBothDirections(t *testing.T) {
+// TestRecordAndQueryBothDirections drives one two-input, one-output
+// execution (u1+u2 -> u3) and checks Query surfaces both directions: u3's
+// own entry names u1/u2 as its inputs, and each of u1/u2's own entries
+// names u3 as what it was consumed into.
+func TestRecordAndQueryBothDirections(t *testing.T) {
 	root := repoRoot(t)
 	home := t.TempDir()
 	t.Setenv(registry.EnvHome, home)
@@ -55,13 +129,13 @@ func TestRecordGenealogyAndQueryBothDirections(t *testing.T) {
 
 	const instanceID = "assembly-1"
 	fields := map[string]string{"station": "line-1"}
-	if err := kvctl.RecordGenealogy(instanceID, []string{"u1", "u2"}, []string{"u3"}, fields, "assembled"); err != nil {
-		t.Fatalf("RecordGenealogy: %v", err)
+	if err := genealogy.Record(instanceID, []string{"u1", "u2"}, []string{"u3"}, fields, "assembled"); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
 
-	var outputEvents []kvctl.GenealogyEvent
+	var outputEvents []genealogy.Event
 	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
-		events, err := kvctl.QueryGenealogy("u3", time.Unix(0, 0), time.Now(), 0)
+		events, err := genealogy.Query("u3", time.Unix(0, 0), time.Now(), 0)
 		if err != nil {
 			return false, err
 		}
@@ -87,9 +161,9 @@ func TestRecordGenealogyAndQueryBothDirections(t *testing.T) {
 	}
 
 	for _, inputUnit := range []string{"u1", "u2"} {
-		var inputEvents []kvctl.GenealogyEvent
+		var inputEvents []genealogy.Event
 		pollUntilTrue(t, 10*time.Second, func() (bool, error) {
-			events, err := kvctl.QueryGenealogy(inputUnit, time.Unix(0, 0), time.Now(), 0)
+			events, err := genealogy.Query(inputUnit, time.Unix(0, 0), time.Now(), 0)
 			if err != nil {
 				return false, err
 			}
@@ -105,10 +179,10 @@ func TestRecordGenealogyAndQueryBothDirections(t *testing.T) {
 	}
 }
 
-// TestGenealogyAncestorsAndDescendantsMultiHop chains two executions --
-// u1+u2 -> u3 (instance A), then u3+u5 -> u4 (instance B) -- and checks
+// TestAncestorsAndDescendantsMultiHop chains two executions -- u1+u2 -> u3
+// (instance A), then u3+u5 -> u4 (instance B) -- and checks
 // Ancestors/Descendants walk both hops, not just the immediate one.
-func TestGenealogyAncestorsAndDescendantsMultiHop(t *testing.T) {
+func TestAncestorsAndDescendantsMultiHop(t *testing.T) {
 	root := repoRoot(t)
 	home := t.TempDir()
 	t.Setenv(registry.EnvHome, home)
@@ -123,11 +197,11 @@ func TestGenealogyAncestorsAndDescendantsMultiHop(t *testing.T) {
 		t.Fatalf("AddNode: %v", err)
 	}
 
-	if err := kvctl.RecordGenealogy("instance-a", []string{"u1", "u2"}, []string{"u3"}, nil, ""); err != nil {
-		t.Fatalf("RecordGenealogy instance-a: %v", err)
+	if err := genealogy.Record("instance-a", []string{"u1", "u2"}, []string{"u3"}, nil, ""); err != nil {
+		t.Fatalf("Record instance-a: %v", err)
 	}
-	if err := kvctl.RecordGenealogy("instance-b", []string{"u3", "u5"}, []string{"u4"}, nil, ""); err != nil {
-		t.Fatalf("RecordGenealogy instance-b: %v", err)
+	if err := genealogy.Record("instance-b", []string{"u3", "u5"}, []string{"u4"}, nil, ""); err != nil {
+		t.Fatalf("Record instance-b: %v", err)
 	}
 
 	sortedCopy := func(ids []string) []string {
@@ -138,7 +212,7 @@ func TestGenealogyAncestorsAndDescendantsMultiHop(t *testing.T) {
 
 	var ancestors []string
 	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
-		ids, err := kvctl.Ancestors("u4", 0)
+		ids, err := genealogy.Ancestors("u4", 0)
 		if err != nil {
 			return false, err
 		}
@@ -151,7 +225,7 @@ func TestGenealogyAncestorsAndDescendantsMultiHop(t *testing.T) {
 
 	var descendants []string
 	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
-		ids, err := kvctl.Descendants("u1", 0)
+		ids, err := genealogy.Descendants("u1", 0)
 		if err != nil {
 			return false, err
 		}
@@ -165,7 +239,7 @@ func TestGenealogyAncestorsAndDescendantsMultiHop(t *testing.T) {
 	// A leaf with no genealogy events at all has no ancestors and no
 	// descendants -- Ancestors/Descendants return an empty result, not an
 	// error, for a unit nothing was ever recorded against.
-	noHistory, err := kvctl.Ancestors("never-recorded", 0)
+	noHistory, err := genealogy.Ancestors("never-recorded", 0)
 	if err != nil {
 		t.Fatalf("Ancestors(never-recorded): %v", err)
 	}
