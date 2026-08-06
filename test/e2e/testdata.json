@@ -10,21 +10,21 @@
   "nodes": {
     "1": {
       "platform": "desktop",
-      "peer_id": "12D3KooWG9NPDAK55arPPiSZwWrjn3Bq9t1ugKNd3q7eKphSxLgt",
-      "public_key": "5e0466636a3a5cb19ae77e6af12d34385ee9db97c8c2fea307c8a54c4fe29c9d",
-      "private_key": "21508b8a3b34d01e7d3950298faf102c38db4d94c0385898d5119f035acf3f0d5e0466636a3a5cb19ae77e6af12d34385ee9db97c8c2fea307c8a54c4fe29c9d"
+      "peer_id": "12D3KooWR5UZcjJ3Neserqi896yk343oRiYZXmJnjzh1Atunwp2u",
+      "public_key": "e2be3f03896f51bd036a2ee46cde2ea8a7c17a972a7504a4a2aa23db2bacb00a",
+      "private_key": "c8c3531df69b12f040320ec030c7760f6c8b9c9b44d66e0c1817b3ffd6e8f10be2be3f03896f51bd036a2ee46cde2ea8a7c17a972a7504a4a2aa23db2bacb00a"
     },
     "2": {
       "platform": "android",
-      "peer_id": "12D3KooWLPM2EQTFXCoofAefKMxFs5SHb7SF2AKyejzmfgiZDdUw",
-      "public_key": "9d07bd43559901c94cec2fc196d2a94aae8bcbb239fbee17d140567cebdffaa4",
-      "private_key": "048bd8242aeae24b02c790859b2590d1b559ab9e70e48393d32b739673ba38fc9d07bd43559901c94cec2fc196d2a94aae8bcbb239fbee17d140567cebdffaa4"
+      "peer_id": "12D3KooWPm5Ee9ecJHLWmJmgZSCHShz91iLZwh1RBjSYjnZDxq2S",
+      "public_key": "cf2bba8237a1656c32201bf0431398e9500c1e5bf3286c5b352c0916f69019ab",
+      "private_key": "1522f5cb5ceaa50fe298fe93a0997592eb81e96486267a0f8e8eba5c88cfcf09cf2bba8237a1656c32201bf0431398e9500c1e5bf3286c5b352c0916f69019ab"
     },
     "3": {
       "platform": "remote",
-      "peer_id": "12D3KooWHSvtT8aejkEf3QyhwLHvn3YWAacuWCGXrsZP9B75RujY",
-      "public_key": "715fb694229b1c324fe3d70953ea3f2e68b2228e1b51868a8d69f10fd8343733",
-      "private_key": "c1f56db88e85d98b09b1827bcff5eb37379647c16273296bc1fb5c78ad4ee6e0715fb694229b1c324fe3d70953ea3f2e68b2228e1b51868a8d69f10fd8343733"
+      "peer_id": "12D3KooWQPkU3UEDum9B8yJnMsTgxK9xTYLcWRvwvsY8n4D92oLy",
+      "public_key": "d890ff1354b06f6571b372ea173643b7a3404e36483ecb6c6dc45bc48e132f66",
+      "private_key": "699f16b253217f9642d17351674f8806ec5359526ff3d15710984531165e90b7d890ff1354b06f6571b372ea173643b7a3404e36483ecb6c6dc45bc48e132f66"
     }
   },
   "rows": [
@@ -756,18 +756,18 @@
     }
   },
   "android_ui_result": {
-    "ran_at": "2026-08-06T17:44:08.728407173+03:00",
+    "ran_at": "2026-08-06T18:03:37.298781303+03:00",
     "status": 0,
     "cases": [
       {
         "command": "Cluster: Start",
         "pass": true,
-        "output": "12D3KooWD6jvAjEuAi4gcZdiYpQVVCh98pZUMgsN5strYboQBBvE"
+        "output": "12D3KooWNdNqmvtbj9vHq4zH5dwKcPRL5RtEGbwEzXSntTpQeQF8"
       },
       {
         "command": "Cluster: StartWithKey",
         "pass": true,
-        "output": "12D3KooWD6jvAjEuAi4gcZdiYpQVVCh98pZUMgsN5strYboQBBvE"
+        "output": "12D3KooWNdNqmvtbj9vHq4zH5dwKcPRL5RtEGbwEzXSntTpQeQF8"
       },
       {
         "command": "Cluster: Join",
@@ -804,12 +804,12 @@
       {
         "command": "Cluster: GetOwnAddr",
         "pass": true,
-        "output": "/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWHSvtT8aejkEf3QyhwLHvn3YWAacuWCGXrsZP9B75RujY/p2p-circuit/p2p/12D3KooWD6jvAjEuAi4gcZdiYpQVVCh98pZUMgsN5strYboQBBvE"
+        "output": "/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWQPkU3UEDum9B8yJnMsTgxK9xTYLcWRvwvsY8n4D92oLy/p2p-circuit/p2p/12D3KooWNdNqmvtbj9vHq4zH5dwKcPRL5RtEGbwEzXSntTpQeQF8"
       },
       {
         "command": "Cluster: CreateJoinRequest",
         "pass": true,
-        "output": "818af032c4e9de89e323c37974674392"
+        "output": "a89d1ee38db93a181be79267df0c7165"
       },
       {
         "command": "Cluster: CancelJoinRequest",
@@ -866,22 +866,22 @@
       {
         "command": "Cluster: ListClusters",
         "pass": true,
-        "output": "[{\"cluster_id\":\"12D3KooWHSvtT8aejkEf3QyhwLHvn3YWAacuWCGXrsZP9B75RujY\",\"peer_id\":\"12D3KooWD6jvAjEuAi4gcZdiYpQVVCh98pZUMgsN5strYboQBBvE\"}]"
+        "output": "[{\"cluster_id\":\"12D3KooWQPkU3UEDum9B8yJnMsTgxK9xTYLcWRvwvsY8n4D92oLy\",\"peer_id\":\"12D3KooWNdNqmvtbj9vHq4zH5dwKcPRL5RtEGbwEzXSntTpQeQF8\"}]"
       },
       {
         "command": "Cluster: ListClusterMembers",
         "pass": true,
-        "output": "[{\"peer_id\":\"12D3KooWD6jvAjEuAi4gcZdiYpQVVCh98pZUMgsN5strYboQBBvE\",\"role\":\"learner\"},{\"peer_id\":\"12D3KooWHSvtT8aejkEf3QyhwLHvn3YWAacuWCGXrsZP9B75RujY\",\"role\":\"leader\"}]"
+        "output": "[{\"peer_id\":\"12D3KooWNdNqmvtbj9vHq4zH5dwKcPRL5RtEGbwEzXSntTpQeQF8\",\"role\":\"learner\"},{\"peer_id\":\"12D3KooWQPkU3UEDum9B8yJnMsTgxK9xTYLcWRvwvsY8n4D92oLy\",\"role\":\"leader\"}]"
       },
       {
         "command": "Cluster: PeerID",
         "pass": true,
-        "output": "12D3KooWD6jvAjEuAi4gcZdiYpQVVCh98pZUMgsN5strYboQBBvE"
+        "output": "12D3KooWNdNqmvtbj9vHq4zH5dwKcPRL5RtEGbwEzXSntTpQeQF8"
       },
       {
         "command": "Cluster: AccessToken",
         "pass": true,
-        "output": "a7a677b3f7d9b94b6497936a308334c48b6e934c07c1e7715d511928f8b617f7"
+        "output": "d52d8b255bcc78b36a0ae30134f4b52cab3e4a41c67312394304308d3adfa347"
       },
       {
         "command": "Cluster: RequestRelayAccess",
@@ -895,12 +895,12 @@
       {
         "command": "KV: Get",
         "pass": true,
-        "output": "e2e-ui-test-value-1786027309032"
+        "output": "e2e-ui-test-value-1786028471734"
       },
       {
         "command": "KV: RangeScan",
         "pass": true,
-        "output": "[{\"key\":\"e2e-ui-test-key\",\"value\":\"e2e-ui-test-value-1786027309032\"}]"
+        "output": "[{\"key\":\"e2e-ui-test-key\",\"value\":\"e2e-ui-test-value-1786028471734\"}]"
       },
       {
         "command": "Permits: RequestPermit",
@@ -938,7 +938,7 @@
       {
         "command": "Channel: OpenChannel",
         "pass": true,
-        "output": "Opened c01a7dd77b15d1a4 -- incoming data appears below as it arrives"
+        "output": "Opened 71235ed8ffe2f287 -- incoming data appears below as it arrives"
       },
       {
         "command": "Channel: ListenChannel",
@@ -976,7 +976,7 @@
       {
         "command": "Log records: LogQuery",
         "pass": true,
-        "output": "[{\"kind\":\"e2e-ui-test\",\"unit_id\":\"ui-test-unit\",\"timestamp\":\"2026-08-06T14:42:49.372005235Z\",\"author_peer_id\":\"12D3KooWD6jvAjEuAi4gcZdiYpQVVCh98pZUMgsN5strYboQBBvE\",\"narrative\":\"ui e2e test\"}]"
+        "output": "[{\"kind\":\"e2e-ui-test\",\"unit_id\":\"ui-test-unit\",\"timestamp\":\"2026-08-06T15:02:14.195917809Z\",\"author_peer_id\":\"12D3KooWNdNqmvtbj9vHq4zH5dwKcPRL5RtEGbwEzXSntTpQeQF8\",\"narrative\":\"ui e2e test\"}]"
       },
       {
         "command": "Group: CreateGroup",
@@ -997,7 +997,7 @@
       {
         "command": "Group: ListGroups",
         "pass": true,
-        "output": "[{\"id\":\"12D3KooWD6jvAjEuAi4gcZdiYpQVVCh98pZUMgsN5strYboQBBvE\",\"name\":\"12D3KooWD6jvAjEuAi4gcZdiYpQVVCh98pZUMgsN5strYboQBBvE\",\"public\":false},{\"id\":\"12D3KooWHSvtT8aejkEf3QyhwLHvn3YWAacuWCGXrsZP9B75RujY\",\"name\":\"12D3KooWHSvtT8aejkEf3QyhwLHvn3YWAacuWCGXrsZP9B75RujY\",\"public\":false},{\"id\":\"channel\",\"name\":\"channel\",\"public\":false},{\"id\":\"cluster\",\"name\":\"cluster\",\"public\":false},{\"id\":\"execute\",\"name\":\"execute\",\"public\":false},{\"id\":\"learner\",\"name\":\"learner\",\"public\":false},{\"id\":\"public\",\"name\":\"public\",\"public\":true},{\"id\":\"relay\",\"name\":\"relay\",\"public\":false},{\"id\":\"remote\",\"name\":\"remote\",\"public\":false},{\"id\":\"voter\",\"name\":\"voter\",\"public\":false}]"
+        "output": "[{\"id\":\"12D3KooWNdNqmvtbj9vHq4zH5dwKcPRL5RtEGbwEzXSntTpQeQF8\",\"name\":\"12D3KooWNdNqmvtbj9vHq4zH5dwKcPRL5RtEGbwEzXSntTpQeQF8\",\"public\":false},{\"id\":\"12D3KooWQPkU3UEDum9B8yJnMsTgxK9xTYLcWRvwvsY8n4D92oLy\",\"name\":\"12D3KooWQPkU3UEDum9B8yJnMsTgxK9xTYLcWRvwvsY8n4D92oLy\",\"public\":false},{\"id\":\"channel\",\"name\":\"channel\",\"public\":false},{\"id\":\"cluster\",\"name\":\"cluster\",\"public\":false},{\"id\":\"execute\",\"name\":\"execute\",\"public\":false},{\"id\":\"learner\",\"name\":\"learner\",\"public\":false},{\"id\":\"public\",\"name\":\"public\",\"public\":true},{\"id\":\"relay\",\"name\":\"relay\",\"public\":false},{\"id\":\"remote\",\"name\":\"remote\",\"public\":false},{\"id\":\"voter\",\"name\":\"voter\",\"public\":false}]"
       },
       {
         "command": "Command: CreateCommand",
@@ -1072,12 +1072,12 @@
       {
         "command": "Dispatch: QueryCommandLog",
         "pass": true,
-        "output": "[{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-06T14:43:21.590515476Z\",\"author_peer_id\":\"12D3KooWD6jvAjEuAi4gcZdiYpQVVCh98pZUMgsN5strYboQBBvE\",\"narrative\":\"ui e2e test\"}]"
+        "output": "[{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-06T15:02:46.662116783Z\",\"author_peer_id\":\"12D3KooWNdNqmvtbj9vHq4zH5dwKcPRL5RtEGbwEzXSntTpQeQF8\",\"narrative\":\"ui e2e test\"}]"
       },
       {
         "command": "Dispatch: LatestCommandLog",
         "pass": true,
-        "output": "{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-06T14:43:21.590515476Z\",\"author_peer_id\":\"12D3KooWD6jvAjEuAi4gcZdiYpQVVCh98pZUMgsN5strYboQBBvE\",\"narrative\":\"ui e2e test\"}"
+        "output": "{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-06T15:02:46.662116783Z\",\"author_peer_id\":\"12D3KooWNdNqmvtbj9vHq4zH5dwKcPRL5RtEGbwEzXSntTpQeQF8\",\"narrative\":\"ui e2e test\"}"
       },
       {
         "command": "Dispatch: WatchCommandLog",
@@ -1122,7 +1122,7 @@
       {
         "command": "Raw: SendEvent",
         "pass": true,
-        "output": "{\"event\":\"get_public_key\",\"value\":\"0x30c4f1eea90c67ea331852841fd6f8abd854ad0d611e7ff38b9642a97ac95537\",\"id\":49603}"
+        "output": "{\"event\":\"get_public_key\",\"value\":\"0xbe574d530380d31507e9258da03cbbb7194aed27afd99706dab935f213bb7f07\",\"id\":30181}"
       },
       {
         "command": "Test: SleepMillis",
@@ -1131,7 +1131,7 @@
     ]
   },
   "android_ui_pair_result": {
-    "ran_at": "2026-08-06T17:44:08.733155132+03:00",
+    "ran_at": "2026-08-06T18:03:37.302471822+03:00",
     "status": 0,
     "cases": [
       {
