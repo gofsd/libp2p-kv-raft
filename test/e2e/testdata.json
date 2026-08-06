@@ -10,27 +10,33 @@
   "nodes": {
     "1": {
       "platform": "desktop",
-      "peer_id": "12D3KooWBLdH8wy4aRUg6AeRfph238xKC9nFu2AvHN9SU9HhbkEx",
-      "public_key": "169c3246b21e483fab51ef36ee93a2bfa2ea1bdf743c62c8360160ce1c9ab085",
-      "private_key": "3806e96d3e5dca3d4f1740d96fd04d6bbee3871371ccf2eac11bf907d0c565a3169c3246b21e483fab51ef36ee93a2bfa2ea1bdf743c62c8360160ce1c9ab085"
+      "peer_id": "12D3KooWEo9Ge54A9w19CcYgLBgG2sD4EsBfy84MbmrGBrSpoPXt",
+      "public_key": "49fa450507dd8076a59365bf80c79285bb6dfc27ec924f61ec096348b5d44217",
+      "private_key": "f80c9e0cba677ffc40974d33855e2115023f2f20708395fc2e2183a0064ad5d149fa450507dd8076a59365bf80c79285bb6dfc27ec924f61ec096348b5d44217"
     },
     "2": {
       "platform": "android",
-      "peer_id": "12D3KooWQfYaPGuSe6Cn4sqmzmDEohwMs9dPHehERg1ciDC6ozmN",
-      "public_key": "dc9cd8323fecb2b15947730d5fba32ef3e6dd86719271eaa2e0c6ff5e1d781f1",
-      "private_key": "4367480a31de7c578e48fd10b314506560be603dd0ec017d04ed5ea29778632edc9cd8323fecb2b15947730d5fba32ef3e6dd86719271eaa2e0c6ff5e1d781f1"
+      "peer_id": "12D3KooWR6YdCsiBgGvAUYcUbdBXsZWsLN7DGBmwCtC7vhGHNNUL",
+      "public_key": "e3046b739a1059bb6dd578058ed3cdb14fdbc5890fd39e58e4844909128a234d",
+      "private_key": "4c70ef129ea672a82ce3872484cc278888486104c9259bf4a5c1fad95fdf810de3046b739a1059bb6dd578058ed3cdb14fdbc5890fd39e58e4844909128a234d"
     },
     "3": {
       "platform": "web",
-      "peer_id": "12D3KooWQ79ncpDnwbjE1j53LVmodsyBCKDpkAUCfneRFEohe4vS",
-      "public_key": "d4507dadcb6405616701a8194889952c710b6696966c5682ebaeba5e77231acf",
-      "private_key": "fa8988e1f3b5d56742db4b179b93cb94d00ee1fcc9507b4fd2144f4c97746cf5d4507dadcb6405616701a8194889952c710b6696966c5682ebaeba5e77231acf"
+      "peer_id": "12D3KooWCMfMx22gGZ8qCXQ7RjWvxwb9zQ4orQij1PTvXu7qT5Gg",
+      "public_key": "25bbd1bfe8c42dc506aa287df902b845ad6d5216981b495134434082ab7665ed",
+      "private_key": "f9e6edef39809f514396657d746554a77166992a22050747fa9579bd3daa3f6625bbd1bfe8c42dc506aa287df902b845ad6d5216981b495134434082ab7665ed"
     },
     "4": {
       "platform": "remote",
-      "peer_id": "12D3KooWRRR76xMRF4zB9gFFqyEoschjL8xDhkNgdWVX8dmmcoon",
-      "public_key": "e7d9f40e4fd8cc31d433a3f383b79a482040c04ac7240d1519e31398e61f5549",
-      "private_key": "e0cbda01883f986e3917452a2e4524020cb823f30e0c1505c2162a326557ab56e7d9f40e4fd8cc31d433a3f383b79a482040c04ac7240d1519e31398e61f5549"
+      "peer_id": "12D3KooWSK9G6wr13Xro9epFVZRZCyUYyvbh64f9f4PdNZMsrVhM",
+      "public_key": "f51a3d56fe87323d10adbf89a90781bf899192399fdce5a90970810de7b598dc",
+      "private_key": "b224a2db318bc7d21ced109c615736b25b827c8333657e8435867530b7b58f2cf51a3d56fe87323d10adbf89a90781bf899192399fdce5a90970810de7b598dc"
+    },
+    "5": {
+      "platform": "remote",
+      "peer_id": "12D3KooWSgMvzBBGHU9odXuWNvEUtVy11MGhVFU4J7u2KYwCkXhF",
+      "public_key": "fa89c358669c7441edd859233684b6d1cfb583749e78e00f2210f1f64fb06f3e",
+      "private_key": "1c50996258655be2b8151d0c1123204d4b786c325c9a1b057ce0be41fc83e851fa89c358669c7441edd859233684b6d1cfb583749e78e00f2210f1f64fb06f3e"
     }
   },
   "rows": [
@@ -454,7 +460,8 @@
         "value": "e2e-large-value-key",
         "id": 400
       },
-      "status": 0,
+      "status": 1,
+      "error": "exit status 1: sendevent: fetch signing key: ipc: no registered node for peer id 12D3KooWSK9G6wr13Xro9epFVZRZCyUYyvbh64f9f4PdNZMsrVhM\n",
       "platform": "remote"
     },
     {
@@ -465,7 +472,8 @@
         "source_id": 400,
         "value": "LARGEVALUE"
       },
-      "status": 0,
+      "status": 1,
+      "error": "exit status 1: sendevent: fetch signing key: ipc: no registered node for peer id 12D3KooWSK9G6wr13Xro9epFVZRZCyUYyvbh64f9f4PdNZMsrVhM\n",
       "platform": "remote"
     },
     {
@@ -475,7 +483,8 @@
         "event": "get_field",
         "source_id": 400
       },
-      "status": 0,
+      "status": 1,
+      "error": "exit status 1: sendevent: fetch signing key: ipc: no registered node for peer id 12D3KooWSK9G6wr13Xro9epFVZRZCyUYyvbh64f9f4PdNZMsrVhM\n",
       "platform": "remote"
     }
   ],
@@ -938,18 +947,18 @@
     }
   },
   "android_ui_result": {
-    "ran_at": "2026-08-05T21:04:19.186119507+03:00",
+    "ran_at": "2026-08-06T13:58:19.39280873+03:00",
     "status": 0,
     "cases": [
       {
         "command": "Cluster: Start",
         "pass": true,
-        "output": "12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf"
+        "output": "12D3KooWEyB1FNezZD6NUVRusmGJ6i3QYJZR5T2kW6JWVNX2WMFz"
       },
       {
         "command": "Cluster: StartWithKey",
         "pass": true,
-        "output": "12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf"
+        "output": "12D3KooWEyB1FNezZD6NUVRusmGJ6i3QYJZR5T2kW6JWVNX2WMFz"
       },
       {
         "command": "Cluster: Join",
@@ -986,12 +995,12 @@
       {
         "command": "Cluster: GetOwnAddr",
         "pass": true,
-        "output": "/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWRRR76xMRF4zB9gFFqyEoschjL8xDhkNgdWVX8dmmcoon/p2p-circuit/p2p/12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf"
+        "output": "/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWSgMvzBBGHU9odXuWNvEUtVy11MGhVFU4J7u2KYwCkXhF/p2p-circuit/p2p/12D3KooWEyB1FNezZD6NUVRusmGJ6i3QYJZR5T2kW6JWVNX2WMFz"
       },
       {
         "command": "Cluster: CreateJoinRequest",
         "pass": true,
-        "output": "424a8e03f101a2bf08baa5ffb8baf0e8"
+        "output": "82d6e693da168921e91832241181fca2"
       },
       {
         "command": "Cluster: CancelJoinRequest",
@@ -1008,12 +1017,314 @@
       {
         "command": "Cluster: RedeemJoinRequestTicket",
         "pass": true
+      },
+      {
+        "command": "Cluster: CreateJoinInvite",
+        "pass": true
+      },
+      {
+        "command": "Cluster: RevokeJoinInvite",
+        "pass": true
+      },
+      {
+        "command": "Cluster: CreateJoinInviteTicket",
+        "pass": true
+      },
+      {
+        "command": "Cluster: VerifyJoinInviteTicket",
+        "pass": true
+      },
+      {
+        "command": "Cluster: Stop",
+        "pass": true
+      },
+      {
+        "command": "Cluster: Delete",
+        "pass": true
+      },
+      {
+        "command": "Cluster: Leave",
+        "pass": true
+      },
+      {
+        "command": "Cluster: Rm",
+        "pass": true
+      },
+      {
+        "command": "Cluster: Kick",
+        "pass": true
+      },
+      {
+        "command": "Cluster: ListClusters",
+        "pass": true,
+        "output": "[{\"cluster_id\":\"12D3KooWSgMvzBBGHU9odXuWNvEUtVy11MGhVFU4J7u2KYwCkXhF\",\"peer_id\":\"12D3KooWEyB1FNezZD6NUVRusmGJ6i3QYJZR5T2kW6JWVNX2WMFz\"}]"
+      },
+      {
+        "command": "Cluster: ListClusterMembers",
+        "pass": true,
+        "output": "[{\"peer_id\":\"12D3KooWEyB1FNezZD6NUVRusmGJ6i3QYJZR5T2kW6JWVNX2WMFz\",\"role\":\"learner\"},{\"peer_id\":\"12D3KooWSgMvzBBGHU9odXuWNvEUtVy11MGhVFU4J7u2KYwCkXhF\",\"role\":\"leader\"}]"
+      },
+      {
+        "command": "Cluster: PeerID",
+        "pass": true,
+        "output": "12D3KooWEyB1FNezZD6NUVRusmGJ6i3QYJZR5T2kW6JWVNX2WMFz"
+      },
+      {
+        "command": "Cluster: AccessToken",
+        "pass": true,
+        "output": "81199d4c2dec203bdff6a800d89a0944f513b1d268cda4ea40bd73987124200e"
+      },
+      {
+        "command": "Cluster: RequestRelayAccess",
+        "pass": true
+      },
+      {
+        "command": "KV: Submit",
+        "pass": true,
+        "output": "OK"
+      },
+      {
+        "command": "KV: Get",
+        "pass": true,
+        "output": "e2e-ui-test-value-1786013707981"
+      },
+      {
+        "command": "KV: RangeScan",
+        "pass": true,
+        "output": "[{\"key\":\"e2e-ui-test-key\",\"value\":\"e2e-ui-test-value-1786013707981\"}]"
+      },
+      {
+        "command": "Permits: RequestPermit",
+        "pass": true,
+        "output": "OK"
+      },
+      {
+        "command": "Permits: ConfirmPermit",
+        "pass": true
+      },
+      {
+        "command": "Permits: RevokePermit",
+        "pass": true
+      },
+      {
+        "command": "Execute: Execute",
+        "pass": true,
+        "output": "OK"
+      },
+      {
+        "command": "Execute: PollExecute",
+        "pass": true,
+        "output": "{\"pending\":false}"
+      },
+      {
+        "command": "Execute: WatchExecute",
+        "pass": true,
+        "output": "Watching -- notifications appear below as they arrive"
+      },
+      {
+        "command": "Execute: StopWatchExecute",
+        "pass": true,
+        "output": "OK"
+      },
+      {
+        "command": "Channel: OpenChannel",
+        "pass": true,
+        "output": "Opened 8a077a345e55653f -- incoming data appears below as it arrives"
+      },
+      {
+        "command": "Channel: ListenChannel",
+        "pass": true
+      },
+      {
+        "command": "Channel: StopListenChannel",
+        "pass": true,
+        "output": "OK"
+      },
+      {
+        "command": "Channel: SendChannelData",
+        "pass": true
+      },
+      {
+        "command": "Channel: CloseChannelWrite",
+        "pass": true,
+        "output": "OK"
+      },
+      {
+        "command": "Channel: CloseChannel",
+        "pass": true,
+        "output": "OK"
+      },
+      {
+        "command": "Channel: StopChannel",
+        "pass": true,
+        "output": "OK"
+      },
+      {
+        "command": "Log records: LogAppend",
+        "pass": true,
+        "output": "OK"
+      },
+      {
+        "command": "Log records: LogQuery",
+        "pass": true,
+        "output": "[{\"kind\":\"e2e-ui-test\",\"unit_id\":\"ui-test-unit\",\"timestamp\":\"2026-08-06T10:56:09.339796078Z\",\"author_peer_id\":\"12D3KooWEyB1FNezZD6NUVRusmGJ6i3QYJZR5T2kW6JWVNX2WMFz\",\"narrative\":\"ui e2e test\"}]"
+      },
+      {
+        "command": "Group: CreateGroup",
+        "pass": true
+      },
+      {
+        "command": "Group: UpdateGroup",
+        "pass": true
+      },
+      {
+        "command": "Group: DeleteGroup",
+        "pass": true
+      },
+      {
+        "command": "Group: GetGroup",
+        "pass": true
+      },
+      {
+        "command": "Group: ListGroups",
+        "pass": true,
+        "output": "[{\"id\":\"12D3KooWEyB1FNezZD6NUVRusmGJ6i3QYJZR5T2kW6JWVNX2WMFz\",\"name\":\"12D3KooWEyB1FNezZD6NUVRusmGJ6i3QYJZR5T2kW6JWVNX2WMFz\",\"public\":false},{\"id\":\"12D3KooWSgMvzBBGHU9odXuWNvEUtVy11MGhVFU4J7u2KYwCkXhF\",\"name\":\"12D3KooWSgMvzBBGHU9odXuWNvEUtVy11MGhVFU4J7u2KYwCkXhF\",\"public\":false},{\"id\":\"channel\",\"name\":\"channel\",\"public\":false},{\"id\":\"cluster\",\"name\":\"cluster\",\"public\":false},{\"id\":\"execute\",\"name\":\"execute\",\"public\":false},{\"id\":\"learner\",\"name\":\"learner\",\"public\":false},{\"id\":\"public\",\"name\":\"public\",\"public\":true},{\"id\":\"relay\",\"name\":\"relay\",\"public\":false},{\"id\":\"remote\",\"name\":\"remote\",\"public\":false},{\"id\":\"voter\",\"name\":\"voter\",\"public\":false}]"
+      },
+      {
+        "command": "Command: CreateCommand",
+        "pass": true
+      },
+      {
+        "command": "Command: UpdateCommand",
+        "pass": true
+      },
+      {
+        "command": "Command: DeleteCommand",
+        "pass": true
+      },
+      {
+        "command": "Command: GetCommand",
+        "pass": true
+      },
+      {
+        "command": "Command: ListCommands",
+        "pass": true,
+        "output": "[{\"id\":\"public-access\",\"name\":\"public-access\",\"target_peer_id\":\"\"}]"
+      },
+      {
+        "command": "Links: AddCommandToGroup",
+        "pass": true
+      },
+      {
+        "command": "Links: RemoveCommandFromGroup",
+        "pass": true
+      },
+      {
+        "command": "Links: ListGroupsForCommand",
+        "pass": true,
+        "output": "[]"
+      },
+      {
+        "command": "Links: AddPeerToGroup",
+        "pass": true
+      },
+      {
+        "command": "Links: RemovePeerFromGroup",
+        "pass": true
+      },
+      {
+        "command": "Links: ListGroupsForPeer",
+        "pass": true,
+        "output": "[\"cluster\",\"learner\"]"
+      },
+      {
+        "command": "Dispatch: SubmitCommand",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: GetCommandRequest",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: ListCommandRequests",
+        "pass": true,
+        "output": "[]"
+      },
+      {
+        "command": "Dispatch: ListExecutionsByPeer",
+        "pass": true,
+        "output": "[]"
+      },
+      {
+        "command": "Dispatch: AppendCommandLog",
+        "pass": true,
+        "output": "OK"
+      },
+      {
+        "command": "Dispatch: QueryCommandLog",
+        "pass": true,
+        "output": "[{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-06T10:56:41.547952174Z\",\"author_peer_id\":\"12D3KooWEyB1FNezZD6NUVRusmGJ6i3QYJZR5T2kW6JWVNX2WMFz\",\"narrative\":\"ui e2e test\"}]"
+      },
+      {
+        "command": "Dispatch: LatestCommandLog",
+        "pass": true,
+        "output": "{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-06T10:56:41.547952174Z\",\"author_peer_id\":\"12D3KooWEyB1FNezZD6NUVRusmGJ6i3QYJZR5T2kW6JWVNX2WMFz\",\"narrative\":\"ui e2e test\"}"
+      },
+      {
+        "command": "Dispatch: WatchCommandLog",
+        "pass": true,
+        "output": "Watching -- new records appear below as they arrive"
+      },
+      {
+        "command": "Dispatch: StopWatchCommandLog",
+        "pass": true,
+        "output": "OK"
+      },
+      {
+        "command": "Dispatch: RunCommandDispatcher",
+        "pass": true,
+        "output": "Dispatching -- requests for no-such-command are handled as they arrive, logged below"
+      },
+      {
+        "command": "Dispatch: StopCommandDispatcher",
+        "pass": true,
+        "output": "OK"
+      },
+      {
+        "command": "ExecInvite: CreateExecInvite",
+        "pass": true
+      },
+      {
+        "command": "ExecInvite: RevokeExecInvite",
+        "pass": true
+      },
+      {
+        "command": "ExecInvite: RedeemExecInvite",
+        "pass": true
+      },
+      {
+        "command": "ExecInvite: CreateExecInviteTicket",
+        "pass": true
+      },
+      {
+        "command": "ExecInvite: RedeemExecInviteTicket",
+        "pass": true
+      },
+      {
+        "command": "Raw: SendEvent",
+        "pass": true,
+        "output": "{\"event\":\"get_public_key\",\"value\":\"0x4c8c09ff6f975bf5b76a9d8a3958a30c98ed4970b07015a6f366195ced3c02cd\",\"id\":45991}"
+      },
+      {
+        "command": "Test: SleepMillis",
+        "pass": true
       }
     ]
   },
   "android_ui_pair_result": {
-    "ran_at": "2026-08-05T21:04:19.189968171+03:00",
-    "status": 0,
+    "ran_at": "2026-08-06T13:58:19.397499324+03:00",
+    "status": 1,
+    "error": "Cluster: Join (sender): Cluster: Join: expected success, got: Cluster: Join(/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWSgMvzBBGHU9odXuWNvEUtVy11MGhVFU4J7u2KYwCkXhF/p2p-circuit/p2p/12D3KooWC7gZatVt7QUAKaWob3QfG8APzpHQqMVCwbY56sx8EjSB#237a3e582b054c11220682e05d9f92df) FAILED: kvmobile: join cluster: shmclient: add: join: connect to leader 12D3KooWC7gZatVt7QUAKaWob3QfG8APzpHQqMVCwbY56sx8EjSB: failed to dial: failed to dial 12D3KooWC7gZatVt7QUAKaWob3QfG8APzpHQqMVCwbY56sx8EjSB: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWSgMvzBBGHU9odXuWNvEUtVy11MGhVFU4J7u2KYwCkXhF/p2p-circuit] error opening relay circuit: NO_RESERVATION (204)",
     "cases": [
       {
         "command": "Cluster: StartSoloWithKey (A, prep)",
@@ -1057,11 +1368,13 @@
       },
       {
         "command": "Cluster: Join (sender)",
-        "pass": true
+        "pass": false,
+        "error": "Cluster: Join: expected success, got: Cluster: Join(/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWSgMvzBBGHU9odXuWNvEUtVy11MGhVFU4J7u2KYwCkXhF/p2p-circuit/p2p/12D3KooWC7gZatVt7QUAKaWob3QfG8APzpHQqMVCwbY56sx8EjSB#237a3e582b054c11220682e05d9f92df) FAILED: kvmobile: join cluster: shmclient: add: join: connect to leader 12D3KooWC7gZatVt7QUAKaWob3QfG8APzpHQqMVCwbY56sx8EjSB: failed to dial: failed to dial 12D3KooWC7gZatVt7QUAKaWob3QfG8APzpHQqMVCwbY56sx8EjSB: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWSgMvzBBGHU9odXuWNvEUtVy11MGhVFU4J7u2KYwCkXhF/p2p-circuit] error opening relay circuit: NO_RESERVATION (204)"
       },
       {
         "command": "Cluster: Join (receiver)",
-        "pass": true
+        "pass": false,
+        "error": "member 12D3KooWEZgm2XPcypHffsHgYy8epLANJ92BR99U1yNDvNpebvjm has role \"learner\", want \"voter\""
       },
       {
         "command": "Cluster: Leave (B)",
