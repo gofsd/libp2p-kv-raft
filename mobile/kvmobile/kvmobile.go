@@ -121,6 +121,24 @@ func relayPeers() []string {
 // client.
 const callTimeout = 60 * time.Second
 
+// joinCallTimeout bounds startAgainst's own Add call specifically --
+// callTimeout is too short for it. pkg/daemon's join() (what EventAdd
+// dispatches to whenever leaderAddr names a real leader, exactly the case
+// every call through this Add is) does its own awaitRelayAddr wait (up to
+// 45s, see that function's doc comment on why it has to happen before the
+// join stream even opens) and then connectWithRetry, whose own escalated
+// budget -- connectRetryReservationAttempts * connectRetryReservationDelay
+// -- runs up to another ~99s if the leader's relay reservation is still
+// settling or the dial hit a bare transient reset (see
+// isRetriableRelayCircuitError/isRetriableDialResetError). Stacked, that's
+// comfortably past callTimeout's 60s on its own, before the join stream's
+// own request/response round trip even starts -- caught live running this
+// project's own android pair e2e scenario, where Join failed with a flat
+// "context deadline exceeded" cutting connectWithRetry's own retry loop
+// off mid-budget rather than letting it either succeed or genuinely
+// exhaust its own longer timeout.
+const joinCallTimeout = 180 * time.Second
+
 // Raft timing knobs for this node's own participation in the cluster.
 // Library defaults (1s heartbeat/election, 500ms leader lease) are tuned
 // for a LAN and are not safe here: a phone on cellular data, reached only
@@ -286,7 +304,7 @@ func startAgainst(dataDirRoot, leaderAddr, suffrage string, resolveIdentity func
 		_ = reg.Put(registry.NodeInfo{PeerID: id, DataDir: clusterDir})
 	}
 
-	addCtx, addCancel := context.WithTimeout(ctx, callTimeout)
+	addCtx, addCancel := context.WithTimeout(ctx, joinCallTimeout)
 	defer addCancel()
 	sess, err := shmclient.Open(addCtx, id)
 	if err != nil {

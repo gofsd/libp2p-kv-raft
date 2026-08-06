@@ -30,6 +30,26 @@ const readyTimeout = 15 * time.Second
 // may take.
 const ipcTimeout = 10 * time.Second
 
+// joinIPCTimeout bounds bootUp's own Add call specifically -- ipcTimeout
+// is far too short for it. pkg/daemon's join() (what EventAdd dispatches
+// to whenever leaderPeerID names a real leader, exactly the case every
+// non-bootstrap call through this Add is) does its own awaitRelayAddr
+// wait (up to 45s, see that function's doc comment on why it has to
+// happen before the join stream even opens -- relevant any time this
+// node itself joins via a relay, see CLAUDE.md's "Node connectivity
+// policy") and then connectWithRetry,
+// whose own escalated budget -- connectRetryReservationAttempts *
+// connectRetryReservationDelay -- runs up to another ~99s if the
+// leader's relay reservation is still settling or the dial hit a bare
+// transient reset (see isRetriableRelayCircuitError/
+// isRetriableDialResetError). Stacked, that's comfortably past
+// ipcTimeout's 10s before the join stream's own request/response round
+// trip even starts -- caught live running this project's own e2e:all
+// against a real relay-dependent deploy, mirroring mobile/kvmobile's
+// identical joinCallTimeout fix (see that constant's own doc comment) for
+// the same underlying pkg/daemon.join() call.
+const joinIPCTimeout = 180 * time.Second
+
 // AddNode implements `mage addnode [leaderPeerID] [ownPeerID]`, building the
 // kvnode daemon binary from source. It requires a Go toolchain and this
 // repo's source tree on the machine it runs on -- see AddNodeWithBinary for
@@ -381,7 +401,7 @@ func bootUp(reg *registry.Registry, binPath string, extraDaemonArgs []string, pe
 		return peerID, nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), joinIPCTimeout)
 	defer cancel()
 	status, err := shmclient.Add(ctx, peerID, leaderPeerID)
 	if err != nil {
