@@ -10,21 +10,21 @@
   "nodes": {
     "1": {
       "platform": "desktop",
-      "peer_id": "12D3KooWR5UZcjJ3Neserqi896yk343oRiYZXmJnjzh1Atunwp2u",
-      "public_key": "e2be3f03896f51bd036a2ee46cde2ea8a7c17a972a7504a4a2aa23db2bacb00a",
-      "private_key": "c8c3531df69b12f040320ec030c7760f6c8b9c9b44d66e0c1817b3ffd6e8f10be2be3f03896f51bd036a2ee46cde2ea8a7c17a972a7504a4a2aa23db2bacb00a"
+      "peer_id": "12D3KooWBDWjMBTPm9aVVEUaPwSAa6gEFxaFKFxts7pAF2XtYbFR",
+      "public_key": "14c9ba0e552c32e16216ce3f21230109340879b8f1c495c40b1f42e959501014",
+      "private_key": "97c3a6d5f8fde50a5ba57c47b2cdaf5f3ff543d521fa3a910128e86c538caaf714c9ba0e552c32e16216ce3f21230109340879b8f1c495c40b1f42e959501014"
     },
     "2": {
       "platform": "android",
-      "peer_id": "12D3KooWPm5Ee9ecJHLWmJmgZSCHShz91iLZwh1RBjSYjnZDxq2S",
-      "public_key": "cf2bba8237a1656c32201bf0431398e9500c1e5bf3286c5b352c0916f69019ab",
-      "private_key": "1522f5cb5ceaa50fe298fe93a0997592eb81e96486267a0f8e8eba5c88cfcf09cf2bba8237a1656c32201bf0431398e9500c1e5bf3286c5b352c0916f69019ab"
+      "peer_id": "12D3KooWGagCPQo8zPWdLz65psyXP7wtTQEGPiYsq7pmakNgwpS2",
+      "public_key": "64800fd53db6a226028ae45e49561b5493d2472a5df9cb49a84a8e35fb2e8887",
+      "private_key": "f78ca23023abb5da921fbadf229cf7b0b98a9a3af21596b242e94dc32a89994e64800fd53db6a226028ae45e49561b5493d2472a5df9cb49a84a8e35fb2e8887"
     },
     "3": {
       "platform": "remote",
-      "peer_id": "12D3KooWQPkU3UEDum9B8yJnMsTgxK9xTYLcWRvwvsY8n4D92oLy",
-      "public_key": "d890ff1354b06f6571b372ea173643b7a3404e36483ecb6c6dc45bc48e132f66",
-      "private_key": "699f16b253217f9642d17351674f8806ec5359526ff3d15710984531165e90b7d890ff1354b06f6571b372ea173643b7a3404e36483ecb6c6dc45bc48e132f66"
+      "peer_id": "12D3KooWCSKjWe9q873DPT9U9Xyg4tpCLvDWSJfRtrokdeHwR5H1",
+      "public_key": "26ed87982b2a9f39826ee9f971c1b06eeaf5c277a17fcda8e8f6d34c2c465b90",
+      "private_key": "f46772f07d374869bf4ac4e2f5a63c7f26362f9a18d87bc1a384d6388002d91a26ed87982b2a9f39826ee9f971c1b06eeaf5c277a17fcda8e8f6d34c2c465b90"
     }
   },
   "rows": [
@@ -756,18 +756,18 @@
     }
   },
   "android_ui_result": {
-    "ran_at": "2026-08-06T18:03:37.298781303+03:00",
+    "ran_at": "2026-08-07T03:00:55.982062767+03:00",
     "status": 0,
     "cases": [
       {
         "command": "Cluster: Start",
         "pass": true,
-        "output": "12D3KooWNdNqmvtbj9vHq4zH5dwKcPRL5RtEGbwEzXSntTpQeQF8"
+        "output": "12D3KooWGgVcfpsr3R8WxtQbi6WgAM2HbWTQEbknrV8BGEQNnnxV"
       },
       {
         "command": "Cluster: StartWithKey",
         "pass": true,
-        "output": "12D3KooWNdNqmvtbj9vHq4zH5dwKcPRL5RtEGbwEzXSntTpQeQF8"
+        "output": "12D3KooWGgVcfpsr3R8WxtQbi6WgAM2HbWTQEbknrV8BGEQNnnxV"
       },
       {
         "command": "Cluster: Join",
@@ -804,12 +804,12 @@
       {
         "command": "Cluster: GetOwnAddr",
         "pass": true,
-        "output": "/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWQPkU3UEDum9B8yJnMsTgxK9xTYLcWRvwvsY8n4D92oLy/p2p-circuit/p2p/12D3KooWNdNqmvtbj9vHq4zH5dwKcPRL5RtEGbwEzXSntTpQeQF8"
+        "output": "/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWCSKjWe9q873DPT9U9Xyg4tpCLvDWSJfRtrokdeHwR5H1/p2p-circuit/p2p/12D3KooWGgVcfpsr3R8WxtQbi6WgAM2HbWTQEbknrV8BGEQNnnxV"
       },
       {
         "command": "Cluster: CreateJoinRequest",
         "pass": true,
-        "output": "a89d1ee38db93a181be79267df0c7165"
+        "output": "b05efd55ac1c178c774da7f6b4325de2"
       },
       {
         "command": "Cluster: CancelJoinRequest",
@@ -866,22 +866,22 @@
       {
         "command": "Cluster: ListClusters",
         "pass": true,
-        "output": "[{\"cluster_id\":\"12D3KooWQPkU3UEDum9B8yJnMsTgxK9xTYLcWRvwvsY8n4D92oLy\",\"peer_id\":\"12D3KooWNdNqmvtbj9vHq4zH5dwKcPRL5RtEGbwEzXSntTpQeQF8\"}]"
+        "output": "[{\"cluster_id\":\"12D3KooWCSKjWe9q873DPT9U9Xyg4tpCLvDWSJfRtrokdeHwR5H1\",\"peer_id\":\"12D3KooWGgVcfpsr3R8WxtQbi6WgAM2HbWTQEbknrV8BGEQNnnxV\"}]"
       },
       {
         "command": "Cluster: ListClusterMembers",
         "pass": true,
-        "output": "[{\"peer_id\":\"12D3KooWNdNqmvtbj9vHq4zH5dwKcPRL5RtEGbwEzXSntTpQeQF8\",\"role\":\"learner\"},{\"peer_id\":\"12D3KooWQPkU3UEDum9B8yJnMsTgxK9xTYLcWRvwvsY8n4D92oLy\",\"role\":\"leader\"}]"
+        "output": "[{\"peer_id\":\"12D3KooWBDWjMBTPm9aVVEUaPwSAa6gEFxaFKFxts7pAF2XtYbFR\",\"role\":\"learner\"},{\"peer_id\":\"12D3KooWCSKjWe9q873DPT9U9Xyg4tpCLvDWSJfRtrokdeHwR5H1\",\"role\":\"leader\"},{\"peer_id\":\"12D3KooWGgVcfpsr3R8WxtQbi6WgAM2HbWTQEbknrV8BGEQNnnxV\",\"role\":\"learner\"},{\"peer_id\":\"12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf\",\"role\":\"learner\"},{\"peer_id\":\"12D3KooWT3WGjQ59zXksCJ6gubSschbnghTKtiyuw8PKTMuLREjT\",\"role\":\"learner\"}]"
       },
       {
         "command": "Cluster: PeerID",
         "pass": true,
-        "output": "12D3KooWNdNqmvtbj9vHq4zH5dwKcPRL5RtEGbwEzXSntTpQeQF8"
+        "output": "12D3KooWGgVcfpsr3R8WxtQbi6WgAM2HbWTQEbknrV8BGEQNnnxV"
       },
       {
         "command": "Cluster: AccessToken",
         "pass": true,
-        "output": "d52d8b255bcc78b36a0ae30134f4b52cab3e4a41c67312394304308d3adfa347"
+        "output": "4e26d105dcc1575cfccd4f5476644dd2e929d06d9977d342e8bbfe9f5fdf93af"
       },
       {
         "command": "Cluster: RequestRelayAccess",
@@ -895,12 +895,12 @@
       {
         "command": "KV: Get",
         "pass": true,
-        "output": "e2e-ui-test-value-1786028471734"
+        "output": "e2e-ui-test-value-1786060735119"
       },
       {
         "command": "KV: RangeScan",
         "pass": true,
-        "output": "[{\"key\":\"e2e-ui-test-key\",\"value\":\"e2e-ui-test-value-1786028471734\"}]"
+        "output": "[{\"key\":\"e2e-ui-test-key\",\"value\":\"e2e-ui-test-value-1786060735119\"}]"
       },
       {
         "command": "Permits: RequestPermit",
@@ -938,7 +938,7 @@
       {
         "command": "Channel: OpenChannel",
         "pass": true,
-        "output": "Opened 71235ed8ffe2f287 -- incoming data appears below as it arrives"
+        "output": "Opened c54e5d075967e014 -- incoming data appears below as it arrives"
       },
       {
         "command": "Channel: ListenChannel",
@@ -976,7 +976,7 @@
       {
         "command": "Log records: LogQuery",
         "pass": true,
-        "output": "[{\"kind\":\"e2e-ui-test\",\"unit_id\":\"ui-test-unit\",\"timestamp\":\"2026-08-06T15:02:14.195917809Z\",\"author_peer_id\":\"12D3KooWNdNqmvtbj9vHq4zH5dwKcPRL5RtEGbwEzXSntTpQeQF8\",\"narrative\":\"ui e2e test\"}]"
+        "output": "[{\"kind\":\"e2e-ui-test\",\"unit_id\":\"ui-test-unit\",\"timestamp\":\"2026-08-06T22:28:50.285916764Z\",\"author_peer_id\":\"12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf\",\"narrative\":\"ui e2e test\"},{\"kind\":\"e2e-ui-test\",\"unit_id\":\"ui-test-unit\",\"timestamp\":\"2026-08-06T22:45:03.057377438Z\",\"author_peer_id\":\"12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf\",\"narrative\":\"ui e2e test\"},{\"kind\":\"e2e-ui-test\",\"unit_id\":\"ui-test-unit\",\"timestamp\":\"2026-08-06T23:25:45.254112337Z\",\"author_peer_id\":\"12D3KooWT3WGjQ59zXksCJ6gubSschbnghTKtiyuw8PKTMuLREjT\",\"narrative\":\"ui e2e test\"},{\"kind\":\"e2e-ui-test\",\"unit_id\":\"ui-test-unit\",\"timestamp\":\"2026-08-06T23:59:56.273998043Z\",\"author_peer_id\":\"12D3KooWGgVcfpsr3R8WxtQbi6WgAM2HbWTQEbknrV8BGEQNnnxV\",\"narrative\":\"ui e2e test\"}]"
       },
       {
         "command": "Group: CreateGroup",
@@ -997,7 +997,7 @@
       {
         "command": "Group: ListGroups",
         "pass": true,
-        "output": "[{\"id\":\"12D3KooWNdNqmvtbj9vHq4zH5dwKcPRL5RtEGbwEzXSntTpQeQF8\",\"name\":\"12D3KooWNdNqmvtbj9vHq4zH5dwKcPRL5RtEGbwEzXSntTpQeQF8\",\"public\":false},{\"id\":\"12D3KooWQPkU3UEDum9B8yJnMsTgxK9xTYLcWRvwvsY8n4D92oLy\",\"name\":\"12D3KooWQPkU3UEDum9B8yJnMsTgxK9xTYLcWRvwvsY8n4D92oLy\",\"public\":false},{\"id\":\"channel\",\"name\":\"channel\",\"public\":false},{\"id\":\"cluster\",\"name\":\"cluster\",\"public\":false},{\"id\":\"execute\",\"name\":\"execute\",\"public\":false},{\"id\":\"learner\",\"name\":\"learner\",\"public\":false},{\"id\":\"public\",\"name\":\"public\",\"public\":true},{\"id\":\"relay\",\"name\":\"relay\",\"public\":false},{\"id\":\"remote\",\"name\":\"remote\",\"public\":false},{\"id\":\"voter\",\"name\":\"voter\",\"public\":false}]"
+        "output": "[{\"id\":\"12D3KooWBDWjMBTPm9aVVEUaPwSAa6gEFxaFKFxts7pAF2XtYbFR\",\"name\":\"12D3KooWBDWjMBTPm9aVVEUaPwSAa6gEFxaFKFxts7pAF2XtYbFR\",\"public\":false},{\"id\":\"12D3KooWCSKjWe9q873DPT9U9Xyg4tpCLvDWSJfRtrokdeHwR5H1\",\"name\":\"12D3KooWCSKjWe9q873DPT9U9Xyg4tpCLvDWSJfRtrokdeHwR5H1\",\"public\":false},{\"id\":\"12D3KooWGgVcfpsr3R8WxtQbi6WgAM2HbWTQEbknrV8BGEQNnnxV\",\"name\":\"12D3KooWGgVcfpsr3R8WxtQbi6WgAM2HbWTQEbknrV8BGEQNnnxV\",\"public\":false},{\"id\":\"12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf\",\"name\":\"12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf\",\"public\":false},{\"id\":\"12D3KooWT3WGjQ59zXksCJ6gubSschbnghTKtiyuw8PKTMuLREjT\",\"name\":\"12D3KooWT3WGjQ59zXksCJ6gubSschbnghTKtiyuw8PKTMuLREjT\",\"public\":false},{\"id\":\"channel\",\"name\":\"channel\",\"public\":false},{\"id\":\"cluster\",\"name\":\"cluster\",\"public\":false},{\"id\":\"execute\",\"name\":\"execute\",\"public\":false},{\"id\":\"learner\",\"name\":\"learner\",\"public\":false},{\"id\":\"public\",\"name\":\"public\",\"public\":true},{\"id\":\"relay\",\"name\":\"relay\",\"public\":false},{\"id\":\"remote\",\"name\":\"remote\",\"public\":false},{\"id\":\"voter\",\"name\":\"voter\",\"public\":false}]"
       },
       {
         "command": "Command: CreateCommand",
@@ -1044,7 +1044,7 @@
       {
         "command": "Links: ListGroupsForPeer",
         "pass": true,
-        "output": "[\"cluster\",\"learner\"]"
+        "output": "[\"channel\",\"cluster\",\"learner\",\"relay\"]"
       },
       {
         "command": "Dispatch: SubmitCommand",
@@ -1072,12 +1072,12 @@
       {
         "command": "Dispatch: QueryCommandLog",
         "pass": true,
-        "output": "[{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-06T15:02:46.662116783Z\",\"author_peer_id\":\"12D3KooWNdNqmvtbj9vHq4zH5dwKcPRL5RtEGbwEzXSntTpQeQF8\",\"narrative\":\"ui e2e test\"}]"
+        "output": "[{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-06T22:29:24.651987228Z\",\"author_peer_id\":\"12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf\",\"narrative\":\"ui e2e test\"},{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-06T22:45:37.487715286Z\",\"author_peer_id\":\"12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf\",\"narrative\":\"ui e2e test\"},{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-06T23:26:17.753496575Z\",\"author_peer_id\":\"12D3KooWT3WGjQ59zXksCJ6gubSschbnghTKtiyuw8PKTMuLREjT\",\"narrative\":\"ui e2e test\"},{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-07T00:00:28.887189788Z\",\"author_peer_id\":\"12D3KooWGgVcfpsr3R8WxtQbi6WgAM2HbWTQEbknrV8BGEQNnnxV\",\"narrative\":\"ui e2e test\"}]"
       },
       {
         "command": "Dispatch: LatestCommandLog",
         "pass": true,
-        "output": "{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-06T15:02:46.662116783Z\",\"author_peer_id\":\"12D3KooWNdNqmvtbj9vHq4zH5dwKcPRL5RtEGbwEzXSntTpQeQF8\",\"narrative\":\"ui e2e test\"}"
+        "output": "{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-07T00:00:28.887189788Z\",\"author_peer_id\":\"12D3KooWGgVcfpsr3R8WxtQbi6WgAM2HbWTQEbknrV8BGEQNnnxV\",\"narrative\":\"ui e2e test\"}"
       },
       {
         "command": "Dispatch: WatchCommandLog",
@@ -1122,7 +1122,7 @@
       {
         "command": "Raw: SendEvent",
         "pass": true,
-        "output": "{\"event\":\"get_public_key\",\"value\":\"0xbe574d530380d31507e9258da03cbbb7194aed27afd99706dab935f213bb7f07\",\"id\":30181}"
+        "output": "{\"event\":\"get_public_key\",\"value\":\"0x65fd95155bcf6a09f24e923f56747e5be7c2a38a1db80be2960137fccab82f5e\",\"id\":4493}"
       },
       {
         "command": "Test: SleepMillis",
@@ -1131,8 +1131,9 @@
     ]
   },
   "android_ui_pair_result": {
-    "ran_at": "2026-08-06T18:03:37.302471822+03:00",
-    "status": 0,
+    "ran_at": "2026-08-07T03:00:55.984688014+03:00",
+    "status": 1,
+    "error": "Cluster: Join (sender): Cluster: Join: expected success, got: Cluster: Join(/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWCSKjWe9q873DPT9U9Xyg4tpCLvDWSJfRtrokdeHwR5H1/p2p-circuit/p2p/12D3KooWJtshhZRBcNWjUHkhnAXRzECcxZ1mdjUioP2iYzfjWw4x#7c4381522d6ca7ca362162aba9bbbf8b) FAILED: kvmobile: join cluster: shmclient: add: join: connect to leader 12D3KooWJtshhZRBcNWjUHkhnAXRzECcxZ1mdjUioP2iYzfjWw4x: failed to dial: failed to dial 12D3KooWJtshhZRBcNWjUHkhnAXRzECcxZ1mdjUioP2iYzfjWw4x: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWCSKjWe9q873DPT9U9Xyg4tpCLvDWSJfRtrokdeHwR5H1/p2p-circuit] error opening hop stream to relay: failed to dial: failed to dial 12D3KooWCSKjWe9q873DPT9U9Xyg4tpCLvDWSJfRtrokdeHwR5H1: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] failed to negotiate security protocol: EOF",
     "cases": [
       {
         "command": "Cluster: StartSoloWithKey (A, prep)",
@@ -1176,11 +1177,13 @@
       },
       {
         "command": "Cluster: Join (sender)",
-        "pass": true
+        "pass": false,
+        "error": "Cluster: Join: expected success, got: Cluster: Join(/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWCSKjWe9q873DPT9U9Xyg4tpCLvDWSJfRtrokdeHwR5H1/p2p-circuit/p2p/12D3KooWJtshhZRBcNWjUHkhnAXRzECcxZ1mdjUioP2iYzfjWw4x#7c4381522d6ca7ca362162aba9bbbf8b) FAILED: kvmobile: join cluster: shmclient: add: join: connect to leader 12D3KooWJtshhZRBcNWjUHkhnAXRzECcxZ1mdjUioP2iYzfjWw4x: failed to dial: failed to dial 12D3KooWJtshhZRBcNWjUHkhnAXRzECcxZ1mdjUioP2iYzfjWw4x: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWCSKjWe9q873DPT9U9Xyg4tpCLvDWSJfRtrokdeHwR5H1/p2p-circuit] error opening hop stream to relay: failed to dial: failed to dial 12D3KooWCSKjWe9q873DPT9U9Xyg4tpCLvDWSJfRtrokdeHwR5H1: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] failed to negotiate security protocol: EOF"
       },
       {
         "command": "Cluster: Join (receiver)",
-        "pass": true
+        "pass": false,
+        "error": "member 12D3KooWRj9T3fAcfbE3oZcMGnX4HX2RrB1FvqJjuG49DdU8Cmz1 has role \"learner\", want \"voter\""
       },
       {
         "command": "Cluster: Leave (B)",
