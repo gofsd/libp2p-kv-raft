@@ -15,9 +15,9 @@ import (
 
 // TestPermitRequestConfirmWorkflow is a real-cluster test (a leader, a
 // joined voter, and a joined nonvoter/learner, no mocks) for
-// EventPermitRequest/EventPermitConfirm: it proves the two-stage
-// pending-then-confirmed record actually gets replicated through raft
-// like any other Set, and specifically that EventPermitConfirm's "only a
+// EventLifecycleWrite's Permit-style Request/Confirm actions: it proves the
+// two-stage pending-then-confirmed record actually gets replicated through
+// raft like any other Set, and specifically that Confirm's "only a
 // raft voter may confirm" rule is enforced against the real,
 // libp2p-authenticated identity of whichever node originates the
 // confirm -- not a client-supplied claim -- by exercising the rejection
@@ -123,7 +123,7 @@ func TestPermitRequestConfirmWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EncodePermitRequestPayload: %v", err)
 	}
-	resp := call(leader, shmevent.Msg{EventType: shmevent.EventPermitRequest, Value: reqPayload, ID: 1})
+	resp := call(leader, shmevent.Msg{EventType: shmevent.EventLifecycleWrite, Value: shmevent.EncodeLifecycleWritePayload(shmevent.KindBootstrapNode, shmevent.LifecycleActionRequest, reqPayload), ID: 1})
 	if resp.EventType == shmevent.EventError {
 		t.Fatalf("permit_request rejected: %s", resp.Value)
 	}
@@ -133,7 +133,7 @@ func TestPermitRequestConfirmWorkflow(t *testing.T) {
 	// A learner (nonvoter) confirming must be rejected, and specifically
 	// for the voter-only reason -- not because e.g. it couldn't find a
 	// leader at all.
-	resp = call(learner, shmevent.Msg{EventType: shmevent.EventPermitConfirm, Value: confirmPayload, ID: 2})
+	resp = call(learner, shmevent.Msg{EventType: shmevent.EventLifecycleWrite, Value: shmevent.EncodeLifecycleWritePayload(shmevent.KindBootstrapNode, shmevent.LifecycleActionConfirm, confirmPayload), ID: 2})
 	if resp.EventType != shmevent.EventError {
 		t.Fatalf("learner permit_confirm unexpectedly succeeded")
 	}
@@ -150,7 +150,7 @@ func TestPermitRequestConfirmWorkflow(t *testing.T) {
 	}
 
 	// A real voter confirming must succeed.
-	resp = call(voter, shmevent.Msg{EventType: shmevent.EventPermitConfirm, Value: confirmPayload, ID: 4})
+	resp = call(voter, shmevent.Msg{EventType: shmevent.EventLifecycleWrite, Value: shmevent.EncodeLifecycleWritePayload(shmevent.KindBootstrapNode, shmevent.LifecycleActionConfirm, confirmPayload), ID: 4})
 	if resp.EventType == shmevent.EventError {
 		t.Fatalf("voter permit_confirm rejected: %s", resp.Value)
 	}
@@ -176,7 +176,7 @@ func TestPermitRequestConfirmWorkflow(t *testing.T) {
 }
 
 // TestPermitRevokeWorkflow is TestPermitRequestConfirmWorkflow's
-// counterpart for EventPermitRevoke: same real leader/voter/learner
+// counterpart for the Permit-style Revoke action: same real leader/voter/learner
 // cluster, proving revoke is voter-gated the identical way confirm is
 // (rejected from the learner, accepted from the voter) and that it
 // actually deletes the confirmed record via kvfsm.OpDel rather than just
@@ -253,13 +253,13 @@ func TestPermitRevokeWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EncodePermitRequestPayload: %v", err)
 	}
-	resp := call(leader, shmevent.Msg{EventType: shmevent.EventPermitRequest, Value: reqPayload, ID: 1})
+	resp := call(leader, shmevent.Msg{EventType: shmevent.EventLifecycleWrite, Value: shmevent.EncodeLifecycleWritePayload(shmevent.KindBootstrapNode, shmevent.LifecycleActionRequest, reqPayload), ID: 1})
 	if resp.EventType == shmevent.EventError {
 		t.Fatalf("permit_request rejected: %s", resp.Value)
 	}
 
 	confirmPayload := shmevent.EncodePermitConfirmPayload(shmevent.KindBootstrapNode, targetPeerID)
-	resp = call(voter, shmevent.Msg{EventType: shmevent.EventPermitConfirm, Value: confirmPayload, ID: 2})
+	resp = call(voter, shmevent.Msg{EventType: shmevent.EventLifecycleWrite, Value: shmevent.EncodeLifecycleWritePayload(shmevent.KindBootstrapNode, shmevent.LifecycleActionConfirm, confirmPayload), ID: 2})
 	if resp.EventType == shmevent.EventError {
 		t.Fatalf("voter permit_confirm rejected: %s", resp.Value)
 	}
@@ -275,7 +275,7 @@ func TestPermitRevokeWorkflow(t *testing.T) {
 	// A learner (nonvoter) revoking must be rejected, for the same
 	// voter-only reason confirm is, and must not touch the confirmed
 	// record.
-	resp = call(learner, shmevent.Msg{EventType: shmevent.EventPermitRevoke, Value: revokePayload, ID: 4})
+	resp = call(learner, shmevent.Msg{EventType: shmevent.EventLifecycleWrite, Value: shmevent.EncodeLifecycleWritePayload(shmevent.KindBootstrapNode, shmevent.LifecycleActionRevoke, revokePayload), ID: 4})
 	if resp.EventType != shmevent.EventError {
 		t.Fatalf("learner permit_revoke unexpectedly succeeded")
 	}
@@ -289,7 +289,7 @@ func TestPermitRevokeWorkflow(t *testing.T) {
 
 	// A real voter revoking must succeed and actually delete the
 	// confirmed record.
-	resp = call(voter, shmevent.Msg{EventType: shmevent.EventPermitRevoke, Value: revokePayload, ID: 6})
+	resp = call(voter, shmevent.Msg{EventType: shmevent.EventLifecycleWrite, Value: shmevent.EncodeLifecycleWritePayload(shmevent.KindBootstrapNode, shmevent.LifecycleActionRevoke, revokePayload), ID: 6})
 	if resp.EventType == shmevent.EventError {
 		t.Fatalf("voter permit_revoke rejected: %s", resp.Value)
 	}

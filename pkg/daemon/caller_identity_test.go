@@ -219,8 +219,8 @@ func TestRemoteGateUnconditional(t *testing.T) {
 		t.Fatalf("EncodePeerGroupPayload: %v", err)
 	}
 	groupBuf, err := shmevent.Encode(shmevent.Msg{
-		EventType: shmevent.EventPeerGroupPut,
-		Value:     groupPayload,
+		EventType: shmevent.EventCatalogPut,
+		Value:     shmevent.EncodeCatalogPayload(shmevent.KindPeerGroup, groupPayload),
 		ID:        2,
 	}, leader.ed25519Priv)
 	if err != nil {

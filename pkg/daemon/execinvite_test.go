@@ -53,9 +53,8 @@ func startExecInviteNode(t *testing.T, tmpDir, name string, cfg Config) *Node {
 // setUpExecInviteACL creates commandID on leader (executing at leader's own
 // peer id) and links it, via a fresh group, to redeemerPeerID -- the
 // Group/Command/GroupCommand/PeerGroup wiring isPermittedForCommand
-// requires -- using the same ordinary EventGroupPut/EventCommandPut/
-// EventGroupCommandPut/EventPeerGroupPut calls `mage creategroup` et al.
-// drive, not a shortcut.
+// requires -- using the same ordinary EventCatalogPut calls `mage
+// creategroup` et al. drive, not a shortcut.
 func setUpExecInviteACL(t *testing.T, ctx context.Context, leader *Node, commandID, groupID, redeemerPeerID string) {
 	t.Helper()
 
@@ -63,7 +62,7 @@ func setUpExecInviteACL(t *testing.T, ctx context.Context, leader *Node, command
 	if err != nil {
 		t.Fatalf("EncodeGroupPutPayload: %v", err)
 	}
-	if resp := execInviteCall(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventGroupPut, Value: groupPayload, ID: 101}); resp.EventType == shmevent.EventError {
+	if resp := execInviteCall(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: shmevent.EncodeCatalogPayload(shmevent.KindGroup, groupPayload), ID: 101}); resp.EventType == shmevent.EventError {
 		t.Fatalf("group_put rejected: %s", resp.Value)
 	}
 
@@ -71,7 +70,7 @@ func setUpExecInviteACL(t *testing.T, ctx context.Context, leader *Node, command
 	if err != nil {
 		t.Fatalf("EncodeCommandPutPayload: %v", err)
 	}
-	if resp := execInviteCall(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventCommandPut, Value: commandPayload, ID: 102}); resp.EventType == shmevent.EventError {
+	if resp := execInviteCall(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: shmevent.EncodeCatalogPayload(shmevent.KindCommand, commandPayload), ID: 102}); resp.EventType == shmevent.EventError {
 		t.Fatalf("command_put rejected: %s", resp.Value)
 	}
 
@@ -79,7 +78,7 @@ func setUpExecInviteACL(t *testing.T, ctx context.Context, leader *Node, command
 	if err != nil {
 		t.Fatalf("EncodeGroupCommandPayload: %v", err)
 	}
-	if resp := execInviteCall(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventGroupCommandPut, Value: groupCommandPayload, ID: 103}); resp.EventType == shmevent.EventError {
+	if resp := execInviteCall(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: shmevent.EncodeCatalogPayload(shmevent.KindGroupCommand, groupCommandPayload), ID: 103}); resp.EventType == shmevent.EventError {
 		t.Fatalf("group_command_put rejected: %s", resp.Value)
 	}
 
@@ -87,7 +86,7 @@ func setUpExecInviteACL(t *testing.T, ctx context.Context, leader *Node, command
 	if err != nil {
 		t.Fatalf("EncodePeerGroupPayload: %v", err)
 	}
-	if resp := execInviteCall(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventPeerGroupPut, Value: peerGroupPayload, ID: 104}); resp.EventType == shmevent.EventError {
+	if resp := execInviteCall(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: shmevent.EncodeCatalogPayload(shmevent.KindPeerGroup, peerGroupPayload), ID: 104}); resp.EventType == shmevent.EventError {
 		t.Fatalf("peer_group_put rejected: %s", resp.Value)
 	}
 }
@@ -133,7 +132,7 @@ func TestExecInviteRedeemByPermittedPeerSucceedsAndIsOneTime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EncodeExecInviteCreatePayload: %v", err)
 	}
-	if resp := execInviteCall(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventExecInviteCreate, Value: createPayload, ID: 1}); resp.EventType == shmevent.EventError {
+	if resp := execInviteCall(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventLifecycleWrite, Value: shmevent.EncodeLifecycleWritePayload(shmevent.KindExecInvite, shmevent.LifecycleActionRequest, createPayload), ID: 1}); resp.EventType == shmevent.EventError {
 		t.Fatalf("exec_invite_create rejected: %s", resp.Value)
 	}
 
@@ -221,7 +220,7 @@ func TestExecInviteRedeemByUnpermittedPeerFailsAndKeepsInvite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EncodeExecInviteCreatePayload: %v", err)
 	}
-	if resp := execInviteCall(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventExecInviteCreate, Value: createPayload, ID: 1}); resp.EventType == shmevent.EventError {
+	if resp := execInviteCall(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventLifecycleWrite, Value: shmevent.EncodeLifecycleWritePayload(shmevent.KindExecInvite, shmevent.LifecycleActionRequest, createPayload), ID: 1}); resp.EventType == shmevent.EventError {
 		t.Fatalf("exec_invite_create rejected: %s", resp.Value)
 	}
 

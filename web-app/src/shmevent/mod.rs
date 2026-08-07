@@ -45,12 +45,6 @@ pub const EVENT_ADD: u8 = 7;
 /// `pkg/shmevent.EventSet`'s doc comment. `Value` is
 /// [`encode_set_payload`]`(key, value)`.
 pub const EVENT_SET: u8 = 8;
-/// Lodges a pending permit record (`KindPermitPeer`/`KindBootstrapNode`).
-/// `Value` is [`system::encode_permit_request_payload`].
-pub const EVENT_PERMIT_REQUEST: u8 = 9;
-/// Promotes a pending permit record to confirmed -- raft-voter-only
-/// server-side. `Value` is [`system::encode_permit_confirm_payload`].
-pub const EVENT_PERMIT_CONFIRM: u8 = 10;
 /// Direct, unreplicated peer-to-peer notification -- see
 /// `pkg/shmevent.EventExecute`'s doc comment. Needs a prior
 /// `EVENT_SET_KEY` pair registering sender/receiver peer ids under
@@ -60,10 +54,6 @@ pub const EVENT_EXECUTE: u8 = 11;
 /// oldest first -- empty `Value` if none queued, otherwise
 /// [`encode_execute_notification`].
 pub const EVENT_POLL_EXECUTE: u8 = 12;
-/// Demotes a confirmed permit record straight back out of existence --
-/// raft-voter-only server-side. Same payload shape as
-/// `EVENT_PERMIT_CONFIRM`.
-pub const EVENT_PERMIT_REVOKE: u8 = 13;
 /// Answers one bounded key-range scan page against the local store --
 /// `Value` is [`encode_list_range_query`]`(start, end)`; the response
 /// reuses the same framing for `(key, value)`, empty if exhausted. See
@@ -92,33 +82,6 @@ pub const EVENT_LOG_PERMIT_REVOKE: u8 = 18;
 /// byte 19 should decode to a real name, not "unknown") only; no web
 /// client capability is built on it, and none ever legitimately can be.
 pub const EVENT_LEAVE: u8 = 19;
-/// Create-or-update a Group ACL catalog record (`Value` is
-/// [`catalog_keys::encode_group_put_payload`]) -- any current raft voter
-/// may Put unilaterally, no second-voter confirmation.
-pub const EVENT_GROUP_PUT: u8 = 20;
-/// Deletes a Group record (`Value` is the raw id bytes) -- cascades
-/// server-side to every referencing GroupCommand/PeerGroup record in the
-/// same raft Apply.
-pub const EVENT_GROUP_DELETE: u8 = 21;
-/// Create-or-update a Command ACL catalog record (`Value` is
-/// [`catalog_keys::encode_command_put_payload`]).
-pub const EVENT_COMMAND_PUT: u8 = 22;
-/// Deletes a Command record (`Value` is the raw id bytes) -- cascades
-/// server-side like `EVENT_GROUP_DELETE`.
-pub const EVENT_COMMAND_DELETE: u8 = 23;
-/// Links a Command to a Group (`Value` is
-/// [`catalog_keys::encode_group_command_payload`]) -- no stored value,
-/// both fields of the relation already live in the key.
-pub const EVENT_GROUP_COMMAND_PUT: u8 = 24;
-/// Unlinks a Command from a Group. Same payload shape as
-/// `EVENT_GROUP_COMMAND_PUT`.
-pub const EVENT_GROUP_COMMAND_DELETE: u8 = 25;
-/// Adds a peer to a Group (`Value` is
-/// [`catalog_keys::encode_peer_group_payload`]).
-pub const EVENT_PEER_GROUP_PUT: u8 = 26;
-/// Removes a peer from a Group. Same payload shape as
-/// `EVENT_PEER_GROUP_PUT`.
-pub const EVENT_PEER_GROUP_DELETE: u8 = 27;
 /// Atomically applies an ordered op list -- see `pkg/shmevent.EventTxn`.
 /// Not sent by this client, but defined so `value_size_for` can name it:
 /// its width has to match Go's whether or not this client ever uses it.
@@ -134,32 +97,23 @@ pub const EVENT_TXN: u8 = 44;
 /// convention. Response `Value` is a hex instance id, mirroring
 /// `dialAndSubmitPublicAccess`'s return.
 pub const EVENT_PUBLIC_ACCESS: u8 = 47;
-/// Creates/updates a device's station description -- see
-/// `pkg/shmevent.EventStationPut`. Defined here for the same reason as
-/// `EVENT_TXN`.
-pub const EVENT_STATION_PUT: u8 = 51;
-/// Removes a station description -- `pkg/shmevent.EventStationDelete`.
-pub const EVENT_STATION_DELETE: u8 = 52;
-/// Generic envelope covering `EVENT_GROUP_PUT`/`EVENT_COMMAND_PUT`/
-/// `EVENT_GROUP_COMMAND_PUT`/`EVENT_PEER_GROUP_PUT`/`EVENT_STATION_PUT` --
-/// see `pkg/shmevent.EventCatalogPut`'s doc comment. Defined here for wire
-/// -table completeness only, same reasoning as `EVENT_TXN`/
-/// `EVENT_GROUP_PUT`: this client is a non-voting learner and none of the
-/// events it generalizes were ever reachable from one.
+/// Generic envelope for the group-based ACL catalog's single-step CRUD
+/// (Group/Command/GroupCommand/PeerGroup/Station Put+Delete) -- see
+/// `pkg/shmevent.EventCatalogPut`'s doc comment. Defined here for wire
+/// -table completeness only, same reasoning as `EVENT_TXN`: this client is
+/// a non-voting learner and none of the events it generalizes were ever
+/// reachable from one.
 pub const EVENT_CATALOG_PUT: u8 = 53;
 /// `EVENT_CATALOG_PUT`'s delete counterpart -- see
 /// `pkg/shmevent.EventCatalogDelete`.
 pub const EVENT_CATALOG_DELETE: u8 = 54;
-/// Generic envelope covering `EVENT_PERMIT_REQUEST`/`EVENT_PERMIT_CONFIRM`/
-/// `EVENT_PERMIT_REVOKE` and the (unported, see `shmevent::system`'s doc
-/// comment) `EVENT_JOIN_INVITE_CREATE`/`REVOKE` and
-/// `EVENT_EXEC_INVITE_CREATE`/`REVOKE` -- see
-/// `pkg/shmevent.EventLifecycleWrite`'s doc comment. `Value` is
-/// [`system::encode_lifecycle_write_payload`]; `app::request_permit` is
-/// this client's one real caller, sending a Permit-style
-/// `system::LIFECYCLE_ACTION_REQUEST`, the exact case
-/// `EVENT_PERMIT_REQUEST` was already reachable from a non-voting learner
-/// for.
+/// Generic envelope for every Permit-style Request/Confirm/Revoke and (on
+/// the Go side only, see `shmevent::system`'s doc comment) JoinInvite/
+/// ExecInvite Create/Revoke -- see `pkg/shmevent.EventLifecycleWrite`'s doc
+/// comment. `Value` is [`system::encode_lifecycle_write_payload`];
+/// `app::request_permit` is this client's one real caller, sending a
+/// Permit-style `system::LIFECYCLE_ACTION_REQUEST`, the one case this
+/// family has ever been reachable from a non-voting learner for.
 pub const EVENT_LIFECYCLE_WRITE: u8 = 55;
 /// Response-only; see `pkg/shmevent.EventError`'s doc comment for why
 /// this exists even though it isn't part of `api/shmevent.capnp`'s
@@ -193,11 +147,10 @@ pub const KV_VALUE_SIZE: usize = 4 * 1024;
 pub fn value_size_for(event: u8) -> usize {
     match event {
         EVENT_SET_KEY | EVENT_SET_FIELD | EVENT_SET | EVENT_GET_FIELD | EVENT_TXN
-        | EVENT_LOG_APPEND | EVENT_COMMAND_PUT | EVENT_STATION_PUT
-        // EVENT_CATALOG_PUT's payload can be EVENT_COMMAND_PUT/
-        // EVENT_STATION_PUT's own (see that constant's doc comment) --
-        // matches pkg/shmevent.valueSizeFor's identical EventCatalogPut
-        // case.
+        | EVENT_LOG_APPEND
+        // EVENT_CATALOG_PUT's payload can carry a Command's form spec or a
+        // Station's attrs -- matches pkg/shmevent.valueSizeFor's identical
+        // EventCatalogPut case.
         | EVENT_CATALOG_PUT => KV_VALUE_SIZE,
         _ => VALUE_SIZE,
     }
@@ -434,25 +387,14 @@ pub fn event_name(event_type: u8) -> &'static str {
         EVENT_GET_PRIVATE_KEY => "get_private_key",
         EVENT_ADD => "add",
         EVENT_SET => "set",
-        EVENT_PERMIT_REQUEST => "permit_request",
-        EVENT_PERMIT_CONFIRM => "permit_confirm",
         EVENT_EXECUTE => "execute",
         EVENT_POLL_EXECUTE => "poll_execute",
-        EVENT_PERMIT_REVOKE => "permit_revoke",
         EVENT_LIST_RANGE => "list_range",
         EVENT_LOG_APPEND => "log_append",
         EVENT_LOG_PERMIT_REQUEST => "log_permit_request",
         EVENT_LOG_PERMIT_CONFIRM => "log_permit_confirm",
         EVENT_LOG_PERMIT_REVOKE => "log_permit_revoke",
         EVENT_LEAVE => "leave",
-        EVENT_GROUP_PUT => "group_put",
-        EVENT_GROUP_DELETE => "group_delete",
-        EVENT_COMMAND_PUT => "command_put",
-        EVENT_COMMAND_DELETE => "command_delete",
-        EVENT_GROUP_COMMAND_PUT => "group_command_put",
-        EVENT_GROUP_COMMAND_DELETE => "group_command_delete",
-        EVENT_PEER_GROUP_PUT => "peer_group_put",
-        EVENT_PEER_GROUP_DELETE => "peer_group_delete",
         EVENT_PUBLIC_ACCESS => "public_access",
         EVENT_CATALOG_PUT => "catalog_put",
         EVENT_CATALOG_DELETE => "catalog_delete",
@@ -473,25 +415,14 @@ pub fn event_from_name(name: &str) -> Option<u8> {
         "get_private_key" => Some(EVENT_GET_PRIVATE_KEY),
         "add" => Some(EVENT_ADD),
         "set" => Some(EVENT_SET),
-        "permit_request" => Some(EVENT_PERMIT_REQUEST),
-        "permit_confirm" => Some(EVENT_PERMIT_CONFIRM),
         "execute" => Some(EVENT_EXECUTE),
         "poll_execute" => Some(EVENT_POLL_EXECUTE),
-        "permit_revoke" => Some(EVENT_PERMIT_REVOKE),
         "list_range" => Some(EVENT_LIST_RANGE),
         "log_append" => Some(EVENT_LOG_APPEND),
         "log_permit_request" => Some(EVENT_LOG_PERMIT_REQUEST),
         "log_permit_confirm" => Some(EVENT_LOG_PERMIT_CONFIRM),
         "log_permit_revoke" => Some(EVENT_LOG_PERMIT_REVOKE),
         "leave" => Some(EVENT_LEAVE),
-        "group_put" => Some(EVENT_GROUP_PUT),
-        "group_delete" => Some(EVENT_GROUP_DELETE),
-        "command_put" => Some(EVENT_COMMAND_PUT),
-        "command_delete" => Some(EVENT_COMMAND_DELETE),
-        "group_command_put" => Some(EVENT_GROUP_COMMAND_PUT),
-        "group_command_delete" => Some(EVENT_GROUP_COMMAND_DELETE),
-        "peer_group_put" => Some(EVENT_PEER_GROUP_PUT),
-        "peer_group_delete" => Some(EVENT_PEER_GROUP_DELETE),
         "public_access" => Some(EVENT_PUBLIC_ACCESS),
         "catalog_put" => Some(EVENT_CATALOG_PUT),
         "catalog_delete" => Some(EVENT_CATALOG_DELETE),
@@ -810,21 +741,19 @@ mod tests {
             };
             encode(&m, Some(&signing_key)).is_err()
         };
-        assert!(too_long(EVENT_PERMIT_REQUEST, VALUE_SIZE + 1));
+        assert!(too_long(EVENT_LIFECYCLE_WRITE, VALUE_SIZE + 1));
         assert!(!too_long(EVENT_SET_KEY, VALUE_SIZE + 1));
         assert!(!too_long(EVENT_SET_KEY, KV_VALUE_SIZE));
         assert!(too_long(EVENT_SET_KEY, KV_VALUE_SIZE + 1));
 
-        // EVENT_CATALOG_PUT's payload can be EVENT_COMMAND_PUT/
-        // EVENT_STATION_PUT's own -- it must inherit their wider
-        // KV_VALUE_SIZE ceiling, not fall back to plain VALUE_SIZE. Pins
-        // the same regression pkg/shmevent's identical test does on the Go
-        // side.
+        // EVENT_CATALOG_PUT's payload can carry a Command's form spec or a
+        // Station's attrs -- it must inherit their wider KV_VALUE_SIZE
+        // ceiling, not fall back to plain VALUE_SIZE. Pins the same
+        // regression pkg/shmevent's identical test does on the Go side.
         assert!(!too_long(EVENT_CATALOG_PUT, VALUE_SIZE + 1));
         assert!(!too_long(EVENT_CATALOG_PUT, KV_VALUE_SIZE));
         assert!(too_long(EVENT_CATALOG_PUT, KV_VALUE_SIZE + 1));
         assert!(too_long(EVENT_CATALOG_DELETE, VALUE_SIZE + 1));
-        assert!(too_long(EVENT_LIFECYCLE_WRITE, VALUE_SIZE + 1));
     }
 
     #[test]
@@ -838,25 +767,14 @@ mod tests {
             EVENT_GET_PRIVATE_KEY,
             EVENT_ADD,
             EVENT_SET,
-            EVENT_PERMIT_REQUEST,
-            EVENT_PERMIT_CONFIRM,
             EVENT_EXECUTE,
             EVENT_POLL_EXECUTE,
-            EVENT_PERMIT_REVOKE,
             EVENT_LIST_RANGE,
             EVENT_LOG_APPEND,
             EVENT_LOG_PERMIT_REQUEST,
             EVENT_LOG_PERMIT_CONFIRM,
             EVENT_LOG_PERMIT_REVOKE,
             EVENT_LEAVE,
-            EVENT_GROUP_PUT,
-            EVENT_GROUP_DELETE,
-            EVENT_COMMAND_PUT,
-            EVENT_COMMAND_DELETE,
-            EVENT_GROUP_COMMAND_PUT,
-            EVENT_GROUP_COMMAND_DELETE,
-            EVENT_PEER_GROUP_PUT,
-            EVENT_PEER_GROUP_DELETE,
             EVENT_PUBLIC_ACCESS,
             EVENT_CATALOG_PUT,
             EVENT_CATALOG_DELETE,
@@ -989,8 +907,7 @@ mod tests {
             EVENT_GET_FIELD,
             EVENT_TXN,
             EVENT_LOG_APPEND,
-            EVENT_COMMAND_PUT,
-            EVENT_STATION_PUT,
+            EVENT_CATALOG_PUT,
             EVENT_ADD,
             EVENT_PUBLIC_ACCESS,
         ] {
@@ -1024,8 +941,7 @@ mod tests {
             EVENT_GET_FIELD,
             EVENT_TXN,
             EVENT_LOG_APPEND,
-            EVENT_COMMAND_PUT,
-            EVENT_STATION_PUT,
+            EVENT_CATALOG_PUT,
         ] {
             for len in [0, 1, 200, VALUE_SIZE] {
                 assert_eq!(canonical_width(event, len), VALUE_SIZE, "event {event}, len {len}");

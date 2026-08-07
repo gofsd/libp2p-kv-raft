@@ -181,11 +181,12 @@ func EnsureBootstrap(repoRoot, path string, f *e2edata.File) (multiaddr, webTran
 // harmless, and this also naturally covers a node identity that itself
 // got reprovisioned (new peer id) against an *existing* bootstrap.
 func GrantRelayAccess(bootstrapPeerID, targetPeerID string) error {
-	payload, err := shmevent.EncodePeerGroupPayload([]byte(targetPeerID), []byte(shmevent.ReservedGroupRelay))
+	inner, err := shmevent.EncodePeerGroupPayload([]byte(targetPeerID), []byte(shmevent.ReservedGroupRelay))
 	if err != nil {
 		return fmt.Errorf("e2erun: encode peer-group payload: %w", err)
 	}
-	status, errMsg := sendEventRemote(bootstrapPeerID, e2edata.NewEvent(shmevent.EventPeerGroupPut, 0, 0, payload, 0))
+	payload := shmevent.EncodeCatalogPayload(shmevent.KindPeerGroup, inner)
+	status, errMsg := sendEventRemote(bootstrapPeerID, e2edata.NewEvent(shmevent.EventCatalogPut, 0, 0, payload, 0))
 	if status != e2edata.StatusPass {
 		return fmt.Errorf("e2erun: grant %s relay access: %s", targetPeerID, errMsg)
 	}

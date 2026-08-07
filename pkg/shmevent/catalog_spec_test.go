@@ -242,14 +242,11 @@ func TestValueSizeTiers(t *testing.T) {
 		{EventGetField, KVValueSize, "get_field"},
 		{EventTxn, KVValueSize, "txn"},
 		{EventLogAppend, KVValueSize, "log_append"},
-		{EventCommandPut, KVValueSize, "command_put"},
-		{EventStationPut, KVValueSize, "station_put"},
+		{EventCatalogPut, KVValueSize, "catalog_put"},
 		{EventChannelSend, ChannelValueSize, "channel_send"},
 		{EventChannelPoll, ChannelValueSize, "channel_poll"},
-		{EventPermitRequest, ValueSize, "permit_request"},
-		{EventGroupPut, ValueSize, "group_put"},
-		{EventCommandDelete, ValueSize, "command_delete"},
-		{EventStationDelete, ValueSize, "station_delete"},
+		{EventLifecycleWrite, ValueSize, "lifecycle_write"},
+		{EventCatalogDelete, ValueSize, "catalog_delete"},
 		{EventGetVersion, ValueSize, "get_version"},
 	} {
 		if got := valueSizeFor(tc.event); got != tc.want {
@@ -271,7 +268,7 @@ func TestValueSizeTiers(t *testing.T) {
 // deployed relay silently ignoring requests rather than as any kind of
 // version error.
 func TestCanonicalWidthKeepsHistoricalWidthForSmallValues(t *testing.T) {
-	for _, event := range []uint8{EventSetKey, EventSetField, EventSet, EventGetField, EventTxn, EventLogAppend, EventCommandPut, EventStationPut} {
+	for _, event := range []uint8{EventSetKey, EventSetField, EventSet, EventGetField, EventTxn, EventLogAppend, EventCatalogPut} {
 		for _, valueLen := range []int{0, 1, 200, ValueSize} {
 			if got := canonicalWidth(event, valueLen); got != ValueSize {
 				t.Errorf("canonicalWidth(%s, %d) = %d, want %d -- a value that fits the historical width must still be padded to it, or every peer on an older build rejects the message as forged",

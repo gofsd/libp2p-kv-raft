@@ -98,7 +98,7 @@ func TestJoinInviteKindNameRoundTrip(t *testing.T) {
 }
 
 func TestJoinInviteEventNameRoundTrip(t *testing.T) {
-	for _, e := range []uint8{EventJoinInviteCreate, EventJoinInviteRevoke} {
+	for _, e := range []uint8{EventLifecycleWrite} {
 		name := EventName(e)
 		got, ok := EventFromName(name)
 		if !ok || got != e {

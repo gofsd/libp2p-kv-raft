@@ -125,7 +125,7 @@ func TestGetPublicPrivateKeyEventsSignWithNilKey(t *testing.T) {
 }
 
 func TestEventNameRoundTrip(t *testing.T) {
-	for _, e := range []uint8{EventSetKey, EventSetField, EventGetKey, EventGetField, EventGetPublicKey, EventGetPrivateKey, EventAdd, EventSet, EventPermitRequest, EventPermitConfirm, EventExecute, EventPollExecute, EventPermitRevoke, EventListRange, EventLogAppend, EventCatalogPut, EventCatalogDelete, EventLifecycleWrite, EventError} {
+	for _, e := range []uint8{EventSetKey, EventSetField, EventGetKey, EventGetField, EventGetPublicKey, EventGetPrivateKey, EventAdd, EventSet, EventExecute, EventPollExecute, EventListRange, EventLogAppend, EventCatalogPut, EventCatalogDelete, EventLifecycleWrite, EventError} {
 		name := EventName(e)
 		got, ok := EventFromName(name)
 		if !ok {
@@ -251,14 +251,13 @@ func TestValueTooLongRejected(t *testing.T) {
 		event uint8
 		limit int
 	}{
-		{"an ordinary event keeps ValueSize", EventPermitRequest, ValueSize},
+		{"an ordinary event keeps ValueSize", EventLifecycleWrite, ValueSize},
 		{"a plain-KV data event gets KVValueSize", EventSetKey, KVValueSize},
 		{"a set gets KVValueSize", EventSet, KVValueSize},
 		{"a txn gets KVValueSize", EventTxn, KVValueSize},
 		{"a channel chunk gets ChannelValueSize", EventChannelSend, ChannelValueSize},
 		// EventCatalogPut's payload can be a Command-with-spec or a
-		// Station's attrs -- both EventCommandPut/EventStationPut's own
-		// KVValueSize tier -- routed through one extra kind-byte wrapper.
+		// Station's attrs, routed through one extra kind-byte wrapper.
 		// Pinned here because it's exactly the kind of regression that's
 		// silent until a real caller's payload is big enough to hit it:
 		// EventCatalogPut defaulting to plain ValueSize would still encode

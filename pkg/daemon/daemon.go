@@ -2207,12 +2207,10 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		}
 	}
 	if caller.remotePeer != "" &&
-		m.EventType != shmevent.EventPermitRequest && m.EventType != shmevent.EventPermitConfirm &&
-		// EventLifecycleWrite carries EventPermitRequest/Confirm's own
-		// exemption too, when its payload actually decodes to one of
-		// those two actions -- see isExemptPermitLifecycleWrite's own
-		// doc comment on why this can't just be a blanket EventType
-		// exemption the way the other two are.
+		// EventLifecycleWrite's Permit-style Request/Confirm actions must
+		// stay reachable by a remote caller with no standing at all -- a
+		// not-yet-permitted peer has no elevated standing to earn
+		// otherwise -- see isExemptPermitLifecycleWrite's own doc comment.
 		(m.EventType != shmevent.EventLifecycleWrite || !isExemptPermitLifecycleWrite(m.Value)) &&
 		// EventSetKey/EventGetKey never touch the store or any privileged
 		// state -- just a per-connection numeric-id relay of a value the
@@ -2289,69 +2287,6 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		}
 		return shmevent.Msg{EventType: shmevent.EventTxn, ID: m.ID}
 
-	case shmevent.EventPermitRequest:
-		kind, peerID, metadata, err := shmevent.DecodePermitRequestPayload(m.Value)
-		if err != nil {
-			return errorMsg(m.ID, err)
-		}
-		key := shmevent.SystemKey(kind, shmevent.StatusPending, peerID)
-		if err := n.handleSetForward(ctx, key, metadata, true); err != nil {
-			return errorMsg(m.ID, err)
-		}
-		return shmevent.Msg{EventType: shmevent.EventPermitRequest, ID: m.ID}
-
-	case shmevent.EventPermitConfirm:
-		// The only place that actually enforces "only a raft voter may
-		// confirm" (see shmevent.EventPermitConfirm's doc comment): check
-		// the *original* caller's own identity here, once, before doing
-		// anything else -- not handleForwardConfirmStream's check, which
-		// only ever authenticates whichever node relayed the request one
-		// hop closer to the leader (using *its own* libp2p identity), not
-		// who actually asked. A remote caller with no standing at all
-		// could otherwise dial any legitimate voter follower and have it
-		// unwittingly relay the confirm on its behalf, or dial the leader
-		// directly (handleConfirmForward's isLeader branch used to apply
-		// with no identity check at all -- that reasoning only held when
-		// caller and node were the same actor, true for a local pkg/ipc
-		// operator but not for a remote caller.Conn()-authenticated key).
-		if caller.remotePeer != "" {
-			rf := n.getRaft()
-			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
-				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
-			}
-		}
-		kind, peerID, err := shmevent.DecodePermitConfirmPayload(m.Value)
-		if err != nil {
-			return errorMsg(m.ID, err)
-		}
-		pendingKey := shmevent.SystemKey(kind, shmevent.StatusPending, peerID)
-		confirmedKey := shmevent.SystemKey(kind, shmevent.StatusConfirmed, peerID)
-		if err := n.handleConfirmForward(ctx, kvfsm.OpConfirm, pendingKey, confirmedKey, true); err != nil {
-			return errorMsg(m.ID, err)
-		}
-		return shmevent.Msg{EventType: shmevent.EventPermitConfirm, ID: m.ID}
-
-	case shmevent.EventPermitRevoke:
-		// Same "only a raft voter may act" enforcement as
-		// EventPermitConfirm above, for the identical reason (see that
-		// case's comment) -- checked once here against the original
-		// caller's own identity, not just relied on downstream.
-		if caller.remotePeer != "" {
-			rf := n.getRaft()
-			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
-				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
-			}
-		}
-		kind, peerID, err := shmevent.DecodePermitConfirmPayload(m.Value)
-		if err != nil {
-			return errorMsg(m.ID, err)
-		}
-		confirmedKey := shmevent.SystemKey(kind, shmevent.StatusConfirmed, peerID)
-		if err := n.handleConfirmForward(ctx, kvfsm.OpDel, confirmedKey, nil, true); err != nil {
-			return errorMsg(m.ID, err)
-		}
-		return shmevent.Msg{EventType: shmevent.EventPermitRevoke, ID: m.ID}
-
 	case shmevent.EventLeave:
 		if err := n.leaveCluster(ctx); err != nil {
 			return errorMsg(m.ID, err)
@@ -2376,237 +2311,12 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		}
 		return shmevent.Msg{EventType: shmevent.EventKick, ID: m.ID}
 
-	// EventGroupPut/Delete, EventCommandPut/Delete,
-	// EventGroupCommandPut/Delete, and EventPeerGroupPut/Delete implement
-	// the group-based ACL catalog's single-step CRUD (see
-	// shmevent.KindGroup's doc comment): each does the identical inline
-	// "only a raft voter may act" early-reject EventPermitConfirm/
-	// EventPermitRevoke above already do for a directly-reached remote
-	// caller (correctness for every other path -- local, or remote hitting
-	// a non-leader node -- still comes from handleConfirmForward's
-	// forward-to-leader hop, whose handleForwardConfirmStream re-checks
-	// voter status against the authenticated forwarding identity
-	// regardless), then decodes its payload, builds the record's key, and
-	// applies via handleConfirmForward -- kvfsm.OpSet for Put (a direct
-	// overwrite: create and update are the same operation, no separate
-	// revision history the way pkg/logrecord keeps), kvfsm.OpDel for a
-	// relation Delete, kvfsm.OpCascadeDelete for a Group/Command Delete
-	// (which also removes every GroupCommand/PeerGroup record referencing
-	// the deleted id -- see kvfsm.Apply's OpCascadeDelete case).
-	case shmevent.EventGroupPut:
-		if caller.remotePeer != "" {
-			rf := n.getRaft()
-			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
-				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
-			}
-		}
-		id, name, public, err := shmevent.DecodeGroupPutPayload(m.Value)
-		if err != nil {
-			return errorMsg(m.ID, err)
-		}
-		if shmevent.IsReservedGroupID(id) || isPeerIdentityGroupID(id) {
-			return errorMsg(m.ID, fmt.Errorf("group id %q is reserved and managed automatically", id))
-		}
-		key := shmevent.GroupKey([]byte(id))
-		if err := n.handleConfirmForward(ctx, kvfsm.OpSet, key, shmevent.EncodeGroupPayload(name, public), true); err != nil {
-			return errorMsg(m.ID, err)
-		}
-		return shmevent.Msg{EventType: shmevent.EventGroupPut, ID: m.ID}
-
-	case shmevent.EventGroupDelete:
-		if caller.remotePeer != "" {
-			rf := n.getRaft()
-			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
-				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
-			}
-		}
-		if shmevent.IsReservedGroupID(string(m.Value)) || isPeerIdentityGroupID(string(m.Value)) {
-			return errorMsg(m.ID, fmt.Errorf("group id %q is reserved and cannot be deleted", m.Value))
-		}
-		key := shmevent.GroupKey(m.Value)
-		if err := n.handleConfirmForward(ctx, kvfsm.OpCascadeDelete, key, nil, true); err != nil {
-			return errorMsg(m.ID, err)
-		}
-		return shmevent.Msg{EventType: shmevent.EventGroupDelete, ID: m.ID}
-
-	case shmevent.EventCommandPut:
-		if caller.remotePeer != "" {
-			rf := n.getRaft()
-			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
-				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
-			}
-		}
-		id, name, peerID, spec, err := shmevent.DecodeCommandPutPayloadFull(m.Value)
-		if err != nil {
-			return errorMsg(m.ID, err)
-		}
-		key := shmevent.CommandKey([]byte(id))
-		// "Carried an empty spec" and "didn't mention the spec" must stay
-		// distinguishable all the way to the FSM, which reads the absence of
-		// the field as "leave the stored spec alone" (see
-		// kvfsm.preserveCommandSpec). Re-encoding both through
-		// EncodeCommandPayloadWithSpec would collapse them, since it treats
-		// an empty spec as no spec -- and a caller clearing a spec would
-		// silently keep it.
-		var value []byte
-		if len(spec) == 0 && shmevent.CommandPutPayloadHasSpec(m.Value) {
-			value, err = shmevent.EncodeCommandPayloadClearingSpec(name, peerID)
-		} else {
-			value, err = shmevent.EncodeCommandPayloadWithSpec(name, peerID, spec)
-		}
-		if err != nil {
-			return errorMsg(m.ID, err)
-		}
-		if err := n.handleConfirmForward(ctx, kvfsm.OpSet, key, value, true); err != nil {
-			return errorMsg(m.ID, err)
-		}
-		return shmevent.Msg{EventType: shmevent.EventCommandPut, ID: m.ID}
-
-	case shmevent.EventCommandDelete:
-		if caller.remotePeer != "" {
-			rf := n.getRaft()
-			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
-				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
-			}
-		}
-		key := shmevent.CommandKey(m.Value)
-		if err := n.handleConfirmForward(ctx, kvfsm.OpCascadeDelete, key, nil, true); err != nil {
-			return errorMsg(m.ID, err)
-		}
-		return shmevent.Msg{EventType: shmevent.EventCommandDelete, ID: m.ID}
-
-	case shmevent.EventStationPut:
-		if caller.remotePeer != "" {
-			rf := n.getRaft()
-			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
-				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
-			}
-		}
-		peerID, name, attrs, err := shmevent.DecodeStationPutPayload(m.Value)
-		if err != nil {
-			return errorMsg(m.ID, err)
-		}
-		if len(peerID) == 0 {
-			return errorMsg(m.ID, fmt.Errorf("station peer id must not be empty"))
-		}
-		value, err := shmevent.EncodeStationPayload(name, attrs)
-		if err != nil {
-			return errorMsg(m.ID, err)
-		}
-		if err := n.handleConfirmForward(ctx, kvfsm.OpSet, shmevent.StationKey(peerID), value, true); err != nil {
-			return errorMsg(m.ID, err)
-		}
-		return shmevent.Msg{EventType: shmevent.EventStationPut, ID: m.ID}
-
-	case shmevent.EventStationDelete:
-		if caller.remotePeer != "" {
-			rf := n.getRaft()
-			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
-				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
-			}
-		}
-		// Plain OpDel, not OpCascadeDelete: nothing references a station
-		// record. A station is a description hanging off a peer id that
-		// every other record already names directly, so deleting one can
-		// never orphan a relation the way deleting a Group or Command can.
-		if err := n.handleConfirmForward(ctx, kvfsm.OpDel, shmevent.StationKey(m.Value), nil, true); err != nil {
-			return errorMsg(m.ID, err)
-		}
-		return shmevent.Msg{EventType: shmevent.EventStationDelete, ID: m.ID}
-
-	case shmevent.EventGroupCommandPut:
-		if caller.remotePeer != "" {
-			rf := n.getRaft()
-			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
-				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
-			}
-		}
-		commandID, groupID, err := shmevent.DecodeGroupCommandPayload(m.Value)
-		if err != nil {
-			return errorMsg(m.ID, err)
-		}
-		key, err := shmevent.GroupCommandKey(commandID, groupID)
-		if err != nil {
-			return errorMsg(m.ID, err)
-		}
-		if err := n.handleConfirmForward(ctx, kvfsm.OpSet, key, nil, true); err != nil {
-			return errorMsg(m.ID, err)
-		}
-		return shmevent.Msg{EventType: shmevent.EventGroupCommandPut, ID: m.ID}
-
-	case shmevent.EventGroupCommandDelete:
-		if caller.remotePeer != "" {
-			rf := n.getRaft()
-			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
-				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
-			}
-		}
-		commandID, groupID, err := shmevent.DecodeGroupCommandPayload(m.Value)
-		if err != nil {
-			return errorMsg(m.ID, err)
-		}
-		key, err := shmevent.GroupCommandKey(commandID, groupID)
-		if err != nil {
-			return errorMsg(m.ID, err)
-		}
-		if err := n.handleConfirmForward(ctx, kvfsm.OpDel, key, nil, true); err != nil {
-			return errorMsg(m.ID, err)
-		}
-		return shmevent.Msg{EventType: shmevent.EventGroupCommandDelete, ID: m.ID}
-
-	case shmevent.EventPeerGroupPut:
-		if caller.remotePeer != "" {
-			rf := n.getRaft()
-			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
-				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
-			}
-		}
-		peerID, groupID, err := shmevent.DecodePeerGroupPayload(m.Value)
-		if err != nil {
-			return errorMsg(m.ID, err)
-		}
-		if shmevent.IsAutoManagedGroupID(string(groupID)) {
-			return errorMsg(m.ID, fmt.Errorf("group %q membership is managed automatically", groupID))
-		}
-		key, err := shmevent.PeerGroupKey(peerID, groupID)
-		if err != nil {
-			return errorMsg(m.ID, err)
-		}
-		if err := n.handleConfirmForward(ctx, kvfsm.OpSet, key, nil, true); err != nil {
-			return errorMsg(m.ID, err)
-		}
-		return shmevent.Msg{EventType: shmevent.EventPeerGroupPut, ID: m.ID}
-
-	case shmevent.EventPeerGroupDelete:
-		if caller.remotePeer != "" {
-			rf := n.getRaft()
-			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
-				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
-			}
-		}
-		peerID, groupID, err := shmevent.DecodePeerGroupPayload(m.Value)
-		if err != nil {
-			return errorMsg(m.ID, err)
-		}
-		if shmevent.IsAutoManagedGroupID(string(groupID)) {
-			return errorMsg(m.ID, fmt.Errorf("group %q membership is managed automatically", groupID))
-		}
-		key, err := shmevent.PeerGroupKey(peerID, groupID)
-		if err != nil {
-			return errorMsg(m.ID, err)
-		}
-		if err := n.handleConfirmForward(ctx, kvfsm.OpDel, key, nil, true); err != nil {
-			return errorMsg(m.ID, err)
-		}
-		return shmevent.Msg{EventType: shmevent.EventPeerGroupDelete, ID: m.ID}
-
-	// EventCatalogPut/EventCatalogDelete are one generic envelope pair
-	// covering the same ten kind-specific events immediately above --
-	// added additively, alongside them, not in place of them; see
-	// EventCatalogPut's own doc comment in pkg/shmevent/event.go.
+	// EventCatalogPut/EventCatalogDelete are the one generic envelope pair
+	// for the group-based ACL catalog's single-step CRUD (see
+	// shmevent.EventCatalogPut's own doc comment in pkg/shmevent/event.go).
 	// catalogPutSpecs/catalogDeleteSpecs (pkg/daemon/catalog_envelope.go)
-	// select the right existing decode/key/validation/op by kind, so the
-	// voter guard is the only thing done once here instead of ten times.
+	// select the right decode/key/validation/op by kind, so the voter
+	// guard is done once here regardless of which kind is being written.
 	case shmevent.EventCatalogPut:
 		if caller.remotePeer != "" {
 			rf := n.getRaft()
@@ -2692,46 +2402,6 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		}
 		return shmevent.Msg{EventType: shmevent.EventLifecycleWrite, ID: m.ID}
 
-	// EventJoinInviteCreate/Revoke are direct writes gated the identical
-	// "only a raft voter may act" way EventGroupPut/Delete are (see that
-	// case's comment) -- creating one is the entire authorization step for
-	// a one-time raft join, so it needs the same live-voter check any
-	// other privileged direct write gets. Redeeming a token happens
-	// entirely inside handleJoinStream/admitOrLodgeJoin instead, not here.
-	case shmevent.EventJoinInviteCreate:
-		if caller.remotePeer != "" {
-			rf := n.getRaft()
-			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
-				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
-			}
-		}
-		token, suffrage, err := shmevent.DecodeJoinInviteCreatePayload(m.Value)
-		if err != nil {
-			return errorMsg(m.ID, err)
-		}
-		key := shmevent.JoinInviteKey(token)
-		if err := n.handleConfirmForward(ctx, kvfsm.OpSet, key, shmevent.EncodeJoinInviteRecord(suffrage), true); err != nil {
-			return errorMsg(m.ID, err)
-		}
-		return shmevent.Msg{EventType: shmevent.EventJoinInviteCreate, ID: m.ID}
-
-	case shmevent.EventJoinInviteRevoke:
-		if caller.remotePeer != "" {
-			rf := n.getRaft()
-			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
-				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
-			}
-		}
-		token, err := shmevent.DecodeJoinInviteRevokePayload(m.Value)
-		if err != nil {
-			return errorMsg(m.ID, err)
-		}
-		key := shmevent.JoinInviteKey(token)
-		if err := n.handleConfirmForward(ctx, kvfsm.OpDel, key, nil, true); err != nil {
-			return errorMsg(m.ID, err)
-		}
-		return shmevent.Msg{EventType: shmevent.EventJoinInviteRevoke, ID: m.ID}
-
 	// EventJoinRequestCreate/Cancel manage this node's own in-memory
 	// join-request ticket (see that event pair's doc comment) -- never
 	// raft/store writes, so unlike every case above there's no voter check
@@ -2754,9 +2424,9 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		n.cancelJoinRequestToken(token)
 		return shmevent.Msg{EventType: shmevent.EventJoinRequestCancel, ID: m.ID}
 
-	// EventRecruit is the reverse of EventJoinInviteCreate: this node
+	// EventRecruit is the reverse of a JoinInvite: this node
 	// (already a raft voter, enforced by mintJoinInvite's own
-	// handleConfirmForward the same way EventJoinInviteCreate's write is)
+	// handleConfirmForward the same way a JoinInvite's own write is)
 	// mints a normal join invite on its own cluster and hand-delivers it
 	// directly to the device named in the ticket -- see
 	// dialAndPushRecruit/handleRecruitStream for the actual network leg.
@@ -2770,46 +2440,6 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 			return errorMsg(m.ID, err)
 		}
 		return shmevent.Msg{EventType: shmevent.EventRecruit, ID: m.ID, Value: []byte(result)}
-
-	// EventExecInviteCreate/Revoke are direct writes gated the identical
-	// "only a raft voter may act" way EventJoinInviteCreate/Revoke are (see
-	// those cases' comments) -- creating one is the entire authorization
-	// step for what commandID+inputsJSON a token may trigger. Redeeming a
-	// token happens entirely over ExecInviteRedeemProtocolID instead (see
-	// dialAndRedeemExecInvite/handleExecInviteRedeemStream), not here.
-	case shmevent.EventExecInviteCreate:
-		if caller.remotePeer != "" {
-			rf := n.getRaft()
-			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
-				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
-			}
-		}
-		token, commandID, inputsJSON, err := shmevent.DecodeExecInviteCreatePayload(m.Value)
-		if err != nil {
-			return errorMsg(m.ID, err)
-		}
-		key := shmevent.ExecInviteKey(token)
-		if err := n.handleConfirmForward(ctx, kvfsm.OpSet, key, shmevent.EncodeExecInviteRecord(commandID, inputsJSON), true); err != nil {
-			return errorMsg(m.ID, err)
-		}
-		return shmevent.Msg{EventType: shmevent.EventExecInviteCreate, ID: m.ID}
-
-	case shmevent.EventExecInviteRevoke:
-		if caller.remotePeer != "" {
-			rf := n.getRaft()
-			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
-				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
-			}
-		}
-		token, err := shmevent.DecodeExecInviteRevokePayload(m.Value)
-		if err != nil {
-			return errorMsg(m.ID, err)
-		}
-		key := shmevent.ExecInviteKey(token)
-		if err := n.handleConfirmForward(ctx, kvfsm.OpDel, key, nil, true); err != nil {
-			return errorMsg(m.ID, err)
-		}
-		return shmevent.Msg{EventType: shmevent.EventExecInviteRevoke, ID: m.ID}
 
 	// EventExecInviteRedeem is local-only (rejected above if
 	// caller.remotePeer != ""): it tells this node's own daemon to dial

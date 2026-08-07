@@ -67,16 +67,17 @@ func remoteQuery(t *testing.T, ctx context.Context, remote lp2phost.Host, remote
 }
 
 // putGroup/putCommand/putGroupCommand apply the group-based ACL catalog's
-// Put events locally against leader (its own sole-voter standing needs no
-// remote identity check -- see EventGroupPut's case in handleShmEvent),
-// building the fixtures TestCommandLogCarveOut* below submit/read against.
+// Put, via EventCatalogPut, locally against leader (its own sole-voter
+// standing needs no remote identity check -- see EventCatalogPut's case in
+// handleShmEvent), building the fixtures TestCommandLogCarveOut* below
+// submit/read against.
 func putGroup(t *testing.T, ctx context.Context, leader *Node, id, name string, public bool) {
 	t.Helper()
 	payload, err := shmevent.EncodeGroupPutPayload(id, name, public)
 	if err != nil {
 		t.Fatalf("EncodeGroupPutPayload: %v", err)
 	}
-	resp := callLocal(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventGroupPut, Value: payload, ID: 1}, leader.ed25519Priv)
+	resp := callLocal(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: shmevent.EncodeCatalogPayload(shmevent.KindGroup, payload), ID: 1}, leader.ed25519Priv)
 	if resp.EventType == shmevent.EventError {
 		t.Fatalf("group_put %q rejected: %s", id, resp.Value)
 	}
@@ -88,7 +89,7 @@ func putCommand(t *testing.T, ctx context.Context, leader *Node, id, name, peerI
 	if err != nil {
 		t.Fatalf("EncodeCommandPutPayload: %v", err)
 	}
-	resp := callLocal(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventCommandPut, Value: payload, ID: 1}, leader.ed25519Priv)
+	resp := callLocal(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: shmevent.EncodeCatalogPayload(shmevent.KindCommand, payload), ID: 1}, leader.ed25519Priv)
 	if resp.EventType == shmevent.EventError {
 		t.Fatalf("command_put %q rejected: %s", id, resp.Value)
 	}
@@ -100,7 +101,7 @@ func putGroupCommand(t *testing.T, ctx context.Context, leader *Node, commandID,
 	if err != nil {
 		t.Fatalf("EncodeGroupCommandPayload: %v", err)
 	}
-	resp := callLocal(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventGroupCommandPut, Value: payload, ID: 1}, leader.ed25519Priv)
+	resp := callLocal(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: shmevent.EncodeCatalogPayload(shmevent.KindGroupCommand, payload), ID: 1}, leader.ed25519Priv)
 	if resp.EventType == shmevent.EventError {
 		t.Fatalf("group_command_put (%q, %q) rejected: %s", commandID, groupID, resp.Value)
 	}

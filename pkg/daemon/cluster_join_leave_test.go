@@ -115,7 +115,8 @@ func TestConfirmGatedJoinRequiresVoterConfirmation(t *testing.T) {
 	}
 
 	confirmPayload := shmevent.EncodePermitConfirmPayload(shmevent.KindClusterJoin, []byte(joiner.peerID))
-	resp := call(voter, shmevent.Msg{EventType: shmevent.EventPermitConfirm, Value: confirmPayload, ID: 1})
+	lifecyclePayload := shmevent.EncodeLifecycleWritePayload(shmevent.KindClusterJoin, shmevent.LifecycleActionConfirm, confirmPayload)
+	resp := call(voter, shmevent.Msg{EventType: shmevent.EventLifecycleWrite, Value: lifecyclePayload, ID: 1})
 	if resp.EventType == shmevent.EventError {
 		t.Fatalf("voter confirm rejected: %s", resp.Value)
 	}

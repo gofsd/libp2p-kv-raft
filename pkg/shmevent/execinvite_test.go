@@ -134,7 +134,7 @@ func TestExecInviteKindNameRoundTrip(t *testing.T) {
 }
 
 func TestExecInviteEventNameRoundTrip(t *testing.T) {
-	for _, e := range []uint8{EventExecInviteCreate, EventExecInviteRevoke, EventExecInviteRedeem} {
+	for _, e := range []uint8{EventLifecycleWrite, EventExecInviteRedeem} {
 		name := EventName(e)
 		got, ok := EventFromName(name)
 		if !ok || got != e {

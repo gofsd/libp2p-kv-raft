@@ -89,7 +89,7 @@ func TestCommandRequestSubmitFromNonVoterForwardsWithoutVoterCheck(t *testing.T)
 	if err != nil {
 		t.Fatalf("EncodeGroupPutPayload: %v", err)
 	}
-	if resp := call(leader, shmevent.Msg{EventType: shmevent.EventGroupPut, Value: groupPayload, ID: 1}); resp.EventType == shmevent.EventError {
+	if resp := call(leader, shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: shmevent.EncodeCatalogPayload(shmevent.KindGroup, groupPayload), ID: 1}); resp.EventType == shmevent.EventError {
 		t.Fatalf("group_put: %s", resp.Value)
 	}
 
@@ -97,7 +97,7 @@ func TestCommandRequestSubmitFromNonVoterForwardsWithoutVoterCheck(t *testing.T)
 	if err != nil {
 		t.Fatalf("EncodeCommandPutPayload: %v", err)
 	}
-	if resp := call(leader, shmevent.Msg{EventType: shmevent.EventCommandPut, Value: cmdPayload, ID: 2}); resp.EventType == shmevent.EventError {
+	if resp := call(leader, shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: shmevent.EncodeCatalogPayload(shmevent.KindCommand, cmdPayload), ID: 2}); resp.EventType == shmevent.EventError {
 		t.Fatalf("command_put: %s", resp.Value)
 	}
 
@@ -105,7 +105,7 @@ func TestCommandRequestSubmitFromNonVoterForwardsWithoutVoterCheck(t *testing.T)
 	if err != nil {
 		t.Fatalf("EncodeGroupCommandPayload: %v", err)
 	}
-	if resp := call(leader, shmevent.Msg{EventType: shmevent.EventGroupCommandPut, Value: gcPayload, ID: 3}); resp.EventType == shmevent.EventError {
+	if resp := call(leader, shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: shmevent.EncodeCatalogPayload(shmevent.KindGroupCommand, gcPayload), ID: 3}); resp.EventType == shmevent.EventError {
 		t.Fatalf("group_command_put: %s", resp.Value)
 	}
 
@@ -115,7 +115,7 @@ func TestCommandRequestSubmitFromNonVoterForwardsWithoutVoterCheck(t *testing.T)
 	if err != nil {
 		t.Fatalf("EncodePeerGroupPayload: %v", err)
 	}
-	if resp := call(leader, shmevent.Msg{EventType: shmevent.EventPeerGroupPut, Value: pgPayload, ID: 4}); resp.EventType == shmevent.EventError {
+	if resp := call(leader, shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: shmevent.EncodeCatalogPayload(shmevent.KindPeerGroup, pgPayload), ID: 4}); resp.EventType == shmevent.EventError {
 		t.Fatalf("peer_group_put: %s", resp.Value)
 	}
 

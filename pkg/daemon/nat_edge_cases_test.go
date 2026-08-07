@@ -447,7 +447,7 @@ func TestExecInviteRedeemOverRelay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EncodeExecInviteCreatePayload: %v", err)
 	}
-	if resp := execInviteCall(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventExecInviteCreate, Value: createPayload, ID: 10}); resp.EventType == shmevent.EventError {
+	if resp := execInviteCall(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventLifecycleWrite, Value: shmevent.EncodeLifecycleWritePayload(shmevent.KindExecInvite, shmevent.LifecycleActionRequest, createPayload), ID: 10}); resp.EventType == shmevent.EventError {
 		t.Fatalf("exec_invite_create rejected: %s", resp.Value)
 	}
 

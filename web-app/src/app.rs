@@ -340,7 +340,6 @@ async fn handle_request(
         // leader unchanged and hands the response straight back, exactly
         // the shape RemoteSession::call already is.
         shmevent::EVENT_SET
-        | shmevent::EVENT_PERMIT_REQUEST
         | shmevent::EVENT_LIFECYCLE_WRITE
         | shmevent::EVENT_LOG_APPEND
         | shmevent::EVENT_LOG_PERMIT_REQUEST

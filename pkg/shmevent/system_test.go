@@ -109,8 +109,8 @@ func TestPermitConfirmPayloadRoundTrip(t *testing.T) {
 // EventLifecycleWrite's whole point is carrying every existing
 // per-(kind,action) payload unchanged behind two extra leading bytes --
 // this pins that round trip, reusing the exact inner payloads
-// EventPermitRequest/Confirm and EventJoinInviteCreate/Revoke already
-// produce.
+// EncodePermitRequestPayload/EncodePermitConfirmPayload and
+// EncodeJoinInviteCreatePayload already produce.
 func TestLifecycleWritePayloadRoundTrip(t *testing.T) {
 	permitInner, err := EncodePermitRequestPayload(KindBootstrapNode, []byte("peer-123"), []byte("meta"))
 	if err != nil {
@@ -162,7 +162,7 @@ func TestEventPermitRequestConfirmEncodeDecodeRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EncodePermitRequestPayload: %v", err)
 	}
-	buf, err := Encode(Msg{EventType: EventPermitRequest, Value: reqPayload, ID: 11}, priv)
+	buf, err := Encode(Msg{EventType: EventLifecycleWrite, Value: EncodeLifecycleWritePayload(KindBootstrapNode, LifecycleActionRequest, reqPayload), ID: 11}, priv)
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
@@ -170,16 +170,20 @@ func TestEventPermitRequestConfirmEncodeDecodeRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
-	kind, peerID, _, err := DecodePermitRequestPayload(got.Value)
+	gotKind, _, gotInner, err := DecodeLifecycleWritePayload(got.Value)
+	if err != nil {
+		t.Fatalf("DecodeLifecycleWritePayload: %v", err)
+	}
+	kind, peerID, _, err := DecodePermitRequestPayload(gotInner)
 	if err != nil {
 		t.Fatalf("DecodePermitRequestPayload: %v", err)
 	}
-	if kind != KindBootstrapNode || string(peerID) != "peer-123" {
+	if gotKind != KindBootstrapNode || kind != KindBootstrapNode || string(peerID) != "peer-123" {
 		t.Fatalf("got kind=%d peerID=%q", kind, peerID)
 	}
 
 	confirmPayload := EncodePermitConfirmPayload(KindBootstrapNode, []byte("peer-123"))
-	buf, err = Encode(Msg{EventType: EventPermitConfirm, Value: confirmPayload, ID: 12}, priv)
+	buf, err = Encode(Msg{EventType: EventLifecycleWrite, Value: EncodeLifecycleWritePayload(KindBootstrapNode, LifecycleActionConfirm, confirmPayload), ID: 12}, priv)
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
@@ -187,11 +191,15 @@ func TestEventPermitRequestConfirmEncodeDecodeRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
-	kind, peerID, err = DecodePermitConfirmPayload(got.Value)
+	gotKind, _, gotInner, err = DecodeLifecycleWritePayload(got.Value)
+	if err != nil {
+		t.Fatalf("DecodeLifecycleWritePayload: %v", err)
+	}
+	kind, peerID, err = DecodePermitConfirmPayload(gotInner)
 	if err != nil {
 		t.Fatalf("DecodePermitConfirmPayload: %v", err)
 	}
-	if kind != KindBootstrapNode || string(peerID) != "peer-123" {
+	if gotKind != KindBootstrapNode || kind != KindBootstrapNode || string(peerID) != "peer-123" {
 		t.Fatalf("got kind=%d peerID=%q", kind, peerID)
 	}
 }

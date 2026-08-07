@@ -15,12 +15,12 @@ import (
 
 // TestGroupPutRequiresVoter mirrors TestLogPermitConfirmRevokeVoterOnly's
 // leader/voter/learner topology for the group-based ACL catalog's
-// single-step Put events (see shmevent.KindGroup's doc comment): a
-// non-voter learner's EventGroupPut must be rejected outright, while a
-// real voter's succeeds and is actually readable afterward -- proving the
+// single-step Put, routed through EventCatalogPut (see shmevent.KindGroup's
+// doc comment): a non-voter learner's Put must be rejected outright, while
+// a real voter's succeeds and is actually readable afterward -- proving the
 // widened handleForwardConfirmStream op check (kvfsm.OpSet, previously
 // only OpConfirm/OpDel) didn't loosen the "only a raft voter may act"
-// enforcement it shares with EventPermitConfirm/EventLogPermitConfirm.
+// enforcement it shares with the rest of the lifecycle/catalog family.
 func TestGroupPutRequiresVoter(t *testing.T) {
 	t.Parallel()
 
@@ -90,9 +90,10 @@ func TestGroupPutRequiresVoter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EncodeGroupPutPayload: %v", err)
 	}
+	catalogPutPayload := shmevent.EncodeCatalogPayload(shmevent.KindGroup, putPayload)
 
 	// A learner (nonvoter) putting a group must be rejected.
-	resp := call(learner, shmevent.Msg{EventType: shmevent.EventGroupPut, Value: putPayload, ID: 1})
+	resp := call(learner, shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: catalogPutPayload, ID: 1})
 	if resp.EventType != shmevent.EventError {
 		t.Fatal("learner group_put unexpectedly succeeded")
 	}
@@ -102,7 +103,7 @@ func TestGroupPutRequiresVoter(t *testing.T) {
 
 	// A real voter putting a group must succeed, and be readable
 	// afterward via a plain get_field against shmevent.GroupKey.
-	resp = call(voter, shmevent.Msg{EventType: shmevent.EventGroupPut, Value: putPayload, ID: 2})
+	resp = call(voter, shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: catalogPutPayload, ID: 2})
 	if resp.EventType == shmevent.EventError {
 		t.Fatalf("voter group_put rejected: %s", resp.Value)
 	}
@@ -124,11 +125,12 @@ func TestGroupPutRequiresVoter(t *testing.T) {
 
 	// Deleting it (also voter-gated, via OpCascadeDelete) must likewise be
 	// rejected for the learner and succeed for the voter.
-	resp = call(learner, shmevent.Msg{EventType: shmevent.EventGroupDelete, Value: []byte("grp-voter-only"), ID: 4})
+	catalogDeletePayload := shmevent.EncodeCatalogPayload(shmevent.KindGroup, []byte("grp-voter-only"))
+	resp = call(learner, shmevent.Msg{EventType: shmevent.EventCatalogDelete, Value: catalogDeletePayload, ID: 4})
 	if resp.EventType != shmevent.EventError {
 		t.Fatal("learner group_delete unexpectedly succeeded")
 	}
-	resp = call(voter, shmevent.Msg{EventType: shmevent.EventGroupDelete, Value: []byte("grp-voter-only"), ID: 5})
+	resp = call(voter, shmevent.Msg{EventType: shmevent.EventCatalogDelete, Value: catalogDeletePayload, ID: 5})
 	if resp.EventType == shmevent.EventError {
 		t.Fatalf("voter group_delete rejected: %s", resp.Value)
 	}
@@ -212,11 +214,11 @@ func TestPersonalGroupPutDeleteRejected(t *testing.T) {
 		if err != nil {
 			t.Fatalf("EncodeGroupPutPayload: %v", err)
 		}
-		resp := call(shmevent.Msg{EventType: shmevent.EventGroupPut, Value: putPayload, ID: 1})
+		resp := call(shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: shmevent.EncodeCatalogPayload(shmevent.KindGroup, putPayload), ID: 1})
 		if resp.EventType != shmevent.EventError {
 			t.Fatalf("group_put against peer-identity-shaped id %q unexpectedly succeeded", id)
 		}
-		resp = call(shmevent.Msg{EventType: shmevent.EventGroupDelete, Value: []byte(id), ID: 2})
+		resp = call(shmevent.Msg{EventType: shmevent.EventCatalogDelete, Value: shmevent.EncodeCatalogPayload(shmevent.KindGroup, []byte(id)), ID: 2})
 		if resp.EventType != shmevent.EventError {
 			t.Fatalf("group_delete against peer-identity-shaped id %q unexpectedly succeeded", id)
 		}
