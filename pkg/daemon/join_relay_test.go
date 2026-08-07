@@ -58,15 +58,7 @@ func TestJoinThroughRelay(t *testing.T) {
 
 	tmpDir := t.TempDir()
 
-	relay, err := p2praft.StartRelayNode(ctx, filepath.Join(tmpDir, "relay.key"), 0)
-	if err != nil {
-		t.Fatalf("start relay: %v", err)
-	}
-	defer relay.Host.Close()
-	if len(relay.Addrs) == 0 {
-		t.Fatal("relay has no addresses")
-	}
-	relayAddr := relay.Addrs[0]
+	relayAddr := testRelayAddr(t, ctx, tmpDir)
 	t.Logf("relay addr: %s", relayAddr)
 
 	fastRaft := Config{

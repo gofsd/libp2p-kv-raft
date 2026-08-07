@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/hex"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -88,14 +89,23 @@ func TestPairThroughRelayCluster(t *testing.T) {
 	}
 
 	// The relay bootstraps a cluster of its own so ensureDefaultPublicCommand
-	// seeds the always-public command the two devices escalate through below.
-	relayCfg := fastRaft
-	relayCfg.RelayService = true
-	relay := startNode("relay", relayCfg)
-	if _, err := relay.handleAdd(ctx, ""); err != nil {
-		t.Fatalf("bootstrap relay: %v", err)
+	// seeds the always-public command the two devices escalate through
+	// below -- see EnvRealRelayAddr's own doc comment (relay_target_test.go)
+	// on why a real deployed bootstrap already satisfies this same
+	// precondition, so real mode here just needs its address, not a local
+	// bootstrap at all.
+	relayAddr := os.Getenv(EnvRealRelayAddr)
+	if relayAddr == "" {
+		relayCfg := fastRaft
+		relayCfg.RelayService = true
+		relay := startNode("relay", relayCfg)
+		if _, err := relay.handleAdd(ctx, ""); err != nil {
+			t.Fatalf("bootstrap relay: %v", err)
+		}
+		relayAddr = relay.advertisedAddrs()[0]
+	} else {
+		t.Logf("using real relay from %s", EnvRealRelayAddr)
 	}
-	relayAddr := relay.advertisedAddrs()[0]
 	t.Logf("relay addr: %s", relayAddr)
 
 	deviceCfg := fastRaft
