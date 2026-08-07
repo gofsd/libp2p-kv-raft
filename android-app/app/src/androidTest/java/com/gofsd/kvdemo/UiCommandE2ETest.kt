@@ -177,6 +177,13 @@ class UiCommandE2ETest {
         // device's own start-up-and-reserve before it can dial in.
         const val RUN_TIMEOUT_MS = 180_000L
         const val POLL_INTERVAL_MS = 250L
+
+        // Bounds waitForActivity's poll for a ListView click's target
+        // Activity to actually become the resumed one. 10s is generous for
+        // what's normally a same-process transition with no network
+        // involved -- this exists for the rare case it isn't instant, not
+        // to paper over a real hang.
+        const val NAV_TIMEOUT_MS = 10_000L
     }
 
     @Test
@@ -305,7 +312,7 @@ class UiCommandE2ETest {
         val entry = JSONObject().put("command", label)
         try {
             clickListItem(spec.name)
-            val detail = currentActivity()
+            val detail = waitForActivity(CommandDetailActivity::class.java)
             verifyDetailScreen(detail, spec)
             if (case.execute) {
                 Assert.assertEquals(
@@ -386,6 +393,45 @@ class UiCommandE2ETest {
                 .firstOrNull()
         }
         return activity ?: throw IllegalStateException("no resumed activity")
+    }
+
+    /**
+     * Polls currentActivity() until it's an instance of [expected] or
+     * NAV_TIMEOUT_MS elapses, instead of sampling once immediately after a
+     * ListView click. clickListItem's perform(click()) starting a new
+     * Activity is a real cross-process transition (a binder call to
+     * ActivityManager) that Espresso's own click() action does not
+     * reliably finish waiting on before returning -- caught live as a
+     * one-off flake (a single command out of 83, whichever one the
+     * scheduler happened to land on that run) where the very next
+     * currentActivity() sample still saw the *previous* screen
+     * ("expected CommandDetailActivity, got CommandListActivity"). Between
+     * polls there can briefly be no resumed activity at all (mid-transition,
+     * the old one has paused but the new one hasn't resumed yet) --
+     * currentActivity()'s own IllegalStateException for that case is caught
+     * and treated as "not yet", not a failure, the same "poll rather than
+     * assume" treatment runCommand already uses for waiting on output text.
+     */
+    private fun waitForActivity(expected: Class<out Activity>): Activity {
+        val deadline = System.currentTimeMillis() + NAV_TIMEOUT_MS
+        var last: Activity? = null
+        while (true) {
+            val activity = try {
+                currentActivity()
+            } catch (e: IllegalStateException) {
+                null
+            }
+            if (activity != null) {
+                last = activity
+                if (expected.isInstance(activity)) {
+                    return activity
+                }
+            }
+            if (System.currentTimeMillis() >= deadline) {
+                return last ?: throw IllegalStateException("no resumed activity after ${NAV_TIMEOUT_MS}ms")
+            }
+            Thread.sleep(POLL_INTERVAL_MS)
+        }
     }
 
     private fun verifyDetailScreen(activity: Activity, spec: CommandSpec) {
