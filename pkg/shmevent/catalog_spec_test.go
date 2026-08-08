@@ -243,6 +243,8 @@ func TestValueSizeTiers(t *testing.T) {
 		{EventTxn, KVValueSize, "txn"},
 		{EventLogAppend, KVValueSize, "log_append"},
 		{EventCatalogPut, KVValueSize, "catalog_put"},
+		{EventDialSubmitCommand, KVValueSize, "dial_submit_command"},
+		{EventDialQueryCommandLog, KVValueSize, "dial_query_command_log"},
 		{EventChannelSend, ChannelValueSize, "channel_send"},
 		{EventChannelPoll, ChannelValueSize, "channel_poll"},
 		{EventLifecycleWrite, ValueSize, "lifecycle_write"},

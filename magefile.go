@@ -1826,6 +1826,44 @@ func EnablePublicAccess() error {
 	return nil
 }
 
+// DialSubmitCommand implements `mage dialsubmitcommand <targetAddr>
+// <commandID> [inputsJSON]`: asks the current node to dial targetAddr
+// directly and submit commandID there as a write into *that* cluster's own
+// log -- RequestPublicAccess generalized from one hardcoded command to
+// any commandID, no raft membership in targetAddr's cluster required,
+// provided commandID is linked to a public group there. See
+// shmevent.EventDialSubmitCommand for the design.
+// Usage: mage dialsubmitcommand <targetAddr> <commandID> [inputsJSON]
+func DialSubmitCommand(targetAddr, commandID, inputsJSON string) error {
+	instanceID, err := kvctl.DialSubmitCommand(targetAddr, commandID, inputsJSON, "")
+	if err != nil {
+		return err
+	}
+	fmt.Printf("✅ command %q submitted to %s (instance %s)\n", commandID, targetAddr, instanceID)
+	return nil
+}
+
+// DialQueryCommandLog implements `mage dialquerycommandlog <targetAddr>
+// <instanceID>`: asks the current node to dial targetAddr directly and
+// print back instanceID's own command-log entries -- DialSubmitCommand's
+// read-back counterpart. Needs no standing in targetAddr's cluster at all:
+// possessing instanceID is the credential.
+// Usage: mage dialquerycommandlog <targetAddr> <instanceID>
+func DialQueryCommandLog(targetAddr, instanceID string) error {
+	records, err := kvctl.DialQueryCommandLog(targetAddr, instanceID, time.Time{}, time.Now(), 0)
+	if err != nil {
+		return err
+	}
+	if len(records) == 0 {
+		fmt.Println("(no records yet)")
+		return nil
+	}
+	for _, r := range records {
+		fmt.Printf("[%s] fields=%v narrative=%q\n", r.Timestamp.Format(time.RFC3339), r.Fields, r.Narrative)
+	}
+	return nil
+}
+
 // CreateJoinInvite generates a fresh one-time join-invite token and
 // prints it -- append it to a leader multiaddr as
 // "<multiaddr>#<tokenHex>" and pass that to mage addfollower/addnode to

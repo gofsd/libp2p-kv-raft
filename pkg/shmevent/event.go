@@ -556,6 +556,35 @@ const (
 	// removed once the fleet was confirmed upgraded past the additive
 	// rollout that introduced it alongside them.
 	EventLifecycleWrite uint8 = 55
+	// EventDialSubmitCommand is EventPublicAccess generalized from one
+	// hardcoded command (DefaultPublicCommandID) to any commandID: it asks
+	// this node to dial targetAddr directly and submit commandID/inputsJSON
+	// as a CommandRequestLogKind write into *that* cluster's own log, the
+	// same carve-out isCommandLogCarveOut already grants any commandID
+	// linked to a public group -- EventPublicAccess was simply the first,
+	// single-purpose client of a target-side door that was never actually
+	// specific to it. Value is EncodeDialSubmitCommandRequest(targetAddr,
+	// commandID, inputsJSON, note). Local-only, same reasoning as
+	// EventPublicAccess: it makes the receiving node act as a client of a
+	// cluster it has no standing in, so a remote caller triggering it would
+	// spend this node's own identity on the remote caller's behalf.
+	// pkg/daemon's dialAndSubmitCommand is the handler (dialAndSubmitPublicAccess
+	// now just calls it with commandID=DefaultPublicCommandID); response
+	// Value is the new dispatch's instance id (hex), the same id SubmitCommand
+	// returns locally, usable against EventDialQueryCommandLog below.
+	EventDialSubmitCommand uint8 = 56
+	// EventDialQueryCommandLog is EventDialSubmitCommand's read-back
+	// counterpart: dials targetAddr and reads back that cluster's own
+	// CommandExecLogKind(instanceID) entries -- the same kind
+	// isCommandLogReadableKind already admits from any remote caller
+	// unconditionally ("possessing the instance id is the credential", see
+	// that function's doc comment), so this event exists only because
+	// pkg/shmclient.Session has no direct-dial mode, not because the target
+	// needs any new permission logic. Value is
+	// EncodeDialQueryCommandLogRequest(targetAddr, instanceID, since, until,
+	// limit); response Value is EncodeLogRecordList(records). Local-only,
+	// same reasoning as EventDialSubmitCommand.
+	EventDialQueryCommandLog uint8 = 57
 	// EventError is response-only: Value carries a UTF-8 error message,
 	// ID echoes the failed request's ID. Not part of the fields the
 	// protocol was specified with -- added because the struct has no
@@ -638,6 +667,10 @@ func EventName(e uint8) string {
 		return "catalog_delete"
 	case EventLifecycleWrite:
 		return "lifecycle_write"
+	case EventDialSubmitCommand:
+		return "dial_submit_command"
+	case EventDialQueryCommandLog:
+		return "dial_query_command_log"
 	case EventError:
 		return "error"
 	default:
@@ -722,6 +755,10 @@ func EventFromName(name string) (uint8, bool) {
 		return EventCatalogDelete, true
 	case "lifecycle_write":
 		return EventLifecycleWrite, true
+	case "dial_submit_command":
+		return EventDialSubmitCommand, true
+	case "dial_query_command_log":
+		return EventDialQueryCommandLog, true
 	case "error":
 		return EventError, true
 	default:
@@ -830,6 +867,13 @@ func valueSizeFor(e uint8) int {
 		// for "started"/"finished" and far too small for a real result with
 		// a dozen measured values. It is caller-authored data in the same
 		// sense the events above are.
+		return KVValueSize
+	case EventDialSubmitCommand, EventDialQueryCommandLog:
+		// The request carries a caller-authored inputsJSON blob (same shape
+		// as SubmitCommand's own, uncapped locally); the response aggregates
+		// several logrecord.Record entries (EncodeLogRecordList). Both would
+		// silently truncate at the default 512-byte ValueSize the way
+		// EventLogAppend's own record would.
 		return KVValueSize
 	}
 	return ValueSize

@@ -2196,6 +2196,9 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 	if caller.remotePeer != "" && m.EventType == shmevent.EventPublicAccess {
 		return errorMsg(m.ID, fmt.Errorf("public_access: not available to a remote caller -- this node submits to the target cluster under its own identity, so letting a stranger trigger it would spend this node's standing on that stranger's behalf"))
 	}
+	if caller.remotePeer != "" && (m.EventType == shmevent.EventDialSubmitCommand || m.EventType == shmevent.EventDialQueryCommandLog) {
+		return errorMsg(m.ID, fmt.Errorf("%s: not available to a remote caller -- this node dials the target under its own identity, so letting a stranger trigger it would spend this node's standing on that stranger's behalf", shmevent.EventName(m.EventType)))
+	}
 	if caller.remotePeer != "" && (m.EventType == shmevent.EventChannelOpen || m.EventType == shmevent.EventChannelSend ||
 		m.EventType == shmevent.EventChannelPoll || m.EventType == shmevent.EventChannelListen || m.EventType == shmevent.EventChannelClose ||
 		m.EventType == shmevent.EventChannelCloseWrite || m.EventType == shmevent.EventChannelDataReady) {
@@ -2467,6 +2470,35 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 			return errorMsg(m.ID, err)
 		}
 		return shmevent.Msg{EventType: shmevent.EventPublicAccess, ID: m.ID, Value: []byte(instanceID)}
+
+	// EventDialSubmitCommand/EventDialQueryCommandLog are local-only for the
+	// same reason EventPublicAccess above is -- see their doc comments and
+	// dialAndSubmitCommand/dialAndQueryCommandLog.
+	case shmevent.EventDialSubmitCommand:
+		targetAddr, commandID, inputsJSON, note, err := shmevent.DecodeDialSubmitCommandRequest(m.Value)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		instanceID, err := n.dialAndSubmitCommand(ctx, targetAddr, commandID, inputsJSON, note)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventDialSubmitCommand, ID: m.ID, Value: []byte(instanceID)}
+
+	case shmevent.EventDialQueryCommandLog:
+		targetAddr, instanceID, since, until, limit, err := shmevent.DecodeDialQueryCommandLogRequest(m.Value)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		records, err := n.dialAndQueryCommandLog(ctx, targetAddr, instanceID, since, until, limit)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		value, err := shmevent.EncodeLogRecordList(records)
+		if err != nil {
+			return errorMsg(m.ID, err)
+		}
+		return shmevent.Msg{EventType: shmevent.EventDialQueryCommandLog, ID: m.ID, Value: value}
 
 	case shmevent.EventExecute:
 		if err := n.dispatchExecute(ctx, m); err != nil {
@@ -3380,6 +3412,120 @@ func dialAttempts(ctx context.Context, h lp2phost.Host, info peer.AddrInfo, atte
 	return lastErr
 }
 
+// dialAndSubmitCommand is EventDialSubmitCommand's local-only handler, and
+// dialAndSubmitPublicAccess's own core logic generalized from one hardcoded
+// commandID (DefaultPublicCommandID) to any commandID/inputsJSON pair. It
+// dials targetAddr's ClientProtocolID -- the remote-client surface, not a
+// local ipc.Call -- and sends one signed EventLogAppend carrying a
+// pkg/logrecord record under shmevent.CommandRequestLogKind(commandID),
+// attributed to this node's own peer id -- byte for byte what a local
+// SubmitCommand would write into its own log, just delivered over the wire
+// into a stranger cluster's log instead.
+//
+// Admission hinges on exactly two things, both of which this builds
+// deliberately rather than incidentally: the *key's* logrecord kind, which
+// is where the target's kvfsm.OpAppendCommandRequest reads the command id
+// back out of (ParseCommandRequestLogKind) before checking
+// IsPermittedForCommand -- generic over commandID, so this succeeds for any
+// command the target has linked to a public group, and is rejected exactly
+// like an unpermitted local SubmitCommand otherwise -- and the message
+// signature, which is where the target reads the author peer id its own
+// dispatcher will see. inputsJSON rides along as the record's "inputs"
+// field, mirroring SubmitCommand's own field name, so the target's
+// RunCommandDispatcher (which only ever reads records this shape, whether
+// written locally or via this carve-out) can't tell the two apart. What's
+// deliberately *not* replicated is SubmitCommand's exec-index and
+// Execute-poke bookkeeping, which serves the *caller's* own dispatcher
+// bookkeeping (nothing here has one) and has no bearing on the target
+// accepting the write; the target's own rescanTicker picks it up instead
+// (see pkg/kvctl.RunCommandDispatcher's doc comment).
+//
+// note, if non-empty, rides along as the request's "note" field -- purely
+// informational (who/what asked), never consulted by permission checks.
+func (n *Node) dialAndSubmitCommand(ctx context.Context, targetAddr, commandID, inputsJSON, note string) (string, error) {
+	info, err := resolveDialAddr(targetAddr)
+	if err != nil {
+		return "", err
+	}
+	if info.ID.String() == n.peerID {
+		return "", fmt.Errorf("%s: %s is this node itself -- a node already has every standing in its own cluster", shmevent.EventName(shmevent.EventDialSubmitCommand), n.peerID)
+	}
+	if err := connectWithRetry(ctx, n.host, *info); err != nil {
+		return "", fmt.Errorf("connect to %s: %w", info.ID, err)
+	}
+
+	var raw [16]byte
+	if _, err := cryptorand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("dial_submit_command: generate instance id: %w", err)
+	}
+	instanceID := hex.EncodeToString(raw[:])
+
+	rnd, err := logrecord.NewRand()
+	if err != nil {
+		return "", fmt.Errorf("dial_submit_command: %w", err)
+	}
+	kind := shmevent.CommandRequestLogKind(commandID)
+	ts := time.Now()
+	key, err := logrecord.BuildKey(kind, instanceID, ts, rnd)
+	if err != nil {
+		return "", fmt.Errorf("dial_submit_command: %w", err)
+	}
+	fields := map[string]string{"command_id": commandID}
+	if inputsJSON != "" {
+		fields["inputs"] = inputsJSON
+	}
+	if note != "" {
+		fields["note"] = note
+	}
+	value, err := logrecord.Record{
+		Kind:         kind,
+		UnitID:       instanceID,
+		Timestamp:    ts,
+		AuthorPeerID: n.peerID,
+		Fields:       fields,
+	}.Encode()
+	if err != nil {
+		return "", fmt.Errorf("dial_submit_command: encode record: %w", err)
+	}
+	payload, err := shmevent.EncodeSetPayload(key, value)
+	if err != nil {
+		return "", fmt.Errorf("dial_submit_command: encode payload: %w", err)
+	}
+	buf, err := shmevent.Encode(shmevent.Msg{EventType: shmevent.EventLogAppend, Value: payload}, n.ed25519Priv)
+	if err != nil {
+		return "", fmt.Errorf("dial_submit_command: encode message: %w", err)
+	}
+
+	// A target worth dialing directly usually has a real public address,
+	// but nothing says the caller can only reach it directly -- allow a
+	// limited/relay connection the same way dialForward does, so this works
+	// from behind NAT via a relay this node already has.
+	s, err := n.host.NewStream(network.WithAllowLimitedConn(ctx, "dial_submit_command"), info.ID, ClientProtocolID)
+	if err != nil {
+		return "", fmt.Errorf("open client stream to %s: %w", info.ID, err)
+	}
+	defer s.Close()
+
+	if _, err := s.Write(buf); err != nil {
+		return "", fmt.Errorf("dial_submit_command: write to %s: %w", info.ID, err)
+	}
+	if err := s.CloseWrite(); err != nil {
+		return "", fmt.Errorf("dial_submit_command: close write to %s: %w", info.ID, err)
+	}
+	respBuf, err := io.ReadAll(s)
+	if err != nil {
+		return "", fmt.Errorf("dial_submit_command: read response from %s: %w", info.ID, err)
+	}
+	resp, _, _, err := shmevent.Decode(respBuf)
+	if err != nil {
+		return "", fmt.Errorf("dial_submit_command: decode response from %s: %w", info.ID, err)
+	}
+	if resp.EventType == shmevent.EventError {
+		return "", fmt.Errorf("%s rejected by %s: %s", commandID, info.ID, resp.Value)
+	}
+	return instanceID, nil
+}
+
 // dialAndSubmitPublicAccess is EventPublicAccess's local-only handler (see
 // that event's doc comment). It dials targetAddr's ClientProtocolID -- the
 // remote-client surface, not a local ipc.Call -- and sends one signed
@@ -3403,83 +3549,22 @@ func dialAttempts(ctx context.Context, h lp2phost.Host, info peer.AddrInfo, atte
 //
 // note, if non-empty, rides along as the request's "note" field -- purely
 // informational (who/what asked), never consulted by the grant itself.
+//
+// This is now a thin caller of dialAndSubmitCommand (commandID=
+// DefaultPublicCommandID, inputsJSON=""), keeping only the relay-specific
+// tail below: waiting for a reservation to land is meaningful for
+// public-access (the whole point is becoming reachable *through* the
+// target if it's a relay), but would be a non sequitur for an arbitrary
+// commandID dialAndSubmitCommand's other callers submit -- see that
+// function's doc comment.
 func (n *Node) dialAndSubmitPublicAccess(ctx context.Context, targetAddr, note string) (string, error) {
 	info, err := resolveDialAddr(targetAddr)
 	if err != nil {
 		return "", err
 	}
-	if info.ID.String() == n.peerID {
-		return "", fmt.Errorf("public_access: %s is this node itself -- a node already has every standing in its own cluster", n.peerID)
-	}
-	if err := connectWithRetry(ctx, n.host, *info); err != nil {
-		return "", fmt.Errorf("connect to %s: %w", info.ID, err)
-	}
-
-	var raw [16]byte
-	if _, err := cryptorand.Read(raw[:]); err != nil {
-		return "", fmt.Errorf("public_access: generate instance id: %w", err)
-	}
-	instanceID := hex.EncodeToString(raw[:])
-
-	rnd, err := logrecord.NewRand()
+	instanceID, err := n.dialAndSubmitCommand(ctx, targetAddr, shmevent.DefaultPublicCommandID, "", note)
 	if err != nil {
-		return "", fmt.Errorf("public_access: %w", err)
-	}
-	kind := shmevent.CommandRequestLogKind(shmevent.DefaultPublicCommandID)
-	ts := time.Now()
-	key, err := logrecord.BuildKey(kind, instanceID, ts, rnd)
-	if err != nil {
-		return "", fmt.Errorf("public_access: %w", err)
-	}
-	fields := map[string]string{"command_id": shmevent.DefaultPublicCommandID}
-	if note != "" {
-		fields["note"] = note
-	}
-	value, err := logrecord.Record{
-		Kind:         kind,
-		UnitID:       instanceID,
-		Timestamp:    ts,
-		AuthorPeerID: n.peerID,
-		Fields:       fields,
-	}.Encode()
-	if err != nil {
-		return "", fmt.Errorf("public_access: encode record: %w", err)
-	}
-	payload, err := shmevent.EncodeSetPayload(key, value)
-	if err != nil {
-		return "", fmt.Errorf("public_access: encode payload: %w", err)
-	}
-	buf, err := shmevent.Encode(shmevent.Msg{EventType: shmevent.EventLogAppend, Value: payload}, n.ed25519Priv)
-	if err != nil {
-		return "", fmt.Errorf("public_access: encode message: %w", err)
-	}
-
-	// A bootstrap node worth asking for relay access usually has a real
-	// public address, but nothing says the caller can only reach it
-	// directly -- allow a limited/relay connection the same way dialForward
-	// does, so this works from behind NAT via a relay this node already has.
-	s, err := n.host.NewStream(network.WithAllowLimitedConn(ctx, "public_access"), info.ID, ClientProtocolID)
-	if err != nil {
-		return "", fmt.Errorf("open client stream to %s: %w", info.ID, err)
-	}
-	defer s.Close()
-
-	if _, err := s.Write(buf); err != nil {
-		return "", fmt.Errorf("public_access: write to %s: %w", info.ID, err)
-	}
-	if err := s.CloseWrite(); err != nil {
-		return "", fmt.Errorf("public_access: close write to %s: %w", info.ID, err)
-	}
-	respBuf, err := io.ReadAll(s)
-	if err != nil {
-		return "", fmt.Errorf("public_access: read response from %s: %w", info.ID, err)
-	}
-	resp, _, _, err := shmevent.Decode(respBuf)
-	if err != nil {
-		return "", fmt.Errorf("public_access: decode response from %s: %w", info.ID, err)
-	}
-	if resp.EventType == shmevent.EventError {
-		return "", fmt.Errorf("public_access rejected by %s: %s", info.ID, resp.Value)
+		return "", err
 	}
 
 	// The grant is committed, but standing alone doesn't make this node
@@ -3517,6 +3602,89 @@ func (n *Node) dialAndSubmitPublicAccess(ctx context.Context, targetAddr, note s
 		}
 	}
 	return instanceID, nil
+}
+
+// dialAndQueryCommandLog is EventDialQueryCommandLog's local-only handler:
+// the direct-dial counterpart of LatestCommandLog/QueryCommandLog's local
+// ListRange loop, reading back targetAddr's own
+// shmevent.CommandExecLogKind(instanceID) entries in [since, until] (up to
+// limit records, 0 meaning unbounded) instead of this node's own local
+// store. Unlike dialAndSubmitCommand, admission needs no prior standing at
+// all: the target's isCommandLogReadableKind returns true unconditionally
+// for CommandExecLogKind -- "possessing the instance id is the credential"
+// (see that function's doc comment) -- so this only ever fails on
+// reachability, never permission.
+//
+// Connects once, then opens one ClientProtocolID stream per page -- there
+// is no persistent session the way pkg/shmclient.Session's local IPC has,
+// so each EventListRange round trip is its own stream, mirroring the
+// per-call dial pkg/shmclient.Session.ListRange's remote counterpart would
+// need if it existed.
+func (n *Node) dialAndQueryCommandLog(ctx context.Context, targetAddr, instanceID string, since, until time.Time, limit int) ([]logrecord.Record, error) {
+	info, err := resolveDialAddr(targetAddr)
+	if err != nil {
+		return nil, err
+	}
+	if info.ID.String() == n.peerID {
+		return nil, fmt.Errorf("%s: %s is this node itself -- read its command log locally instead", shmevent.EventName(shmevent.EventDialQueryCommandLog), n.peerID)
+	}
+	if err := connectWithRetry(ctx, n.host, *info); err != nil {
+		return nil, fmt.Errorf("connect to %s: %w", info.ID, err)
+	}
+
+	lo, hi := logrecord.ScanBounds(shmevent.CommandExecLogKind, instanceID, since, until)
+	var records []logrecord.Record
+	for limit <= 0 || len(records) < limit {
+		query, err := shmevent.EncodeListRangeQuery(lo, hi)
+		if err != nil {
+			return nil, fmt.Errorf("dial_query_command_log: encode query: %w", err)
+		}
+		buf, err := shmevent.Encode(shmevent.Msg{EventType: shmevent.EventListRange, Value: query}, n.ed25519Priv)
+		if err != nil {
+			return nil, fmt.Errorf("dial_query_command_log: encode message: %w", err)
+		}
+
+		s, err := n.host.NewStream(network.WithAllowLimitedConn(ctx, "dial_query_command_log"), info.ID, ClientProtocolID)
+		if err != nil {
+			return nil, fmt.Errorf("open client stream to %s: %w", info.ID, err)
+		}
+		_, writeErr := s.Write(buf)
+		closeErr := s.CloseWrite()
+		if writeErr != nil {
+			s.Close()
+			return nil, fmt.Errorf("dial_query_command_log: write to %s: %w", info.ID, writeErr)
+		}
+		if closeErr != nil {
+			s.Close()
+			return nil, fmt.Errorf("dial_query_command_log: close write to %s: %w", info.ID, closeErr)
+		}
+		respBuf, err := io.ReadAll(s)
+		s.Close()
+		if err != nil {
+			return nil, fmt.Errorf("dial_query_command_log: read response from %s: %w", info.ID, err)
+		}
+		resp, _, _, err := shmevent.Decode(respBuf)
+		if err != nil {
+			return nil, fmt.Errorf("dial_query_command_log: decode response from %s: %w", info.ID, err)
+		}
+		if resp.EventType == shmevent.EventError {
+			return nil, fmt.Errorf("dial_query_command_log rejected by %s: %s", info.ID, resp.Value)
+		}
+		if len(resp.Value) == 0 {
+			break
+		}
+		key, value, err := shmevent.DecodeListRangeQuery(resp.Value)
+		if err != nil {
+			return nil, fmt.Errorf("dial_query_command_log: decode list range response: %w", err)
+		}
+		rec, err := logrecord.Decode(value)
+		if err != nil {
+			return nil, fmt.Errorf("dial_query_command_log: decode record: %w", err)
+		}
+		records = append(records, rec)
+		lo = append(append([]byte{}, key...), 0x00)
+	}
+	return records, nil
 }
 
 // hasPublicAddr reports whether any of addrs is internet-routable. It

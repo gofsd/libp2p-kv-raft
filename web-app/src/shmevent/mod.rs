@@ -115,6 +115,15 @@ pub const EVENT_CATALOG_DELETE: u8 = 54;
 /// Permit-style `system::LIFECYCLE_ACTION_REQUEST`, the one case this
 /// family has ever been reachable from a non-voting learner for.
 pub const EVENT_LIFECYCLE_WRITE: u8 = 55;
+/// `EVENT_PUBLIC_ACCESS` generalized to an arbitrary command id -- see
+/// `pkg/shmevent.EventDialSubmitCommand`'s doc comment. Defined here for
+/// wire-table completeness only, same reasoning as `EVENT_TXN`: this
+/// client has no `do_dial_submit_command` caller of its own yet.
+pub const EVENT_DIAL_SUBMIT_COMMAND: u8 = 56;
+/// `EVENT_DIAL_SUBMIT_COMMAND`'s read-back counterpart -- see
+/// `pkg/shmevent.EventDialQueryCommandLog`'s doc comment. Defined here for
+/// wire-table completeness only, same reasoning as `EVENT_DIAL_SUBMIT_COMMAND`.
+pub const EVENT_DIAL_QUERY_COMMAND_LOG: u8 = 57;
 /// Response-only; see `pkg/shmevent.EventError`'s doc comment for why
 /// this exists even though it isn't part of `api/shmevent.capnp`'s
 /// originally specified field set.
@@ -151,7 +160,12 @@ pub fn value_size_for(event: u8) -> usize {
         // EVENT_CATALOG_PUT's payload can carry a Command's form spec or a
         // Station's attrs -- matches pkg/shmevent.valueSizeFor's identical
         // EventCatalogPut case.
-        | EVENT_CATALOG_PUT => KV_VALUE_SIZE,
+        | EVENT_CATALOG_PUT
+        // Request carries a caller-authored inputsJSON blob; response
+        // aggregates several log records -- matches
+        // pkg/shmevent.valueSizeFor's identical case for both events.
+        | EVENT_DIAL_SUBMIT_COMMAND
+        | EVENT_DIAL_QUERY_COMMAND_LOG => KV_VALUE_SIZE,
         _ => VALUE_SIZE,
     }
 }
@@ -399,6 +413,8 @@ pub fn event_name(event_type: u8) -> &'static str {
         EVENT_CATALOG_PUT => "catalog_put",
         EVENT_CATALOG_DELETE => "catalog_delete",
         EVENT_LIFECYCLE_WRITE => "lifecycle_write",
+        EVENT_DIAL_SUBMIT_COMMAND => "dial_submit_command",
+        EVENT_DIAL_QUERY_COMMAND_LOG => "dial_query_command_log",
         EVENT_ERROR => "error",
         _ => "unknown",
     }
@@ -427,6 +443,8 @@ pub fn event_from_name(name: &str) -> Option<u8> {
         "catalog_put" => Some(EVENT_CATALOG_PUT),
         "catalog_delete" => Some(EVENT_CATALOG_DELETE),
         "lifecycle_write" => Some(EVENT_LIFECYCLE_WRITE),
+        "dial_submit_command" => Some(EVENT_DIAL_SUBMIT_COMMAND),
+        "dial_query_command_log" => Some(EVENT_DIAL_QUERY_COMMAND_LOG),
         "error" => Some(EVENT_ERROR),
         _ => None,
     }
@@ -779,6 +797,8 @@ mod tests {
             EVENT_CATALOG_PUT,
             EVENT_CATALOG_DELETE,
             EVENT_LIFECYCLE_WRITE,
+            EVENT_DIAL_SUBMIT_COMMAND,
+            EVENT_DIAL_QUERY_COMMAND_LOG,
             EVENT_ERROR,
         ] {
             let name = event_name(e);
@@ -910,6 +930,8 @@ mod tests {
             EVENT_CATALOG_PUT,
             EVENT_ADD,
             EVENT_PUBLIC_ACCESS,
+            EVENT_DIAL_SUBMIT_COMMAND,
+            EVENT_DIAL_QUERY_COMMAND_LOG,
         ] {
             let m = Msg {
                 event_type: event,

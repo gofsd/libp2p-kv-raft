@@ -22,6 +22,7 @@ import (
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/chandata"
 	"github.com/gofsd/libp2p-kv-raft/pkg/ipc"
+	"github.com/gofsd/libp2p-kv-raft/pkg/logrecord"
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
 
@@ -637,6 +638,59 @@ func (s *Session) PublicAccess(ctx context.Context, targetAddr, note string) (st
 		return "", fmt.Errorf("shmclient: public_access: %s", resp.Value)
 	}
 	return string(resp.Value), nil
+}
+
+// DialSubmitCommand asks this session's own node to dial targetAddr
+// directly and submit commandID/inputsJSON there as a CommandRequestLogKind
+// write into *that* cluster's own log -- PublicAccess generalized from one
+// hardcoded command to any commandID, see shmevent.EventDialSubmitCommand's
+// doc comment. Returns the new dispatch's instance id, usable with
+// DialQueryCommandLog to read back its result.
+func (s *Session) DialSubmitCommand(ctx context.Context, targetAddr, commandID, inputsJSON, note string) (string, error) {
+	value, err := shmevent.EncodeDialSubmitCommandRequest(targetAddr, commandID, inputsJSON, note)
+	if err != nil {
+		return "", fmt.Errorf("shmclient: dial_submit_command: %w", err)
+	}
+	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
+		EventType: shmevent.EventDialSubmitCommand,
+		Value:     value,
+		ID:        newID(),
+	}, s.priv)
+	if err != nil {
+		return "", fmt.Errorf("shmclient: dial_submit_command: %w", err)
+	}
+	if resp.EventType == shmevent.EventError {
+		return "", fmt.Errorf("shmclient: dial_submit_command: %s", resp.Value)
+	}
+	return string(resp.Value), nil
+}
+
+// DialQueryCommandLog asks this session's own node to dial targetAddr
+// directly and read back instanceID's own CommandExecLogKind entries in
+// [since, until], up to limit records (0 meaning unbounded) --
+// DialSubmitCommand's read-back counterpart, see
+// shmevent.EventDialQueryCommandLog's doc comment.
+func (s *Session) DialQueryCommandLog(ctx context.Context, targetAddr, instanceID string, since, until time.Time, limit int) ([]logrecord.Record, error) {
+	value, err := shmevent.EncodeDialQueryCommandLogRequest(targetAddr, instanceID, since, until, limit)
+	if err != nil {
+		return nil, fmt.Errorf("shmclient: dial_query_command_log: %w", err)
+	}
+	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
+		EventType: shmevent.EventDialQueryCommandLog,
+		Value:     value,
+		ID:        newID(),
+	}, s.priv)
+	if err != nil {
+		return nil, fmt.Errorf("shmclient: dial_query_command_log: %w", err)
+	}
+	if resp.EventType == shmevent.EventError {
+		return nil, fmt.Errorf("shmclient: dial_query_command_log: %s", resp.Value)
+	}
+	records, err := shmevent.DecodeLogRecordList(resp.Value)
+	if err != nil {
+		return nil, fmt.Errorf("shmclient: dial_query_command_log: decode response: %w", err)
+	}
+	return records, nil
 }
 
 // Execute sends payload as a direct peer-to-peer EventExecute notification
