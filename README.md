@@ -507,20 +507,40 @@ which the NDK headers only declare from API 26 onward; building against a lower 
 hides the declaration and fails with a confusing `could not determine what
 C.ASharedMemory_create refers to` linker error rather than a clear availability error.
 
-The app's UI browses the full `Kvmobile` command surface rather than exposing just a few calls:
-`MainActivity` brings the daemon up once via `Start` (joining the build-time-baked-in leader) and
-lists every category from `CommandCatalog.kt`'s ~60-entry `CommandSpec` table (Cluster, KV,
-Permits, Execute, Log records, Group, Command, Links, Dispatch, ExecInvite, Raw); tapping one opens
-`CommandListActivity` for that category's commands, and tapping a command opens
-`CommandDetailActivity`, which renders one labeled input field per parameter, a Run button, and
+The app's UI browses the full `Kvmobile` command surface rather than exposing just a few calls. It's
+a single Activity (`MainActivity`) hosting a Jetpack Compose `NavHost` of four routes
+(`AppRoot.kt`/`CategoriesScreen.kt`/`CommandListScreen.kt`/`CommandDetailScreen.kt`/`LogScreen.kt`)
+rather than one Activity per screen — brings the daemon up once via `Start` (joining the
+build-time-baked-in leader) and lists every category from `CommandCatalog.kt`'s ~60-entry
+`CommandSpec` table (Cluster, KV, Permits, Execute, Log records, Group, Command, Links, Dispatch,
+ExecInvite, Raw); tapping one navigates to that category's commands, and tapping a command navigates
+to its own detail screen, which renders one labeled input field per parameter, a Run button, and
 that screen's own scrollable output log. Every call goes through the daemon's IPC exactly like the
 desktop CLI, just over the Android shared-memory transport instead of named shared memory, off the
 UI thread; `submit`/dispatch calls are forwarded from this (never-leader) follower to whichever
 peer is currently leader, over `pkg/daemon.ForwardProtocolID`. The three standing-subscription
 calls (`WatchExecute`, `WatchCommandLog`, `RunCommandDispatcher`) post their callback notifications
 to a process-wide `OutputLog` instead of that one screen's output, since the subscription keeps
-running after you navigate away — `ActivityLogActivity` (the main screen's "Activity Log" button)
-shows that full history plus live updates while it's the foregrounded screen.
+running after you navigate away — `LogScreen` (the categories screen's "Activity Log" button) shows
+that full history plus live updates while it's the foregrounded screen.
+
+A DataMatrix scanner (`ScannerHost.kt`/`MainScannerWidget.kt`, ZXing decode over a CameraX frame
+feed) is mounted once, above the `NavHost`, so it's live on every screen rather than scoped to one —
+tap the floating bubble to expand it full-screen. A successful scan calls `Kvmobile.decodeEvent` on
+the decoded bytes and shows a confirm/cancel dialog (`ScanConfirmationDialog.kt`) before ever
+submitting anything; confirming calls `Kvmobile.triggerEvent` (an alias for `sendEvent`) against the
+current cluster. Every command form whose underlying call is a direct, single-message wrapper
+around one `pkg/e2edata` op (verified per spec against its actual Go implementation, not assumed —
+see `CommandSpec.eventOp`/`toEventFields`'s own doc comment in `CommandCatalog.kt`) also gets a
+"Generate DataMatrix" button, calling `Kvmobile.encodeEvent` on the form's current inputs and
+rendering the result as a scannable code (`GeneratedDataMatrixDialog.kt`) — another device can scan
+it and get the same trigger-or-cancel prompt. Compound/orchestration commands (daemon lifecycle,
+`SubmitCommand`'s multi-primitive dispatch, standing subscriptions, paginated `List*` reads, ...)
+show that button disabled with an explanatory caption instead, since they have no single capnp
+event to generate. Binary payloads survive the round trip through ZXing's String-only reader/writer
+via an ISO-8859-1 `ByteArray<->String` conversion (`DataMatrixCodec.kt`) — see that file's doc
+comment, and `DataMatrixCodecTest.kt`'s plain-JVM round-trip tests, for why that's lossless rather
+than assumed.
 
 `Kvmobile` runs exactly one daemon per process. `Start(dataDir)`/`StartWithKey(dataDir, keyHex)`
 bring it up joined to the build-time-baked-in leader — the Android equivalent of desktop's
@@ -745,10 +765,14 @@ queue per device (see `WatchCommandLog`'s own doc comment on this identical cons
 independent `PollExecute` drainer here would race a real app's own `WatchExecute` callback — the normal
 shape a `kvmobile` app already runs — and silently steal notifications meant for it.
 
-`Kvmobile.sendEvent` (not used by `MainActivity`, only by the e2e pipeline's `E2ETest`
-instrumented test) exposes the same raw `pkg/shmevent` event dispatch `submit`/`get` are themselves
-built on, for tests that need the exact event kvctl-cli's `sendevent` can send on desktop/remote
-rather than only the higher-level Set/Get shape.
+`Kvmobile.sendEvent` exposes the same raw `pkg/shmevent` event dispatch `submit`/`get` are
+themselves built on, for tests that need the exact event kvctl-cli's `sendevent` can send on
+desktop/remote rather than only the higher-level Set/Get shape — used by the e2e pipeline's
+`E2ETest` instrumented test, the app's own "Raw: SendEvent" command form, and (via its
+`triggerEvent` alias) the scanner's confirm-and-trigger flow described above. `encodeEvent`/
+`decodeEvent` are that same event's encode/decode halves without the dispatch, letting a client
+render/scan a DataMatrix code without any capnp tooling of its own — see
+[docs/android.md](docs/android.md)'s "Raw escape hatch" section for their full signatures.
 
 **MIUI/Xiaomi devices**: `adb install` can fail with `INSTALL_FAILED_USER_RESTRICTED` even with
 "Unknown sources" allowed — there's a separate Developer Options toggle, **"Install via USB"**,
@@ -1625,10 +1649,13 @@ against whatever device/emulator is connected, pulling back a real per-row resul
 `android-app/app/src/androidTest/.../E2ETest.kt`), then a second, separate `adb shell am instrument`
 invocation of `UiCommandE2ETest.kt` on the same install -- unlike `E2ETest`, which drives
 `Kvmobile.sendEvent` directly and never touches a single screen, this one clicks through the real
-app (`MainActivity`'s category list -> `CommandListActivity`'s command list ->
-`CommandDetailActivity`'s dynamically-rendered param fields and Run button) for literally every
-`CommandCatalog.kt` entry, so the command surface exposed through the UI can never silently drift
-out of coverage. A command failure here fails every row in that node's batch, the same as a
+app (CategoriesScreen's category list -> CommandListScreen's command list ->
+CommandDetailScreen's dynamically-rendered param fields and Run button, driven via Compose's own
+test APIs -- `onNodeWithTag`/`performClick`/`performTextInput` against each screen's testTags,
+not Espresso View matchers or Activity-class identity, since the app moved from four Activities to
+one Activity + a NavHost of Composable routes) for literally every `CommandCatalog.kt` entry, so
+the command surface exposed through the UI can never silently drift out of coverage. A command
+failure here fails every row in that node's batch, the same as a
 build/install failure would, since none of them can be trusted to have run against a working app --
 degrading to a clear Skipped status if `gomobile`/`adb`/a connected device aren't available at all,
 and a clear Failed status with the real diagnostic (not just "exit status 1") if the build/install/

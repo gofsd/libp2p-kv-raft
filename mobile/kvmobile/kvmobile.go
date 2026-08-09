@@ -1067,41 +1067,12 @@ func SendEvent(eventJSON string) (string, error) {
 		return "", fmt.Errorf("kvmobile: Start has not completed successfully yet")
 	}
 
-	var ev e2edata.Event
-	if err := json.Unmarshal([]byte(eventJSON), &ev); err != nil {
-		return "", fmt.Errorf("kvmobile: parse event json: %w", err)
-	}
-	if ev.ID == 0 {
-		ev.ID = randomID()
-	}
-	msg, err := ev.ToMsg()
-	if err != nil {
-		return "", fmt.Errorf("kvmobile: %w", err)
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
 
-	var priv shmevent.PrivateKey
-	if shmevent.RequiresSignature(msg.Which()) {
-		keyMsg, err := shmevent.NewGetPrivateKey()
-		if err != nil {
-			return "", fmt.Errorf("kvmobile: fetch signing key: %w", err)
-		}
-		keyMsg.SetId(randomID())
-		keyResp, err := ipc.Call(ctx, id, keyMsg, nil)
-		if err != nil {
-			return "", fmt.Errorf("kvmobile: fetch signing key: %w", err)
-		}
-		if keyResp.Which() == shmevent.Event_Which_error {
-			errMsg, _ := keyResp.Error().Message_()
-			return "", fmt.Errorf("kvmobile: fetch signing key: %s", errMsg)
-		}
-		privKey, err := keyResp.GetPrivateKey().PrivKey()
-		if err != nil {
-			return "", fmt.Errorf("kvmobile: fetch signing key: %w", err)
-		}
-		priv = shmevent.PrivateKey(privKey)
+	msg, priv, err := buildAndSignEvent(ctx, id, eventJSON)
+	if err != nil {
+		return "", err
 	}
 
 	resp, err := ipc.Call(ctx, id, msg, priv)
@@ -1118,6 +1089,52 @@ func SendEvent(eventJSON string) (string, error) {
 		return "", fmt.Errorf("kvmobile: encode response: %w", err)
 	}
 	return string(out), nil
+}
+
+// buildAndSignEvent parses eventJSON (pkg/e2edata.Event's JSON shape) into
+// a capnp shmevent.Msg and, if the resulting op requires a signature,
+// fetches this device's own currently loaded private key over id's live
+// session and signs with it -- the shared parse+sign logic SendEvent and
+// EncodeEvent both need, factored out so they can't silently drift apart
+// (mirrors cmd/kvctl-cli's near-identical parseEventArg/
+// signEventForCurrentKey pair). Callers still choose how the result is
+// used -- dispatched via ipc.Call (SendEvent) or encoded to raw bytes via
+// shmevent.Encode (EncodeEvent).
+func buildAndSignEvent(ctx context.Context, id string, eventJSON string) (shmevent.Msg, shmevent.PrivateKey, error) {
+	var ev e2edata.Event
+	if err := json.Unmarshal([]byte(eventJSON), &ev); err != nil {
+		return shmevent.Msg{}, nil, fmt.Errorf("kvmobile: parse event json: %w", err)
+	}
+	if ev.ID == 0 {
+		ev.ID = randomID()
+	}
+	msg, err := ev.ToMsg()
+	if err != nil {
+		return shmevent.Msg{}, nil, fmt.Errorf("kvmobile: %w", err)
+	}
+
+	var priv shmevent.PrivateKey
+	if shmevent.RequiresSignature(msg.Which()) {
+		keyMsg, err := shmevent.NewGetPrivateKey()
+		if err != nil {
+			return shmevent.Msg{}, nil, fmt.Errorf("kvmobile: fetch signing key: %w", err)
+		}
+		keyMsg.SetId(randomID())
+		keyResp, err := ipc.Call(ctx, id, keyMsg, nil)
+		if err != nil {
+			return shmevent.Msg{}, nil, fmt.Errorf("kvmobile: fetch signing key: %w", err)
+		}
+		if keyResp.Which() == shmevent.Event_Which_error {
+			errMsg, _ := keyResp.Error().Message_()
+			return shmevent.Msg{}, nil, fmt.Errorf("kvmobile: fetch signing key: %s", errMsg)
+		}
+		privKey, err := keyResp.GetPrivateKey().PrivKey()
+		if err != nil {
+			return shmevent.Msg{}, nil, fmt.Errorf("kvmobile: fetch signing key: %w", err)
+		}
+		priv = shmevent.PrivateKey(privKey)
+	}
+	return msg, priv, nil
 }
 
 // randomID returns a random non-zero id -- 0 is reserved meaning

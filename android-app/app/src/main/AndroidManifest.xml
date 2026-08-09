@@ -2,11 +2,25 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- For the DataMatrix scanner (see ScannerHost.kt/MainScannerWidget.kt).
+         Not required="true": unlike object-history-app, this app's core
+         function (running a raft/libp2p node and its command catalog) has
+         no dependency on the camera, so a device/emulator without one, or
+         a user who denies the permission, still gets a fully usable app;
+         the scanner bubble alone degrades to a "permission required"
+         placeholder instead of the app refusing to run. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application
         android:allowBackup="false"
         android:label="KV Demo"
-        android:theme="@android:style/Theme.Material.Light">
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <!-- Single Activity for the whole app now (see MainActivity.kt,
+             AppRoot.kt): every screen is a NavHost route/Composable
+             instead of its own Activity. NoActionBar since Compose draws
+             its own chrome; a platform ActionBar on top of it would be
+             redundant. -->
         <activity
             android:name=".MainActivity"
             android:exported="true">
@@ -15,8 +29,5 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <activity android:name=".CommandListActivity" android:exported="false" />
-        <activity android:name=".CommandDetailActivity" android:exported="false" />
-        <activity android:name=".ActivityLogActivity" android:exported="false" />
     </application>
 </manifest>
