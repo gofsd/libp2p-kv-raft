@@ -12,7 +12,6 @@ import (
 	"github.com/gofsd/libp2p-kv-raft/pkg/e2edata"
 	"github.com/gofsd/libp2p-kv-raft/pkg/registry"
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmclient"
-	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
 
 // spawnTestLeader starts a real pkg/daemon node in dataDir, bootstrapped
@@ -110,18 +109,18 @@ func TestSendEventAgainstRealDaemon(t *testing.T) {
 	}
 
 	resp := mustSendEvent(t, `{"event":"get_public_key"}`)
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("get_public_key returned an error event: value=%q", resp.Value())
+	if resp.Op == "error" {
+		t.Fatalf("get_public_key returned an error event: fields=%v", resp.Fields)
 	}
-	if len(resp.Value()) != shmevent.PublicKeySize {
-		t.Fatalf("get_public_key value len = %d, want %d", len(resp.Value()), shmevent.PublicKeySize)
+	if len(resp.Fields["pub_key"]) == 0 {
+		t.Fatalf("get_public_key returned no pub_key field: fields=%v", resp.Fields)
 	}
 
-	if resp := mustSendEvent(t, `{"event":"set_key","value":"hello","id":100}`); resp.EventType == shmevent.EventError {
-		t.Fatalf("set_key returned an error event: value=%q", resp.Value())
+	if resp := mustSendEvent(t, `{"event":"set_key","id":100,"fields":{"value":"hello"}}`); resp.Op == "error" {
+		t.Fatalf("set_key returned an error event: fields=%v", resp.Fields)
 	}
-	if resp := mustSendEvent(t, `{"event":"set_field","source_id":100,"value":"world"}`); resp.EventType == shmevent.EventError {
-		t.Fatalf("set_field returned an error event: value=%q", resp.Value())
+	if resp := mustSendEvent(t, `{"event":"set_field","fields":{"source_id":"100","value":"world"}}`); resp.Op == "error" {
+		t.Fatalf("set_field returned an error event: fields=%v", resp.Fields)
 	}
 
 	// A SetField forwarded to the leader can commit slightly before this
@@ -132,17 +131,17 @@ func TestSendEventAgainstRealDaemon(t *testing.T) {
 	// replication has already caught up in zero time.
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		resp = mustSendEvent(t, `{"event":"get_field","value":"hello"}`)
-		if resp.EventType != shmevent.EventError {
+		resp = mustSendEvent(t, `{"event":"get_field_by_key","fields":{"key":"hello"}}`)
+		if resp.Op != "error" {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("get_field returned an error event: value=%q", resp.Value())
+			t.Fatalf("get_field_by_key returned an error event: fields=%v", resp.Fields)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if string(resp.Value()) != "world" {
-		t.Fatalf("get_field value = %q, want %q", resp.Value(), "world")
+	if resp.Fields["value"] != "world" {
+		t.Fatalf("get_field_by_key value = %q, want %q", resp.Fields["value"], "world")
 	}
 }
 

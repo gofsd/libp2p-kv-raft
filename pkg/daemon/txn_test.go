@@ -15,20 +15,42 @@ import (
 // handleShmEvent as a local caller.
 func callTxnLocal(t *testing.T, ctx context.Context, n *Node, m shmevent.Msg) shmevent.Msg {
 	t.Helper()
-	buf, err := shmevent.Encode(m, n.ed25519Priv)
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
-	decoded, crc, sig, err := shmevent.Decode(buf)
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	return n.handleShmEvent(ctx, decoded, crc, sig, n.localCaller())
+	return callLocal(t, ctx, n, m, n.ed25519Priv)
 }
 
-// TestEventTxnAppliesAllOpsAtomically proves a multi-op EventTxn -- two
-// Sets and a Delete of a key set up ahead of time -- lands as a single
-// unit: every op is independently readable afterward via EventGetField.
+// newRawTxnMsg builds a txn Msg directly through the low-level generated
+// accessors, bypassing NewTxn's own ValidTxnOp/empty-key validation --
+// mirrors what NewTxn does internally, minus the checks -- so a test can
+// put an op onto the wire that NewTxn itself would refuse to build, and
+// exercise kvfsm.Apply's own independent validation instead.
+func newRawTxnMsg(t *testing.T, ops []shmevent.TxnOpSpec) shmevent.Msg {
+	t.Helper()
+	m, err := shmevent.NewMsg()
+	if err != nil {
+		t.Fatalf("NewMsg: %v", err)
+	}
+	m.SetTxn()
+	grp := m.Txn()
+	list, err := grp.NewOps(int32(len(ops)))
+	if err != nil {
+		t.Fatalf("NewOps: %v", err)
+	}
+	for i, op := range ops {
+		dst := list.At(i)
+		dst.SetOp(op.Op)
+		if err := dst.SetKey(op.Key); err != nil {
+			t.Fatalf("SetKey: %v", err)
+		}
+		if err := dst.SetValue(op.Value); err != nil {
+			t.Fatalf("SetValue: %v", err)
+		}
+	}
+	return m
+}
+
+// TestEventTxnAppliesAllOpsAtomically proves a multi-op txn -- two Sets and
+// a Delete of a key set up ahead of time -- lands as a single unit: every
+// op is independently readable afterward via getFieldByKey.
 func TestEventTxnAppliesAllOpsAtomically(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -36,33 +58,44 @@ func TestEventTxnAppliesAllOpsAtomically(t *testing.T) {
 	leader := startTestLeader(t, ctx, Config{})
 
 	// Pre-existing key the transaction will delete.
-	setPayload, err := shmevent.EncodeSetPayload([]byte("to-delete"), []byte("gone-soon"))
+	setMsg, err := shmevent.NewSet([]byte("to-delete"), []byte("gone-soon"))
 	if err != nil {
-		t.Fatalf("EncodeSetPayload: %v", err)
+		t.Fatalf("NewSet: %v", err)
 	}
-	if resp := callTxnLocal(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventSet, Value: setPayload, ID: 1}); resp.EventType == shmevent.EventError {
-		t.Fatalf("seed set: %s", resp.Value)
+	setMsg.SetId(1)
+	if resp := callTxnLocal(t, ctx, leader, setMsg); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("seed set: %s", mustErrMessage(t, resp))
 	}
 
-	ops := []shmevent.TxnOp{
+	ops := []shmevent.TxnOpSpec{
 		{Op: shmevent.TxnOpSet, Key: []byte("k1"), Value: []byte("v1")},
 		{Op: shmevent.TxnOpSet, Key: []byte("k2"), Value: []byte("v2")},
 		{Op: shmevent.TxnOpDelete, Key: []byte("to-delete")},
 	}
-	txnPayload, err := shmevent.EncodeTxnPayload(ops)
+	txnMsg, err := shmevent.NewTxn(ops)
 	if err != nil {
-		t.Fatalf("EncodeTxnPayload: %v", err)
+		t.Fatalf("NewTxn: %v", err)
 	}
-	if resp := callTxnLocal(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventTxn, Value: txnPayload, ID: 2}); resp.EventType == shmevent.EventError {
-		t.Fatalf("txn: %s", resp.Value)
+	txnMsg.SetId(2)
+	if resp := callTxnLocal(t, ctx, leader, txnMsg); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("txn: %s", mustErrMessage(t, resp))
 	}
 
 	get := func(key string) (string, bool) {
-		resp := callTxnLocal(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventGetField, Value: []byte(key), ID: 3})
-		if resp.EventType == shmevent.EventError {
+		m, err := shmevent.NewGetFieldByKey([]byte(key))
+		if err != nil {
+			t.Fatalf("NewGetFieldByKey: %v", err)
+		}
+		m.SetId(3)
+		resp := callTxnLocal(t, ctx, leader, m)
+		if resp.Which() == shmevent.Event_Which_error {
 			return "", false
 		}
-		return string(resp.Value), true
+		value, err := resp.GetFieldByKey().Value()
+		if err != nil {
+			t.Fatalf("GetFieldByKey value: %v", err)
+		}
+		return string(value), true
 	}
 
 	if v, ok := get("k1"); !ok || v != "v1" {
@@ -88,60 +121,66 @@ func TestEventTxnRejectsReservedNamespaceKeyWithNoPartialEffect(t *testing.T) {
 	leader := startTestLeader(t, ctx, Config{})
 
 	reservedKey := append([]byte{shmevent.SystemKeyPrefix}, []byte("whatever")...)
-	ops := []shmevent.TxnOp{
+	ops := []shmevent.TxnOpSpec{
 		{Op: shmevent.TxnOpSet, Key: []byte("ordinary-key"), Value: []byte("ordinary-value")},
 		{Op: shmevent.TxnOpSet, Key: reservedKey, Value: []byte("nope")},
 	}
-	txnPayload, err := shmevent.EncodeTxnPayload(ops)
+	txnMsg, err := shmevent.NewTxn(ops)
 	if err != nil {
-		t.Fatalf("EncodeTxnPayload: %v", err)
+		t.Fatalf("NewTxn: %v", err)
 	}
-	resp := callTxnLocal(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventTxn, Value: txnPayload, ID: 1})
-	if resp.EventType != shmevent.EventError {
+	txnMsg.SetId(1)
+	resp := callTxnLocal(t, ctx, leader, txnMsg)
+	if resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("txn touching a reserved-namespace key unexpectedly succeeded")
 	}
-	if !strings.Contains(string(resp.Value), "reserved") {
-		t.Fatalf("txn rejection = %q, want it to mention the reserved namespace", resp.Value)
+	if !strings.Contains(mustErrMessage(t, resp), "reserved") {
+		t.Fatalf("txn rejection = %q, want it to mention the reserved namespace", mustErrMessage(t, resp))
 	}
 
-	getResp := callTxnLocal(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventGetField, Value: []byte("ordinary-key"), ID: 2})
-	if getResp.EventType != shmevent.EventError {
+	getMsg, err := shmevent.NewGetFieldByKey([]byte("ordinary-key"))
+	if err != nil {
+		t.Fatalf("NewGetFieldByKey: %v", err)
+	}
+	getMsg.SetId(2)
+	getResp := callTxnLocal(t, ctx, leader, getMsg)
+	if getResp.Which() != shmevent.Event_Which_error {
 		t.Fatal("ordinary-key was written despite the whole txn being rejected")
 	}
 }
 
 // TestEventTxnRejectsUnknownOpKindWithNoPartialEffect proves an
-// unrecognized TxnOp.Op value fails the whole kvfsm.Apply call before any
-// of the transaction's ops are written -- kvfsm.OpTxn's own
-// validate-then-write discipline, one layer past pkg/daemon's
-// reserved-key gate.
+// unrecognized TxnOpSpec.Op value fails the whole kvfsm.Apply call before
+// any of the transaction's ops are written -- kvfsm.OpTxn's own
+// validate-then-write discipline, one layer past pkg/daemon's reserved-key
+// gate. Built via newRawTxnMsg, since NewTxn itself already refuses an
+// invalid op kind client-side (see that constructor's own validation) --
+// this test is specifically about kvfsm.Apply's independent check.
 func TestEventTxnRejectsUnknownOpKindWithNoPartialEffect(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	leader := startTestLeader(t, ctx, Config{})
 
-	// EncodeTxnPayload itself validates Op, so build the malformed payload
-	// by hand to exercise kvfsm.Apply's own validation independently of
-	// it.
-	validOp, err := shmevent.EncodeTxnPayload([]shmevent.TxnOp{{Op: shmevent.TxnOpSet, Key: []byte("k1"), Value: []byte("v1")}})
-	if err != nil {
-		t.Fatalf("EncodeTxnPayload: %v", err)
+	ops := []shmevent.TxnOpSpec{
+		{Op: shmevent.TxnOpSet, Key: []byte("k1"), Value: []byte("v1")},
+		{Op: 99, Key: []byte("k2"), Value: nil}, // unrecognized op kind
 	}
-	// Two ops: the valid one above, plus a second with an unknown op byte
-	// (99), appended by hand in the same wire framing EncodeTxnPayload
-	// itself uses ([1-byte op][2-byte keylen][key][2-byte valuelen][value]).
-	malformed := append([]byte{}, validOp...)
-	malformed[1] = 2 // op count: 1 -> 2
-	malformed = append(malformed, 99, 0, 2, 'k', '2', 0, 0)
+	txnMsg := newRawTxnMsg(t, ops)
+	txnMsg.SetId(1)
 
-	resp := callTxnLocal(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventTxn, Value: malformed, ID: 1})
-	if resp.EventType != shmevent.EventError {
+	resp := callTxnLocal(t, ctx, leader, txnMsg)
+	if resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("txn with an unknown op kind unexpectedly succeeded")
 	}
 
-	getResp := callTxnLocal(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventGetField, Value: []byte("k1"), ID: 2})
-	if getResp.EventType != shmevent.EventError {
+	getMsg, err := shmevent.NewGetFieldByKey([]byte("k1"))
+	if err != nil {
+		t.Fatalf("NewGetFieldByKey: %v", err)
+	}
+	getMsg.SetId(2)
+	getResp := callTxnLocal(t, ctx, leader, getMsg)
+	if getResp.Which() != shmevent.Event_Which_error {
 		t.Fatal("k1 was written despite the whole txn being rejected for an unknown op kind")
 	}
 }

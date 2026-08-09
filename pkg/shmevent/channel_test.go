@@ -5,7 +5,24 @@ import (
 	"testing"
 )
 
-func TestChannelSendPayloadRoundTrip(t *testing.T) {
+func TestChannelOpenRoundTrip(t *testing.T) {
+	m, err := NewChannelOpen("12D3KooWtest")
+	if err != nil {
+		t.Fatalf("NewChannelOpen: %v", err)
+	}
+	if m.Which() != Event_Which_channelOpen {
+		t.Fatalf("Which() = %v, want channelOpen", m.Which())
+	}
+	peerID, err := m.ChannelOpen().PeerId()
+	if err != nil {
+		t.Fatalf("PeerId: %v", err)
+	}
+	if peerID != "12D3KooWtest" {
+		t.Fatalf("got peerID %q, want %q", peerID, "12D3KooWtest")
+	}
+}
+
+func TestChannelSendRoundTrip(t *testing.T) {
 	cases := []struct {
 		name    string
 		purpose byte
@@ -17,117 +34,140 @@ func TestChannelSendPayloadRoundTrip(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			payload, err := EncodeChannelSendPayload("chan-1", c.purpose, []byte("hello"))
+			m, err := NewChannelSend("chan-1", c.purpose, []byte("hello"))
 			if err != nil {
-				t.Fatalf("EncodeChannelSendPayload: %v", err)
+				t.Fatalf("NewChannelSend: %v", err)
 			}
-			gotID, gotPurpose, gotChunk, err := DecodeChannelSendPayload(payload)
+			if m.Which() != Event_Which_channelSend {
+				t.Fatalf("Which() = %v, want channelSend", m.Which())
+			}
+			grp := m.ChannelSend()
+			gotID, err := grp.ChannelId()
 			if err != nil {
-				t.Fatalf("DecodeChannelSendPayload: %v", err)
+				t.Fatalf("ChannelId: %v", err)
 			}
-			if string(gotID) != "chan-1" {
+			if gotID != "chan-1" {
 				t.Fatalf("got channelID %q, want %q", gotID, "chan-1")
 			}
-			if gotPurpose != c.purpose {
-				t.Fatalf("got purpose %d, want %d", gotPurpose, c.purpose)
+			if grp.Purpose() != c.purpose {
+				t.Fatalf("got purpose %d, want %d", grp.Purpose(), c.purpose)
+			}
+			gotChunk, err := grp.Chunk()
+			if err != nil {
+				t.Fatalf("Chunk: %v", err)
 			}
 			if !bytes.Equal(gotChunk, []byte("hello")) {
 				t.Fatalf("got chunk %q, want %q", gotChunk, "hello")
 			}
 		})
 	}
-
-	if _, _, _, err := DecodeChannelSendPayload(nil); err == nil {
-		t.Fatal("DecodeChannelSendPayload unexpectedly accepted an empty payload")
-	}
 }
 
-func TestChannelWireChunkRoundTrip(t *testing.T) {
-	cases := []struct {
-		name    string
-		purpose byte
-		chunk   []byte
-	}{
-		{"data", ChannelPurposeData, []byte("hello")},
-		{"control", ChannelPurposeControl, []byte("ping")},
-		{"video", ChannelPurposeVideo, []byte{0x00, 0x01, 0x02}},
-		{"empty chunk", ChannelPurposeData, nil},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			payload := EncodeChannelWireChunk(c.purpose, c.chunk)
-			gotPurpose, gotChunk, err := DecodeChannelWireChunk(payload)
-			if err != nil {
-				t.Fatalf("DecodeChannelWireChunk: %v", err)
-			}
-			if gotPurpose != c.purpose {
-				t.Fatalf("got purpose %d, want %d", gotPurpose, c.purpose)
-			}
-			if !bytes.Equal(gotChunk, c.chunk) {
-				t.Fatalf("got chunk %q, want %q", gotChunk, c.chunk)
-			}
-		})
-	}
-
-	if _, _, err := DecodeChannelWireChunk(nil); err == nil {
-		t.Fatal("DecodeChannelWireChunk unexpectedly accepted an empty payload")
-	}
-}
-
-func TestChannelAcceptRoundTrip(t *testing.T) {
-	payload, err := EncodeChannelAccept("chan-1", "12D3KooWtest")
+func TestChannelPollRoundTrip(t *testing.T) {
+	m, err := NewChannelPoll("chan-1")
 	if err != nil {
-		t.Fatalf("EncodeChannelAccept: %v", err)
+		t.Fatalf("NewChannelPoll: %v", err)
 	}
-	gotID, gotPeer, err := DecodeChannelAccept(payload)
+	grp := m.ChannelPoll()
+	gotID, err := grp.ChannelId()
 	if err != nil {
-		t.Fatalf("DecodeChannelAccept: %v", err)
+		t.Fatalf("ChannelId: %v", err)
 	}
-	if string(gotID) != "chan-1" {
+	if gotID != "chan-1" {
 		t.Fatalf("got channelID %q, want %q", gotID, "chan-1")
 	}
-	if string(gotPeer) != "12D3KooWtest" {
+
+	// The response reuses the same variant, filling in status/purpose/chunk.
+	grp.SetStatus(ChannelPollChunk)
+	grp.SetPurpose(ChannelPurposeVideo)
+	if err := grp.SetChunk([]byte("some bytes")); err != nil {
+		t.Fatalf("SetChunk: %v", err)
+	}
+	if grp.Status() != ChannelPollChunk {
+		t.Fatalf("got status %d, want %d", grp.Status(), ChannelPollChunk)
+	}
+	if grp.Purpose() != ChannelPurposeVideo {
+		t.Fatalf("got purpose %d, want %d", grp.Purpose(), ChannelPurposeVideo)
+	}
+	gotChunk, err := grp.Chunk()
+	if err != nil {
+		t.Fatalf("Chunk: %v", err)
+	}
+	if !bytes.Equal(gotChunk, []byte("some bytes")) {
+		t.Fatalf("got chunk %q, want %q", gotChunk, "some bytes")
+	}
+}
+
+func TestChannelListenRoundTrip(t *testing.T) {
+	m, err := NewChannelListen()
+	if err != nil {
+		t.Fatalf("NewChannelListen: %v", err)
+	}
+	if m.Which() != Event_Which_channelListen {
+		t.Fatalf("Which() = %v, want channelListen", m.Which())
+	}
+
+	// The response reuses the same variant, filling in channelId/remotePeerId.
+	grp := m.ChannelListen()
+	if err := grp.SetChannelId("chan-1"); err != nil {
+		t.Fatalf("SetChannelId: %v", err)
+	}
+	if err := grp.SetRemotePeerId("12D3KooWtest"); err != nil {
+		t.Fatalf("SetRemotePeerId: %v", err)
+	}
+	gotID, err := grp.ChannelId()
+	if err != nil {
+		t.Fatalf("ChannelId: %v", err)
+	}
+	if gotID != "chan-1" {
+		t.Fatalf("got channelID %q, want %q", gotID, "chan-1")
+	}
+	gotPeer, err := grp.RemotePeerId()
+	if err != nil {
+		t.Fatalf("RemotePeerId: %v", err)
+	}
+	if gotPeer != "12D3KooWtest" {
 		t.Fatalf("got remotePeerID %q, want %q", gotPeer, "12D3KooWtest")
 	}
 }
 
-func TestChannelPollResponseRoundTrip(t *testing.T) {
-	cases := []struct {
-		name    string
-		status  byte
-		purpose byte
-		chunk   []byte
-	}{
-		{"no data", ChannelPollNoData, ChannelPurposeData, nil},
-		{"chunk", ChannelPollChunk, ChannelPurposeData, []byte("some bytes")},
-		{"chunk control", ChannelPollChunk, ChannelPurposeControl, []byte("ping")},
-		{"chunk video", ChannelPollChunk, ChannelPurposeVideo, []byte{0xDE, 0xAD}},
-		{"closed", ChannelPollClosed, ChannelPurposeData, nil},
+func TestChannelCloseRoundTrip(t *testing.T) {
+	m, err := NewChannelClose("chan-1")
+	if err != nil {
+		t.Fatalf("NewChannelClose: %v", err)
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			payload := EncodeChannelPollResponse(c.status, c.purpose, c.chunk)
-			gotStatus, gotPurpose, gotChunk, err := DecodeChannelPollResponse(payload)
-			if err != nil {
-				t.Fatalf("DecodeChannelPollResponse: %v", err)
-			}
-			if gotStatus != c.status {
-				t.Fatalf("got status %d, want %d", gotStatus, c.status)
-			}
-			if gotPurpose != c.purpose {
-				t.Fatalf("got purpose %d, want %d", gotPurpose, c.purpose)
-			}
-			if !bytes.Equal(gotChunk, c.chunk) {
-				t.Fatalf("got chunk %q, want %q", gotChunk, c.chunk)
-			}
-		})
+	gotID, err := m.ChannelClose().ChannelId()
+	if err != nil {
+		t.Fatalf("ChannelId: %v", err)
+	}
+	if gotID != "chan-1" {
+		t.Fatalf("got channelID %q, want %q", gotID, "chan-1")
 	}
 
-	if _, _, _, err := DecodeChannelPollResponse(nil); err == nil {
-		t.Fatal("DecodeChannelPollResponse unexpectedly accepted an empty payload")
+	mw, err := NewChannelCloseWrite("chan-2")
+	if err != nil {
+		t.Fatalf("NewChannelCloseWrite: %v", err)
 	}
-	if _, _, _, err := DecodeChannelPollResponse([]byte{ChannelPollChunk}); err == nil {
-		t.Fatal("DecodeChannelPollResponse unexpectedly accepted a status-only payload")
+	gotID, err = mw.ChannelCloseWrite().ChannelId()
+	if err != nil {
+		t.Fatalf("ChannelId: %v", err)
+	}
+	if gotID != "chan-2" {
+		t.Fatalf("got channelID %q, want %q", gotID, "chan-2")
+	}
+}
+
+func TestChannelDataReadyRoundTrip(t *testing.T) {
+	m, err := NewChannelDataReady("chan-1")
+	if err != nil {
+		t.Fatalf("NewChannelDataReady: %v", err)
+	}
+	gotID, err := m.ChannelDataReady().ChannelId()
+	if err != nil {
+		t.Fatalf("ChannelId: %v", err)
+	}
+	if gotID != "chan-1" {
+		t.Fatalf("got channelID %q, want %q", gotID, "chan-1")
 	}
 }
 
@@ -164,12 +204,20 @@ func TestChannelPurposeNameRoundTrip(t *testing.T) {
 }
 
 func TestChannelEventNameRoundTrip(t *testing.T) {
-	events := []uint8{EventChannelOpen, EventChannelSend, EventChannelPoll, EventChannelListen, EventChannelClose, EventChannelCloseWrite}
+	events := []Event_Which{
+		Event_Which_channelOpen,
+		Event_Which_channelSend,
+		Event_Which_channelPoll,
+		Event_Which_channelListen,
+		Event_Which_channelClose,
+		Event_Which_channelCloseWrite,
+		Event_Which_channelDataReady,
+	}
 	for _, e := range events {
 		name := EventName(e)
 		got, ok := EventFromName(name)
 		if !ok || got != e {
-			t.Fatalf("EventFromName(%q) = %d, %v, want %d, true", name, got, ok, e)
+			t.Fatalf("EventFromName(%q) = %v, %v, want %v, true", name, got, ok, e)
 		}
 	}
 }

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/logrecord"
-	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
 
 // grantCommandAccess links commandID to groupID (AddCommandToGroup) and
@@ -241,10 +240,8 @@ func TestLatestCommandLog(t *testing.T) {
 
 // TestLatestCommandLogReturnsOutputIntact checks a normal-sized
 // AppendCommandLog entry round-trips through LatestCommandLog byte-for-
-// byte, and that the whole thing is comfortably inside
-// shmevent.ValueSize -- LatestCommandLog itself does no truncation (see
-// its doc comment), since AppendCommandLog already can't store anything
-// over that limit in the first place.
+// byte -- see TestAppendCommandLogHandlesLargeEntry below for the same
+// guarantee at a much larger size.
 func TestLatestCommandLogReturnsOutputIntact(t *testing.T) {
 	leaderAddr := spawnTestLeader(t, t.TempDir())
 
@@ -272,9 +269,6 @@ func TestLatestCommandLogReturnsOutputIntact(t *testing.T) {
 		if err != nil {
 			return false, err
 		}
-		if len(out) > shmevent.ValueSize {
-			t.Fatalf("LatestCommandLog output is %d bytes, want <= %d (shmevent.ValueSize)", len(out), shmevent.ValueSize)
-		}
 		return true, json.Unmarshal([]byte(out), &rec)
 	})
 	if rec.Narrative != output {
@@ -282,16 +276,17 @@ func TestLatestCommandLogReturnsOutputIntact(t *testing.T) {
 	}
 }
 
-// TestAppendCommandLogRejectsOversizedEntry checks AppendCommandLog
-// surfaces a clear error for a narrative too large for a single record,
-// rather than silently accepting or corrupting it -- the write-time half of
-// the guarantee LatestCommandLog's doc comment relies on.
-//
-// Sized against shmevent.KVValueSize, not ValueSize: EventLogAppend moved to
-// the larger tier so a journal entry can hold a real result rather than only
-// a one-line narration. The ceiling moved; that there *is* one, enforced at
-// write time, did not.
-func TestAppendCommandLogRejectsOversizedEntry(t *testing.T) {
+// TestAppendCommandLogHandlesLargeEntry checks a large AppendCommandLog
+// narrative round-trips through LatestCommandLog intact rather than being
+// silently truncated or corrupted. This used to be
+// TestAppendCommandLogRejectsOversizedEntry: the old wire format enforced a
+// fixed per-event ceiling (shmevent.ValueSize/KVValueSize/ChannelValueSize),
+// and this test drove AppendCommandLog past it to check that was rejected
+// cleanly. The new capnp-based Msg union has no such ceiling at all, so
+// there's nothing left to reject at write time -- the closest surviving
+// assertion is that a write comfortably bigger than the old 4KB KVValueSize
+// tier still isn't lost or mangled.
+func TestAppendCommandLogHandlesLargeEntry(t *testing.T) {
 	leaderAddr := spawnTestLeader(t, t.TempDir())
 
 	prevLeader := leaderMultiaddr
@@ -306,8 +301,23 @@ func TestAppendCommandLogRejectsOversizedEntry(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	hugeOutput := strings.Repeat("x", shmevent.KVValueSize*4)
-	if err := AppendCommandLog("", "instance-oversized", "", hugeOutput); err == nil {
-		t.Fatalf("AppendCommandLog with oversized narrative: want error, got none")
+	// 16KB -- 4x the old KVValueSize (4096 bytes) tier this test used to
+	// drive AppendCommandLog past to trigger a rejection.
+	const largeSize = 4096 * 4
+	largeOutput := strings.Repeat("x", largeSize)
+	const instanceID = "instance-large"
+	if err := AppendCommandLog("", instanceID, "", largeOutput); err != nil {
+		t.Fatalf("AppendCommandLog with large narrative: %v", err)
 	}
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		out, err := LatestCommandLog(instanceID)
+		if err != nil {
+			return false, err
+		}
+		var rec logrecord.Record
+		if err := json.Unmarshal([]byte(out), &rec); err != nil {
+			return false, err
+		}
+		return rec.Narrative == largeOutput, nil
+	})
 }

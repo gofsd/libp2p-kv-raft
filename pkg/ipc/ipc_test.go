@@ -59,7 +59,11 @@ func TestCallRawPreservesOriginalSignature(t *testing.T) {
 		t.Fatalf("generate key: %v", err)
 	}
 
-	req := shmevent.Msg{EventType: shmevent.EventGetField, Value: []byte("some-key"), ID: 7}
+	req, err := shmevent.NewGetFieldByKey([]byte("some-key"))
+	if err != nil {
+		t.Fatalf("NewGetFieldByKey: %v", err)
+	}
+	req.SetId(7)
 	encoded, err := shmevent.Encode(req, originalPriv)
 	if err != nil {
 		t.Fatalf("shmevent.Encode: %v", err)
@@ -76,9 +80,24 @@ func TestCallRawPreservesOriginalSignature(t *testing.T) {
 			// signature -- a bug here would mean CallRaw quietly re-signed
 			// (or mangled) the caller's already-signed bytes.
 			if err := shmevent.Verify(originalPub, m, crc, sig); err != nil {
-				return shmevent.Msg{EventType: shmevent.EventError, ID: m.ID, Value: []byte(err.Error())}
+				errResp, encErr := shmevent.NewError(err.Error())
+				if encErr != nil {
+					// Only possible on a malformed message string; not
+					// reachable with the fixed input this test uses.
+					panic(encErr)
+				}
+				errResp.SetId(m.Id())
+				return errResp
 			}
-			return shmevent.Msg{EventType: shmevent.EventGetField, ID: m.ID, Value: []byte("ok")}
+			okResp, encErr := shmevent.NewGetFieldByKey([]byte("some-key"))
+			if encErr == nil {
+				encErr = okResp.GetFieldByKey().SetValue([]byte("ok"))
+			}
+			if encErr != nil {
+				panic(encErr)
+			}
+			okResp.SetId(m.Id())
+			return okResp
 		})
 	}()
 
@@ -86,11 +105,16 @@ func TestCallRawPreservesOriginalSignature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CallRaw: %v", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("server rejected the request's original signature: %s", resp.Value)
+	if resp.Which() == shmevent.Event_Which_error {
+		msg, _ := resp.Error().Message_()
+		t.Fatalf("server rejected the request's original signature: %s", msg)
 	}
-	if string(resp.Value) != "ok" {
-		t.Fatalf("got response value %q, want %q", resp.Value, "ok")
+	respValue, err := resp.GetFieldByKey().Value()
+	if err != nil {
+		t.Fatalf("resp.GetFieldByKey().Value(): %v", err)
+	}
+	if string(respValue) != "ok" {
+		t.Fatalf("got response value %q, want %q", respValue, "ok")
 	}
 
 	cancel()

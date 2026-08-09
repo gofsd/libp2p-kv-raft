@@ -131,7 +131,7 @@ func CreateExecInviteTicket(commandID, inputsJSON string) (string, error) {
 		return "", fmt.Errorf("create exec invite ticket: get own addr: %w", err)
 	}
 
-	value, err := shmevent.EncodeExecTicketPayload(addr, token)
+	m, err := shmevent.NewExecTicket(addr, token)
 	if err != nil {
 		return "", fmt.Errorf("create exec invite ticket: %w", err)
 	}
@@ -139,7 +139,7 @@ func CreateExecInviteTicket(commandID, inputsJSON string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("create exec invite ticket: fetch signing key: %w", err)
 	}
-	wire, err := shmevent.Encode(shmevent.Msg{EventType: shmevent.EventExecTicket, Value: value}, priv)
+	wire, err := shmevent.Encode(m, priv)
 	if err != nil {
 		return "", fmt.Errorf("create exec invite ticket: sign: %w", err)
 	}
@@ -165,10 +165,15 @@ func RedeemExecInviteTicket(ticketB64 string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("decode exec invite ticket: %w", err)
 	}
-	if m.EventType != shmevent.EventExecTicket {
-		return "", fmt.Errorf("not an exec invite ticket (event %s)", shmevent.EventName(m.EventType))
+	if m.Which() != shmevent.Event_Which_execTicket {
+		return "", fmt.Errorf("not an exec invite ticket (event %s)", shmevent.EventName(m.Which()))
 	}
-	sourceAddr, token, err := shmevent.DecodeExecTicketPayload(m.Value)
+	grp := m.ExecTicket()
+	sourceAddr, err := grp.SourceAddr()
+	if err != nil {
+		return "", fmt.Errorf("decode exec invite ticket: %w", err)
+	}
+	token, err := grp.Token()
 	if err != nil {
 		return "", fmt.Errorf("decode exec invite ticket: %w", err)
 	}

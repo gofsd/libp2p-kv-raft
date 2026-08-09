@@ -31,35 +31,29 @@ func remoteAppend(t *testing.T, ctx context.Context, remote lp2phost.Host, remot
 	if err != nil {
 		t.Fatalf("Record.Encode: %v", err)
 	}
-	payload, err := shmevent.EncodeSetPayload(key, value)
+	m, err := shmevent.NewLogAppend(key, value)
 	if err != nil {
-		t.Fatalf("EncodeSetPayload: %v", err)
+		t.Fatalf("NewLogAppend: %v", err)
 	}
-	resp, err := callClientProtocol(ctx, remote, target, shmevent.Msg{
-		EventType: shmevent.EventLogAppend,
-		Value:     payload,
-		ID:        1,
-	}, remotePriv)
+	m.SetId(1)
+	resp, err := callClientProtocol(ctx, remote, target, m, remotePriv)
 	if err != nil {
 		t.Fatalf("log_append: %v", err)
 	}
 	return resp
 }
 
-// remoteQuery drives EventListRange once (not in a loop -- these tests
-// only need to know whether the first match is granted or rejected) from
-// remote against target for [start, end].
+// remoteQuery drives listRange once (not in a loop -- these tests only
+// need to know whether the first match is granted or rejected) from remote
+// against target for [start, end].
 func remoteQuery(t *testing.T, ctx context.Context, remote lp2phost.Host, remotePriv shmevent.PrivateKey, target peer.ID, start, end []byte) shmevent.Msg {
 	t.Helper()
-	query, err := shmevent.EncodeListRangeQuery(start, end)
+	m, err := shmevent.NewListRange(start, end)
 	if err != nil {
-		t.Fatalf("EncodeListRangeQuery: %v", err)
+		t.Fatalf("NewListRange: %v", err)
 	}
-	resp, err := callClientProtocol(ctx, remote, target, shmevent.Msg{
-		EventType: shmevent.EventListRange,
-		Value:     query,
-		ID:        2,
-	}, remotePriv)
+	m.SetId(2)
+	resp, err := callClientProtocol(ctx, remote, target, m, remotePriv)
 	if err != nil {
 		t.Fatalf("list_range: %v", err)
 	}
@@ -67,43 +61,43 @@ func remoteQuery(t *testing.T, ctx context.Context, remote lp2phost.Host, remote
 }
 
 // putGroup/putCommand/putGroupCommand apply the group-based ACL catalog's
-// Put, via EventCatalogPut, locally against leader (its own sole-voter
-// standing needs no remote identity check -- see EventCatalogPut's case in
+// Put locally against leader (its own sole-voter standing needs no remote
+// identity check -- see groupPut/commandPut/groupCommandPut's cases in
 // handleShmEvent), building the fixtures TestCommandLogCarveOut* below
 // submit/read against.
 func putGroup(t *testing.T, ctx context.Context, leader *Node, id, name string, public bool) {
 	t.Helper()
-	payload, err := shmevent.EncodeGroupPutPayload(id, name, public)
+	m, err := shmevent.NewGroupPut(id, name, public)
 	if err != nil {
-		t.Fatalf("EncodeGroupPutPayload: %v", err)
+		t.Fatalf("NewGroupPut: %v", err)
 	}
-	resp := callLocal(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: shmevent.EncodeCatalogPayload(shmevent.KindGroup, payload), ID: 1}, leader.ed25519Priv)
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("group_put %q rejected: %s", id, resp.Value)
+	resp := callLocal(t, ctx, leader, m, leader.ed25519Priv)
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("group_put %q rejected: %s", id, mustErrMessage(t, resp))
 	}
 }
 
 func putCommand(t *testing.T, ctx context.Context, leader *Node, id, name, peerID string) {
 	t.Helper()
-	payload, err := shmevent.EncodeCommandPutPayload(id, name, []byte(peerID))
+	m, err := shmevent.NewCommandPut(id, name, peerID)
 	if err != nil {
-		t.Fatalf("EncodeCommandPutPayload: %v", err)
+		t.Fatalf("NewCommandPut: %v", err)
 	}
-	resp := callLocal(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: shmevent.EncodeCatalogPayload(shmevent.KindCommand, payload), ID: 1}, leader.ed25519Priv)
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("command_put %q rejected: %s", id, resp.Value)
+	resp := callLocal(t, ctx, leader, m, leader.ed25519Priv)
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("command_put %q rejected: %s", id, mustErrMessage(t, resp))
 	}
 }
 
 func putGroupCommand(t *testing.T, ctx context.Context, leader *Node, commandID, groupID string) {
 	t.Helper()
-	payload, err := shmevent.EncodeGroupCommandPayload([]byte(commandID), []byte(groupID))
+	m, err := shmevent.NewGroupCommandPut(commandID, groupID)
 	if err != nil {
-		t.Fatalf("EncodeGroupCommandPayload: %v", err)
+		t.Fatalf("NewGroupCommandPut: %v", err)
 	}
-	resp := callLocal(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: shmevent.EncodeCatalogPayload(shmevent.KindGroupCommand, payload), ID: 1}, leader.ed25519Priv)
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("group_command_put (%q, %q) rejected: %s", commandID, groupID, resp.Value)
+	resp := callLocal(t, ctx, leader, m, leader.ed25519Priv)
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("group_command_put (%q, %q) rejected: %s", commandID, groupID, mustErrMessage(t, resp))
 	}
 }
 
@@ -135,12 +129,12 @@ func TestCommandLogCarveOutSubmitPublicCommand(t *testing.T) {
 	instanceID := "inst-1"
 
 	publicResp := remoteAppend(t, ctx, remote, remotePriv, leaderPeerID, shmevent.CommandRequestLogKind("cmd-public"), instanceID, base)
-	if publicResp.EventType == shmevent.EventError {
-		t.Fatalf("submitting a command linked to a public group was rejected: %s", publicResp.Value)
+	if publicResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("submitting a command linked to a public group was rejected: %s", mustErrMessage(t, publicResp))
 	}
 
 	privateResp := remoteAppend(t, ctx, remote, remotePriv, leaderPeerID, shmevent.CommandRequestLogKind("cmd-private"), instanceID, base)
-	if privateResp.EventType != shmevent.EventError {
+	if privateResp.Which() != shmevent.Event_Which_error {
 		t.Fatal("submitting a command with no public group unexpectedly succeeded for an unauthorized remote caller")
 	}
 }
@@ -173,26 +167,26 @@ func TestCommandLogCarveOutReadOwnRecords(t *testing.T) {
 
 	// A public command's own request queue is readable.
 	lo, hi := logrecord.ScanBounds(shmevent.CommandRequestLogKind("cmd-public"), "inst-1", base.Add(-time.Hour), base.Add(time.Hour))
-	if resp := remoteQuery(t, ctx, remote, remotePriv, leaderPeerID, lo, hi); resp.EventType == shmevent.EventError {
-		t.Fatalf("reading a public command's own request queue was rejected: %s", resp.Value)
+	if resp := remoteQuery(t, ctx, remote, remotePriv, leaderPeerID, lo, hi); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("reading a public command's own request queue was rejected: %s", mustErrMessage(t, resp))
 	}
 
 	// A non-public command's request queue is not.
 	lo2, hi2 := logrecord.ScanBounds(shmevent.CommandRequestLogKind("cmd-private"), "inst-1", base.Add(-time.Hour), base.Add(time.Hour))
-	if resp := remoteQuery(t, ctx, remote, remotePriv, leaderPeerID, lo2, hi2); resp.EventType != shmevent.EventError {
+	if resp := remoteQuery(t, ctx, remote, remotePriv, leaderPeerID, lo2, hi2); resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("reading a non-public command's request queue unexpectedly succeeded")
 	}
 
 	// The caller's own execution index is readable, regardless of any
 	// command standing at all.
 	loSelf, hiSelf := logrecord.ScanBounds(shmevent.CommandExecIndexKind(remoteIDStr), "inst-1", base.Add(-time.Hour), base.Add(time.Hour))
-	if resp := remoteQuery(t, ctx, remote, remotePriv, leaderPeerID, loSelf, hiSelf); resp.EventType == shmevent.EventError {
-		t.Fatalf("reading the caller's own execution index was rejected: %s", resp.Value)
+	if resp := remoteQuery(t, ctx, remote, remotePriv, leaderPeerID, loSelf, hiSelf); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("reading the caller's own execution index was rejected: %s", mustErrMessage(t, resp))
 	}
 
 	// Another peer's execution index is not.
 	loOther, hiOther := logrecord.ScanBounds(shmevent.CommandExecIndexKind("some-other-peer-id"), "inst-1", base.Add(-time.Hour), base.Add(time.Hour))
-	if resp := remoteQuery(t, ctx, remote, remotePriv, leaderPeerID, loOther, hiOther); resp.EventType != shmevent.EventError {
+	if resp := remoteQuery(t, ctx, remote, remotePriv, leaderPeerID, loOther, hiOther); resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("reading another peer's execution index unexpectedly succeeded")
 	}
 
@@ -201,8 +195,8 @@ func TestCommandLogCarveOutReadOwnRecords(t *testing.T) {
 	// GetCommandRequest doc comment), unrelated to any command/group
 	// standing.
 	loLog, hiLog := logrecord.ScanBounds(shmevent.CommandExecLogKind, "some-random-instance-id", base.Add(-time.Hour), base.Add(time.Hour))
-	if resp := remoteQuery(t, ctx, remote, remotePriv, leaderPeerID, loLog, hiLog); resp.EventType == shmevent.EventError {
-		t.Fatalf("reading shmevent.CommandExecLogKind was rejected: %s", resp.Value)
+	if resp := remoteQuery(t, ctx, remote, remotePriv, leaderPeerID, loLog, hiLog); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("reading shmevent.CommandExecLogKind was rejected: %s", mustErrMessage(t, resp))
 	}
 }
 
@@ -222,20 +216,20 @@ func TestCommandLogCarveOutRejectsOrdinaryLogKind(t *testing.T) {
 
 	base := time.Date(2026, 7, 19, 0, 0, 0, 0, time.UTC)
 	resp := remoteAppend(t, ctx, remote, remotePriv, leaderPeerID, "sitrep", "1BCT", base)
-	if resp.EventType != shmevent.EventError {
+	if resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("log_append of an ordinary log kind from an unauthorized remote peer unexpectedly succeeded")
 	}
-	if !strings.Contains(string(resp.Value), "not permitted") {
-		t.Fatalf("log_append rejection = %q, want it to mention not being permitted", resp.Value)
+	if !strings.Contains(mustErrMessage(t, resp), "not permitted") {
+		t.Fatalf("log_append rejection = %q, want it to mention not being permitted", mustErrMessage(t, resp))
 	}
 
 	lo, hi := logrecord.ScanBounds("sitrep", "1BCT", base.Add(-time.Hour), base.Add(time.Hour))
 	qresp := remoteQuery(t, ctx, remote, remotePriv, leaderPeerID, lo, hi)
-	if qresp.EventType != shmevent.EventError {
+	if qresp.Which() != shmevent.Event_Which_error {
 		t.Fatal("list_range of an ordinary log kind from an unauthorized remote peer unexpectedly succeeded")
 	}
-	if !strings.Contains(string(qresp.Value), "not permitted") {
-		t.Fatalf("list_range rejection = %q, want it to mention not being permitted", qresp.Value)
+	if !strings.Contains(mustErrMessage(t, qresp), "not permitted") {
+		t.Fatalf("list_range rejection = %q, want it to mention not being permitted", mustErrMessage(t, qresp))
 	}
 }
 
@@ -263,7 +257,7 @@ func TestCommandLogCarveOutRangeSingleKindOnly(t *testing.T) {
 	_, hi := logrecord.ScanBounds("sitrep", "1BCT", base.Add(-time.Hour), base.Add(time.Hour))
 
 	resp := remoteQuery(t, ctx, remote, remotePriv, leaderPeerID, lo, hi)
-	if resp.EventType != shmevent.EventError {
+	if resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("list_range with start in a permitted command's queue but end reaching into an unrelated kind unexpectedly succeeded")
 	}
 }
@@ -297,13 +291,13 @@ func TestLogAccessUnconditionalForClusterMembers(t *testing.T) {
 	}
 
 	base := time.Date(2026, 7, 19, 0, 0, 0, 0, time.UTC)
-	if resp := remoteAppend(t, ctx, remote, remotePriv, leaderPeerID, "sitrep", "1BCT", base); resp.EventType == shmevent.EventError {
-		t.Fatalf("log_append rejected for a cluster member: %s", resp.Value)
+	if resp := remoteAppend(t, ctx, remote, remotePriv, leaderPeerID, "sitrep", "1BCT", base); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("log_append rejected for a cluster member: %s", mustErrMessage(t, resp))
 	}
 
 	lo, hi := logrecord.ScanBounds("sitrep", "1BCT", base.Add(-time.Hour), base.Add(time.Hour))
-	if resp := remoteQuery(t, ctx, remote, remotePriv, leaderPeerID, lo, hi); resp.EventType == shmevent.EventError {
-		t.Fatalf("list_range rejected for a cluster member: %s", resp.Value)
+	if resp := remoteQuery(t, ctx, remote, remotePriv, leaderPeerID, lo, hi); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("list_range rejected for a cluster member: %s", mustErrMessage(t, resp))
 	}
 }
 
@@ -333,26 +327,32 @@ func TestLogAccessLocalCallerNeverGated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Record.Encode: %v", err)
 	}
-	payload, err := shmevent.EncodeSetPayload(key, value)
+	appendMsg, err := shmevent.NewLogAppend(key, value)
 	if err != nil {
-		t.Fatalf("EncodeSetPayload: %v", err)
+		t.Fatalf("NewLogAppend: %v", err)
 	}
+	appendMsg.SetId(1)
 
-	resp := callLocal(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventLogAppend, Value: payload, ID: 1}, leader.ed25519Priv)
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("local log_append rejected despite no group standing: %s", resp.Value)
+	resp := callLocal(t, ctx, leader, appendMsg, leader.ed25519Priv)
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("local log_append rejected despite no group standing: %s", mustErrMessage(t, resp))
 	}
 
 	lo, hi := logrecord.ScanBounds("sitrep", "1BCT", base.Add(-time.Hour), base.Add(time.Hour))
-	query, err := shmevent.EncodeListRangeQuery(lo, hi)
+	queryMsg, err := shmevent.NewListRange(lo, hi)
 	if err != nil {
-		t.Fatalf("EncodeListRangeQuery: %v", err)
+		t.Fatalf("NewListRange: %v", err)
 	}
-	qresp := callLocal(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventListRange, Value: query, ID: 2}, leader.ed25519Priv)
-	if qresp.EventType == shmevent.EventError {
-		t.Fatalf("local list_range rejected despite no group standing: %s", qresp.Value)
+	queryMsg.SetId(2)
+	qresp := callLocal(t, ctx, leader, queryMsg, leader.ed25519Priv)
+	if qresp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("local list_range rejected despite no group standing: %s", mustErrMessage(t, qresp))
 	}
-	if len(qresp.Value) == 0 {
+	qrespKey, err := qresp.ListRange().Key()
+	if err != nil {
+		t.Fatalf("ListRange key: %v", err)
+	}
+	if len(qrespKey) == 0 {
 		t.Fatal("local list_range found nothing -- append above must not have landed")
 	}
 }

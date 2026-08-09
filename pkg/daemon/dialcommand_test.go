@@ -35,16 +35,20 @@ func TestDialSubmitCommandGrantsGenericCommand(t *testing.T) {
 
 	target := leader.advertisedAddrs()[0]
 	inputsJSON := `{"foo":"bar"}`
-	reqPayload, err := shmevent.EncodeDialSubmitCommandRequest(target, "cmd-dial-public", inputsJSON, "e2e-note")
+	reqMsg, err := shmevent.NewDialSubmitCommand(target, "cmd-dial-public", inputsJSON, "e2e-note")
 	if err != nil {
-		t.Fatalf("EncodeDialSubmitCommandRequest: %v", err)
+		t.Fatalf("NewDialSubmitCommand: %v", err)
 	}
+	reqMsg.SetId(1)
 
-	resp := callLocal(t, ctx, stranger, shmevent.Msg{EventType: shmevent.EventDialSubmitCommand, Value: reqPayload, ID: 1}, stranger.ed25519Priv)
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("dial_submit_command was rejected: %s", resp.Value)
+	resp := callLocal(t, ctx, stranger, reqMsg, stranger.ed25519Priv)
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("dial_submit_command was rejected: %s", mustErrMessage(t, resp))
 	}
-	instanceID := string(resp.Value)
+	instanceID, err := resp.DialSubmitCommand().InstanceId()
+	if err != nil {
+		t.Fatalf("DialSubmitCommand instance_id: %v", err)
+	}
 	if instanceID == "" {
 		t.Fatal("dial_submit_command returned no instance id")
 	}
@@ -54,20 +58,21 @@ func TestDialSubmitCommandGrantsGenericCommand(t *testing.T) {
 	// claims to have written, attributed to the stranger's own identity.
 	base := time.Now()
 	lo, hi := logrecord.ScanBounds(shmevent.CommandRequestLogKind("cmd-dial-public"), instanceID, base.Add(-time.Hour), base.Add(time.Hour))
-	query, err := shmevent.EncodeListRangeQuery(lo, hi)
+	queryMsg, err := shmevent.NewListRange(lo, hi)
 	if err != nil {
-		t.Fatalf("EncodeListRangeQuery: %v", err)
+		t.Fatalf("NewListRange: %v", err)
 	}
-	queryResp := callLocal(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventListRange, Value: query, ID: 2}, leader.ed25519Priv)
-	if queryResp.EventType == shmevent.EventError {
-		t.Fatalf("reading back the submitted command's log entry was rejected: %s", queryResp.Value)
+	queryMsg.SetId(2)
+	queryResp := callLocal(t, ctx, leader, queryMsg, leader.ed25519Priv)
+	if queryResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("reading back the submitted command's log entry was rejected: %s", mustErrMessage(t, queryResp))
 	}
-	if len(queryResp.Value) == 0 {
+	value, err := queryResp.ListRange().Value()
+	if err != nil {
+		t.Fatalf("ListRange value: %v", err)
+	}
+	if len(value) == 0 {
 		t.Fatal("no log entry found for the submitted command -- dial_submit_command did not actually land")
-	}
-	_, value, err := shmevent.DecodeListRangeQuery(queryResp.Value)
-	if err != nil {
-		t.Fatalf("DecodeListRangeQuery: %v", err)
 	}
 	rec, err := logrecord.Decode(value)
 	if err != nil {
@@ -107,13 +112,14 @@ func TestDialSubmitCommandRejectsNonPublicCommand(t *testing.T) {
 	putGroupCommand(t, ctx, leader, "cmd-dial-private", "grp-dial-private")
 
 	target := leader.advertisedAddrs()[0]
-	reqPayload, err := shmevent.EncodeDialSubmitCommandRequest(target, "cmd-dial-private", "", "")
+	reqMsg, err := shmevent.NewDialSubmitCommand(target, "cmd-dial-private", "", "")
 	if err != nil {
-		t.Fatalf("EncodeDialSubmitCommandRequest: %v", err)
+		t.Fatalf("NewDialSubmitCommand: %v", err)
 	}
+	reqMsg.SetId(1)
 
-	resp := callLocal(t, ctx, stranger, shmevent.Msg{EventType: shmevent.EventDialSubmitCommand, Value: reqPayload, ID: 1}, stranger.ed25519Priv)
-	if resp.EventType != shmevent.EventError {
+	resp := callLocal(t, ctx, stranger, reqMsg, stranger.ed25519Priv)
+	if resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("dial_submit_command against a command with no public group unexpectedly succeeded")
 	}
 }
@@ -161,18 +167,19 @@ func TestDialQueryCommandLogNeedsNoStanding(t *testing.T) {
 	}
 
 	target := leader.advertisedAddrs()[0]
-	reqPayload, err := shmevent.EncodeDialQueryCommandLogRequest(target, instanceID, base.Add(-time.Hour), base.Add(time.Hour), 0)
+	reqMsg, err := shmevent.NewDialQueryCommandLog(target, instanceID, base.Add(-time.Hour), base.Add(time.Hour), 0)
 	if err != nil {
-		t.Fatalf("EncodeDialQueryCommandLogRequest: %v", err)
+		t.Fatalf("NewDialQueryCommandLog: %v", err)
 	}
+	reqMsg.SetId(1)
 
-	resp := callLocal(t, ctx, reader, shmevent.Msg{EventType: shmevent.EventDialQueryCommandLog, Value: reqPayload, ID: 1}, reader.ed25519Priv)
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("dial_query_command_log was rejected despite no standing being required: %s", resp.Value)
+	resp := callLocal(t, ctx, reader, reqMsg, reader.ed25519Priv)
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("dial_query_command_log was rejected despite no standing being required: %s", mustErrMessage(t, resp))
 	}
-	records, err := shmevent.DecodeLogRecordList(resp.Value)
+	records, err := shmevent.DialQueryCommandLogRecords(resp.DialQueryCommandLog())
 	if err != nil {
-		t.Fatalf("DecodeLogRecordList: %v", err)
+		t.Fatalf("DialQueryCommandLogRecords: %v", err)
 	}
 	if len(records) != 1 {
 		t.Fatalf("got %d records, want 1", len(records))
@@ -199,23 +206,20 @@ func TestDialSubmitCommandRejectsRemoteCaller(t *testing.T) {
 	leader := startTestLeader(t, ctx, Config{})
 	remote, remotePriv, leaderPeerID := newTestRemoteHost(t, ctx, leader)
 
-	reqPayload, err := shmevent.EncodeDialSubmitCommandRequest("/ip4/127.0.0.1/tcp/1/p2p/"+leader.peerID, "cmd-x", "", "")
+	reqMsg, err := shmevent.NewDialSubmitCommand("/ip4/127.0.0.1/tcp/1/p2p/"+leader.peerID, "cmd-x", "", "")
 	if err != nil {
-		t.Fatalf("EncodeDialSubmitCommandRequest: %v", err)
+		t.Fatalf("NewDialSubmitCommand: %v", err)
 	}
-	resp, err := callClientProtocol(ctx, remote, leaderPeerID, shmevent.Msg{
-		EventType: shmevent.EventDialSubmitCommand,
-		Value:     reqPayload,
-		ID:        1,
-	}, remotePriv)
+	reqMsg.SetId(1)
+	resp, err := callClientProtocol(ctx, remote, leaderPeerID, reqMsg, remotePriv)
 	if err != nil {
 		t.Fatalf("dial_submit_command call: %v", err)
 	}
-	if resp.EventType != shmevent.EventError {
+	if resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("dial_submit_command from a remote caller unexpectedly succeeded")
 	}
-	if !strings.Contains(string(resp.Value), "not available to a remote caller") {
-		t.Fatalf("dial_submit_command rejected for the wrong reason: %s", resp.Value)
+	if !strings.Contains(mustErrMessage(t, resp), "not available to a remote caller") {
+		t.Fatalf("dial_submit_command rejected for the wrong reason: %s", mustErrMessage(t, resp))
 	}
 }
 
@@ -227,23 +231,20 @@ func TestDialQueryCommandLogRejectsRemoteCaller(t *testing.T) {
 	leader := startTestLeader(t, ctx, Config{})
 	remote, remotePriv, leaderPeerID := newTestRemoteHost(t, ctx, leader)
 
-	reqPayload, err := shmevent.EncodeDialQueryCommandLogRequest("/ip4/127.0.0.1/tcp/1/p2p/"+leader.peerID, "some-instance", time.Time{}, time.Time{}, 0)
+	reqMsg, err := shmevent.NewDialQueryCommandLog("/ip4/127.0.0.1/tcp/1/p2p/"+leader.peerID, "some-instance", time.Time{}, time.Time{}, 0)
 	if err != nil {
-		t.Fatalf("EncodeDialQueryCommandLogRequest: %v", err)
+		t.Fatalf("NewDialQueryCommandLog: %v", err)
 	}
-	resp, err := callClientProtocol(ctx, remote, leaderPeerID, shmevent.Msg{
-		EventType: shmevent.EventDialQueryCommandLog,
-		Value:     reqPayload,
-		ID:        1,
-	}, remotePriv)
+	reqMsg.SetId(1)
+	resp, err := callClientProtocol(ctx, remote, leaderPeerID, reqMsg, remotePriv)
 	if err != nil {
 		t.Fatalf("dial_query_command_log call: %v", err)
 	}
-	if resp.EventType != shmevent.EventError {
+	if resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("dial_query_command_log from a remote caller unexpectedly succeeded")
 	}
-	if !strings.Contains(string(resp.Value), "not available to a remote caller") {
-		t.Fatalf("dial_query_command_log rejected for the wrong reason: %s", resp.Value)
+	if !strings.Contains(mustErrMessage(t, resp), "not available to a remote caller") {
+		t.Fatalf("dial_query_command_log rejected for the wrong reason: %s", mustErrMessage(t, resp))
 	}
 }
 
@@ -259,15 +260,16 @@ func TestDialSubmitCommandRejectsSelfDial(t *testing.T) {
 
 	leader := startTestLeader(t, ctx, Config{})
 
-	reqPayload, err := shmevent.EncodeDialSubmitCommandRequest(leader.advertisedAddrs()[0], "cmd-x", "", "")
+	reqMsg, err := shmevent.NewDialSubmitCommand(leader.advertisedAddrs()[0], "cmd-x", "", "")
 	if err != nil {
-		t.Fatalf("EncodeDialSubmitCommandRequest: %v", err)
+		t.Fatalf("NewDialSubmitCommand: %v", err)
 	}
-	resp := callLocal(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventDialSubmitCommand, Value: reqPayload, ID: 1}, leader.ed25519Priv)
-	if resp.EventType != shmevent.EventError {
+	reqMsg.SetId(1)
+	resp := callLocal(t, ctx, leader, reqMsg, leader.ed25519Priv)
+	if resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("dial_submit_command targeting the caller's own node unexpectedly succeeded")
 	}
-	if !strings.Contains(string(resp.Value), "is this node itself") {
-		t.Fatalf("dial_submit_command self-dial rejected for the wrong reason: %s", resp.Value)
+	if !strings.Contains(mustErrMessage(t, resp), "is this node itself") {
+		t.Fatalf("dial_submit_command self-dial rejected for the wrong reason: %s", mustErrMessage(t, resp))
 	}
 }

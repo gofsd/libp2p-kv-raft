@@ -103,22 +103,17 @@ func TestConfirmGatedJoinRequiresVoterConfirmation(t *testing.T) {
 
 	call := func(n *Node, m shmevent.Msg) shmevent.Msg {
 		t.Helper()
-		buf, err := shmevent.Encode(m, n.ed25519Priv)
-		if err != nil {
-			t.Fatalf("encode: %v", err)
-		}
-		decoded, crc, sig, err := shmevent.Decode(buf)
-		if err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		return n.handleShmEvent(ctx, decoded, crc, sig, n.localCaller())
+		return callLocal(t, ctx, n, m, n.ed25519Priv)
 	}
 
-	confirmPayload := shmevent.EncodePermitConfirmPayload(shmevent.KindClusterJoin, []byte(joiner.peerID))
-	lifecyclePayload := shmevent.EncodeLifecycleWritePayload(shmevent.KindClusterJoin, shmevent.LifecycleActionConfirm, confirmPayload)
-	resp := call(voter, shmevent.Msg{EventType: shmevent.EventLifecycleWrite, Value: lifecyclePayload, ID: 1})
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("voter confirm rejected: %s", resp.Value)
+	confirmMsg, err := shmevent.NewPermitConfirm(shmevent.KindClusterJoin, joiner.peerID)
+	if err != nil {
+		t.Fatalf("NewPermitConfirm: %v", err)
+	}
+	confirmMsg.SetId(1)
+	resp := call(voter, confirmMsg)
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("voter confirm rejected: %s", mustErrMessage(t, resp))
 	}
 
 	if !isMember(leader.getRaft(), joiner.peerID) {
@@ -194,22 +189,19 @@ func TestLeaveShrinksClusterGracefully(t *testing.T) {
 
 	call := func(n *Node, m shmevent.Msg) shmevent.Msg {
 		t.Helper()
-		buf, err := shmevent.Encode(m, n.ed25519Priv)
-		if err != nil {
-			t.Fatalf("encode: %v", err)
-		}
-		decoded, crc, sig, err := shmevent.Decode(buf)
-		if err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		return n.handleShmEvent(ctx, decoded, crc, sig, n.localCaller())
+		return callLocal(t, ctx, n, m, n.ed25519Priv)
 	}
 
 	// voter is not the leader, so this exercises leaveCluster's forwarded
 	// (ForwardLeaveProtocolID) path, not just the direct-apply one.
-	resp := call(voter, shmevent.Msg{EventType: shmevent.EventLeave, ID: 1})
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("leave rejected: %s", resp.Value)
+	leaveMsg, err := shmevent.NewLeave()
+	if err != nil {
+		t.Fatalf("NewLeave: %v", err)
+	}
+	leaveMsg.SetId(1)
+	resp := call(voter, leaveMsg)
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("leave rejected: %s", mustErrMessage(t, resp))
 	}
 
 	if isMember(leader.getRaft(), voter.peerID) {
@@ -217,20 +209,26 @@ func TestLeaveShrinksClusterGracefully(t *testing.T) {
 	}
 
 	memberKey := shmevent.ClusterMemberKey([]byte(voter.peerID))
-	getResp := call(leader, shmevent.Msg{EventType: shmevent.EventGetField, Value: memberKey, ID: 2})
-	if getResp.EventType != shmevent.EventError {
+	getMsg, err := shmevent.NewGetFieldByKey(memberKey)
+	if err != nil {
+		t.Fatalf("NewGetFieldByKey: %v", err)
+	}
+	getMsg.SetId(2)
+	getResp := call(leader, getMsg)
+	if getResp.Which() != shmevent.Event_Which_error {
 		t.Fatal("voter's KindClusterMember record still present after leaving -- should have been deleted")
 	}
 
 	// The remaining cluster (just the leader, now the sole voter again)
 	// must keep operating normally after the shrink.
-	setPayload, err := shmevent.EncodeSetPayload([]byte("k"), []byte("v"))
+	setMsg, err := shmevent.NewSet([]byte("k"), []byte("v"))
 	if err != nil {
-		t.Fatalf("EncodeSetPayload: %v", err)
+		t.Fatalf("NewSet: %v", err)
 	}
-	resp = call(leader, shmevent.Msg{EventType: shmevent.EventSet, Value: setPayload, ID: 3})
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("set after leave rejected: %s", resp.Value)
+	setMsg.SetId(3)
+	resp = call(leader, setMsg)
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("set after leave rejected: %s", mustErrMessage(t, resp))
 	}
 }
 
@@ -302,19 +300,16 @@ func TestOriginRejoinsClusterCatchesUpOnMissedWrites(t *testing.T) {
 	// not a raft instance left dangling mid-removal.
 	call := func(n *Node, m shmevent.Msg) shmevent.Msg {
 		t.Helper()
-		buf, err := shmevent.Encode(m, n.ed25519Priv)
-		if err != nil {
-			t.Fatalf("encode: %v", err)
-		}
-		decoded, crc, sig, err := shmevent.Decode(buf)
-		if err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		return n.handleShmEvent(ctx, decoded, crc, sig, n.localCaller())
+		return callLocal(t, ctx, n, m, n.ed25519Priv)
 	}
-	resp := call(origin, shmevent.Msg{EventType: shmevent.EventLeave, ID: 1})
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("origin leave rejected: %s", resp.Value)
+	leaveMsg, err := shmevent.NewLeave()
+	if err != nil {
+		t.Fatalf("NewLeave: %v", err)
+	}
+	leaveMsg.SetId(1)
+	resp := call(origin, leaveMsg)
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("origin leave rejected: %s", mustErrMessage(t, resp))
 	}
 	origin.shutdown()
 

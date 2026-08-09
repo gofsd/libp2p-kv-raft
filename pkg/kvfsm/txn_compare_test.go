@@ -18,7 +18,7 @@ import (
 // half its keys would be worse than no compare at all: a caller retrying the
 // read-modify-write would be building on state it never saw.
 func TestApplyOpTxnCompare(t *testing.T) {
-	newFSM := func(t *testing.T) (*FSM, func(ops []shmevent.TxnOp) ApplyResult) {
+	newFSM := func(t *testing.T) (*FSM, func(ops []shmevent.TxnOpSpec) ApplyResult) {
 		t.Helper()
 		s, err := store.Open(filepath.Join(t.TempDir(), "sqlite"))
 		if err != nil {
@@ -27,7 +27,7 @@ func TestApplyOpTxnCompare(t *testing.T) {
 		t.Cleanup(func() { s.Close() })
 
 		f := New(s)
-		return f, func(ops []shmevent.TxnOp) ApplyResult {
+		return f, func(ops []shmevent.TxnOpSpec) ApplyResult {
 			t.Helper()
 			payload, err := shmevent.EncodeTxnPayload(ops)
 			if err != nil {
@@ -47,7 +47,7 @@ func TestApplyOpTxnCompare(t *testing.T) {
 			t.Fatalf("seed: %v", err)
 		}
 
-		res := apply([]shmevent.TxnOp{
+		res := apply([]shmevent.TxnOpSpec{
 			{Op: shmevent.TxnOpCompare, Key: []byte("k"), Value: []byte("old")},
 			{Op: shmevent.TxnOpSet, Key: []byte("k"), Value: []byte("new")},
 		})
@@ -65,7 +65,7 @@ func TestApplyOpTxnCompare(t *testing.T) {
 			t.Fatalf("seed: %v", err)
 		}
 
-		res := apply([]shmevent.TxnOp{
+		res := apply([]shmevent.TxnOpSpec{
 			{Op: shmevent.TxnOpCompare, Key: []byte("k"), Value: []byte("what-i-read")},
 			{Op: shmevent.TxnOpSet, Key: []byte("k"), Value: []byte("my-update")},
 			{Op: shmevent.TxnOpSet, Key: []byte("unrelated"), Value: []byte("also-mine")},
@@ -86,7 +86,7 @@ func TestApplyOpTxnCompare(t *testing.T) {
 
 	t.Run("an absent key never satisfies a value compare", func(t *testing.T) {
 		_, apply := newFSM(t)
-		res := apply([]shmevent.TxnOp{
+		res := apply([]shmevent.TxnOpSpec{
 			{Op: shmevent.TxnOpCompare, Key: []byte("missing"), Value: []byte("")},
 			{Op: shmevent.TxnOpSet, Key: []byte("missing"), Value: []byte("v")},
 		})
@@ -101,7 +101,7 @@ func TestApplyOpTxnCompare(t *testing.T) {
 	t.Run("compare-absent creates only when nobody got there first", func(t *testing.T) {
 		f, apply := newFSM(t)
 
-		res := apply([]shmevent.TxnOp{
+		res := apply([]shmevent.TxnOpSpec{
 			{Op: shmevent.TxnOpCompareAbsent, Key: []byte("new-key")},
 			{Op: shmevent.TxnOpSet, Key: []byte("new-key"), Value: []byte("first")},
 		})
@@ -111,7 +111,7 @@ func TestApplyOpTxnCompare(t *testing.T) {
 
 		// The second creator is exactly the racing client this op exists
 		// for: it must lose, and must not clobber the winner's value.
-		res = apply([]shmevent.TxnOp{
+		res = apply([]shmevent.TxnOpSpec{
 			{Op: shmevent.TxnOpCompareAbsent, Key: []byte("new-key")},
 			{Op: shmevent.TxnOpSet, Key: []byte("new-key"), Value: []byte("second")},
 		})
@@ -132,7 +132,7 @@ func TestApplyOpTxnCompare(t *testing.T) {
 			t.Fatalf("seed: %v", err)
 		}
 
-		res := apply([]shmevent.TxnOp{
+		res := apply([]shmevent.TxnOpSpec{
 			{Op: shmevent.TxnOpCompare, Key: []byte("index"), Value: []byte("a,b")},
 			{Op: shmevent.TxnOpSet, Key: []byte("index"), Value: []byte("a,b,c")},
 			{Op: shmevent.TxnOpSet, Key: []byte("doc/c"), Value: []byte("{}")},

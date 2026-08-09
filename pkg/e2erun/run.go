@@ -17,7 +17,6 @@ import (
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/e2edata"
 	"github.com/gofsd/libp2p-kv-raft/pkg/registry"
-	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
 
 // EnvTypes is the environment variable Run reads (via SelectedTypes) to
@@ -400,7 +399,7 @@ func Run(repoRoot, path string, f *e2edata.File, rowIndices []int, types Types) 
 			}
 		}
 		fmt.Fprintf(os.Stderr, "e2erun: row %d (version %d, node %d, event %s): %s\n",
-			idx, row.Version, row.Node, shmevent.EventName(row.Event.EventType), statusName(row.Status))
+			idx, row.Version, row.Node, row.Event.Op, statusName(row.Status))
 		if err := f.Save(path); err != nil {
 			return err
 		}
@@ -462,8 +461,8 @@ func statusName(status int) string {
 // before this per-row loop even starts (see those functions' doc comments
 // for why).
 func runRow(kvnodeBin, kvctlBin string, nodeID int, node e2edata.Node, bootstrapMultiaddr string, ev e2edata.Event) (status int, errMsg string) {
-	if ev.EventType == shmevent.EventAdd {
-		resolved := ResolveBootstrapPlaceholder(string(ev.Value()), bootstrapMultiaddr)
+	if ev.Op == "bootstrap_or_join_cluster" {
+		resolved := ResolveBootstrapPlaceholder(ev.Fields["leader_addr"], bootstrapMultiaddr)
 		// " learner" for a desktop node, the same marker and the same
 		// reason android.go's own join carries it: this shared bootstrap
 		// leader is long-lived and never torn down, while an e2e desktop
@@ -482,11 +481,9 @@ func runRow(kvnodeBin, kvctlBin string, nodeID int, node e2edata.Node, bootstrap
 		if node.Platform == e2edata.PlatformDesktop {
 			resolved += " learner"
 		}
-		ev = e2edata.NewEvent(ev.EventType, ev.SourceID, ev.DestinationID, []byte(resolved), ev.ID)
+		ev = withField(ev, "leader_addr", resolved)
 	}
-	if expanded := ExpandRowValue(string(ev.Value())); expanded != string(ev.Value()) {
-		ev = e2edata.NewEvent(ev.EventType, ev.SourceID, ev.DestinationID, []byte(expanded), ev.ID)
-	}
+	ev = expandEventFields(ev, ExpandRowValue)
 
 	switch node.Platform {
 	case e2edata.PlatformRemote:
@@ -512,7 +509,8 @@ func runRow(kvnodeBin, kvctlBin string, nodeID int, node e2edata.Node, bootstrap
 		// is harmless -- matches GrantRelayAccess's own "unconditional,
 		// not gated" reasoning.
 		if bootstrapMultiaddr != "" {
-			if status, errMsg := sendEventLocal(kvctlBin, node.PeerID, e2edata.NewEvent(shmevent.EventPublicAccess, 0, 0, []byte(bootstrapMultiaddr), 0)); status != e2edata.StatusPass {
+			publicAccessEv := e2edata.Event{Op: "public_access", Fields: map[string]string{"target_peer": bootstrapMultiaddr}}
+			if status, errMsg := sendEventLocal(kvctlBin, node.PeerID, publicAccessEv); status != e2edata.StatusPass {
 				return e2edata.StatusFail, fmt.Sprintf("request public access: %s", errMsg)
 			}
 		}
@@ -633,7 +631,7 @@ func isTransientLeaderError(errMsg string) bool {
 // var's doc comment): a real failure there (a bad signature, a rejected
 // join, a genuinely missing key) still fails on the first try, unmasked.
 func retryReadsIfNeeded(ev e2edata.Event, dispatch func() (int, string)) (int, string) {
-	isRead := ev.EventType == shmevent.EventGetField || ev.EventType == shmevent.EventGetKey
+	isRead := ev.Op == "get_field_by_key" || ev.Op == "get_field_by_registry" || ev.Op == "get_key"
 
 	status, errMsg := dispatch()
 	if status == e2edata.StatusPass {
@@ -711,8 +709,8 @@ func interpretSendEventResult(stdout, stderr string, runErr error) (int, string)
 		}
 		return e2edata.StatusFail, fmt.Sprintf("parse sendevent output %q: %v", stdout, err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return e2edata.StatusFail, string(resp.Value())
+	if resp.Op == "error" {
+		return e2edata.StatusFail, resp.Fields["message"]
 	}
 	return e2edata.StatusPass, ""
 }

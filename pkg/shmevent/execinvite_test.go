@@ -57,15 +57,29 @@ func TestExecInviteRecordRoundTrip(t *testing.T) {
 	}
 }
 
+// The old wire format's EncodeExecInviteCreatePayload/
+// DecodeExecInviteCreatePayload (a hand-packed token+commandID+inputsJSON
+// blob) is gone -- an execInviteCreate Msg carries those as separate typed
+// capnp fields (NewExecInviteCreate, Event_execInviteCreate's Token/
+// CommandId/InputsJson accessors) instead. NewExecInviteCreate keeps the
+// same wrong-size-token rejection the old encoder had.
 func TestExecInviteCreatePayloadRoundTrip(t *testing.T) {
 	token := randomExecInviteToken(t)
-	payload, err := EncodeExecInviteCreatePayload(token, "cmd-1", `{"a":1}`)
+	m, err := NewExecInviteCreate(token, "cmd-1", `{"a":1}`)
 	if err != nil {
-		t.Fatalf("EncodeExecInviteCreatePayload: %v", err)
+		t.Fatalf("NewExecInviteCreate: %v", err)
 	}
-	gotToken, gotCommandID, gotInputs, err := DecodeExecInviteCreatePayload(payload)
+	gotToken, err := m.ExecInviteCreate().Token()
 	if err != nil {
-		t.Fatalf("DecodeExecInviteCreatePayload: %v", err)
+		t.Fatalf("Token: %v", err)
+	}
+	gotCommandID, err := m.ExecInviteCreate().CommandId()
+	if err != nil {
+		t.Fatalf("CommandId: %v", err)
+	}
+	gotInputs, err := m.ExecInviteCreate().InputsJson()
+	if err != nil {
+		t.Fatalf("InputsJson: %v", err)
 	}
 	if !bytes.Equal(gotToken, token) {
 		t.Fatalf("got token %x, want %x", gotToken, token)
@@ -74,39 +88,48 @@ func TestExecInviteCreatePayloadRoundTrip(t *testing.T) {
 		t.Fatalf("got commandID=%q inputs=%q, want commandID=%q inputs=%q", gotCommandID, gotInputs, "cmd-1", `{"a":1}`)
 	}
 
-	if _, err := EncodeExecInviteCreatePayload([]byte("too-short"), "cmd-1", ""); err == nil {
-		t.Fatal("EncodeExecInviteCreatePayload unexpectedly accepted a wrong-size token")
-	}
-	if _, _, _, err := DecodeExecInviteCreatePayload([]byte("short")); err == nil {
-		t.Fatal("DecodeExecInviteCreatePayload unexpectedly accepted a malformed payload")
+	if _, err := NewExecInviteCreate([]byte("too-short"), "cmd-1", ""); err == nil {
+		t.Fatal("NewExecInviteCreate unexpectedly accepted a wrong-size token")
 	}
 }
 
+// The old wire format's EncodeExecInviteRevokePayload/
+// DecodeExecInviteRevokePayload is gone the same way -- an
+// execInviteRevoke Msg carries token as its own typed field
+// (NewExecInviteRevoke, Event_execInviteRevoke's Token accessor).
 func TestExecInviteRevokePayloadRoundTrip(t *testing.T) {
 	token := randomExecInviteToken(t)
-	payload := EncodeExecInviteRevokePayload(token)
-	got, err := DecodeExecInviteRevokePayload(payload)
+	m, err := NewExecInviteRevoke(token)
 	if err != nil {
-		t.Fatalf("DecodeExecInviteRevokePayload: %v", err)
+		t.Fatalf("NewExecInviteRevoke: %v", err)
+	}
+	got, err := m.ExecInviteRevoke().Token()
+	if err != nil {
+		t.Fatalf("Token: %v", err)
 	}
 	if !bytes.Equal(got, token) {
 		t.Fatalf("got token %x, want %x", got, token)
 	}
-
-	if _, err := DecodeExecInviteRevokePayload([]byte("wrong size")); err == nil {
-		t.Fatal("DecodeExecInviteRevokePayload unexpectedly accepted a malformed payload")
-	}
 }
 
+// The old wire format's EncodeExecInviteRedeemRequest/
+// DecodeExecInviteRedeemRequest is gone -- an execInviteRedeem Msg (built
+// via NewExecInviteRedeem, the local-request shape) carries sourceAddr and
+// token as separate typed fields instead, with the same wrong-size-token
+// rejection.
 func TestExecInviteRedeemRequestRoundTrip(t *testing.T) {
 	token := randomExecInviteToken(t)
-	payload, err := EncodeExecInviteRedeemRequest("/ip4/127.0.0.1/tcp/4001/p2p/abc", token)
+	m, err := NewExecInviteRedeem("/ip4/127.0.0.1/tcp/4001/p2p/abc", token)
 	if err != nil {
-		t.Fatalf("EncodeExecInviteRedeemRequest: %v", err)
+		t.Fatalf("NewExecInviteRedeem: %v", err)
 	}
-	gotAddr, gotToken, err := DecodeExecInviteRedeemRequest(payload)
+	gotAddr, err := m.ExecInviteRedeem().SourceAddr()
 	if err != nil {
-		t.Fatalf("DecodeExecInviteRedeemRequest: %v", err)
+		t.Fatalf("SourceAddr: %v", err)
+	}
+	gotToken, err := m.ExecInviteRedeem().Token()
+	if err != nil {
+		t.Fatalf("Token: %v", err)
 	}
 	if gotAddr != "/ip4/127.0.0.1/tcp/4001/p2p/abc" {
 		t.Fatalf("got addr %q, want %q", gotAddr, "/ip4/127.0.0.1/tcp/4001/p2p/abc")
@@ -115,11 +138,8 @@ func TestExecInviteRedeemRequestRoundTrip(t *testing.T) {
 		t.Fatalf("got token %x, want %x", gotToken, token)
 	}
 
-	if _, err := EncodeExecInviteRedeemRequest("addr", []byte("too-short")); err == nil {
-		t.Fatal("EncodeExecInviteRedeemRequest unexpectedly accepted a wrong-size token")
-	}
-	if _, _, err := DecodeExecInviteRedeemRequest([]byte("short")); err == nil {
-		t.Fatal("DecodeExecInviteRedeemRequest unexpectedly accepted a malformed payload")
+	if _, err := NewExecInviteRedeem("addr", []byte("too-short")); err == nil {
+		t.Fatal("NewExecInviteRedeem unexpectedly accepted a wrong-size token")
 	}
 }
 
@@ -133,67 +153,89 @@ func TestExecInviteKindNameRoundTrip(t *testing.T) {
 	}
 }
 
+// The old generic EventLifecycleWrite envelope this test used alongside
+// EventExecInviteRedeem is gone -- every former (kind,action) pair the
+// envelope carried is now its own top-level variant (see this package's
+// migration notes); execInviteCreate is execInviteRedeem's own create-side
+// counterpart, so it stands in here.
 func TestExecInviteEventNameRoundTrip(t *testing.T) {
-	for _, e := range []uint8{EventLifecycleWrite, EventExecInviteRedeem} {
-		name := EventName(e)
+	for _, w := range []Event_Which{Event_Which_execInviteCreate, Event_Which_execInviteRedeem} {
+		name := EventName(w)
 		got, ok := EventFromName(name)
-		if !ok || got != e {
-			t.Fatalf("event %d: round trip through name %q got %d ok=%v", e, name, got, ok)
+		if !ok || got != w {
+			t.Fatalf("event %v: round trip through name %q got %v ok=%v", w, name, got, ok)
 		}
-		if !RequiresSignature(e) {
-			t.Fatalf("event %d (%s) unexpectedly does not require a signature", e, name)
+		if !RequiresSignature(w) {
+			t.Fatalf("event %v (%s) unexpectedly does not require a signature", w, name)
 		}
 	}
 }
 
 func TestExecTicketEventNameRoundTrip(t *testing.T) {
-	name := EventName(EventExecTicket)
+	name := EventName(Event_Which_execTicket)
 	if name != "exec_ticket" {
 		t.Fatalf("got name %q, want %q", name, "exec_ticket")
 	}
 	got, ok := EventFromName(name)
-	if !ok || got != EventExecTicket {
-		t.Fatalf("round trip through name %q got %d ok=%v, want %d", name, got, ok, EventExecTicket)
+	if !ok || got != Event_Which_execTicket {
+		t.Fatalf("round trip through name %q got %v ok=%v, want %v", name, got, ok, Event_Which_execTicket)
 	}
-	if !RequiresSignature(EventExecTicket) {
-		t.Fatalf("EventExecTicket unexpectedly does not require a signature")
+	if !RequiresSignature(Event_Which_execTicket) {
+		t.Fatalf("execTicket unexpectedly does not require a signature")
 	}
 }
 
+// The old wire format's EncodeExecTicketPayload/DecodeExecTicketPayload
+// (byte-identical to EncodeExecInviteRedeemRequest, deliberately, since a
+// ticket is a pre-signed redeem request) is gone -- execTicket and
+// execInviteRedeem are now separate top-level capnp variants, so there's no
+// shared byte encoding to compare. What this test pins instead: both
+// variants still carry the same sourceAddr/token pair with identical
+// semantics, built independently.
 func TestExecTicketPayloadRoundTrip(t *testing.T) {
 	token := randomExecInviteToken(t)
 	const addr = "/ip4/127.0.0.1/tcp/4001/p2p/abc"
 
-	payload, err := EncodeExecTicketPayload(addr, token)
+	ticket, err := NewExecTicket(addr, token)
 	if err != nil {
-		t.Fatalf("EncodeExecTicketPayload: %v", err)
+		t.Fatalf("NewExecTicket: %v", err)
 	}
-	// Byte-identical to EncodeExecInviteRedeemRequest -- see that
-	// function's doc comment for why this dual use is deliberate.
-	want, err := EncodeExecInviteRedeemRequest(addr, token)
+	redeem, err := NewExecInviteRedeem(addr, token)
 	if err != nil {
-		t.Fatalf("EncodeExecInviteRedeemRequest: %v", err)
-	}
-	if !bytes.Equal(payload, want) {
-		t.Fatalf("EncodeExecTicketPayload diverged from EncodeExecInviteRedeemRequest: got %x, want %x", payload, want)
+		t.Fatalf("NewExecInviteRedeem: %v", err)
 	}
 
-	gotAddr, gotToken, err := DecodeExecTicketPayload(payload)
+	gotAddr, err := ticket.ExecTicket().SourceAddr()
 	if err != nil {
-		t.Fatalf("DecodeExecTicketPayload: %v", err)
+		t.Fatalf("SourceAddr: %v", err)
 	}
-	if gotAddr != addr {
-		t.Fatalf("got addr %q, want %q", gotAddr, addr)
+	gotToken, err := ticket.ExecTicket().Token()
+	if err != nil {
+		t.Fatalf("Token: %v", err)
 	}
-	if !bytes.Equal(gotToken, token) {
-		t.Fatalf("got token %x, want %x", gotToken, token)
+	wantAddr, err := redeem.ExecInviteRedeem().SourceAddr()
+	if err != nil {
+		t.Fatalf("SourceAddr: %v", err)
+	}
+	wantToken, err := redeem.ExecInviteRedeem().Token()
+	if err != nil {
+		t.Fatalf("Token: %v", err)
+	}
+	if gotAddr != wantAddr {
+		t.Fatalf("execTicket addr %q diverged from execInviteRedeem addr %q", gotAddr, wantAddr)
+	}
+	if !bytes.Equal(gotToken, wantToken) {
+		t.Fatalf("execTicket token %x diverged from execInviteRedeem token %x", gotToken, wantToken)
+	}
+	if gotAddr != addr || !bytes.Equal(gotToken, token) {
+		t.Fatalf("got addr=%q token=%x, want addr=%q token=%x", gotAddr, gotToken, addr, token)
 	}
 }
 
 // TestExecTicketSignVerifyRoundTrip exercises the actual security property
 // EventExecTicket exists for: a ticket signed by one key verifies against
 // that key's matching public key, fails against a different one, and any
-// tampering with the encoded bytes (as would happen if a scanned
+// tampering with the encoded fields (as would happen if a scanned
 // DataMatrix payload were altered or a different sourceAddr/token were
 // substituted in) is caught by Verify -- entirely via Encode/Decode/Verify
 // standalone, no shmring session involved, confirming the "no daemon
@@ -204,32 +246,36 @@ func TestExecTicketSignVerifyRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	token := randomExecInviteToken(t)
-	value, err := EncodeExecTicketPayload("/ip4/127.0.0.1/tcp/4001/p2p/abc", token)
+	m, err := NewExecTicket("/ip4/127.0.0.1/tcp/4001/p2p/abc", token)
 	if err != nil {
-		t.Fatalf("EncodeExecTicketPayload: %v", err)
+		t.Fatalf("NewExecTicket: %v", err)
 	}
 
-	wire, err := Encode(Msg{EventType: EventExecTicket, Value: value}, priv)
+	wire, err := Encode(m, priv)
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
 
-	m, crc, sig, err := Decode(wire)
+	decoded, crc, sig, err := Decode(wire)
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
-	if m.EventType != EventExecTicket {
-		t.Fatalf("got event type %d, want %d", m.EventType, EventExecTicket)
+	if decoded.Which() != Event_Which_execTicket {
+		t.Fatalf("got Which %v, want %v", decoded.Which(), Event_Which_execTicket)
 	}
-	gotAddr, gotToken, err := DecodeExecTicketPayload(m.Value)
+	gotAddr, err := decoded.ExecTicket().SourceAddr()
 	if err != nil {
-		t.Fatalf("DecodeExecTicketPayload: %v", err)
+		t.Fatalf("SourceAddr: %v", err)
+	}
+	gotToken, err := decoded.ExecTicket().Token()
+	if err != nil {
+		t.Fatalf("Token: %v", err)
 	}
 	if gotAddr != "/ip4/127.0.0.1/tcp/4001/p2p/abc" || !bytes.Equal(gotToken, token) {
 		t.Fatalf("decoded payload mismatch: addr=%q token=%x", gotAddr, gotToken)
 	}
 
-	if err := Verify(pub, m, crc, sig); err != nil {
+	if err := Verify(pub, decoded, crc, sig); err != nil {
 		t.Fatalf("Verify with correct key: %v", err)
 	}
 
@@ -237,23 +283,22 @@ func TestExecTicketSignVerifyRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Verify(otherPub, m, crc, sig); err == nil {
+	if err := Verify(otherPub, decoded, crc, sig); err == nil {
 		t.Fatal("Verify unexpectedly succeeded against the wrong public key")
 	}
 
 	// A ticket with a substituted token (e.g. an attacker splicing a
 	// different token into an otherwise-genuine ticket) must fail
 	// verification against the original signature -- same technique
-	// TestSignVerifyTamperDetection uses elsewhere in this package.
-	tampered := m
+	// TestSignVerifyTamperDetection uses elsewhere in this package: decoded
+	// is a capnp struct sharing the underlying segment, so mutating its
+	// field in place stands in for the old flat struct's field-copy tamper.
 	tamperedToken := append([]byte(nil), token...)
 	tamperedToken[0] ^= 0xFF
-	tamperedValue, err := EncodeExecTicketPayload("/ip4/127.0.0.1/tcp/4001/p2p/abc", tamperedToken)
-	if err != nil {
-		t.Fatalf("EncodeExecTicketPayload: %v", err)
+	if err := decoded.ExecTicket().SetToken(tamperedToken); err != nil {
+		t.Fatalf("SetToken: %v", err)
 	}
-	tampered.Value = tamperedValue
-	if err := Verify(pub, tampered, crc, sig); err == nil {
+	if err := Verify(pub, decoded, crc, sig); err == nil {
 		t.Fatal("Verify unexpectedly succeeded after tampering with the ticket's token")
 	}
 }

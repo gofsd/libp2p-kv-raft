@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
-	"hash/crc32"
 	"testing"
 )
 
@@ -79,40 +78,68 @@ func TestCommandPayloadRoundTrip(t *testing.T) {
 	}
 }
 
+// The old wire format packed a commandPut event's id/name/peerID/spec into
+// one hand-rolled byte blob (EncodeCommandPutPayload/
+// EncodeCommandPutPayloadWithSpec/DecodeCommandPutPayloadFull), now deleted:
+// a commandPut Msg carries those as separate typed capnp fields directly
+// (NewCommandPut/NewCommandPutWithSpec, Event_commandPut's Id/Name/PeerId/
+// Spec/HasSpec accessors). This pins the same round trip -- including that
+// a spec-less put leaves HasSpec false, the wire-level counterpart of
+// TestCommandPayloadStaysV1WithoutASpec above -- at the Msg/wire level
+// instead of the byte-blob level.
 func TestCommandPutPayloadRoundTrip(t *testing.T) {
-	spec := []byte(`{"fields":[]}`)
+	spec := `{"fields":[]}`
 
-	v1, err := EncodeCommandPutPayload("inspect", "Inspect", []byte("peer1"))
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("EncodeCommandPutPayload: %v", err)
-	}
-	noSpec, err := EncodeCommandPutPayloadWithSpec("inspect", "Inspect", []byte("peer1"), nil)
-	if err != nil {
-		t.Fatalf("EncodeCommandPutPayloadWithSpec: %v", err)
-	}
-	if !bytes.Equal(v1, noSpec) {
-		t.Fatalf("spec-less put encode = %x, want v1 %x", noSpec, v1)
+		t.Fatalf("generate key: %v", err)
 	}
 
-	payload, err := EncodeCommandPutPayloadWithSpec("inspect", "Inspect", []byte("peer1"), spec)
+	noSpec, err := NewCommandPut("inspect", "Inspect", "peer1")
 	if err != nil {
-		t.Fatalf("encode: %v", err)
+		t.Fatalf("NewCommandPut: %v", err)
 	}
-	id, name, peerID, gotSpec, err := DecodeCommandPutPayloadFull(payload)
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if id != "inspect" || name != "Inspect" || string(peerID) != "peer1" || string(gotSpec) != string(spec) {
-		t.Fatalf("got %q/%q/%q/%q", id, name, peerID, gotSpec)
+	if noSpec.CommandPut().HasSpec() {
+		t.Fatal("NewCommandPut must leave HasSpec false")
 	}
 
-	// And the v1 payload still decodes through the full decoder.
-	id, name, peerID, gotSpec, err = DecodeCommandPutPayloadFull(v1)
+	withSpec, err := NewCommandPutWithSpec("inspect", "Inspect", "peer1", spec)
 	if err != nil {
-		t.Fatalf("decode v1: %v", err)
+		t.Fatalf("NewCommandPutWithSpec: %v", err)
 	}
-	if id != "inspect" || name != "Inspect" || string(peerID) != "peer1" || len(gotSpec) != 0 {
-		t.Fatalf("v1 got %q/%q/%q/%q", id, name, peerID, gotSpec)
+	buf, err := Encode(withSpec, priv)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	decoded, crc, sig, err := Decode(buf)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if err := Verify(pub, decoded, crc, sig); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if decoded.Which() != Event_Which_commandPut {
+		t.Fatalf("Which = %v, want commandPut", decoded.Which())
+	}
+	grp := decoded.CommandPut()
+	id, err := grp.Id()
+	if err != nil {
+		t.Fatalf("Id: %v", err)
+	}
+	name, err := grp.Name()
+	if err != nil {
+		t.Fatalf("Name: %v", err)
+	}
+	peerID, err := grp.PeerId()
+	if err != nil {
+		t.Fatalf("PeerId: %v", err)
+	}
+	gotSpec, err := grp.Spec()
+	if err != nil {
+		t.Fatalf("Spec: %v", err)
+	}
+	if id != "inspect" || name != "Inspect" || peerID != "peer1" || gotSpec != spec || !grp.HasSpec() {
+		t.Fatalf("got %q/%q/%q/%q (hasSpec=%v)", id, name, peerID, gotSpec, grp.HasSpec())
 	}
 }
 
@@ -130,75 +157,78 @@ func TestStationPayloadRoundTrip(t *testing.T) {
 		t.Fatalf("got %q/%q", name, gotAttrs)
 	}
 
-	putPayload, err := EncodeStationPutPayload([]byte("peer1"), "Assembly 1", attrs)
+	// The old wire format's EncodeStationPutPayload/DecodeStationPutPayload
+	// (a hand-packed peerID+name+attrs blob) is gone the same way
+	// EncodeCommandPutPayload is -- a stationPut Msg carries those as
+	// separate typed fields (NewStationPut, Event_stationPut's PeerId/Name/
+	// Attrs accessors) instead.
+	m, err := NewStationPut("peer1", "Assembly 1", string(attrs))
 	if err != nil {
-		t.Fatalf("EncodeStationPutPayload: %v", err)
+		t.Fatalf("NewStationPut: %v", err)
 	}
-	peerID, name, gotAttrs, err := DecodeStationPutPayload(putPayload)
+	peerID, err := m.StationPut().PeerId()
 	if err != nil {
-		t.Fatalf("DecodeStationPutPayload: %v", err)
+		t.Fatalf("PeerId: %v", err)
 	}
-	if string(peerID) != "peer1" || name != "Assembly 1" || string(gotAttrs) != string(attrs) {
-		t.Fatalf("got %q/%q/%q", peerID, name, gotAttrs)
+	putName, err := m.StationPut().Name()
+	if err != nil {
+		t.Fatalf("Name: %v", err)
+	}
+	putAttrs, err := m.StationPut().Attrs()
+	if err != nil {
+		t.Fatalf("Attrs: %v", err)
+	}
+	if peerID != "peer1" || putName != "Assembly 1" || putAttrs != string(attrs) {
+		t.Fatalf("got %q/%q/%q", peerID, putName, putAttrs)
 	}
 }
 
-// EventCatalogPut/EventCatalogDelete's whole point is carrying every
-// existing per-kind payload unchanged behind one extra leading kind byte --
-// this pins that round trip for all five kinds, including that the wrapped
-// bytes come back byte-identical to what the kind's own existing encoder
-// produced.
-func TestCatalogPayloadRoundTrip(t *testing.T) {
-	groupInner, err := EncodeGroupPutPayload("g1", "infantry", true)
+// The old wire format wrapped every Group/Command/Station/GroupCommand/
+// PeerGroup "put" payload behind one extra leading kind byte
+// (EncodeCatalogPayload/DecodeCatalogPayload), used by EventCatalogPut to
+// carry any of the five under one wire event. That wrapper is gone: each
+// kind is now its own top-level capnp union variant (groupPut/commandPut/
+// stationPut/groupCommandPut/peerGroupPut), so Which() alone is what used
+// to be the wrapper's kind byte. This pins the same property the old test
+// did -- every kind survives a full sign/encode/decode/verify cycle
+// distinguishably from every other kind -- at the variant level instead.
+func TestCatalogVariantsRoundTripThroughWire(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("EncodeGroupPutPayload: %v", err)
-	}
-	commandInner, err := EncodeCommandPutPayload("c1", "resupply", []byte("peer1"))
-	if err != nil {
-		t.Fatalf("EncodeCommandPutPayload: %v", err)
-	}
-	stationInner, err := EncodeStationPutPayload([]byte("peer1"), "Assembly 1", []byte("attrs"))
-	if err != nil {
-		t.Fatalf("EncodeStationPutPayload: %v", err)
-	}
-	groupCommandInner, err := EncodeGroupCommandPayload([]byte("c1"), []byte("g1"))
-	if err != nil {
-		t.Fatalf("EncodeGroupCommandPayload: %v", err)
-	}
-	peerGroupInner, err := EncodePeerGroupPayload([]byte("peer1"), []byte("g1"))
-	if err != nil {
-		t.Fatalf("EncodePeerGroupPayload: %v", err)
+		t.Fatalf("generate key: %v", err)
 	}
 
 	for _, tc := range []struct {
 		name  string
-		kind  byte
-		inner []byte
+		build func() (Msg, error)
+		want  Event_Which
 	}{
-		{"group", KindGroup, groupInner},
-		{"command", KindCommand, commandInner},
-		{"station", KindStation, stationInner},
-		{"group_command", KindGroupCommand, groupCommandInner},
-		{"peer_group", KindPeerGroup, peerGroupInner},
-		{"empty inner", KindGroup, nil},
+		{"group_put", func() (Msg, error) { return NewGroupPut("g1", "infantry", true) }, Event_Which_groupPut},
+		{"command_put", func() (Msg, error) { return NewCommandPut("c1", "resupply", "peer1") }, Event_Which_commandPut},
+		{"station_put", func() (Msg, error) { return NewStationPut("peer1", "Assembly 1", "attrs") }, Event_Which_stationPut},
+		{"group_command_put", func() (Msg, error) { return NewGroupCommandPut("c1", "g1") }, Event_Which_groupCommandPut},
+		{"peer_group_put", func() (Msg, error) { return NewPeerGroupPut("peer1", "g1") }, Event_Which_peerGroupPut},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			wrapped := EncodeCatalogPayload(tc.kind, tc.inner)
-			gotKind, gotInner, err := DecodeCatalogPayload(wrapped)
+			m, err := tc.build()
 			if err != nil {
-				t.Fatalf("DecodeCatalogPayload: %v", err)
+				t.Fatalf("build: %v", err)
 			}
-			if gotKind != tc.kind {
-				t.Fatalf("got kind %d, want %d", gotKind, tc.kind)
+			buf, err := Encode(m, priv)
+			if err != nil {
+				t.Fatalf("Encode: %v", err)
 			}
-			if !bytes.Equal(gotInner, tc.inner) {
-				t.Fatalf("got inner %x, want %x", gotInner, tc.inner)
+			decoded, crc, sig, err := Decode(buf)
+			if err != nil {
+				t.Fatalf("Decode: %v", err)
+			}
+			if err := Verify(pub, decoded, crc, sig); err != nil {
+				t.Fatalf("Verify: %v", err)
+			}
+			if decoded.Which() != tc.want {
+				t.Fatalf("Which = %v, want %v", decoded.Which(), tc.want)
 			}
 		})
-	}
-
-	if _, _, err := DecodeCatalogPayload(nil); err == nil {
-		t.Fatal("DecodeCatalogPayload unexpectedly accepted an empty payload")
 	}
 }
 
@@ -220,119 +250,13 @@ func TestStationKeyBoundsCoverOnlyStations(t *testing.T) {
 	}
 }
 
-// The value ceiling is also the fixed width canonicalPayload pads to before
-// CRC and signing, which makes this table part of the wire format rather
-// than a mere limit: web-app/src/shmevent/mod.rs's value_size_for has to
-// return the identical width for every event, or the two implementations
-// compute different CRCs and signatures over identical messages and each
-// rejects the other's as forged.
-//
-// Nothing in Go can enforce the Rust side, so this test exists to make a
-// change here visible: if you add an event to a tier, the failure message
-// names the file that has to be edited by hand.
-func TestValueSizeTiers(t *testing.T) {
-	for _, tc := range []struct {
-		event uint8
-		want  int
-		name  string
-	}{
-		{EventSetKey, KVValueSize, "set_key"},
-		{EventSetField, KVValueSize, "set_field"},
-		{EventSet, KVValueSize, "set"},
-		{EventGetField, KVValueSize, "get_field"},
-		{EventTxn, KVValueSize, "txn"},
-		{EventLogAppend, KVValueSize, "log_append"},
-		{EventCatalogPut, KVValueSize, "catalog_put"},
-		{EventDialSubmitCommand, KVValueSize, "dial_submit_command"},
-		{EventDialQueryCommandLog, KVValueSize, "dial_query_command_log"},
-		{EventChannelSend, ChannelValueSize, "channel_send"},
-		{EventChannelPoll, ChannelValueSize, "channel_poll"},
-		{EventLifecycleWrite, ValueSize, "lifecycle_write"},
-		{EventCatalogDelete, ValueSize, "catalog_delete"},
-		{EventGetVersion, ValueSize, "get_version"},
-	} {
-		if got := valueSizeFor(tc.event); got != tc.want {
-			t.Errorf("valueSizeFor(%s) = %d, want %d -- if this is intentional, "+
-				"web-app/src/shmevent/mod.rs's value_size_for must be changed to match, "+
-				"or cross-language CRC/signature verification breaks silently",
-				tc.name, got, tc.want)
-		}
-	}
-}
-
-// TestCanonicalWidthKeepsHistoricalWidthForSmallValues pins the property
-// that makes raising a value ceiling safe *across builds*, not just across
-// languages: peers do not upgrade together, so a message that would have
-// fit the old ceiling has to keep hashing and signing exactly as it always
-// did. Raising the KV events to KVValueSize without this made every one of
-// them unverifiable to any peer still on an older build -- and, because a
-// message that fails to decode gets no reply at all, it presented as a
-// deployed relay silently ignoring requests rather than as any kind of
-// version error.
-func TestCanonicalWidthKeepsHistoricalWidthForSmallValues(t *testing.T) {
-	for _, event := range []uint8{EventSetKey, EventSetField, EventSet, EventGetField, EventTxn, EventLogAppend, EventCatalogPut} {
-		for _, valueLen := range []int{0, 1, 200, ValueSize} {
-			if got := canonicalWidth(event, valueLen); got != ValueSize {
-				t.Errorf("canonicalWidth(%s, %d) = %d, want %d -- a value that fits the historical width must still be padded to it, or every peer on an older build rejects the message as forged",
-					EventName(event), valueLen, got, ValueSize)
-			}
-		}
-		// Past the historical width, only new builds can be involved at all,
-		// so the raised ceiling is what both ends use.
-		if got := canonicalWidth(event, ValueSize+1); got != KVValueSize {
-			t.Errorf("canonicalWidth(%s, %d) = %d, want %d", EventName(event), ValueSize+1, got, KVValueSize)
-		}
-	}
-
-	// Channel events have only ever had one width, at every value length.
-	for _, event := range []uint8{EventChannelSend, EventChannelPoll} {
-		for _, valueLen := range []int{0, 200, ValueSize, ValueSize + 1, ChannelValueSize} {
-			if got := canonicalWidth(event, valueLen); got != ChannelValueSize {
-				t.Errorf("canonicalWidth(%s, %d) = %d, want %d", EventName(event), valueLen, got, ChannelValueSize)
-			}
-		}
-	}
-}
-
-// TestSmallValueSignatureIsWidthStable is the end-to-end statement of the
-// same property, at the level a peer actually experiences it: a real signed
-// message with a small value must verify against a signature computed the
-// way every build of this project has always computed it -- 512-wide
-// padding -- regardless of the event's current ceiling.
-func TestSmallValueSignatureIsWidthStable(t *testing.T) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
-	}
-
-	m := Msg{EventType: EventLogAppend, Value: []byte("a small journal record"), ID: 7}
-	buf, err := Encode(m, priv)
-	if err != nil {
-		t.Fatalf("Encode: %v", err)
-	}
-	decoded, crc, sig, err := Decode(buf)
-	if err != nil {
-		t.Fatalf("Decode: %v", err)
-	}
-
-	// Rebuild the historical payload by hand rather than calling
-	// canonicalPayload, so this test still fails if that function starts
-	// agreeing with itself about a different width.
-	historical := make([]byte, 1+2+2+ValueSize+2)
-	historical[0] = m.EventType
-	copy(historical[5:], m.Value)
-	historical[5+ValueSize] = byte(m.ID >> 8)
-	historical[5+ValueSize+1] = byte(m.ID)
-	wantCRC := crc32.ChecksumIEEE(historical)
-	if crc != wantCRC {
-		t.Fatalf("crc = %#x, want %#x (the value fits ValueSize, so it must be checksummed over a %d-wide payload)", crc, wantCRC, ValueSize)
-	}
-
-	signed := append(append([]byte(nil), historical...), byte(wantCRC>>24), byte(wantCRC>>16), byte(wantCRC>>8), byte(wantCRC))
-	if !ed25519.Verify(pub, signed, sig) {
-		t.Fatal("signature does not verify against the historical fixed-width payload -- an older peer would reject this message as forged")
-	}
-	if err := Verify(pub, decoded, crc, sig); err != nil {
-		t.Fatalf("Verify: %v", err)
-	}
-}
+// TestValueSizeTiers and TestCanonicalWidthKeepsHistoricalWidthForSmallValues
+// and TestSmallValueSignatureIsWidthStable pinned the old wire format's fixed
+// per-event canonical padding widths (ValueSize/KVValueSize/ChannelValueSize,
+// valueSizeFor, canonicalWidth) that made cross-language and cross-build
+// CRC/signature computation agree over a fixed-width payload. None of that
+// exists in the capnp rewrite -- there is no canonical padding step and no
+// per-event size ceiling at all, so there is nothing left for these tests to
+// pin. Dropped rather than adapted; see this package's migration notes and
+// event_test.go's note by TestValueTooLongRejected's removal for the same
+// reasoning.

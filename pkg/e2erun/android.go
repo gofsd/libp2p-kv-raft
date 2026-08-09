@@ -14,7 +14,6 @@ import (
 	"strings"
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/e2edata"
-	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
 
 // androidGoPackage is mobile/kvmobile's import path, for the -X ldflags
@@ -248,7 +247,7 @@ func runAndroidNode(repoRoot string, node e2edata.Node, bootstrapMultiaddr strin
 		eventJSONs := make([]string, len(rowIdxs))
 		for i, idx := range rowIdxs {
 			ev := f.Rows[idx].Event
-			if ev.EventType == shmevent.EventAdd && string(ev.Value()) == BootstrapToken {
+			if ev.Op == "bootstrap_or_join_cluster" && ev.Fields["leader_addr"] == BootstrapToken {
 				// This row's own join is actually a no-op by the time it
 				// runs: Kvmobile.start (E2ETest.kt, called once before any
 				// row) already joined this device via buildAndroidAAR's
@@ -261,12 +260,10 @@ func runAndroidNode(repoRoot string, node e2edata.Node, bootstrapMultiaddr strin
 				// so this recorded row keeps meaning what it says (a learner
 				// join, matching how the device actually joined) rather than
 				// silently mismatching it.
-				resolved := ResolveBootstrapPlaceholder(string(ev.Value()), bootstrapMultiaddr) + " learner"
-				ev = e2edata.NewEvent(ev.EventType, ev.SourceID, ev.DestinationID, []byte(resolved), ev.ID)
+				resolved := ResolveBootstrapPlaceholder(ev.Fields["leader_addr"], bootstrapMultiaddr) + " learner"
+				ev = withField(ev, "leader_addr", resolved)
 			}
-			if expanded := ExpandRowValue(string(ev.Value())); expanded != string(ev.Value()) {
-				ev = e2edata.NewEvent(ev.EventType, ev.SourceID, ev.DestinationID, []byte(expanded), ev.ID)
-			}
+			ev = expandEventFields(ev, ExpandRowValue)
 			data, err := json.Marshal(ev)
 			if err != nil {
 				return fail(fmt.Errorf("e2erun: encode android row event: %w", err))

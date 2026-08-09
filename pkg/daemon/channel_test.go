@@ -17,20 +17,60 @@ import (
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
 
-// pollChannel is a small test helper wrapping EventChannelPoll's
-// decode step -- used throughout below to avoid repeating
-// DecodeChannelPollResponse's error handling at every call site.
+// channelOpenMsg builds a channelOpen request Msg addressed to peerID.
+func channelOpenMsg(t *testing.T, peerID string, id uint16) shmevent.Msg {
+	t.Helper()
+	m, err := shmevent.NewChannelOpen(peerID)
+	if err != nil {
+		t.Fatalf("NewChannelOpen: %v", err)
+	}
+	m.SetId(id)
+	return m
+}
+
+// channelIDFromOpenResp extracts the freshly minted local channelID from a
+// channelOpen response -- the response reuses the request's own peerId
+// field to carry it back (see NewChannelOpen's doc comment).
+func channelIDFromOpenResp(t *testing.T, resp shmevent.Msg) string {
+	t.Helper()
+	id, err := resp.ChannelOpen().PeerId()
+	if err != nil {
+		t.Fatalf("ChannelOpen peer_id: %v", err)
+	}
+	return id
+}
+
+// channelSendMsg builds a channelSend request Msg.
+func channelSendMsg(t *testing.T, channelID string, purpose byte, chunk []byte, id uint16) shmevent.Msg {
+	t.Helper()
+	m, err := shmevent.NewChannelSend(channelID, purpose, chunk)
+	if err != nil {
+		t.Fatalf("NewChannelSend: %v", err)
+	}
+	m.SetId(id)
+	return m
+}
+
+// pollChannel is a small test helper wrapping channelPoll's response
+// fields -- used throughout below to avoid repeating the same field reads
+// at every call site.
 func pollChannel(t *testing.T, ctx context.Context, n *Node, channelID string) (status, purpose byte, chunk []byte) {
 	t.Helper()
-	resp := callLocal(t, ctx, n, shmevent.Msg{EventType: shmevent.EventChannelPoll, Value: []byte(channelID), ID: 1}, n.ed25519Priv)
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("channel_poll rejected: %s", resp.Value)
-	}
-	status, purpose, chunk, err := shmevent.DecodeChannelPollResponse(resp.Value)
+	m, err := shmevent.NewChannelPoll(channelID)
 	if err != nil {
-		t.Fatalf("DecodeChannelPollResponse: %v", err)
+		t.Fatalf("NewChannelPoll: %v", err)
 	}
-	return status, purpose, chunk
+	m.SetId(1)
+	resp := callLocal(t, ctx, n, m, n.ed25519Priv)
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("channel_poll rejected: %s", mustErrMessage(t, resp))
+	}
+	grp := resp.ChannelPoll()
+	chunk, err = grp.Chunk()
+	if err != nil {
+		t.Fatalf("ChannelPoll chunk: %v", err)
+	}
+	return grp.Status(), grp.Purpose(), chunk
 }
 
 // pollChannelUntilChunk polls channelID on n until a chunk arrives or
@@ -62,23 +102,33 @@ func pollChannelUntilChunkWithPurpose(t *testing.T, ctx context.Context, n *Node
 	}
 }
 
-// listenChannelUntilClaimed polls EventChannelListen on n until an
-// incoming channel is claimed or deadline passes, returning its local
-// channelID and the remote peer id it reports.
+// listenChannelUntilClaimed polls channelListen on n until an incoming
+// channel is claimed or deadline passes, returning its local channelID and
+// the remote peer id it reports.
 func listenChannelUntilClaimed(t *testing.T, ctx context.Context, n *Node) (channelID, remotePeerID string) {
 	t.Helper()
 	deadline := time.After(10 * time.Second)
 	for {
-		resp := callLocal(t, ctx, n, shmevent.Msg{EventType: shmevent.EventChannelListen, ID: 1}, n.ed25519Priv)
-		if resp.EventType == shmevent.EventError {
-			t.Fatalf("channel_listen rejected: %s", resp.Value)
+		m, err := shmevent.NewChannelListen()
+		if err != nil {
+			t.Fatalf("NewChannelListen: %v", err)
 		}
-		if len(resp.Value) > 0 {
-			gotID, gotPeer, err := shmevent.DecodeChannelAccept(resp.Value)
+		m.SetId(1)
+		resp := callLocal(t, ctx, n, m, n.ed25519Priv)
+		if resp.Which() == shmevent.Event_Which_error {
+			t.Fatalf("channel_listen rejected: %s", mustErrMessage(t, resp))
+		}
+		grp := resp.ChannelListen()
+		gotID, err := grp.ChannelId()
+		if err != nil {
+			t.Fatalf("ChannelListen channel_id: %v", err)
+		}
+		if gotID != "" {
+			gotPeer, err := grp.RemotePeerId()
 			if err != nil {
-				t.Fatalf("DecodeChannelAccept: %v", err)
+				t.Fatalf("ChannelListen remote_peer_id: %v", err)
 			}
-			return string(gotID), string(gotPeer)
+			return gotID, gotPeer
 		}
 		select {
 		case <-deadline:
@@ -93,9 +143,9 @@ func listenChannelUntilClaimed(t *testing.T, ctx context.Context, n *Node) (chan
 // standing handleChannelStream's always-enforced gate now requires
 // between two standalone test nodes with no cluster relationship to each
 // other (see shmevent.ReservedGroupChannel's own doc comment). Every
-// EventChannelOpen in this file dials from a to b, never the other way
+// channelOpen in this file dials from a to b, never the other way
 // (b's own replies reuse the channel a already opened, via
-// EventChannelSend -- see TestChannelOpenBidirectionalSendPoll), so a
+// channelSend -- see TestChannelOpenBidirectionalSendPoll), so a
 // single grant of a into b's store is always what these tests need.
 func grantChannelAccess(t *testing.T, sender, receiver *Node) {
 	t.Helper()
@@ -128,22 +178,18 @@ func TestChannelOpenBidirectionalSendPoll(t *testing.T) {
 	connectPeers(t, ctx, a, b)
 	grantChannelAccess(t, a, b)
 
-	openResp := callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(b.peerID), ID: 1}, a.ed25519Priv)
-	if openResp.EventType == shmevent.EventError {
-		t.Fatalf("channel_open rejected: %s", openResp.Value)
+	openResp := callLocal(t, ctx, a, channelOpenMsg(t, b.peerID, 1), a.ed25519Priv)
+	if openResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("channel_open rejected: %s", mustErrMessage(t, openResp))
 	}
-	aChannelID := string(openResp.Value)
+	aChannelID := channelIDFromOpenResp(t, openResp)
 	if aChannelID == "" {
 		t.Fatal("channel_open returned an empty channelID")
 	}
 
-	sendResp := callLocal(t, ctx, a, shmevent.Msg{
-		EventType: shmevent.EventChannelSend,
-		Value:     mustEncodeChannelSend(t, aChannelID, shmevent.ChannelPurposeData, []byte("hello from a")),
-		ID:        2,
-	}, a.ed25519Priv)
-	if sendResp.EventType == shmevent.EventError {
-		t.Fatalf("channel_send rejected: %s", sendResp.Value)
+	sendResp := callLocal(t, ctx, a, channelSendMsg(t, aChannelID, shmevent.ChannelPurposeData, []byte("hello from a"), 2), a.ed25519Priv)
+	if sendResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("channel_send rejected: %s", mustErrMessage(t, sendResp))
 	}
 
 	bChannelID, remotePeerID := listenChannelUntilClaimed(t, ctx, b)
@@ -156,13 +202,9 @@ func TestChannelOpenBidirectionalSendPoll(t *testing.T) {
 		t.Fatalf("b received %q, want %q", gotChunk, "hello from a")
 	}
 
-	replyResp := callLocal(t, ctx, b, shmevent.Msg{
-		EventType: shmevent.EventChannelSend,
-		Value:     mustEncodeChannelSend(t, bChannelID, shmevent.ChannelPurposeData, []byte("hello from b")),
-		ID:        3,
-	}, b.ed25519Priv)
-	if replyResp.EventType == shmevent.EventError {
-		t.Fatalf("reply channel_send rejected: %s", replyResp.Value)
+	replyResp := callLocal(t, ctx, b, channelSendMsg(t, bChannelID, shmevent.ChannelPurposeData, []byte("hello from b"), 3), b.ed25519Priv)
+	if replyResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("reply channel_send rejected: %s", mustErrMessage(t, replyResp))
 	}
 
 	gotReply := pollChannelUntilChunk(t, ctx, a, aChannelID)
@@ -174,9 +216,8 @@ func TestChannelOpenBidirectionalSendPoll(t *testing.T) {
 // TestChannelPurposeCarriedEndToEnd is the central assertion this whole
 // framed/purpose-tagged rewrite exists for: a purpose other than the
 // default (ChannelPurposeVideo, ChannelPurposeControl) survives
-// EncodeChannelSendPayload -> the signed network frame
-// (EncodeChannelWireChunk) -> EncodeChannelPollResponse intact, in both
-// directions.
+// channelSend -> the signed network frame (EncodeChannelFrame) ->
+// channelPoll intact, in both directions.
 func TestChannelPurposeCarriedEndToEnd(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -188,19 +229,15 @@ func TestChannelPurposeCarriedEndToEnd(t *testing.T) {
 	connectPeers(t, ctx, a, b)
 	grantChannelAccess(t, a, b)
 
-	openResp := callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(b.peerID), ID: 1}, a.ed25519Priv)
-	if openResp.EventType == shmevent.EventError {
-		t.Fatalf("channel_open rejected: %s", openResp.Value)
+	openResp := callLocal(t, ctx, a, channelOpenMsg(t, b.peerID, 1), a.ed25519Priv)
+	if openResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("channel_open rejected: %s", mustErrMessage(t, openResp))
 	}
-	aChannelID := string(openResp.Value)
+	aChannelID := channelIDFromOpenResp(t, openResp)
 
-	sendResp := callLocal(t, ctx, a, shmevent.Msg{
-		EventType: shmevent.EventChannelSend,
-		Value:     mustEncodeChannelSend(t, aChannelID, shmevent.ChannelPurposeVideo, []byte("frame bytes")),
-		ID:        2,
-	}, a.ed25519Priv)
-	if sendResp.EventType == shmevent.EventError {
-		t.Fatalf("channel_send rejected: %s", sendResp.Value)
+	sendResp := callLocal(t, ctx, a, channelSendMsg(t, aChannelID, shmevent.ChannelPurposeVideo, []byte("frame bytes"), 2), a.ed25519Priv)
+	if sendResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("channel_send rejected: %s", mustErrMessage(t, sendResp))
 	}
 
 	bChannelID, _ := listenChannelUntilClaimed(t, ctx, b)
@@ -212,13 +249,9 @@ func TestChannelPurposeCarriedEndToEnd(t *testing.T) {
 		t.Fatalf("b received purpose %d, want %d (ChannelPurposeVideo)", gotPurpose, shmevent.ChannelPurposeVideo)
 	}
 
-	replyResp := callLocal(t, ctx, b, shmevent.Msg{
-		EventType: shmevent.EventChannelSend,
-		Value:     mustEncodeChannelSend(t, bChannelID, shmevent.ChannelPurposeControl, []byte("ack")),
-		ID:        3,
-	}, b.ed25519Priv)
-	if replyResp.EventType == shmevent.EventError {
-		t.Fatalf("reply channel_send rejected: %s", replyResp.Value)
+	replyResp := callLocal(t, ctx, b, channelSendMsg(t, bChannelID, shmevent.ChannelPurposeControl, []byte("ack"), 3), b.ed25519Priv)
+	if replyResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("reply channel_send rejected: %s", mustErrMessage(t, replyResp))
 	}
 
 	gotReply, gotReplyPurpose := pollChannelUntilChunkWithPurpose(t, ctx, a, aChannelID)
@@ -231,18 +264,18 @@ func TestChannelPurposeCarriedEndToEnd(t *testing.T) {
 }
 
 // TestChannelLargeChunkNearChannelMaxSize confirms a channel chunk can
-// carry far more than the old, shared shmevent.ValueSize (512 bytes)
-// every other event's Value is still capped at -- proving
-// EventChannelSend/EventChannelPoll's own, much larger
-// shmevent.ChannelValueSize ceiling (see that constant's doc comment)
-// actually applies end to end: local IPC send, the signed network frame,
-// and local IPC poll all carry a single chunk right up against
-// shmevent.ChannelValueSize with no splitting. This exercises the legacy
-// per-chunk IPC path (raw EventChannelSend/Poll, the same as every other
-// test in this file) rather than the much larger pkg/chandata ring path
-// (channelMaxChunkSize, see that constant's doc comment) -- that path's
-// own near-ceiling coverage lives in pkg/shmclient instead, since it has
-// no IPC-request-sized payload to stay under in the first place.
+// carry far more than the old, shared shmevent.ValueSize (512 bytes) --
+// that ceiling, like every other artificial per-event size cap, is gone
+// entirely in the capnp rewrite (no ValueSize/ChannelValueSize exist
+// anymore at all), so this now exercises a chunk comfortably bigger than
+// that old 512-byte figure (mirrored here as a literal) rather than
+// against any current ceiling -- there isn't one to size against. This
+// exercises the legacy per-chunk IPC path (raw channelSend/Poll, the same
+// as every other test in this file) rather than the much larger
+// pkg/chandata ring path (channelMaxChunkSize, see that constant's doc
+// comment) -- that path's own near-ceiling coverage lives in
+// pkg/shmclient instead, since it has no IPC-request-sized payload to stay
+// under in the first place.
 func TestChannelLargeChunkNearChannelMaxSize(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -254,33 +287,24 @@ func TestChannelLargeChunkNearChannelMaxSize(t *testing.T) {
 	connectPeers(t, ctx, a, b)
 	grantChannelAccess(t, a, b)
 
-	openResp := callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(b.peerID), ID: 1}, a.ed25519Priv)
-	if openResp.EventType == shmevent.EventError {
-		t.Fatalf("channel_open rejected: %s", openResp.Value)
+	openResp := callLocal(t, ctx, a, channelOpenMsg(t, b.peerID, 1), a.ed25519Priv)
+	if openResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("channel_open rejected: %s", mustErrMessage(t, openResp))
 	}
-	aChannelID := string(openResp.Value)
+	aChannelID := channelIDFromOpenResp(t, openResp)
 
-	// shmevent.ChannelValueSize (see that constant's doc comment) is
-	// EventChannelSend/Poll's actual IPC ceiling; EncodeChannelSendPayload
-	// adds its own channelID+purpose overhead on top of the raw chunk, so
-	// the send payload here is that ceiling minus that overhead -- well
-	// beyond the old 512-byte shmevent.ValueSize ceiling either way.
-	sendOverhead := 2 + len(aChannelID) + 1 // EncodeChannelSendPayload's own packing
-	want := make([]byte, shmevent.ChannelValueSize-sendOverhead)
+	// oldValueSize mirrors the deleted shmevent.ValueSize (512 bytes) --
+	// this test's whole point is a chunk comfortably bigger than that,
+	// which no longer has any real ceiling to bump up against.
+	const oldValueSize = 512
+	want := make([]byte, oldValueSize*4)
 	for i := range want {
 		want[i] = byte(i % 256)
 	}
-	if len(want) <= shmevent.ValueSize {
-		t.Fatalf("test chunk (%d bytes) isn't actually bigger than the old shared ValueSize (%d) -- test no longer proves anything", len(want), shmevent.ValueSize)
-	}
 
-	sendResp := callLocal(t, ctx, a, shmevent.Msg{
-		EventType: shmevent.EventChannelSend,
-		Value:     mustEncodeChannelSend(t, aChannelID, shmevent.ChannelPurposeData, want),
-		ID:        2,
-	}, a.ed25519Priv)
-	if sendResp.EventType == shmevent.EventError {
-		t.Fatalf("channel_send rejected: %s", sendResp.Value)
+	sendResp := callLocal(t, ctx, a, channelSendMsg(t, aChannelID, shmevent.ChannelPurposeData, want, 2), a.ed25519Priv)
+	if sendResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("channel_send rejected: %s", mustErrMessage(t, sendResp))
 	}
 
 	bChannelID, _ := listenChannelUntilClaimed(t, ctx, b)
@@ -310,16 +334,21 @@ func TestChannelCloseIsObservedAsClosedByPeer(t *testing.T) {
 	connectPeers(t, ctx, a, b)
 	grantChannelAccess(t, a, b)
 
-	openResp := callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(b.peerID), ID: 1}, a.ed25519Priv)
-	if openResp.EventType == shmevent.EventError {
-		t.Fatalf("channel_open rejected: %s", openResp.Value)
+	openResp := callLocal(t, ctx, a, channelOpenMsg(t, b.peerID, 1), a.ed25519Priv)
+	if openResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("channel_open rejected: %s", mustErrMessage(t, openResp))
 	}
-	aChannelID := string(openResp.Value)
+	aChannelID := channelIDFromOpenResp(t, openResp)
 	bChannelID, _ := listenChannelUntilClaimed(t, ctx, b)
 
-	closeResp := callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelClose, Value: []byte(aChannelID), ID: 2}, a.ed25519Priv)
-	if closeResp.EventType == shmevent.EventError {
-		t.Fatalf("channel_close rejected: %s", closeResp.Value)
+	closeMsg, err := shmevent.NewChannelClose(aChannelID)
+	if err != nil {
+		t.Fatalf("NewChannelClose: %v", err)
+	}
+	closeMsg.SetId(2)
+	closeResp := callLocal(t, ctx, a, closeMsg, a.ed25519Priv)
+	if closeResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("channel_close rejected: %s", mustErrMessage(t, closeResp))
 	}
 
 	deadline := time.After(10 * time.Second)
@@ -348,7 +377,7 @@ func TestChannelCloseIsObservedAsClosedByPeer(t *testing.T) {
 // closing) must still let b's still-open direction keep working -- b can
 // send a reply, a can still receive it -- and only once b's own
 // direction also finishes does a's side see ChannelPollClosed. A full
-// EventChannelClose right after a's own EOF would have cut b's reply off
+// channelClose right after a's own EOF would have cut b's reply off
 // prematurely.
 func TestChannelCloseWriteLeavesOtherDirectionOpen(t *testing.T) {
 	t.Parallel()
@@ -361,28 +390,29 @@ func TestChannelCloseWriteLeavesOtherDirectionOpen(t *testing.T) {
 	connectPeers(t, ctx, a, b)
 	grantChannelAccess(t, a, b)
 
-	openResp := callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(b.peerID), ID: 1}, a.ed25519Priv)
-	if openResp.EventType == shmevent.EventError {
-		t.Fatalf("channel_open rejected: %s", openResp.Value)
+	openResp := callLocal(t, ctx, a, channelOpenMsg(t, b.peerID, 1), a.ed25519Priv)
+	if openResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("channel_open rejected: %s", mustErrMessage(t, openResp))
 	}
-	aChannelID := string(openResp.Value)
+	aChannelID := channelIDFromOpenResp(t, openResp)
 	bChannelID, _ := listenChannelUntilClaimed(t, ctx, b)
 
 	// a is "done sending" (its stdin hit EOF) -- half-close, not close.
-	closeWriteResp := callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelCloseWrite, Value: []byte(aChannelID), ID: 2}, a.ed25519Priv)
-	if closeWriteResp.EventType == shmevent.EventError {
-		t.Fatalf("channel_close_write rejected: %s", closeWriteResp.Value)
+	closeWriteMsg, err := shmevent.NewChannelCloseWrite(aChannelID)
+	if err != nil {
+		t.Fatalf("NewChannelCloseWrite: %v", err)
+	}
+	closeWriteMsg.SetId(2)
+	closeWriteResp := callLocal(t, ctx, a, closeWriteMsg, a.ed25519Priv)
+	if closeWriteResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("channel_close_write rejected: %s", mustErrMessage(t, closeWriteResp))
 	}
 
 	// b must still be able to send a reply, and a must still receive it
 	// -- the direction b->a was never touched by a's half-close.
-	replyResp := callLocal(t, ctx, b, shmevent.Msg{
-		EventType: shmevent.EventChannelSend,
-		Value:     mustEncodeChannelSend(t, bChannelID, shmevent.ChannelPurposeData, []byte("still here")),
-		ID:        3,
-	}, b.ed25519Priv)
-	if replyResp.EventType == shmevent.EventError {
-		t.Fatalf("channel_send after peer's half-close rejected: %s", replyResp.Value)
+	replyResp := callLocal(t, ctx, b, channelSendMsg(t, bChannelID, shmevent.ChannelPurposeData, []byte("still here"), 3), b.ed25519Priv)
+	if replyResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("channel_send after peer's half-close rejected: %s", mustErrMessage(t, replyResp))
 	}
 	if got := pollChannelUntilChunk(t, ctx, a, aChannelID); string(got) != "still here" {
 		t.Fatalf("a received %q after its own half-close, want %q", got, "still here")
@@ -391,9 +421,14 @@ func TestChannelCloseWriteLeavesOtherDirectionOpen(t *testing.T) {
 	// Now b also finishes (its own EOF) -- a full close this time, since
 	// b has nothing further to receive either. Only now should a observe
 	// ChannelPollClosed.
-	bCloseResp := callLocal(t, ctx, b, shmevent.Msg{EventType: shmevent.EventChannelClose, Value: []byte(bChannelID), ID: 4}, b.ed25519Priv)
-	if bCloseResp.EventType == shmevent.EventError {
-		t.Fatalf("channel_close rejected: %s", bCloseResp.Value)
+	bCloseMsg, err := shmevent.NewChannelClose(bChannelID)
+	if err != nil {
+		t.Fatalf("NewChannelClose: %v", err)
+	}
+	bCloseMsg.SetId(4)
+	bCloseResp := callLocal(t, ctx, b, bCloseMsg, b.ed25519Priv)
+	if bCloseResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("channel_close rejected: %s", mustErrMessage(t, bCloseResp))
 	}
 	deadline := time.After(10 * time.Second)
 	for {
@@ -445,11 +480,11 @@ func TestChannelStreamRejectsForgedSignature(t *testing.T) {
 		t.Fatalf("connect forger->b: %v", err)
 	}
 
-	notifValue, err := shmevent.EncodeExecuteNotification([]byte(a.peerID), nil)
+	handshake, err := shmevent.NewChannelOpenHandshake(a.peerID)
 	if err != nil {
-		t.Fatalf("EncodeExecuteNotification: %v", err)
+		t.Fatalf("NewChannelOpenHandshake: %v", err)
 	}
-	buf, err := shmevent.Encode(shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: notifValue}, shmevent.PrivateKey(mustRaw(t, forgerPriv)))
+	buf, err := shmevent.Encode(handshake, shmevent.PrivateKey(mustRaw(t, forgerPriv)))
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
@@ -469,12 +504,21 @@ func TestChannelStreamRejectsForgedSignature(t *testing.T) {
 	// b must never accept this: give handleChannelStream a moment to run,
 	// then confirm nothing became listenable.
 	time.Sleep(200 * time.Millisecond)
-	listenResp := callLocal(t, ctx, b, shmevent.Msg{EventType: shmevent.EventChannelListen, ID: 1}, b.ed25519Priv)
-	if listenResp.EventType == shmevent.EventError {
-		t.Fatalf("channel_listen rejected: %s", listenResp.Value)
+	listenMsg, err := shmevent.NewChannelListen()
+	if err != nil {
+		t.Fatalf("NewChannelListen: %v", err)
 	}
-	if len(listenResp.Value) != 0 {
-		t.Fatalf("forged channel_open was accepted and became listenable: %q", listenResp.Value)
+	listenMsg.SetId(1)
+	listenResp := callLocal(t, ctx, b, listenMsg, b.ed25519Priv)
+	if listenResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("channel_listen rejected: %s", mustErrMessage(t, listenResp))
+	}
+	gotID, err := listenResp.ChannelListen().ChannelId()
+	if err != nil {
+		t.Fatalf("ChannelListen channel_id: %v", err)
+	}
+	if gotID != "" {
+		t.Fatalf("forged channel_open was accepted and became listenable: %q", gotID)
 	}
 }
 
@@ -483,11 +527,11 @@ func TestChannelStreamRejectsForgedSignature(t *testing.T) {
 // actually gates channel data: after a's real handshake with b succeeds,
 // a frame written directly onto the stream but signed with an unrelated
 // key must never be delivered via channel_poll. This is the whole point
-// of framing every post-handshake message as a signed shmevent.Event
-// instead of raw bytes (see ChannelProtocolID's doc comment) -- without
-// per-frame verification, this same injection would have silently
-// appeared as ordinary received bytes under this package's earlier
-// raw-pipe design.
+// of framing every post-handshake message with SignChannelChunk/
+// EncodeChannelFrame's own signature scheme (see ChannelProtocolID's doc
+// comment) -- without per-frame verification, this same injection would
+// have silently appeared as ordinary received bytes under this package's
+// earlier raw-pipe design.
 func TestChannelDataFrameForgedAfterHandshakeRejected(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -499,11 +543,11 @@ func TestChannelDataFrameForgedAfterHandshakeRejected(t *testing.T) {
 	connectPeers(t, ctx, a, b)
 	grantChannelAccess(t, a, b)
 
-	openResp := callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(b.peerID), ID: 1}, a.ed25519Priv)
-	if openResp.EventType == shmevent.EventError {
-		t.Fatalf("channel_open rejected: %s", openResp.Value)
+	openResp := callLocal(t, ctx, a, channelOpenMsg(t, b.peerID, 1), a.ed25519Priv)
+	if openResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("channel_open rejected: %s", mustErrMessage(t, openResp))
 	}
-	aChannelID := string(openResp.Value)
+	aChannelID := channelIDFromOpenResp(t, openResp)
 	bChannelID, _ := listenChannelUntilClaimed(t, ctx, b)
 
 	// Inject a frame directly onto a's side of the stream, signed with an
@@ -518,13 +562,12 @@ func TestChannelDataFrameForgedAfterHandshakeRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate forger key: %v", err)
 	}
-	forgedBuf, err := shmevent.Encode(shmevent.Msg{
-		EventType: shmevent.EventChannelSend,
-		Value:     shmevent.EncodeChannelWireChunk(shmevent.ChannelPurposeData, []byte("forged")),
-	}, shmevent.PrivateKey(mustRaw(t, forgerPriv)))
+	forgerRaw := shmevent.PrivateKey(mustRaw(t, forgerPriv))
+	crc, sig, err := shmevent.SignChannelChunk(forgerRaw, shmevent.ChannelPurposeData, []byte("forged"))
 	if err != nil {
-		t.Fatalf("Encode forged frame: %v", err)
+		t.Fatalf("SignChannelChunk: %v", err)
 	}
+	forgedBuf := shmevent.EncodeChannelFrame(shmevent.ChannelPurposeData, crc, sig, []byte("forged"))
 	if err := writeFramed(aSess.stream, forgedBuf); err != nil {
 		t.Fatalf("write forged frame: %v", err)
 	}
@@ -580,13 +623,13 @@ func TestChannelGroupGate(t *testing.T) {
 
 	open := func(id uint16) shmevent.Msg {
 		t.Helper()
-		return callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(b.peerID), ID: id}, a.ed25519Priv)
+		return callLocal(t, ctx, a, channelOpenMsg(t, b.peerID, id), a.ed25519Priv)
 	}
 
 	// Neither a cluster member nor in the channel group: rejected.
 	// dispatchChannelOpen reads b's reject response synchronously, so the
 	// gate's rejection on b surfaces straight back as a local error on a.
-	if resp := open(1); resp.EventType != shmevent.EventError {
+	if resp := open(1); resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("channel_open from a sender in neither reserved group unexpectedly succeeded")
 	}
 
@@ -603,8 +646,8 @@ func TestChannelGroupGate(t *testing.T) {
 	if err := b.store.Set(channelGroupKey, nil); err != nil {
 		t.Fatalf("grant channel group membership: %v", err)
 	}
-	if resp := open(2); resp.EventType == shmevent.EventError {
-		t.Fatalf("channel_open from a channel-group member rejected: %s", resp.Value)
+	if resp := open(2); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("channel_open from a channel-group member rejected: %s", mustErrMessage(t, resp))
 	}
 
 	// Revoke it again and confirm "cluster" group membership alone is
@@ -612,7 +655,7 @@ func TestChannelGroupGate(t *testing.T) {
 	if err := b.store.Delete(channelGroupKey); err != nil {
 		t.Fatalf("revoke channel group membership: %v", err)
 	}
-	if resp := open(3); resp.EventType != shmevent.EventError {
+	if resp := open(3); resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("channel_open from a sender with revoked channel-group membership and no cluster membership unexpectedly succeeded")
 	}
 
@@ -623,8 +666,8 @@ func TestChannelGroupGate(t *testing.T) {
 	if err := b.store.Set(clusterGroupKey, nil); err != nil {
 		t.Fatalf("grant cluster group membership: %v", err)
 	}
-	if resp := open(4); resp.EventType == shmevent.EventError {
-		t.Fatalf("channel_open from a cluster-group member rejected: %s", resp.Value)
+	if resp := open(4); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("channel_open from a cluster-group member rejected: %s", mustErrMessage(t, resp))
 	}
 }
 
@@ -649,19 +692,19 @@ func TestChannelPersonalGroupGate(t *testing.T) {
 
 	openAtoB := func(id uint16) shmevent.Msg {
 		t.Helper()
-		return callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(b.peerID), ID: id}, a.ed25519Priv)
+		return callLocal(t, ctx, a, channelOpenMsg(t, b.peerID, id), a.ed25519Priv)
 	}
 	openBtoA := func(id uint16) shmevent.Msg {
 		t.Helper()
-		return callLocal(t, ctx, b, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(a.peerID), ID: id}, b.ed25519Priv)
+		return callLocal(t, ctx, b, channelOpenMsg(t, a.peerID, id), b.ed25519Priv)
 	}
 
 	// Neither side has granted the other anything yet: both directions
 	// are rejected.
-	if resp := openAtoB(1); resp.EventType != shmevent.EventError {
+	if resp := openAtoB(1); resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("a -> b channel_open with no grant either way unexpectedly succeeded")
 	}
-	if resp := openBtoA(2); resp.EventType != shmevent.EventError {
+	if resp := openBtoA(2); resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("b -> a channel_open with no grant either way unexpectedly succeeded")
 	}
 
@@ -681,10 +724,10 @@ func TestChannelPersonalGroupGate(t *testing.T) {
 	if err := b.store.Set(bPersonalGroupKey, nil); err != nil {
 		t.Fatalf("grant a access to b's personal group: %v", err)
 	}
-	if resp := openAtoB(3); resp.EventType == shmevent.EventError {
-		t.Fatalf("a -> b channel_open after b granted a access rejected: %s", resp.Value)
+	if resp := openAtoB(3); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("a -> b channel_open after b granted a access rejected: %s", mustErrMessage(t, resp))
 	}
-	if resp := openBtoA(4); resp.EventType != shmevent.EventError {
+	if resp := openBtoA(4); resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("b -> a channel_open unexpectedly succeeded from b's one-directional grant of a alone")
 	}
 
@@ -702,8 +745,8 @@ func TestChannelPersonalGroupGate(t *testing.T) {
 	if err := a.store.Set(aPersonalGroupKey, nil); err != nil {
 		t.Fatalf("grant b access to a's personal group: %v", err)
 	}
-	if resp := openBtoA(5); resp.EventType == shmevent.EventError {
-		t.Fatalf("b -> a channel_open after a granted b access rejected: %s", resp.Value)
+	if resp := openBtoA(5); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("b -> a channel_open after a granted b access rejected: %s", mustErrMessage(t, resp))
 	}
 
 	// Revoking b's grant of a leaves a's grant of b (the reverse
@@ -711,17 +754,17 @@ func TestChannelPersonalGroupGate(t *testing.T) {
 	if err := b.store.Delete(bPersonalGroupKey); err != nil {
 		t.Fatalf("revoke a's access to b's personal group: %v", err)
 	}
-	if resp := openAtoB(6); resp.EventType != shmevent.EventError {
+	if resp := openAtoB(6); resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("a -> b channel_open after b revoked a's grant unexpectedly succeeded")
 	}
-	if resp := openBtoA(7); resp.EventType == shmevent.EventError {
-		t.Fatalf("b -> a channel_open rejected after only a -> b's grant was revoked: %s", resp.Value)
+	if resp := openBtoA(7); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("b -> a channel_open rejected after only a -> b's grant was revoked: %s", mustErrMessage(t, resp))
 	}
 }
 
 // TestChannelEventsRejectRemoteCaller mirrors
 // TestClientProtocolRejectsRemoteKeyFetch's loop-over-events shape: none
-// of the 5 channel events are available to a remote (ClientProtocolID)
+// of the channel events are available to a remote (ClientProtocolID)
 // caller, only this node's own local operator.
 func TestChannelEventsRejectRemoteCaller(t *testing.T) {
 	t.Parallel()
@@ -731,22 +774,30 @@ func TestChannelEventsRejectRemoteCaller(t *testing.T) {
 	leader := startTestLeader(t, ctx, Config{})
 	remote, remotePriv, leaderPeerID := newTestRemoteHost(t, ctx, leader)
 
-	events := []uint8{
-		shmevent.EventChannelOpen,
-		shmevent.EventChannelSend,
-		shmevent.EventChannelPoll,
-		shmevent.EventChannelListen,
-		shmevent.EventChannelClose,
-		shmevent.EventChannelCloseWrite,
-		shmevent.EventChannelDataReady,
+	builders := []func() (shmevent.Msg, error){
+		func() (shmevent.Msg, error) { return shmevent.NewChannelOpen("some-peer") },
+		func() (shmevent.Msg, error) {
+			return shmevent.NewChannelSend("some-channel", shmevent.ChannelPurposeData, nil)
+		},
+		func() (shmevent.Msg, error) { return shmevent.NewChannelPoll("some-channel") },
+		shmevent.NewChannelListen,
+		func() (shmevent.Msg, error) { return shmevent.NewChannelClose("some-channel") },
+		func() (shmevent.Msg, error) { return shmevent.NewChannelCloseWrite("some-channel") },
+		func() (shmevent.Msg, error) { return shmevent.NewChannelDataReady("some-channel") },
 	}
-	for _, evt := range events {
-		resp, err := callClientProtocol(ctx, remote, leaderPeerID, shmevent.Msg{EventType: evt, ID: 1}, remotePriv)
+	for _, build := range builders {
+		m, err := build()
 		if err != nil {
-			t.Fatalf("%s: %v", shmevent.EventName(evt), err)
+			t.Fatalf("build request: %v", err)
 		}
-		if resp.EventType != shmevent.EventError {
-			t.Fatalf("%s succeeded remotely, want rejection", shmevent.EventName(evt))
+		m.SetId(1)
+		want := shmevent.EventName(m.Which())
+		resp, err := callClientProtocol(ctx, remote, leaderPeerID, m, remotePriv)
+		if err != nil {
+			t.Fatalf("%s: %v", want, err)
+		}
+		if resp.Which() != shmevent.Event_Which_error {
+			t.Fatalf("%s succeeded remotely, want rejection", want)
 		}
 	}
 }
@@ -769,9 +820,9 @@ func TestChannelReapEvictsUnclaimedPendingChannel(t *testing.T) {
 	connectPeers(t, ctx, a, b)
 	grantChannelAccess(t, a, b)
 
-	openResp := callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(b.peerID), ID: 1}, a.ed25519Priv)
-	if openResp.EventType == shmevent.EventError {
-		t.Fatalf("channel_open rejected: %s", openResp.Value)
+	openResp := callLocal(t, ctx, a, channelOpenMsg(t, b.peerID, 1), a.ed25519Priv)
+	if openResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("channel_open rejected: %s", mustErrMessage(t, openResp))
 	}
 
 	// Give handleChannelStream a moment to register + queue the incoming
@@ -783,22 +834,22 @@ func TestChannelReapEvictsUnclaimedPendingChannel(t *testing.T) {
 	// Any subsequent Poll/Listen call opportunistically reaps -- confirm
 	// the never-claimed channel is simply gone (channel_listen reports
 	// nothing pending), not delivered late.
-	listenResp := callLocal(t, ctx, b, shmevent.Msg{EventType: shmevent.EventChannelListen, ID: 2}, b.ed25519Priv)
-	if listenResp.EventType == shmevent.EventError {
-		t.Fatalf("channel_listen rejected: %s", listenResp.Value)
-	}
-	if len(listenResp.Value) != 0 {
-		t.Fatalf("reaped channel was still delivered via channel_listen: %q", listenResp.Value)
-	}
-}
-
-func mustEncodeChannelSend(t *testing.T, channelID string, purpose byte, chunk []byte) []byte {
-	t.Helper()
-	payload, err := shmevent.EncodeChannelSendPayload(channelID, purpose, chunk)
+	listenMsg, err := shmevent.NewChannelListen()
 	if err != nil {
-		t.Fatalf("EncodeChannelSendPayload: %v", err)
+		t.Fatalf("NewChannelListen: %v", err)
 	}
-	return payload
+	listenMsg.SetId(2)
+	listenResp := callLocal(t, ctx, b, listenMsg, b.ed25519Priv)
+	if listenResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("channel_listen rejected: %s", mustErrMessage(t, listenResp))
+	}
+	gotID, err := listenResp.ChannelListen().ChannelId()
+	if err != nil {
+		t.Fatalf("ChannelListen channel_id: %v", err)
+	}
+	if gotID != "" {
+		t.Fatalf("reaped channel was still delivered via channel_listen: %q", gotID)
+	}
 }
 
 // TestChannelSessionPushPopPreservesPurposeAndOrder is a deterministic,
@@ -842,7 +893,7 @@ func TestChannelSessionPushPopPreservesPurposeAndOrder(t *testing.T) {
 }
 
 // TestChannelBurstSendStaysUnderPollResponseLimit fires several
-// EventChannelSend calls back-to-back at b with no poll from b in between
+// channelSend calls back-to-back at b with no poll from b in between
 // (burst load, receiver polls slower than sender sends), confirming no
 // individual poll ever errors and the full concatenated result exactly
 // matches what a sent, in order and undamaged -- a general burst/ordering
@@ -861,11 +912,11 @@ func TestChannelBurstSendStaysUnderPollResponseLimit(t *testing.T) {
 	connectPeers(t, ctx, a, b)
 	grantChannelAccess(t, a, b)
 
-	openResp := callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(b.peerID), ID: 1}, a.ed25519Priv)
-	if openResp.EventType == shmevent.EventError {
-		t.Fatalf("channel_open rejected: %s", openResp.Value)
+	openResp := callLocal(t, ctx, a, channelOpenMsg(t, b.peerID, 1), a.ed25519Priv)
+	if openResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("channel_open rejected: %s", mustErrMessage(t, openResp))
 	}
-	aChannelID := string(openResp.Value)
+	aChannelID := channelIDFromOpenResp(t, openResp)
 
 	// Fire every send before b ever polls, each its own frame well within
 	// channelMaxChunkSize.
@@ -878,13 +929,9 @@ func TestChannelBurstSendStaysUnderPollResponseLimit(t *testing.T) {
 			chunk[j] = byte((i*sendSize + j) % 256)
 		}
 		want = append(want, chunk...)
-		sendResp := callLocal(t, ctx, a, shmevent.Msg{
-			EventType: shmevent.EventChannelSend,
-			Value:     mustEncodeChannelSend(t, aChannelID, shmevent.ChannelPurposeData, chunk),
-			ID:        uint16(2 + i),
-		}, a.ed25519Priv)
-		if sendResp.EventType == shmevent.EventError {
-			t.Fatalf("channel_send %d rejected: %s", i, sendResp.Value)
+		sendResp := callLocal(t, ctx, a, channelSendMsg(t, aChannelID, shmevent.ChannelPurposeData, chunk, uint16(2+i)), a.ed25519Priv)
+		if sendResp.Which() == shmevent.Event_Which_error {
+			t.Fatalf("channel_send %d rejected: %s", i, mustErrMessage(t, sendResp))
 		}
 	}
 
@@ -957,23 +1004,19 @@ func TestChannelQuotaExhaustionClosesSession(t *testing.T) {
 	connectPeers(t, ctx, a, b)
 	grantChannelAccess(t, a, b)
 
-	openResp := callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(b.peerID), ID: 1}, a.ed25519Priv)
-	if openResp.EventType == shmevent.EventError {
-		t.Fatalf("channel_open rejected: %s", openResp.Value)
+	openResp := callLocal(t, ctx, a, channelOpenMsg(t, b.peerID, 1), a.ed25519Priv)
+	if openResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("channel_open rejected: %s", mustErrMessage(t, openResp))
 	}
-	aChannelID := string(openResp.Value)
+	aChannelID := channelIDFromOpenResp(t, openResp)
 
 	bChannelID, _ := listenChannelUntilClaimed(t, ctx, b)
 
 	// Well over b's 5-byte burst budget -- denied on arrival regardless of
 	// a's own (unlimited) outbound quota, which only gates a's own send.
-	sendResp := callLocal(t, ctx, a, shmevent.Msg{
-		EventType: shmevent.EventChannelSend,
-		Value:     mustEncodeChannelSend(t, aChannelID, shmevent.ChannelPurposeData, []byte("this chunk is over budget")),
-		ID:        2,
-	}, a.ed25519Priv)
-	if sendResp.EventType == shmevent.EventError {
-		t.Fatalf("channel_send rejected on a's own side: %s", sendResp.Value)
+	sendResp := callLocal(t, ctx, a, channelSendMsg(t, aChannelID, shmevent.ChannelPurposeData, []byte("this chunk is over budget"), 2), a.ed25519Priv)
+	if sendResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("channel_send rejected on a's own side: %s", mustErrMessage(t, sendResp))
 	}
 
 	deadline := time.After(10 * time.Second)

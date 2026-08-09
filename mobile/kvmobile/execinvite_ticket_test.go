@@ -20,11 +20,11 @@ import (
 // raw leader like spawnTestLeader's.
 func buildExecInviteTicket(t *testing.T, priv shmevent.PrivateKey, sourceAddr string, token []byte) string {
 	t.Helper()
-	value, err := shmevent.EncodeExecTicketPayload(sourceAddr, token)
+	m, err := shmevent.NewExecTicket(sourceAddr, token)
 	if err != nil {
-		t.Fatalf("EncodeExecTicketPayload: %v", err)
+		t.Fatalf("NewExecTicket: %v", err)
 	}
-	wire, err := shmevent.Encode(shmevent.Msg{EventType: shmevent.EventExecTicket, Value: value}, priv)
+	wire, err := shmevent.Encode(m, priv)
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
@@ -71,12 +71,16 @@ func TestCreateExecInviteTicketIsVerifiable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("shmevent.Decode: %v", err)
 	}
-	if m.EventType != shmevent.EventExecTicket {
-		t.Fatalf("got event type %d, want %d", m.EventType, shmevent.EventExecTicket)
+	if m.Which() != shmevent.Event_Which_execTicket {
+		t.Fatalf("got event %s, want %s", shmevent.EventName(m.Which()), shmevent.EventName(shmevent.Event_Which_execTicket))
 	}
-	addr, token, err := shmevent.DecodeExecTicketPayload(m.Value)
+	addr, err := m.ExecTicket().SourceAddr()
 	if err != nil {
-		t.Fatalf("DecodeExecTicketPayload: %v", err)
+		t.Fatalf("SourceAddr: %v", err)
+	}
+	token, err := m.ExecTicket().Token()
+	if err != nil {
+		t.Fatalf("Token: %v", err)
 	}
 	if len(token) != shmevent.ExecInviteTokenSize {
 		t.Fatalf("got token length %d, want %d", len(token), shmevent.ExecInviteTokenSize)

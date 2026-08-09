@@ -5,11 +5,12 @@ import (
 	"strings"
 )
 
-// TxnOp.Op's valid values. TxnOpSet/TxnOpDelete are plain key writes and
-// deletes; TxnOpCompare/TxnOpCompareAbsent are *preconditions* that write
-// nothing and instead decide whether the rest of the transaction applies at
-// all -- the compare-and-swap shape this type's doc comment used to name as
-// something a real transaction "might eventually grow into".
+// TxnOpSpec.Op's valid values. TxnOpSet/TxnOpDelete are plain key writes
+// and deletes; TxnOpCompare/TxnOpCompareAbsent are *preconditions* that
+// write nothing and instead decide whether the rest of the transaction
+// applies at all -- the compare-and-swap shape this type's doc comment
+// used to name as something a real transaction "might eventually grow
+// into".
 const (
 	TxnOpSet    byte = 1
 	TxnOpDelete byte = 2
@@ -29,34 +30,37 @@ const (
 // error carries, wherever it is produced or inspected. It exists because
 // that failure has to survive a boundary Go error values can't cross: the
 // FSM raises it (kvfsm.ErrCompareFailed), pkg/daemon forwards its text over
-// IPC as an EventError, and the client turns it back into a typed result
+// IPC as an error Msg, and the client turns it back into a typed result
 // (pkg/shmclient.ErrCompareFailed, mobile/kvmobile.CompareAndSwap's plain
 // false). Matching on a constant both ends import beats each end hard-coding
 // the same string and only finding out they disagree when a retry loop
 // silently stops retrying.
 const CompareFailedMarker = "txn: compare failed"
 
-// TxnOp is one operation within an EventTxn request: Set (Key and Value both
-// required), Delete (Key required, Value ignored), or one of the two compare
-// preconditions above. See EventTxn's doc comment for the atomicity guarantee
+// TxnOpSpec is one operation within a txn request: Set (Key and Value both
+// required), Delete (Key required, Value ignored), or one of the two
+// compare preconditions above. Named "Spec" (not "TxnOp") to avoid
+// colliding with the generated capnp TxnOp struct type this package's
+// NewTxn/TxnOps convert to/from -- see those functions' doc comments.
+// See txn's doc comment in api/shmevent.capnp for the atomicity guarantee
 // applying a list of these gets, and kvfsm's OpTxn case for the rule that
-// every compare is evaluated -- against the committed state, inside the same
-// single Apply -- before any write in the same transaction lands.
-type TxnOp struct {
+// every compare is evaluated -- against the committed state, inside the
+// same single Apply -- before any write in the same transaction lands.
+type TxnOpSpec struct {
 	Op    byte
 	Key   []byte
 	Value []byte
 }
 
 // IsCompare reports whether op is a precondition rather than a write.
-func (op TxnOp) IsCompare() bool {
+func (op TxnOpSpec) IsCompare() bool {
 	return op.Op == TxnOpCompare || op.Op == TxnOpCompareAbsent
 }
 
 // ValidTxnOp reports whether op is one of the four kinds this package
-// defines. Kept here rather than duplicated in pkg/daemon's EventTxn
-// handler and kvfsm's OpTxn case, which both have to reject an unknown
-// kind and would otherwise drift apart as kinds are added.
+// defines. Kept here rather than duplicated in pkg/daemon's txn handler
+// and kvfsm's OpTxn case, which both have to reject an unknown kind and
+// would otherwise drift apart as kinds are added.
 func ValidTxnOp(op byte) bool {
 	switch op {
 	case TxnOpSet, TxnOpDelete, TxnOpCompare, TxnOpCompareAbsent:
@@ -65,13 +69,79 @@ func ValidTxnOp(op byte) bool {
 	return false
 }
 
-// EncodeTxnPayload packs ops into a single EventTxn Msg.Value: a 2-byte
+// NewTxn builds a txn Msg from ops -- see that variant's doc comment in
+// api/shmevent.capnp.
+func NewTxn(ops []TxnOpSpec) (Msg, error) {
+	if len(ops) > 0xFFFF {
+		return Msg{}, fmt.Errorf("shmevent: txn has too many ops: %d", len(ops))
+	}
+	for _, op := range ops {
+		if len(op.Key) == 0 {
+			return Msg{}, fmt.Errorf("shmevent: txn op has an empty key")
+		}
+		if !ValidTxnOp(op.Op) {
+			return Msg{}, fmt.Errorf("shmevent: txn op has unknown kind %d", op.Op)
+		}
+	}
+
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
+	}
+	m.SetTxn()
+	grp := m.Txn()
+	list, err := grp.NewOps(int32(len(ops)))
+	if err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_txn: %w", err)
+	}
+	for i, op := range ops {
+		dst := list.At(i)
+		dst.SetOp(op.Op)
+		if err := dst.SetKey(op.Key); err != nil {
+			return Msg{}, fmt.Errorf("shmevent: new_txn: op %d: %w", i, err)
+		}
+		if err := dst.SetValue(op.Value); err != nil {
+			return Msg{}, fmt.Errorf("shmevent: new_txn: op %d: %w", i, err)
+		}
+	}
+	return m, nil
+}
+
+// TxnOps reads a txn Msg's ops back out as []TxnOpSpec -- NewTxn's
+// inverse, for a receiver (pkg/daemon) that wants to iterate them as
+// plain Go values rather than the generated capnp TxnOp_List directly.
+func TxnOps(grp Event_txn) ([]TxnOpSpec, error) {
+	list, err := grp.Ops()
+	if err != nil {
+		return nil, fmt.Errorf("shmevent: txn ops: %w", err)
+	}
+	out := make([]TxnOpSpec, list.Len())
+	for i := range out {
+		src := list.At(i)
+		key, err := src.Key()
+		if err != nil {
+			return nil, fmt.Errorf("shmevent: txn op %d key: %w", i, err)
+		}
+		value, err := src.Value()
+		if err != nil {
+			return nil, fmt.Errorf("shmevent: txn op %d value: %w", i, err)
+		}
+		out[i] = TxnOpSpec{Op: src.Op(), Key: key, Value: value}
+	}
+	return out, nil
+}
+
+// EncodeTxnPayload packs ops into a raft log entry value: a 2-byte
 // big-endian op count, then each op as [1-byte Op][2-byte key
-// length][key][2-byte value length][value] -- every field explicitly
-// length-prefixed (unlike EncodeSetPayload's "last field takes the rest of
-// the buffer" trick) since more than one op can follow within the same
-// Value.
-func EncodeTxnPayload(ops []TxnOp) ([]byte, error) {
+// length][key][2-byte value length][value]. Internal only -- unlike the
+// wire Msg union, a raft log entry is never exchanged with a non-Go peer
+// (rafttransport's own msgpack framing wraps this for the AppendEntries
+// hop between raft nodes, all of which are this same Go binary), so there
+// is no reason to route it through capnp; pkg/daemon's txn handler reads
+// the wire Msg via TxnOps then re-encodes with this before forwarding to
+// raft (kvfsm.OpTxn), the same way EventSet's key/value already travel as
+// plain []byte through handleOpForward rather than as a wire Msg.
+func EncodeTxnPayload(ops []TxnOpSpec) ([]byte, error) {
 	if len(ops) > 0xFFFF {
 		return nil, fmt.Errorf("shmevent: txn payload has too many ops: %d", len(ops))
 	}
@@ -112,13 +182,13 @@ func EncodeTxnPayload(ops []TxnOp) ([]byte, error) {
 }
 
 // DecodeTxnPayload is the inverse of EncodeTxnPayload.
-func DecodeTxnPayload(payload []byte) ([]TxnOp, error) {
+func DecodeTxnPayload(payload []byte) ([]TxnOpSpec, error) {
 	if len(payload) < 2 {
 		return nil, fmt.Errorf("shmevent: txn payload too short: %d bytes", len(payload))
 	}
 	count := int(payload[0])<<8 | int(payload[1])
 	off := 2
-	ops := make([]TxnOp, 0, count)
+	ops := make([]TxnOpSpec, 0, count)
 	for i := range count {
 		if off+1+2 > len(payload) {
 			return nil, fmt.Errorf("shmevent: txn payload truncated at op %d", i)
@@ -139,7 +209,7 @@ func DecodeTxnPayload(payload []byte) ([]TxnOp, error) {
 		}
 		value := payload[off : off+valueLen]
 		off += valueLen
-		ops = append(ops, TxnOp{Op: op, Key: key, Value: value})
+		ops = append(ops, TxnOpSpec{Op: op, Key: key, Value: value})
 	}
 	if off != len(payload) {
 		return nil, fmt.Errorf("shmevent: txn payload has %d trailing bytes", len(payload)-off)
@@ -148,8 +218,8 @@ func DecodeTxnPayload(payload []byte) ([]TxnOp, error) {
 }
 
 // ParseTxnOpsString parses a human-typeable transaction description into a
-// TxnOp list: a space-separated list of `<key>=<value>` (a Set -- split on
-// the first `=` only, so a value itself containing `=` is preserved
+// TxnOpSpec list: a space-separated list of `<key>=<value>` (a Set -- split
+// on the first `=` only, so a value itself containing `=` is preserved
 // verbatim), `del:<key>` (a Delete), `if:<key>=<value>` (a TxnOpCompare
 // precondition) or `ifabsent:<key>` (a TxnOpCompareAbsent precondition)
 // tokens. Shared by pkg/kvctl's `mage txn` target and mobile/kvmobile.Txn,
@@ -160,25 +230,25 @@ func DecodeTxnPayload(payload []byte) ([]TxnOp, error) {
 // literally named `if` or `del` can't be mistaken for one -- the cost is
 // that those four prefixes are reserved at the *start of a token* only; a
 // key containing them anywhere else is unaffected.
-func ParseTxnOpsString(ops string) ([]TxnOp, error) {
+func ParseTxnOpsString(ops string) ([]TxnOpSpec, error) {
 	fields := strings.Fields(ops)
 	if len(fields) == 0 {
 		return nil, fmt.Errorf("shmevent: txn: no ops given (want e.g. \"k1=v1 k2=v2 del:k3 if:k4=v4 ifabsent:k5\")")
 	}
-	parsed := make([]TxnOp, 0, len(fields))
+	parsed := make([]TxnOpSpec, 0, len(fields))
 	for _, field := range fields {
 		if key, ok := strings.CutPrefix(field, "del:"); ok {
 			if key == "" {
 				return nil, fmt.Errorf("shmevent: txn: %q has an empty key", field)
 			}
-			parsed = append(parsed, TxnOp{Op: TxnOpDelete, Key: []byte(key)})
+			parsed = append(parsed, TxnOpSpec{Op: TxnOpDelete, Key: []byte(key)})
 			continue
 		}
 		if key, ok := strings.CutPrefix(field, "ifabsent:"); ok {
 			if key == "" {
 				return nil, fmt.Errorf("shmevent: txn: %q has an empty key", field)
 			}
-			parsed = append(parsed, TxnOp{Op: TxnOpCompareAbsent, Key: []byte(key)})
+			parsed = append(parsed, TxnOpSpec{Op: TxnOpCompareAbsent, Key: []byte(key)})
 			continue
 		}
 		if rest, ok := strings.CutPrefix(field, "if:"); ok {
@@ -186,14 +256,14 @@ func ParseTxnOpsString(ops string) ([]TxnOp, error) {
 			if !found || key == "" {
 				return nil, fmt.Errorf("shmevent: txn: %q is not if:<key>=<value>", field)
 			}
-			parsed = append(parsed, TxnOp{Op: TxnOpCompare, Key: []byte(key), Value: []byte(value)})
+			parsed = append(parsed, TxnOpSpec{Op: TxnOpCompare, Key: []byte(key), Value: []byte(value)})
 			continue
 		}
 		key, value, ok := strings.Cut(field, "=")
 		if !ok || key == "" {
 			return nil, fmt.Errorf("shmevent: txn: %q is neither <key>=<value> nor del:<key>", field)
 		}
-		parsed = append(parsed, TxnOp{Op: TxnOpSet, Key: []byte(key), Value: []byte(value)})
+		parsed = append(parsed, TxnOpSpec{Op: TxnOpSet, Key: []byte(key), Value: []byte(value)})
 	}
 	return parsed, nil
 }

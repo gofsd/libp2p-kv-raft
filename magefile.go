@@ -276,11 +276,20 @@ func (E2E) AddNode(platform string) error {
 // whatever it is at run time" (see pkg/e2erun.BootstrapToken) instead of a
 // frozen address.
 //
-// Usage: mage e2e:addtest <nodeID> <eventName> <id> <sourceID> <destID> <value>
-func (E2E) AddTest(nodeID int, eventName string, id, sourceID, destID int, value string) error {
-	eventType, ok := shmevent.EventFromName(eventName)
-	if !ok {
-		return fmt.Errorf("e2e:addtest: unknown event name %q (want one of: set_key, set_field, get_key, get_field, get_public_key, get_private_key, add)", eventName)
+// Usage: mage e2e:addtest <nodeID> <eventName> <id> '<fieldsJSON>'
+// fieldsJSON is a JSON object of the event's own named fields (see
+// api/shmevent.capnp's per-variant field lists, or e2edata.Event's doc
+// comment) -- e.g. `{"key":"hello","value":"world"}` for set, or `{}`/
+// omitted for a no-field event like leave. "" is shorthand for `{}`.
+func (E2E) AddTest(nodeID int, eventName string, id int, fieldsJSON string) error {
+	if _, ok := shmevent.EventFromName(eventName); !ok {
+		return fmt.Errorf("e2e:addtest: unknown event name %q", eventName)
+	}
+	var fields map[string]string
+	if fieldsJSON != "" {
+		if err := json.Unmarshal([]byte(fieldsJSON), &fields); err != nil {
+			return fmt.Errorf("e2e:addtest: parse fields json: %w", err)
+		}
 	}
 	path, err := testdataPath()
 	if err != nil {
@@ -290,7 +299,10 @@ func (E2E) AddTest(nodeID int, eventName string, id, sourceID, destID int, value
 	if err != nil {
 		return err
 	}
-	ev := e2edata.NewEvent(eventType, uint16(sourceID), uint16(destID), []byte(value), uint16(id))
+	ev := e2edata.Event{Op: eventName, ID: uint16(id), Fields: fields}
+	if _, err := ev.ToMsg(); err != nil {
+		return fmt.Errorf("e2e:addtest: %w", err)
+	}
 	row, err := f.AddTest(nodeID, ev)
 	if err != nil {
 		return err
@@ -1676,7 +1688,7 @@ func RequestPermit(kind, peerID, metadata string) error {
 	if !ok {
 		return fmt.Errorf("unknown permit kind %q (want \"bootstrap\")", kind)
 	}
-	if err := kvctl.RequestPermit(k, []byte(peerID), []byte(metadata)); err != nil {
+	if err := kvctl.RequestPermit(k, []byte(peerID), metadata); err != nil {
 		return err
 	}
 	fmt.Println("✅ permit requested")

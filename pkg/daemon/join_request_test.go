@@ -57,15 +57,7 @@ func TestRecruitAdmitsPendingNodeAndTicketIsSingleUse(t *testing.T) {
 
 	call := func(n *Node, m shmevent.Msg) shmevent.Msg {
 		t.Helper()
-		buf, err := shmevent.Encode(m, n.ed25519Priv)
-		if err != nil {
-			t.Fatalf("encode: %v", err)
-		}
-		decoded, crc, sig, err := shmevent.Decode(buf)
-		if err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		return n.handleShmEvent(ctx, decoded, crc, sig, n.localCaller())
+		return callLocal(t, ctx, n, m, n.ed25519Priv)
 	}
 
 	// recruiter: an existing raft cluster (its own solo leader).
@@ -83,22 +75,37 @@ func TestRecruitAdmitsPendingNodeAndTicketIsSingleUse(t *testing.T) {
 		t.Fatal("device unexpectedly already has a raft instance before any join-request activity")
 	}
 
-	createResp := call(device, shmevent.Msg{EventType: shmevent.EventJoinRequestCreate, ID: 1})
-	if createResp.EventType == shmevent.EventError {
-		t.Fatalf("join_request_create rejected: %s", createResp.Value)
+	createMsg, err := shmevent.NewJoinRequestCreate()
+	if err != nil {
+		t.Fatalf("NewJoinRequestCreate: %v", err)
 	}
-	correlationToken := createResp.Value
+	createMsg.SetId(1)
+	createResp := call(device, createMsg)
+	if createResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("join_request_create rejected: %s", mustErrMessage(t, createResp))
+	}
+	correlationToken, err := createResp.JoinRequestCreate().Token()
+	if err != nil {
+		t.Fatalf("JoinRequestCreate token: %v", err)
+	}
 	if len(correlationToken) != shmevent.JoinInviteTokenSize {
 		t.Fatalf("got token of length %d, want %d", len(correlationToken), shmevent.JoinInviteTokenSize)
 	}
 	ticket := device.advertisedAddrs()[0] + "#" + hex.EncodeToString(correlationToken)
 
-	recruitPayload := shmevent.EncodeRecruitPayload(ticket, shmevent.SuffrageVoter)
-	recruitResp := call(recruiter, shmevent.Msg{EventType: shmevent.EventRecruit, Value: recruitPayload, ID: 2})
-	if recruitResp.EventType == shmevent.EventError {
-		t.Fatalf("recruit rejected: %s", recruitResp.Value)
+	recruitMsg, err := shmevent.NewRecruit(ticket, shmevent.SuffrageVoter)
+	if err != nil {
+		t.Fatalf("NewRecruit: %v", err)
 	}
-	result := string(recruitResp.Value)
+	recruitMsg.SetId(2)
+	recruitResp := call(recruiter, recruitMsg)
+	if recruitResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("recruit rejected: %s", mustErrMessage(t, recruitResp))
+	}
+	result, err := recruitResp.Recruit().Ticket()
+	if err != nil {
+		t.Fatalf("Recruit ticket: %v", err)
+	}
 	if !strings.HasSuffix(result, " ok") {
 		t.Fatalf("got recruit result %q, want it to end in %q", result, " ok")
 	}
@@ -124,8 +131,13 @@ func TestRecruitAdmitsPendingNodeAndTicketIsSingleUse(t *testing.T) {
 	// same (already-used) ticket must fail, even though the underlying
 	// join-invite minting machinery itself would otherwise happily mint
 	// another fresh invite.
-	recruitResp2 := call(recruiter, shmevent.Msg{EventType: shmevent.EventRecruit, Value: recruitPayload, ID: 3})
-	if recruitResp2.EventType != shmevent.EventError {
+	recruitMsg2, err := shmevent.NewRecruit(ticket, shmevent.SuffrageVoter)
+	if err != nil {
+		t.Fatalf("NewRecruit: %v", err)
+	}
+	recruitMsg2.SetId(3)
+	recruitResp2 := call(recruiter, recruitMsg2)
+	if recruitResp2.Which() != shmevent.Event_Which_error {
 		t.Fatal("second recruit against the already-consumed ticket unexpectedly succeeded")
 	}
 }
@@ -153,10 +165,23 @@ func TestJoinRequestCreateAndCancelAreLocalOnly(t *testing.T) {
 
 	remoteCaller := callerIdentity{remotePeer: n.host.ID(), verifyPub: n.ed25519Pub}
 
-	for _, evt := range []uint8{shmevent.EventJoinRequestCreate, shmevent.EventJoinRequestCancel, shmevent.EventRecruit} {
-		resp := n.handleShmEvent(ctx, shmevent.Msg{EventType: evt, ID: 1}, 0, nil, remoteCaller)
-		if resp.EventType != shmevent.EventError {
-			t.Fatalf("event %s unexpectedly accepted from a remote caller", shmevent.EventName(evt))
+	builders := []func() (shmevent.Msg, error){
+		shmevent.NewJoinRequestCreate,
+		func() (shmevent.Msg, error) {
+			return shmevent.NewJoinRequestCancel(make([]byte, shmevent.JoinInviteTokenSize))
+		},
+		func() (shmevent.Msg, error) { return shmevent.NewRecruit("some-ticket", shmevent.SuffrageVoter) },
+	}
+	for _, build := range builders {
+		m, err := build()
+		if err != nil {
+			t.Fatalf("build request: %v", err)
+		}
+		m.SetId(1)
+		want := shmevent.EventName(m.Which())
+		resp := n.handleShmEvent(ctx, m, 0, nil, remoteCaller)
+		if resp.Which() != shmevent.Event_Which_error {
+			t.Fatalf("event %s unexpectedly accepted from a remote caller", want)
 		}
 	}
 }
@@ -187,20 +212,21 @@ func TestGetOwnAddrWorksWithoutRaft(t *testing.T) {
 		t.Fatal("node unexpectedly already has a raft instance")
 	}
 
-	buf, err := shmevent.Encode(shmevent.Msg{EventType: shmevent.EventGetOwnAddr, ID: 1}, n.ed25519Priv)
+	m, err := shmevent.NewGetOwnAddr()
 	if err != nil {
-		t.Fatalf("encode: %v", err)
+		t.Fatalf("NewGetOwnAddr: %v", err)
 	}
-	decoded, crc, sig, err := shmevent.Decode(buf)
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	resp := n.handleShmEvent(ctx, decoded, crc, sig, n.localCaller())
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("get_own_addr rejected: %s", resp.Value)
+	m.SetId(1)
+	resp := callLocal(t, ctx, n, m, n.ed25519Priv)
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("get_own_addr rejected: %s", mustErrMessage(t, resp))
 	}
 	want := n.advertisedAddrs()[0]
-	if got := string(resp.Value); got != want {
+	got, err := resp.GetOwnAddr().Addr()
+	if err != nil {
+		t.Fatalf("GetOwnAddr addr: %v", err)
+	}
+	if got != want {
 		t.Fatalf("got addr %q, want %q", got, want)
 	}
 }
@@ -242,15 +268,7 @@ func TestJoinRequestCancelInvalidatesBeforeRedemption(t *testing.T) {
 
 	call := func(n *Node, m shmevent.Msg) shmevent.Msg {
 		t.Helper()
-		buf, err := shmevent.Encode(m, n.ed25519Priv)
-		if err != nil {
-			t.Fatalf("encode: %v", err)
-		}
-		decoded, crc, sig, err := shmevent.Decode(buf)
-		if err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		return n.handleShmEvent(ctx, decoded, crc, sig, n.localCaller())
+		return callLocal(t, ctx, n, m, n.ed25519Priv)
 	}
 
 	recruiter := startNode("recruiter")
@@ -262,21 +280,38 @@ func TestJoinRequestCancelInvalidatesBeforeRedemption(t *testing.T) {
 	device := startNode("device")
 	defer device.shutdown()
 
-	createResp := call(device, shmevent.Msg{EventType: shmevent.EventJoinRequestCreate, ID: 1})
-	if createResp.EventType == shmevent.EventError {
-		t.Fatalf("join_request_create rejected: %s", createResp.Value)
+	createMsg, err := shmevent.NewJoinRequestCreate()
+	if err != nil {
+		t.Fatalf("NewJoinRequestCreate: %v", err)
 	}
-	correlationToken := createResp.Value
+	createMsg.SetId(1)
+	createResp := call(device, createMsg)
+	if createResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("join_request_create rejected: %s", mustErrMessage(t, createResp))
+	}
+	correlationToken, err := createResp.JoinRequestCreate().Token()
+	if err != nil {
+		t.Fatalf("JoinRequestCreate token: %v", err)
+	}
 	ticket := device.advertisedAddrs()[0] + "#" + hex.EncodeToString(correlationToken)
 
-	cancelResp := call(device, shmevent.Msg{EventType: shmevent.EventJoinRequestCancel, Value: shmevent.EncodeJoinRequestCancelPayload(correlationToken), ID: 2})
-	if cancelResp.EventType == shmevent.EventError {
-		t.Fatalf("join_request_cancel rejected: %s", cancelResp.Value)
+	cancelMsg, err := shmevent.NewJoinRequestCancel(correlationToken)
+	if err != nil {
+		t.Fatalf("NewJoinRequestCancel: %v", err)
+	}
+	cancelMsg.SetId(2)
+	cancelResp := call(device, cancelMsg)
+	if cancelResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("join_request_cancel rejected: %s", mustErrMessage(t, cancelResp))
 	}
 
-	recruitPayload := shmevent.EncodeRecruitPayload(ticket, shmevent.SuffrageVoter)
-	recruitResp := call(recruiter, shmevent.Msg{EventType: shmevent.EventRecruit, Value: recruitPayload, ID: 3})
-	if recruitResp.EventType != shmevent.EventError {
+	recruitMsg, err := shmevent.NewRecruit(ticket, shmevent.SuffrageVoter)
+	if err != nil {
+		t.Fatalf("NewRecruit: %v", err)
+	}
+	recruitMsg.SetId(3)
+	recruitResp := call(recruiter, recruitMsg)
+	if recruitResp.Which() != shmevent.Event_Which_error {
 		t.Fatal("recruit against a cancelled ticket unexpectedly succeeded")
 	}
 }

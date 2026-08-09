@@ -91,7 +91,7 @@ func TestAddNodeAndAddTest(t *testing.T) {
 		t.Fatalf("second node id = %d, want 2", id2)
 	}
 
-	row, err := f.AddTest(id1, NewEvent(shmevent.EventGetPublicKey, 0, 0, nil, 0))
+	row, err := f.AddTest(id1, Event{Op: "get_public_key"})
 	if err != nil {
 		t.Fatalf("AddTest: %v", err)
 	}
@@ -115,13 +115,13 @@ func TestPendingRows(t *testing.T) {
 	}
 
 	f.NewVersion("v1")
-	if _, err := f.AddTest(id, NewEvent(shmevent.EventGetPublicKey, 0, 0, nil, 0)); err != nil {
+	if _, err := f.AddTest(id, Event{Op: "get_public_key"}); err != nil {
 		t.Fatal(err)
 	}
 	f.MarkPublished()
 
 	f.NewVersion("v2")
-	if _, err := f.AddTest(id, NewEvent(shmevent.EventGetPrivateKey, 0, 0, nil, 0)); err != nil {
+	if _, err := f.AddTest(id, Event{Op: "get_private_key"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -149,7 +149,8 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddNode: %v", err)
 	}
-	if _, err := f.AddTest(id, NewEvent(shmevent.EventSetField, 5, 0, []byte("world"), 0)); err != nil {
+	ev := Event{Op: "set_field", Fields: map[string]string{"source_id": "5", "value": "world"}}
+	if _, err := f.AddTest(id, ev); err != nil {
 		t.Fatal(err)
 	}
 
@@ -164,8 +165,8 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if loaded.CurrentVersion() != 1 {
 		t.Fatalf("loaded CurrentVersion = %d, want 1", loaded.CurrentVersion())
 	}
-	gotValue := loaded.Rows[0].Event.Value()
-	if len(loaded.Rows) != 1 || string(gotValue) != "world" {
+	gotValue := loaded.Rows[0].Event.Fields["value"]
+	if len(loaded.Rows) != 1 || gotValue != "world" {
 		t.Fatalf("loaded rows mismatch: %+v", loaded.Rows)
 	}
 	if loaded.Nodes[id].PeerID != f.Nodes[id].PeerID {
@@ -184,13 +185,13 @@ func TestLoadMissingFile(t *testing.T) {
 }
 
 func TestEventJSONHumanReadable(t *testing.T) {
-	ev := NewEvent(shmevent.EventSetField, 100, 0, []byte("world"), 7)
+	ev := Event{Op: "set_field", ID: 7, Fields: map[string]string{"source_id": "100", "value": "world"}}
 	data, err := json.Marshal(ev)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
 	got := string(data)
-	want := `{"event":"set_field","source_id":100,"value":"world","id":7}`
+	want := `{"event":"set_field","id":7,"fields":{"source_id":"100","value":"world"}}`
 	if got != want {
 		t.Fatalf("Marshal(set_field) = %s, want %s", got, want)
 	}
@@ -199,15 +200,15 @@ func TestEventJSONHumanReadable(t *testing.T) {
 	if err := json.Unmarshal(data, &back); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if back.EventType != ev.EventType || back.SourceID != ev.SourceID || back.DestinationID != ev.DestinationID ||
-		string(back.Value()) != string(ev.Value()) || back.ID != ev.ID {
+	if back.Op != ev.Op || back.ID != ev.ID || len(back.Fields) != len(ev.Fields) ||
+		back.Fields["source_id"] != ev.Fields["source_id"] || back.Fields["value"] != ev.Fields["value"] {
 		t.Fatalf("round trip mismatch: got %+v, want %+v", back, ev)
 	}
 }
 
 func TestEventJSONBinaryValueUsesHexPrefix(t *testing.T) {
 	binary := []byte{0xde, 0xad, 0xbe, 0xef, 0x00, 0xff}
-	ev := NewEvent(shmevent.EventGetPublicKey, 0, 0, binary, 0)
+	ev := Event{Op: "get_public_key", Fields: map[string]string{"pub_key": valueToJSON(binary)}}
 	data, err := json.Marshal(ev)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
@@ -220,15 +221,27 @@ func TestEventJSONBinaryValueUsesHexPrefix(t *testing.T) {
 	if err := json.Unmarshal(data, &back); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if string(back.Value()) != string(binary) {
-		t.Fatalf("round trip mismatch: got %x, want %x", back.Value(), binary)
+	gotBinary, err := valueFromJSON(back.Fields["pub_key"])
+	if err != nil {
+		t.Fatalf("valueFromJSON: %v", err)
+	}
+	if string(gotBinary) != string(binary) {
+		t.Fatalf("round trip mismatch: got %x, want %x", gotBinary, binary)
 	}
 }
 
+// TestEventJSONUnknownEventNameRejected: unlike the old flat encoding,
+// UnmarshalJSON no longer validates the event name itself (Op is just a
+// free-form string field) -- the rejection now happens one step later, at
+// ToMsg, which is the only place that actually needs to resolve Op against
+// a known wire variant. See ToMsg's own default case.
 func TestEventJSONUnknownEventNameRejected(t *testing.T) {
 	var ev Event
-	if err := json.Unmarshal([]byte(`{"event":"not_a_real_event"}`), &ev); err == nil {
-		t.Fatal("Unmarshal with unknown event name: want error, got nil")
+	if err := json.Unmarshal([]byte(`{"event":"not_a_real_event"}`), &ev); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if _, err := ev.ToMsg(); err == nil {
+		t.Fatal("ToMsg with unknown event name: want error, got nil")
 	}
 }
 
@@ -258,7 +271,7 @@ func TestDeleteNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.AddTest(id, NewEvent(shmevent.EventGetPublicKey, 0, 0, nil, 0)); err != nil {
+	if _, err := f.AddTest(id, Event{Op: "get_public_key"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -290,7 +303,7 @@ func TestAddTestRecordsPlatformOnRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	row, err := f.AddTest(id, NewEvent(shmevent.EventGetPublicKey, 0, 0, nil, 0))
+	row, err := f.AddTest(id, Event{Op: "get_public_key"})
 	if err != nil {
 		t.Fatalf("AddTest: %v", err)
 	}
@@ -305,7 +318,7 @@ func TestEnsureNodeRecoversDeletedNodeUnderSameID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	row, err := f.AddTest(id, NewEvent(shmevent.EventGetPublicKey, 0, 0, nil, 0))
+	row, err := f.AddTest(id, Event{Op: "get_public_key"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +363,7 @@ func TestNextNodeIDAvoidsOrphanedRowIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.AddTest(desktopID, NewEvent(shmevent.EventGetPublicKey, 0, 0, nil, 0)); err != nil {
+	if _, err := f.AddTest(desktopID, Event{Op: "get_public_key"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -380,7 +393,7 @@ func TestLoadBackfillsRowPlatformFromCurrentNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.AddTest(id, NewEvent(shmevent.EventGetPublicKey, 0, 0, nil, 0)); err != nil {
+	if _, err := f.AddTest(id, Event{Op: "get_public_key"}); err != nil {
 		t.Fatal(err)
 	}
 	// Simulate a file written before Row.Platform existed.

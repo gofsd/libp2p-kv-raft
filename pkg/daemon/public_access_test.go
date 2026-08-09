@@ -45,12 +45,20 @@ func TestPublicAccessGrantsChannelRelayAccess(t *testing.T) {
 
 	// The address form a real caller has: the target's own advertised
 	// multiaddr, plus an optional note.
-	target := leader.advertisedAddrs()[0] + "#e2e-test-device"
-	resp := callLocal(t, ctx, stranger, shmevent.Msg{EventType: shmevent.EventPublicAccess, Value: []byte(target), ID: 1}, stranger.ed25519Priv)
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("public_access was rejected: %s", resp.Value)
+	accessMsg, err := shmevent.NewPublicAccess(leader.advertisedAddrs()[0], "e2e-test-device")
+	if err != nil {
+		t.Fatalf("NewPublicAccess: %v", err)
 	}
-	if len(resp.Value) == 0 {
+	accessMsg.SetId(1)
+	resp := callLocal(t, ctx, stranger, accessMsg, stranger.ed25519Priv)
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("public_access was rejected: %s", mustErrMessage(t, resp))
+	}
+	instanceID, err := resp.PublicAccess().InstanceId()
+	if err != nil {
+		t.Fatalf("PublicAccess instance_id: %v", err)
+	}
+	if instanceID == "" {
 		t.Fatal("public_access returned no instance id")
 	}
 
@@ -62,10 +70,10 @@ func TestPublicAccessGrantsChannelRelayAccess(t *testing.T) {
 	}
 
 	// The grant is what unlocks the resource, not just the group record:
-	// an actual EventChannelOpen against the leader must now be admitted.
-	openResp := callLocal(t, ctx, stranger, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(leader.peerID), ID: 2}, stranger.ed25519Priv)
-	if openResp.EventType == shmevent.EventError {
-		t.Fatalf("channel_open from the stranger was rejected after public_access: %s", openResp.Value)
+	// an actual channelOpen against the leader must now be admitted.
+	openResp := callLocal(t, ctx, stranger, channelOpenMsg(t, leader.peerID, 2), stranger.ed25519Priv)
+	if openResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("channel_open from the stranger was rejected after public_access: %s", mustErrMessage(t, openResp))
 	}
 }
 
@@ -82,18 +90,19 @@ func TestPublicAccessRejectsRemoteCaller(t *testing.T) {
 	leader := startTestLeader(t, ctx, Config{})
 	remote, remotePriv, leaderPeerID := newTestRemoteHost(t, ctx, leader)
 
-	resp, err := callClientProtocol(ctx, remote, leaderPeerID, shmevent.Msg{
-		EventType: shmevent.EventPublicAccess,
-		Value:     []byte("/ip4/127.0.0.1/tcp/1/p2p/" + leader.peerID),
-		ID:        1,
-	}, remotePriv)
+	accessMsg, err := shmevent.NewPublicAccess("/ip4/127.0.0.1/tcp/1/p2p/"+leader.peerID, "")
+	if err != nil {
+		t.Fatalf("NewPublicAccess: %v", err)
+	}
+	accessMsg.SetId(1)
+	resp, err := callClientProtocol(ctx, remote, leaderPeerID, accessMsg, remotePriv)
 	if err != nil {
 		t.Fatalf("public_access call: %v", err)
 	}
-	if resp.EventType != shmevent.EventError {
+	if resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("public_access from a remote caller unexpectedly succeeded")
 	}
-	if !strings.Contains(string(resp.Value), "not available to a remote caller") {
-		t.Fatalf("public_access rejected for the wrong reason: %s", resp.Value)
+	if !strings.Contains(mustErrMessage(t, resp), "not available to a remote caller") {
+		t.Fatalf("public_access rejected for the wrong reason: %s", mustErrMessage(t, resp))
 	}
 }

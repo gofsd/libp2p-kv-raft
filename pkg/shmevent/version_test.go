@@ -10,9 +10,16 @@ func TestVersionInfoRoundTrip(t *testing.T) {
 		GoVersion:     "go1.25.7",
 		Libp2pVersion: "v0.48.0",
 	}
-	got, err := DecodeVersionInfo(EncodeVersionInfo(want))
+	m, err := NewGetVersionResponse(want)
 	if err != nil {
-		t.Fatalf("DecodeVersionInfo: %v", err)
+		t.Fatalf("NewGetVersionResponse: %v", err)
+	}
+	if m.Which() != Event_Which_getVersion {
+		t.Fatalf("Which() = %v, want getVersion", m.Which())
+	}
+	got, err := VersionInfoFrom(m.GetVersion())
+	if err != nil {
+		t.Fatalf("VersionInfoFrom: %v", err)
 	}
 	if got != want {
 		t.Fatalf("round trip mismatch: got %+v, want %+v", got, want)
@@ -20,17 +27,15 @@ func TestVersionInfoRoundTrip(t *testing.T) {
 }
 
 func TestVersionInfoZeroValueRoundTrip(t *testing.T) {
-	got, err := DecodeVersionInfo(EncodeVersionInfo(VersionInfo{}))
+	m, err := NewGetVersionResponse(VersionInfo{})
 	if err != nil {
-		t.Fatalf("DecodeVersionInfo: %v", err)
+		t.Fatalf("NewGetVersionResponse: %v", err)
+	}
+	got, err := VersionInfoFrom(m.GetVersion())
+	if err != nil {
+		t.Fatalf("VersionInfoFrom: %v", err)
 	}
 	if got != (VersionInfo{}) {
 		t.Fatalf("round trip of zero value mismatch: got %+v", got)
-	}
-}
-
-func TestDecodeVersionInfoRejectsGarbage(t *testing.T) {
-	if _, err := DecodeVersionInfo([]byte("not json")); err == nil {
-		t.Fatal("DecodeVersionInfo unexpectedly accepted non-JSON input")
 	}
 }

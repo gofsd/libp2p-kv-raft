@@ -78,9 +78,14 @@ func TestRelayLeaderReplicatesToPeerBehindItself(t *testing.T) {
 	// Standing first, then a reservation on the leader's own relay: the
 	// follower is reachable at a circuit address whose relay hop is the
 	// leader.
-	resp := callLocal(t, ctx, follower, shmevent.Msg{EventType: shmevent.EventPublicAccess, Value: []byte(leaderAddr), ID: 1}, follower.ed25519Priv)
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("public_access rejected: %s", resp.Value)
+	accessMsg, err := shmevent.NewPublicAccess(leaderAddr, "")
+	if err != nil {
+		t.Fatalf("NewPublicAccess: %v", err)
+	}
+	accessMsg.SetId(1)
+	resp := callLocal(t, ctx, follower, accessMsg, follower.ed25519Priv)
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("public_access rejected: %s", mustErrMessage(t, resp))
 	}
 	followerCircuit := leaderAddr + "/p2p-circuit/p2p/" + follower.peerID
 	maddr, err := multiaddr.NewMultiaddr(followerCircuit)

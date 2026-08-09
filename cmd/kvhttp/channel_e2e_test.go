@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"sync"
 	"syscall"
 	"testing"
@@ -85,12 +86,16 @@ func TestChannelOpenBidirectionalSendPollOverHTTP(t *testing.T) {
 		t.Fatalf("AccessToken(B): %v", err)
 	}
 
-	// A opens a channel to B.
-	openResp := postEvent(t, srv, tokenA, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(peerB)})
-	if openResp.EventType == shmevent.EventError {
-		t.Fatalf("channel_open rejected: %s", openResp.Value)
+	// A opens a channel to B. The response reuses channel_open's own
+	// peer_id field to carry the freshly minted local channel id back --
+	// see api/shmevent.capnp's channelOpen doc comment and
+	// pkg/daemon.handleShmEvent's Event_Which_channelOpen case
+	// (m.ChannelOpen().SetPeerId(channelID)).
+	openResp := postEvent(t, srv, tokenA, e2edata.Event{Op: "channel_open", Fields: map[string]string{"peer_id": peerB}})
+	if openResp.Op == "error" {
+		t.Fatalf("channel_open rejected: %s", openResp.Fields["message"])
 	}
-	channelIDA := string(openResp.Value)
+	channelIDA := openResp.Fields["peer_id"]
 	if channelIDA == "" {
 		t.Fatal("channel_open returned an empty channel id")
 	}
@@ -102,13 +107,13 @@ func TestChannelOpenBidirectionalSendPollOverHTTP(t *testing.T) {
 	}
 
 	// A -> B.
-	payloadAtoB, err := shmevent.EncodeChannelSendPayload(channelIDA, shmevent.ChannelPurposeData, []byte("hello from A"))
-	if err != nil {
-		t.Fatalf("EncodeChannelSendPayload(A->B): %v", err)
-	}
-	sendResp := postEvent(t, srv, tokenA, shmevent.Msg{EventType: shmevent.EventChannelSend, Value: payloadAtoB})
-	if sendResp.EventType == shmevent.EventError {
-		t.Fatalf("channel_send (A->B) rejected: %s", sendResp.Value)
+	sendResp := postEvent(t, srv, tokenA, e2edata.Event{Op: "channel_send", Fields: map[string]string{
+		"channel_id": channelIDA,
+		"purpose":    strconv.Itoa(int(shmevent.ChannelPurposeData)),
+		"chunk":      "hello from A",
+	}})
+	if sendResp.Op == "error" {
+		t.Fatalf("channel_send (A->B) rejected: %s", sendResp.Fields["message"])
 	}
 	if got := pollChannelUntilChunk(t, srv, tokenB, channelIDB); string(got) != "hello from A" {
 		t.Fatalf("B received %q, want %q", got, "hello from A")
@@ -117,13 +122,13 @@ func TestChannelOpenBidirectionalSendPollOverHTTP(t *testing.T) {
 	// B -> A, on B's own independently minted channel id -- proving this
 	// is a genuine bidirectional pipe, not just A's own request echoed
 	// back.
-	payloadBtoA, err := shmevent.EncodeChannelSendPayload(channelIDB, shmevent.ChannelPurposeData, []byte("hello from B"))
-	if err != nil {
-		t.Fatalf("EncodeChannelSendPayload(B->A): %v", err)
-	}
-	sendResp = postEvent(t, srv, tokenB, shmevent.Msg{EventType: shmevent.EventChannelSend, Value: payloadBtoA})
-	if sendResp.EventType == shmevent.EventError {
-		t.Fatalf("channel_send (B->A) rejected: %s", sendResp.Value)
+	sendResp = postEvent(t, srv, tokenB, e2edata.Event{Op: "channel_send", Fields: map[string]string{
+		"channel_id": channelIDB,
+		"purpose":    strconv.Itoa(int(shmevent.ChannelPurposeData)),
+		"chunk":      "hello from B",
+	}})
+	if sendResp.Op == "error" {
+		t.Fatalf("channel_send (B->A) rejected: %s", sendResp.Fields["message"])
 	}
 	if got := pollChannelUntilChunk(t, srv, tokenA, channelIDA); string(got) != "hello from B" {
 		t.Fatalf("A received %q, want %q", got, "hello from B")
@@ -131,9 +136,9 @@ func TestChannelOpenBidirectionalSendPollOverHTTP(t *testing.T) {
 
 	// A closes its end outright; B must observe it as closed on its next
 	// poll rather than hanging or erroring.
-	closeResp := postEvent(t, srv, tokenA, shmevent.Msg{EventType: shmevent.EventChannelClose, Value: []byte(channelIDA)})
-	if closeResp.EventType == shmevent.EventError {
-		t.Fatalf("channel_close rejected: %s", closeResp.Value)
+	closeResp := postEvent(t, srv, tokenA, e2edata.Event{Op: "channel_close", Fields: map[string]string{"channel_id": channelIDA}})
+	if closeResp.Op == "error" {
+		t.Fatalf("channel_close rejected: %s", closeResp.Fields["message"])
 	}
 	deadline := time.Now().Add(10 * time.Second)
 	for {
@@ -148,13 +153,13 @@ func TestChannelOpenBidirectionalSendPollOverHTTP(t *testing.T) {
 	}
 }
 
-// postEvent POSTs req (as the same e2edata.Event JSON shape kvctl-cli
+// postEvent POSTs ev (as the same e2edata.Event JSON shape kvctl-cli
 // sendevent/kvhttp's own doc comment describes) to srv with token as the
-// bearer, and decodes the response back into a shmevent.Msg -- the HTTP
+// bearer, and decodes the response back into an e2edata.Event -- the HTTP
 // counterpart to pkg/daemon/channel_test.go's callLocal.
-func postEvent(t *testing.T, srv *httptest.Server, token string, req shmevent.Msg) shmevent.Msg {
+func postEvent(t *testing.T, srv *httptest.Server, token string, ev e2edata.Event) e2edata.Event {
 	t.Helper()
-	body, err := json.Marshal(e2edata.EventFromMsg(req))
+	body, err := json.Marshal(ev)
 	if err != nil {
 		t.Fatalf("encode request event: %v", err)
 	}
@@ -176,26 +181,35 @@ func postEvent(t *testing.T, srv *httptest.Server, token string, req shmevent.Ms
 		t.Fatalf("read response body: %v", err)
 	}
 
-	var ev e2edata.Event
-	if err := json.Unmarshal(respBody, &ev); err != nil {
+	var out e2edata.Event
+	if err := json.Unmarshal(respBody, &out); err != nil {
 		t.Fatalf("decode response event (status %d, body %q): %v", resp.StatusCode, respBody, err)
 	}
-	return ev.ToMsg()
+	return out
 }
 
-// pollChannel is postEvent's EventChannelPoll-specific counterpart,
-// mirroring pkg/daemon/channel_test.go's identically named helper.
+// pollChannel is postEvent's channel_poll-specific counterpart, mirroring
+// pkg/daemon/channel_test.go's identically named helper. It round-trips
+// the response back through e2edata.Event.ToMsg rather than hand-parsing
+// the JSON "status"/"purpose"/"chunk" fields itself, reusing that same
+// field-decoding logic (including chunk's plain-text-or-0x-hex encoding,
+// see pkg/e2edata/file.go's Event doc comment) instead of duplicating it.
 func pollChannel(t *testing.T, srv *httptest.Server, token, channelID string) (status, purpose byte, chunk []byte) {
 	t.Helper()
-	resp := postEvent(t, srv, token, shmevent.Msg{EventType: shmevent.EventChannelPoll, Value: []byte(channelID)})
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("channel_poll rejected: %s", resp.Value)
+	resp := postEvent(t, srv, token, e2edata.Event{Op: "channel_poll", Fields: map[string]string{"channel_id": channelID}})
+	if resp.Op == "error" {
+		t.Fatalf("channel_poll rejected: %s", resp.Fields["message"])
 	}
-	status, purpose, chunk, err := shmevent.DecodeChannelPollResponse(resp.Value)
+	m, err := resp.ToMsg()
 	if err != nil {
-		t.Fatalf("DecodeChannelPollResponse: %v", err)
+		t.Fatalf("channel_poll response: %v", err)
 	}
-	return status, purpose, chunk
+	grp := m.ChannelPoll()
+	chunk, err = grp.Chunk()
+	if err != nil {
+		t.Fatalf("channel_poll response chunk: %v", err)
+	}
+	return grp.Status(), grp.Purpose(), chunk
 }
 
 // pollChannelUntilChunk polls channelID via srv until a chunk arrives or
@@ -219,23 +233,19 @@ func pollChannelUntilChunk(t *testing.T, srv *httptest.Server, token, channelID 
 	}
 }
 
-// listenChannelUntilClaimed polls EventChannelListen via srv until an
-// incoming channel is claimed or the deadline passes, returning its local
+// listenChannelUntilClaimed polls channel_listen via srv until an incoming
+// channel is claimed or the deadline passes, returning its local
 // channelID and the remote peer id it reports.
 func listenChannelUntilClaimed(t *testing.T, srv *httptest.Server, token string) (channelID, remotePeerID string) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		resp := postEvent(t, srv, token, shmevent.Msg{EventType: shmevent.EventChannelListen})
-		if resp.EventType == shmevent.EventError {
-			t.Fatalf("channel_listen rejected: %s", resp.Value)
+		resp := postEvent(t, srv, token, e2edata.Event{Op: "channel_listen"})
+		if resp.Op == "error" {
+			t.Fatalf("channel_listen rejected: %s", resp.Fields["message"])
 		}
-		if len(resp.Value) > 0 {
-			gotID, gotPeer, err := shmevent.DecodeChannelAccept(resp.Value)
-			if err != nil {
-				t.Fatalf("DecodeChannelAccept: %v", err)
-			}
-			return string(gotID), string(gotPeer)
+		if id := resp.Fields["channel_id"]; id != "" {
+			return id, resp.Fields["remote_peer_id"]
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("incoming channel never became listenable")

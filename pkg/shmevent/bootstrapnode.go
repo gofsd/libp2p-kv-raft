@@ -1,6 +1,6 @@
 package shmevent
 
-import "fmt"
+import "encoding/json"
 
 // This file turns KindBootstrapNode (see system.go's doc comment: "a
 // known circuit-relay v2 server's multiaddr this node can dial for a
@@ -40,29 +40,32 @@ func BootstrapNodeKeyBounds() (lo, hi []byte) {
 	return lo, hi
 }
 
+// bootstrapNodeMetadata is EncodeBootstrapNodeMetadata/
+// DecodeBootstrapNodeMetadata's JSON shape.
+type bootstrapNodeMetadata struct {
+	Addr     string `json:"addr"`
+	Priority uint8  `json:"priority"`
+}
+
 // EncodeBootstrapNodeMetadata packs a dialable multiaddr (including its
 // trailing /p2p/<peerID> component -- the same full form
 // Config.RelayPeers/-relay-peer/configs/bootstrap-nodes.json entries
 // already use, since pkg/daemon's relayCandidates parses it straight back
 // into a peer.AddrInfo via peer.AddrInfoFromP2pAddr) and a failover
-// priority into the metadata argument EventPermitRequest expects for a
-// KindBootstrapNode request. priority is fixed-size and placed first (the
-// same reason EncodeClusterJoinMetadata puts its own fixed-size suffrage
-// byte before addr) so addr, variable-length, can trail with no length
-// prefix of its own. Lower priority values are preferred first --
+// priority into the metadata argument NewPermitRequest expects for a
+// KindBootstrapNode request. Lower priority values are preferred first --
 // priority 0 is tried before priority 1 -- mirroring common "0 is
 // highest" routing-preference convention.
-func EncodeBootstrapNodeMetadata(addr string, priority uint8) []byte {
-	buf := make([]byte, 1+len(addr))
-	buf[0] = priority
-	copy(buf[1:], addr)
-	return buf
+func EncodeBootstrapNodeMetadata(addr string, priority uint8) string {
+	b, _ := json.Marshal(bootstrapNodeMetadata{Addr: addr, Priority: priority})
+	return string(b)
 }
 
 // DecodeBootstrapNodeMetadata is the inverse of EncodeBootstrapNodeMetadata.
-func DecodeBootstrapNodeMetadata(metadata []byte) (addr string, priority uint8, err error) {
-	if len(metadata) < 1 {
-		return "", 0, fmt.Errorf("shmevent: bootstrap node metadata too short: %d bytes", len(metadata))
+func DecodeBootstrapNodeMetadata(metadata string) (addr string, priority uint8, err error) {
+	var m bootstrapNodeMetadata
+	if err := json.Unmarshal([]byte(metadata), &m); err != nil {
+		return "", 0, err
 	}
-	return string(metadata[1:]), metadata[0], nil
+	return m.Addr, m.Priority, nil
 }

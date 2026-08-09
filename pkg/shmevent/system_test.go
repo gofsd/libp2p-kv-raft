@@ -17,38 +17,45 @@ func TestSystemKeyLayout(t *testing.T) {
 	}
 }
 
+// The old wire format's EncodePermitRequestPayload/DecodePermitRequestPayload
+// (a hand-packed kind+peerID+metadata blob) is gone -- a permitRequest Msg
+// carries those as separate typed capnp fields (NewPermitRequest,
+// Event_permitRequest's Kind/PeerId/Metadata accessors) instead.
 func TestPermitRequestPayloadRoundTrip(t *testing.T) {
-	payload, err := EncodePermitRequestPayload(KindBootstrapNode, []byte("peer-123"), []byte("/ip4/1.2.3.4/tcp/4001"))
+	m, err := NewPermitRequest(KindBootstrapNode, "peer-123", "/ip4/1.2.3.4/tcp/4001")
 	if err != nil {
-		t.Fatalf("EncodePermitRequestPayload: %v", err)
+		t.Fatalf("NewPermitRequest: %v", err)
 	}
-	kind, peerID, metadata, err := DecodePermitRequestPayload(payload)
+	grp := m.PermitRequest()
+	peerID, err := grp.PeerId()
 	if err != nil {
-		t.Fatalf("DecodePermitRequestPayload: %v", err)
+		t.Fatalf("PeerId: %v", err)
 	}
-	if kind != KindBootstrapNode || string(peerID) != "peer-123" || string(metadata) != "/ip4/1.2.3.4/tcp/4001" {
-		t.Fatalf("got kind=%d peerID=%q metadata=%q", kind, peerID, metadata)
+	metadata, err := grp.Metadata()
+	if err != nil {
+		t.Fatalf("Metadata: %v", err)
+	}
+	if grp.Kind() != KindBootstrapNode || peerID != "peer-123" || metadata != "/ip4/1.2.3.4/tcp/4001" {
+		t.Fatalf("got kind=%d peerID=%q metadata=%q", grp.Kind(), peerID, metadata)
 	}
 
 	// Empty metadata must round-trip too (the common case for a kind with
 	// no metadata of its own).
-	payload, err = EncodePermitRequestPayload(KindBootstrapNode, []byte("peer-456"), nil)
+	m, err = NewPermitRequest(KindBootstrapNode, "peer-456", "")
 	if err != nil {
-		t.Fatalf("EncodePermitRequestPayload with empty metadata: %v", err)
+		t.Fatalf("NewPermitRequest with empty metadata: %v", err)
 	}
-	kind, peerID, metadata, err = DecodePermitRequestPayload(payload)
+	grp = m.PermitRequest()
+	peerID, err = grp.PeerId()
 	if err != nil {
-		t.Fatalf("DecodePermitRequestPayload with empty metadata: %v", err)
+		t.Fatalf("PeerId: %v", err)
 	}
-	if kind != KindBootstrapNode || string(peerID) != "peer-456" || len(metadata) != 0 {
-		t.Fatalf("got kind=%d peerID=%q metadata=%q, want empty metadata", kind, peerID, metadata)
+	metadata, err = grp.Metadata()
+	if err != nil {
+		t.Fatalf("Metadata: %v", err)
 	}
-
-	if _, _, _, err := DecodePermitRequestPayload([]byte{0, 0}); err == nil {
-		t.Fatal("DecodePermitRequestPayload unexpectedly accepted a payload shorter than the header")
-	}
-	if _, _, _, err := DecodePermitRequestPayload([]byte{KindBootstrapNode, 0, 10}); err == nil {
-		t.Fatal("DecodePermitRequestPayload unexpectedly accepted a peerID length exceeding the payload size")
+	if grp.Kind() != KindBootstrapNode || peerID != "peer-456" || metadata != "" {
+		t.Fatalf("got kind=%d peerID=%q metadata=%q, want empty metadata", grp.Kind(), peerID, metadata)
 	}
 }
 
@@ -91,64 +98,70 @@ func TestClusterMemberPayloadRoundTrip(t *testing.T) {
 	}
 }
 
+// The old wire format's EncodePermitConfirmPayload/DecodePermitConfirmPayload
+// is gone the same way -- a permitConfirm Msg carries kind/peerID as
+// separate typed fields (NewPermitConfirm, Event_permitConfirm's Kind/
+// PeerId accessors).
 func TestPermitConfirmPayloadRoundTrip(t *testing.T) {
-	payload := EncodePermitConfirmPayload(KindBootstrapNode, []byte("peer-123"))
-	kind, peerID, err := DecodePermitConfirmPayload(payload)
+	m, err := NewPermitConfirm(KindBootstrapNode, "peer-123")
 	if err != nil {
-		t.Fatalf("DecodePermitConfirmPayload: %v", err)
+		t.Fatalf("NewPermitConfirm: %v", err)
 	}
-	if kind != KindBootstrapNode || string(peerID) != "peer-123" {
-		t.Fatalf("got kind=%d peerID=%q", kind, peerID)
+	peerID, err := m.PermitConfirm().PeerId()
+	if err != nil {
+		t.Fatalf("PeerId: %v", err)
 	}
-
-	if _, _, err := DecodePermitConfirmPayload(nil); err == nil {
-		t.Fatal("DecodePermitConfirmPayload unexpectedly accepted an empty payload")
+	if m.PermitConfirm().Kind() != KindBootstrapNode || peerID != "peer-123" {
+		t.Fatalf("got kind=%d peerID=%q", m.PermitConfirm().Kind(), peerID)
 	}
 }
 
-// EventLifecycleWrite's whole point is carrying every existing
-// per-(kind,action) payload unchanged behind two extra leading bytes --
-// this pins that round trip, reusing the exact inner payloads
-// EncodePermitRequestPayload/EncodePermitConfirmPayload and
-// EncodeJoinInviteCreatePayload already produce.
-func TestLifecycleWritePayloadRoundTrip(t *testing.T) {
-	permitInner, err := EncodePermitRequestPayload(KindBootstrapNode, []byte("peer-123"), []byte("meta"))
+// The old generic EventLifecycleWrite envelope (EncodeLifecycleWritePayload/
+// DecodeLifecycleWritePayload plus the LifecycleActionRequest/Confirm/Revoke
+// constants) wrapped every (kind,action) pair -- permit request/confirm/
+// revoke, join-invite create/revoke, exec-invite create/revoke -- behind
+// two extra leading bytes. All of that is gone: each (kind,action) pair is
+// now its own top-level capnp variant (permitRequest/permitConfirm/
+// permitRevoke/joinInviteCreate/...), so Which() alone is what used to be
+// the envelope's kind+action header. This pins the same property the old
+// test did -- every pair survives a full sign/encode/decode/verify cycle
+// distinguishably from every other pair -- at the variant level instead.
+func TestPermitVariantsRoundTripThroughWire(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
-		t.Fatalf("EncodePermitRequestPayload: %v", err)
-	}
-	joinInviteInner, err := EncodeJoinInviteCreatePayload(make([]byte, JoinInviteTokenSize), SuffrageVoter)
-	if err != nil {
-		t.Fatalf("EncodeJoinInviteCreatePayload: %v", err)
+		t.Fatal(err)
 	}
 
 	for _, tc := range []struct {
-		name   string
-		kind   byte
-		action byte
-		inner  []byte
+		name  string
+		build func() (Msg, error)
+		want  Event_Which
 	}{
-		{"permit request", KindBootstrapNode, LifecycleActionRequest, permitInner},
-		{"permit revoke", KindClusterJoin, LifecycleActionRevoke, EncodePermitConfirmPayload(KindClusterJoin, []byte("peer-9"))},
-		{"join invite create", KindJoinInvite, LifecycleActionRequest, joinInviteInner},
-		{"empty inner", KindExecInvite, LifecycleActionRevoke, nil},
+		{"permit request", func() (Msg, error) { return NewPermitRequest(KindBootstrapNode, "peer-123", "meta") }, Event_Which_permitRequest},
+		{"permit confirm", func() (Msg, error) { return NewPermitConfirm(KindClusterJoin, "peer-9") }, Event_Which_permitConfirm},
+		{"permit revoke", func() (Msg, error) { return NewPermitRevoke(KindClusterJoin, "peer-9") }, Event_Which_permitRevoke},
+		{"join invite create", func() (Msg, error) { return NewJoinInviteCreate(make([]byte, JoinInviteTokenSize), SuffrageVoter) }, Event_Which_joinInviteCreate},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			wrapped := EncodeLifecycleWritePayload(tc.kind, tc.action, tc.inner)
-			gotKind, gotAction, gotInner, err := DecodeLifecycleWritePayload(wrapped)
+			m, err := tc.build()
 			if err != nil {
-				t.Fatalf("DecodeLifecycleWritePayload: %v", err)
+				t.Fatalf("build: %v", err)
 			}
-			if gotKind != tc.kind || gotAction != tc.action {
-				t.Fatalf("got kind=%d action=%d, want kind=%d action=%d", gotKind, gotAction, tc.kind, tc.action)
+			buf, err := Encode(m, priv)
+			if err != nil {
+				t.Fatalf("Encode: %v", err)
 			}
-			if !bytes.Equal(gotInner, tc.inner) {
-				t.Fatalf("got inner %x, want %x", gotInner, tc.inner)
+			decoded, crc, sig, err := Decode(buf)
+			if err != nil {
+				t.Fatalf("Decode: %v", err)
+			}
+			if err := Verify(pub, decoded, crc, sig); err != nil {
+				t.Fatalf("Verify: %v", err)
+			}
+			if decoded.Which() != tc.want {
+				t.Fatalf("Which = %v, want %v", decoded.Which(), tc.want)
 			}
 		})
-	}
-
-	if _, _, _, err := DecodeLifecycleWritePayload([]byte{1}); err == nil {
-		t.Fatal("DecodeLifecycleWritePayload unexpectedly accepted a payload shorter than kind+action")
 	}
 }
 
@@ -158,11 +171,12 @@ func TestEventPermitRequestConfirmEncodeDecodeRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reqPayload, err := EncodePermitRequestPayload(KindBootstrapNode, []byte("peer-123"), nil)
+	req, err := NewPermitRequest(KindBootstrapNode, "peer-123", "")
 	if err != nil {
-		t.Fatalf("EncodePermitRequestPayload: %v", err)
+		t.Fatalf("NewPermitRequest: %v", err)
 	}
-	buf, err := Encode(Msg{EventType: EventLifecycleWrite, Value: EncodeLifecycleWritePayload(KindBootstrapNode, LifecycleActionRequest, reqPayload), ID: 11}, priv)
+	req.SetId(11)
+	buf, err := Encode(req, priv)
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
@@ -170,20 +184,23 @@ func TestEventPermitRequestConfirmEncodeDecodeRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
-	gotKind, _, gotInner, err := DecodeLifecycleWritePayload(got.Value)
-	if err != nil {
-		t.Fatalf("DecodeLifecycleWritePayload: %v", err)
+	if got.Which() != Event_Which_permitRequest {
+		t.Fatalf("Which = %v, want permitRequest", got.Which())
 	}
-	kind, peerID, _, err := DecodePermitRequestPayload(gotInner)
+	peerID, err := got.PermitRequest().PeerId()
 	if err != nil {
-		t.Fatalf("DecodePermitRequestPayload: %v", err)
+		t.Fatalf("PeerId: %v", err)
 	}
-	if gotKind != KindBootstrapNode || kind != KindBootstrapNode || string(peerID) != "peer-123" {
-		t.Fatalf("got kind=%d peerID=%q", kind, peerID)
+	if got.PermitRequest().Kind() != KindBootstrapNode || peerID != "peer-123" {
+		t.Fatalf("got kind=%d peerID=%q", got.PermitRequest().Kind(), peerID)
 	}
 
-	confirmPayload := EncodePermitConfirmPayload(KindBootstrapNode, []byte("peer-123"))
-	buf, err = Encode(Msg{EventType: EventLifecycleWrite, Value: EncodeLifecycleWritePayload(KindBootstrapNode, LifecycleActionConfirm, confirmPayload), ID: 12}, priv)
+	confirm, err := NewPermitConfirm(KindBootstrapNode, "peer-123")
+	if err != nil {
+		t.Fatalf("NewPermitConfirm: %v", err)
+	}
+	confirm.SetId(12)
+	buf, err = Encode(confirm, priv)
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
@@ -191,15 +208,14 @@ func TestEventPermitRequestConfirmEncodeDecodeRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
-	gotKind, _, gotInner, err = DecodeLifecycleWritePayload(got.Value)
-	if err != nil {
-		t.Fatalf("DecodeLifecycleWritePayload: %v", err)
+	if got.Which() != Event_Which_permitConfirm {
+		t.Fatalf("Which = %v, want permitConfirm", got.Which())
 	}
-	kind, peerID, err = DecodePermitConfirmPayload(gotInner)
+	peerID, err = got.PermitConfirm().PeerId()
 	if err != nil {
-		t.Fatalf("DecodePermitConfirmPayload: %v", err)
+		t.Fatalf("PeerId: %v", err)
 	}
-	if gotKind != KindBootstrapNode || kind != KindBootstrapNode || string(peerID) != "peer-123" {
-		t.Fatalf("got kind=%d peerID=%q", kind, peerID)
+	if got.PermitConfirm().Kind() != KindBootstrapNode || peerID != "peer-123" {
+		t.Fatalf("got kind=%d peerID=%q", got.PermitConfirm().Kind(), peerID)
 	}
 }

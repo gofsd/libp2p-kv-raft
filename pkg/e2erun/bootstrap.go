@@ -140,7 +140,7 @@ func EnsureBootstrap(repoRoot, path string, f *e2edata.File) (multiaddr, webTran
 		// pkg/daemon.Run's hasState check) -- sending it another
 		// self-leader EventAdd would hit BootstrapCluster's own refusal to
 		// re-bootstrap a non-empty log and fail this whole call.
-		status, errMsg := sendEventRemote(node.PeerID, e2edata.NewEvent(shmevent.EventAdd, 0, 0, nil, 0))
+		status, errMsg := sendEventRemote(node.PeerID, e2edata.Event{Op: "bootstrap_or_join_cluster"})
 		if status != e2edata.StatusPass {
 			return "", "", "", fmt.Errorf("e2erun: bootstrap self-leader EventAdd: %s", errMsg)
 		}
@@ -181,12 +181,11 @@ func EnsureBootstrap(repoRoot, path string, f *e2edata.File) (multiaddr, webTran
 // harmless, and this also naturally covers a node identity that itself
 // got reprovisioned (new peer id) against an *existing* bootstrap.
 func GrantRelayAccess(bootstrapPeerID, targetPeerID string) error {
-	inner, err := shmevent.EncodePeerGroupPayload([]byte(targetPeerID), []byte(shmevent.ReservedGroupRelay))
-	if err != nil {
-		return fmt.Errorf("e2erun: encode peer-group payload: %w", err)
-	}
-	payload := shmevent.EncodeCatalogPayload(shmevent.KindPeerGroup, inner)
-	status, errMsg := sendEventRemote(bootstrapPeerID, e2edata.NewEvent(shmevent.EventCatalogPut, 0, 0, payload, 0))
+	ev := e2edata.Event{Op: "peer_group_put", Fields: map[string]string{
+		"peer_id":  targetPeerID,
+		"group_id": shmevent.ReservedGroupRelay,
+	}}
+	status, errMsg := sendEventRemote(bootstrapPeerID, ev)
 	if status != e2edata.StatusPass {
 		return fmt.Errorf("e2erun: grant %s relay access: %s", targetPeerID, errMsg)
 	}

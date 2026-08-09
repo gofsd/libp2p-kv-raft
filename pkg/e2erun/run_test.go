@@ -24,7 +24,17 @@ func TestResolveBootstrapPlaceholder(t *testing.T) {
 }
 
 func TestInterpretSendEventResult(t *testing.T) {
-	okEv := e2edata.EventFromMsg(shmevent.Msg{EventType: shmevent.EventGetPublicKey, Value: []byte("key-bytes")})
+	okMsg, err := shmevent.NewGetPublicKey()
+	if err != nil {
+		t.Fatalf("NewGetPublicKey: %v", err)
+	}
+	if err := okMsg.GetPublicKey().SetPubKey([]byte("key-bytes")); err != nil {
+		t.Fatalf("SetPubKey: %v", err)
+	}
+	okEv, err := e2edata.EventFromMsg(okMsg)
+	if err != nil {
+		t.Fatalf("EventFromMsg(ok): %v", err)
+	}
 	okJSON := mustJSON(t, okEv)
 	status, errMsg := interpretSendEventResult(okJSON, "", nil)
 	if status != e2edata.StatusPass || errMsg != "" {
@@ -35,7 +45,14 @@ func TestInterpretSendEventResult(t *testing.T) {
 	// 1 for an EventError response -- interpretSendEventResult must still
 	// read that JSON, not just report the nonzero exit opaquely (a real
 	// bug caught running this against a live deployed node).
-	errEv := e2edata.EventFromMsg(shmevent.Msg{EventType: shmevent.EventError, Value: []byte("store: key not found")})
+	errRespMsg, err := shmevent.NewError("store: key not found")
+	if err != nil {
+		t.Fatalf("NewError: %v", err)
+	}
+	errEv, err := e2edata.EventFromMsg(errRespMsg)
+	if err != nil {
+		t.Fatalf("EventFromMsg(error): %v", err)
+	}
 	errJSON := mustJSON(t, errEv)
 	status, errMsg = interpretSendEventResult(errJSON, "", errExitStatus1)
 	if status != e2edata.StatusFail || errMsg != "store: key not found" {

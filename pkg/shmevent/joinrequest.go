@@ -2,45 +2,69 @@ package shmevent
 
 import "fmt"
 
-// EncodeJoinRequestCancelPayload packs token (the join-request ticket to
-// clear) as an EventJoinRequestCancel Msg.Value -- same shape as
-// EncodeJoinInviteRevokePayload, kept as its own named pair since the two
-// events guard unrelated concepts (a raft-backed KindJoinInvite record vs.
-// this node's own in-memory pending ticket) even though the wire shape
-// happens to match.
-func EncodeJoinRequestCancelPayload(token []byte) []byte {
-	buf := make([]byte, len(token))
-	copy(buf, token)
-	return buf
-}
-
-// DecodeJoinRequestCancelPayload is the inverse of
-// EncodeJoinRequestCancelPayload.
-func DecodeJoinRequestCancelPayload(payload []byte) (token []byte, err error) {
-	if len(payload) != JoinInviteTokenSize {
-		return nil, fmt.Errorf("shmevent: join request cancel payload must be %d bytes, got %d", JoinInviteTokenSize, len(payload))
+// NewJoinRequestCreate builds a joinRequestCreate request Msg: local-only,
+// mints a fresh correlation token held purely in this daemon's own
+// process memory. The response reuses this same variant with token
+// filled in.
+func NewJoinRequestCreate() (Msg, error) {
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
 	}
-	return payload, nil
+	m.SetJoinRequestCreate()
+	return m, nil
 }
 
-// EncodeRecruitPayload packs ticket ("<device's own multiaddr>#<tokenHex>",
-// see EventJoinRequestCreate) and the suffrage the redeemed device should be
-// admitted with into a single EventRecruit Msg.Value: suffrage first (fixed
-// size, so it needs no length prefix), then ticket verbatim as the trailing
-// field, mirroring EncodeJoinInviteCreatePayload's token-then-suffrage
-// convention with the fixed/variable fields swapped since here it's the
-// variable-length field that must be last.
-func EncodeRecruitPayload(ticket string, suffrage byte) []byte {
-	buf := make([]byte, 1+len(ticket))
-	buf[0] = suffrage
-	copy(buf[1:], ticket)
-	return buf
-}
-
-// DecodeRecruitPayload is the inverse of EncodeRecruitPayload.
-func DecodeRecruitPayload(payload []byte) (ticket string, suffrage byte, err error) {
-	if len(payload) < 1 {
-		return "", 0, fmt.Errorf("shmevent: recruit payload must be at least 1 byte, got %d", len(payload))
+// NewJoinRequestCancel builds a joinRequestCancel Msg: invalidates a
+// still-pending join-request token.
+func NewJoinRequestCancel(token []byte) (Msg, error) {
+	if len(token) != JoinInviteTokenSize {
+		return Msg{}, fmt.Errorf("shmevent: join request token must be %d bytes, got %d", JoinInviteTokenSize, len(token))
 	}
-	return string(payload[1:]), payload[0], nil
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
+	}
+	m.SetJoinRequestCancel()
+	if err := m.JoinRequestCancel().SetToken(token); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_join_request_cancel: %w", err)
+	}
+	return m, nil
+}
+
+// NewRecruit builds a recruit Msg: local-only, splits ticket
+// ("<device's own multiaddr>#<tokenHex>", see NewJoinRequestCreate),
+// mints a normal join invite, and dials the device directly to hand it
+// over.
+func NewRecruit(ticket string, suffrage byte) (Msg, error) {
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
+	}
+	m.SetRecruit()
+	grp := m.Recruit()
+	if err := grp.SetTicket(ticket); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_recruit: %w", err)
+	}
+	grp.SetSuffrage(suffrage)
+	return m, nil
+}
+
+// NewJoinRequestTicket builds a joinRequestTicket Msg: an offline
+// signed-ticket wire format (never dispatched live) -- see that variant's
+// doc comment in api/shmevent.capnp.
+func NewJoinRequestTicket(sourceAddr string, token []byte) (Msg, error) {
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
+	}
+	m.SetJoinRequestTicket()
+	grp := m.JoinRequestTicket()
+	if err := grp.SetSourceAddr(sourceAddr); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_join_request_ticket: %w", err)
+	}
+	if err := grp.SetToken(token); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_join_request_ticket: %w", err)
+	}
+	return m, nil
 }

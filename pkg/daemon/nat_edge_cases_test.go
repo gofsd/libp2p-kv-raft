@@ -394,9 +394,14 @@ func TestExecInviteRedeemOverRelay(t *testing.T) {
 	// the dialer (src), not just the reservation holder (see that
 	// method's own doc comment on daemon.go).
 	for name, n := range map[string]*Node{"leader": leader, "redeemer": redeemer} {
-		resp := execInviteCall(t, ctx, n, shmevent.Msg{EventType: shmevent.EventPublicAccess, Value: []byte(relayAddr), ID: 1})
-		if resp.EventType == shmevent.EventError {
-			t.Fatalf("public_access from %s rejected: %s", name, resp.Value)
+		accessMsg, err := shmevent.NewPublicAccess(relayAddr, "")
+		if err != nil {
+			t.Fatalf("NewPublicAccess: %v", err)
+		}
+		accessMsg.SetId(1)
+		resp := execInviteCall(t, ctx, n, accessMsg)
+		if resp.Which() == shmevent.Event_Which_error {
+			t.Fatalf("public_access from %s rejected: %s", name, mustErrMessage(t, resp))
 		}
 	}
 
@@ -443,34 +448,45 @@ func TestExecInviteRedeemOverRelay(t *testing.T) {
 	setUpExecInviteACL(t, ctx, leader, "cmd-relay", "grp-relay", redeemer.peerID)
 
 	token := newExecInviteToken(t)
-	createPayload, err := shmevent.EncodeExecInviteCreatePayload(token, "cmd-relay", "")
+	createMsg, err := shmevent.NewExecInviteCreate(token, "cmd-relay", "")
 	if err != nil {
-		t.Fatalf("EncodeExecInviteCreatePayload: %v", err)
+		t.Fatalf("NewExecInviteCreate: %v", err)
 	}
-	if resp := execInviteCall(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventLifecycleWrite, Value: shmevent.EncodeLifecycleWritePayload(shmevent.KindExecInvite, shmevent.LifecycleActionRequest, createPayload), ID: 10}); resp.EventType == shmevent.EventError {
-		t.Fatalf("exec_invite_create rejected: %s", resp.Value)
+	createMsg.SetId(10)
+	if resp := execInviteCall(t, ctx, leader, createMsg); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("exec_invite_create rejected: %s", mustErrMessage(t, resp))
 	}
 
 	// leaderCircuitAddr, not leader's real dialable address, is what the
 	// redeemer resolves sourceAddr into -- naming it explicitly is what
 	// forces dialAndRedeemExecInvite through the relay circuit, the same
 	// technique TestPairThroughRelayCluster uses for its own two dials.
-	redeemPayload, err := shmevent.EncodeExecInviteRedeemRequest(leaderCircuitAddr, token)
+	redeemMsg, err := shmevent.NewExecInviteRedeem(leaderCircuitAddr, token)
 	if err != nil {
-		t.Fatalf("EncodeExecInviteRedeemRequest: %v", err)
+		t.Fatalf("NewExecInviteRedeem: %v", err)
 	}
-	resp := execInviteCall(t, ctx, redeemer, shmevent.Msg{EventType: shmevent.EventExecInviteRedeem, Value: redeemPayload, ID: 11})
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("exec_invite_redeem over relay rejected: %s", resp.Value)
+	redeemMsg.SetId(11)
+	resp := execInviteCall(t, ctx, redeemer, redeemMsg)
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("exec_invite_redeem over relay rejected: %s", mustErrMessage(t, resp))
 	}
-	if string(resp.Value) == "" {
+	instanceID, err := resp.ExecInviteRedeem().InstanceId()
+	if err != nil {
+		t.Fatalf("ExecInviteRedeem instance_id: %v", err)
+	}
+	if instanceID == "" {
 		t.Fatal("exec_invite_redeem over relay succeeded but returned an empty instance id")
 	}
 
 	// Same token again must fail -- the invite is one-time, exactly as it
 	// is over a direct connection.
-	resp = execInviteCall(t, ctx, redeemer, shmevent.Msg{EventType: shmevent.EventExecInviteRedeem, Value: redeemPayload, ID: 12})
-	if resp.EventType != shmevent.EventError {
+	redeemMsg2, err := shmevent.NewExecInviteRedeem(leaderCircuitAddr, token)
+	if err != nil {
+		t.Fatalf("NewExecInviteRedeem: %v", err)
+	}
+	redeemMsg2.SetId(12)
+	resp = execInviteCall(t, ctx, redeemer, redeemMsg2)
+	if resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("second exec_invite_redeem over relay with an already-consumed token unexpectedly succeeded")
 	}
 }

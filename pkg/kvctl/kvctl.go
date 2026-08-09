@@ -549,7 +549,7 @@ func GetFrom(peerID, key string) (string, error) {
 // own voterMultiaddr list argument already uses) into a shmevent.TxnOp
 // list -- a thin wrapper around shmevent.ParseTxnOpsString, shared as-is
 // with mobile/kvmobile.Txn so both bindings accept the identical grammar.
-func ParseTxnOps(ops string) ([]shmevent.TxnOp, error) {
+func ParseTxnOps(ops string) ([]shmevent.TxnOpSpec, error) {
 	return shmevent.ParseTxnOpsString(ops)
 }
 
@@ -623,7 +623,7 @@ func Txn(ops string) error {
 // to the leader like any other Set -- see shmevent.EventPermitRequest's
 // doc comment. Any raft node may originate one, so this needs no special
 // standing of its own.
-func RequestPermit(kind byte, targetPeerID, metadata []byte) error {
+func RequestPermit(kind byte, targetPeerID []byte, metadata string) error {
 	reg, err := registry.Open()
 	if err != nil {
 		return err

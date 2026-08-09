@@ -66,7 +66,7 @@ func TestRelayCandidatesMergesSeedsAndStoreSortedByPriority(t *testing.T) {
 	writeConfirmed := func(addr string, priority uint8) {
 		key := shmevent.SystemKey(shmevent.KindBootstrapNode, shmevent.StatusConfirmed, []byte(mustPeerID(t, addr)))
 		value := shmevent.EncodeBootstrapNodeMetadata(addr, priority)
-		if err := st.Set(key, value); err != nil {
+		if err := st.Set(key, []byte(value)); err != nil {
 			t.Fatalf("set %s: %v", addr, err)
 		}
 	}
@@ -80,7 +80,7 @@ func TestRelayCandidatesMergesSeedsAndStoreSortedByPriority(t *testing.T) {
 	// A pending (not yet confirmed) record must never be picked up.
 	pendingAddr := newTestPeerAddr(t, 4005)
 	pendingKey := shmevent.SystemKey(shmevent.KindBootstrapNode, shmevent.StatusPending, []byte(mustPeerID(t, pendingAddr)))
-	if err := st.Set(pendingKey, shmevent.EncodeBootstrapNodeMetadata(pendingAddr, 0)); err != nil {
+	if err := st.Set(pendingKey, []byte(shmevent.EncodeBootstrapNodeMetadata(pendingAddr, 0))); err != nil {
 		t.Fatalf("set pending: %v", err)
 	}
 

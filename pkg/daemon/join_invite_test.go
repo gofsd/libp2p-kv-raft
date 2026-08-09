@@ -74,25 +74,18 @@ func TestJoinInviteAdmitsBrandNewNodeWithoutConfirmation(t *testing.T) {
 
 	call := func(n *Node, m shmevent.Msg) shmevent.Msg {
 		t.Helper()
-		buf, err := shmevent.Encode(m, n.ed25519Priv)
-		if err != nil {
-			t.Fatalf("encode: %v", err)
-		}
-		decoded, crc, sig, err := shmevent.Decode(buf)
-		if err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		return n.handleShmEvent(ctx, decoded, crc, sig, n.localCaller())
+		return callLocal(t, ctx, n, m, n.ed25519Priv)
 	}
 
 	token := newInviteToken(t)
-	createPayload, err := shmevent.EncodeJoinInviteCreatePayload(token, shmevent.SuffrageVoter)
+	createMsg, err := shmevent.NewJoinInviteCreate(token, shmevent.SuffrageVoter)
 	if err != nil {
-		t.Fatalf("EncodeJoinInviteCreatePayload: %v", err)
+		t.Fatalf("NewJoinInviteCreate: %v", err)
 	}
-	resp := call(leader, shmevent.Msg{EventType: shmevent.EventLifecycleWrite, Value: shmevent.EncodeLifecycleWritePayload(shmevent.KindJoinInvite, shmevent.LifecycleActionRequest, createPayload), ID: 1})
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("join_invite_create rejected: %s", resp.Value)
+	createMsg.SetId(1)
+	resp := call(leader, createMsg)
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("join_invite_create rejected: %s", mustErrMessage(t, resp))
 	}
 
 	newcomer := startNode("newcomer")
@@ -183,29 +176,26 @@ func TestJoinInviteRevokeInvalidatesBeforeRedemption(t *testing.T) {
 
 	call := func(n *Node, m shmevent.Msg) shmevent.Msg {
 		t.Helper()
-		buf, err := shmevent.Encode(m, n.ed25519Priv)
-		if err != nil {
-			t.Fatalf("encode: %v", err)
-		}
-		decoded, crc, sig, err := shmevent.Decode(buf)
-		if err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		return n.handleShmEvent(ctx, decoded, crc, sig, n.localCaller())
+		return callLocal(t, ctx, n, m, n.ed25519Priv)
 	}
 
 	token := newInviteToken(t)
-	createPayload, err := shmevent.EncodeJoinInviteCreatePayload(token, shmevent.SuffrageLearner)
+	createMsg, err := shmevent.NewJoinInviteCreate(token, shmevent.SuffrageLearner)
 	if err != nil {
-		t.Fatalf("EncodeJoinInviteCreatePayload: %v", err)
+		t.Fatalf("NewJoinInviteCreate: %v", err)
 	}
-	if resp := call(leader, shmevent.Msg{EventType: shmevent.EventLifecycleWrite, Value: shmevent.EncodeLifecycleWritePayload(shmevent.KindJoinInvite, shmevent.LifecycleActionRequest, createPayload), ID: 1}); resp.EventType == shmevent.EventError {
-		t.Fatalf("join_invite_create rejected: %s", resp.Value)
+	createMsg.SetId(1)
+	if resp := call(leader, createMsg); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("join_invite_create rejected: %s", mustErrMessage(t, resp))
 	}
 
-	revokePayload := shmevent.EncodeJoinInviteRevokePayload(token)
-	if resp := call(leader, shmevent.Msg{EventType: shmevent.EventLifecycleWrite, Value: shmevent.EncodeLifecycleWritePayload(shmevent.KindJoinInvite, shmevent.LifecycleActionRevoke, revokePayload), ID: 2}); resp.EventType == shmevent.EventError {
-		t.Fatalf("join_invite_revoke rejected: %s", resp.Value)
+	revokeMsg, err := shmevent.NewJoinInviteRevoke(token)
+	if err != nil {
+		t.Fatalf("NewJoinInviteRevoke: %v", err)
+	}
+	revokeMsg.SetId(2)
+	if resp := call(leader, revokeMsg); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("join_invite_revoke rejected: %s", mustErrMessage(t, resp))
 	}
 
 	newcomerKey := filepath.Join(tmpDir, "newcomer.key")

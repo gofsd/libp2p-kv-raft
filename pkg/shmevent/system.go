@@ -1,6 +1,7 @@
 package shmevent
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -230,24 +231,32 @@ const (
 	SuffrageLearner byte = 0x02
 )
 
-// EncodeClusterJoinMetadata packs a joining peer's dialable multiaddr and
-// requested suffrage into the metadata argument EventPermitRequest expects
-// (see EncodePermitRequestPayload) for a KindClusterJoin request: suffrage
-// byte first (fixed size), then addr verbatim as the rest of the buffer --
-// no length prefix needed since addr is always last.
-func EncodeClusterJoinMetadata(addr string, suffrage byte) []byte {
-	buf := make([]byte, 1+len(addr))
-	buf[0] = suffrage
-	copy(buf[1:], addr)
-	return buf
+// clusterJoinMetadata is EncodeClusterJoinMetadata/DecodeClusterJoinMetadata's
+// JSON shape: a joining peer's dialable multiaddr and requested suffrage,
+// packed into permitRequest's metadata field for a KindClusterJoin
+// request.
+type clusterJoinMetadata struct {
+	Addr     string `json:"addr"`
+	Suffrage byte   `json:"suffrage"`
+}
+
+// EncodeClusterJoinMetadata packs addr/suffrage into the metadata argument
+// NewPermitRequest expects for a KindClusterJoin request. JSON, like every
+// other kind's metadata (see permitRequest's doc comment in
+// api/shmevent.capnp) -- v's fields are a string and a byte, so
+// json.Marshal can never actually fail here.
+func EncodeClusterJoinMetadata(addr string, suffrage byte) string {
+	b, _ := json.Marshal(clusterJoinMetadata{Addr: addr, Suffrage: suffrage})
+	return string(b)
 }
 
 // DecodeClusterJoinMetadata is the inverse of EncodeClusterJoinMetadata.
-func DecodeClusterJoinMetadata(payload []byte) (addr string, suffrage byte, err error) {
-	if len(payload) < 1 {
-		return "", 0, fmt.Errorf("shmevent: cluster join metadata too short: %d bytes", len(payload))
+func DecodeClusterJoinMetadata(metadata string) (addr string, suffrage byte, err error) {
+	var m clusterJoinMetadata
+	if err := json.Unmarshal([]byte(metadata), &m); err != nil {
+		return "", 0, fmt.Errorf("shmevent: cluster join metadata: %w", err)
 	}
-	return string(payload[1:]), payload[0], nil
+	return m.Addr, m.Suffrage, nil
 }
 
 // SystemKey builds the pkg/store key for a system record:
@@ -316,36 +325,25 @@ func DecodeClusterMemberPayload(payload []byte) (pub PublicKey, role byte, err e
 	return pub, role, nil
 }
 
-// EncodePermitRequestPayload packs kind, peerID, and metadata into a
-// single EventPermitRequest Msg.Value: kind, then a 2-byte big-endian
-// length prefix for peerID, then peerID, then metadata verbatim (the
-// rest of the buffer, needing no length prefix of its own). metadata is
-// opaque to this package -- e.g. a dialable multiaddr for
-// KindBootstrapNode.
-func EncodePermitRequestPayload(kind byte, peerID, metadata []byte) ([]byte, error) {
-	if len(peerID) > 0xFFFF {
-		return nil, fmt.Errorf("shmevent: permit request peerID too long: %d bytes", len(peerID))
+// NewPermitRequest builds a permitRequest Msg: lodges a pending permit
+// record. kind is one of KindBootstrapNode/KindClusterJoin (more reserved
+// for later); metadata is that kind's own small JSON blob (see
+// EncodeBootstrapNodeMetadata/EncodeClusterJoinMetadata).
+func NewPermitRequest(kind byte, peerID, metadata string) (Msg, error) {
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
 	}
-	buf := make([]byte, 1+2+len(peerID)+len(metadata))
-	buf[0] = kind
-	buf[1] = byte(len(peerID) >> 8)
-	buf[2] = byte(len(peerID))
-	copy(buf[3:], peerID)
-	copy(buf[3+len(peerID):], metadata)
-	return buf, nil
-}
-
-// DecodePermitRequestPayload is the inverse of EncodePermitRequestPayload.
-func DecodePermitRequestPayload(payload []byte) (kind byte, peerID, metadata []byte, err error) {
-	if len(payload) < 3 {
-		return 0, nil, nil, fmt.Errorf("shmevent: permit request payload too short: %d bytes", len(payload))
+	m.SetPermitRequest()
+	grp := m.PermitRequest()
+	grp.SetKind(kind)
+	if err := grp.SetPeerId(peerID); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_permit_request: %w", err)
 	}
-	kind = payload[0]
-	idLen := int(payload[1])<<8 | int(payload[2])
-	if 3+idLen > len(payload) {
-		return 0, nil, nil, fmt.Errorf("shmevent: permit request peerID length %d exceeds payload size %d", idLen, len(payload))
+	if err := grp.SetMetadata(metadata); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_permit_request: %w", err)
 	}
-	return kind, payload[3 : 3+idLen], payload[3+idLen:], nil
+	return m, nil
 }
 
 // RelayLimits is the per-peer circuit-relay v2 resource allotment
@@ -392,61 +390,36 @@ func DefaultRelayLimits() RelayLimits {
 	}
 }
 
-// EncodePermitConfirmPayload packs kind and peerID (the rest of the
-// buffer) into a single EventPermitConfirm Msg.Value -- no metadata
-// field, since the daemon reads the pending request's own value back out
-// of the store rather than trusting the confirming caller to resend it.
-func EncodePermitConfirmPayload(kind byte, peerID []byte) []byte {
-	buf := make([]byte, 1+len(peerID))
-	buf[0] = kind
-	copy(buf[1:], peerID)
-	return buf
-}
-
-// DecodePermitConfirmPayload is the inverse of EncodePermitConfirmPayload.
-func DecodePermitConfirmPayload(payload []byte) (kind byte, peerID []byte, err error) {
-	if len(payload) < 1 {
-		return 0, nil, fmt.Errorf("shmevent: permit confirm payload too short")
+// NewPermitConfirm builds a permitConfirm Msg: promotes a pending permit
+// record to confirmed -- no metadata field, since the daemon reads the
+// pending request's own value back out of the store rather than trusting
+// the confirming caller to resend it.
+func NewPermitConfirm(kind byte, peerID string) (Msg, error) {
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
 	}
-	return payload[0], payload[1:], nil
-}
-
-// LifecycleActionRequest/Confirm/Revoke are EventLifecycleWrite's action
-// byte -- see that event's doc comment. Request also stands for "Create"
-// for KindJoinInvite/KindExecInvite, which have no separate
-// pending/confirmed stage; LifecycleActionConfirm is meaningful only for
-// Permit-style kinds (anything other than KindJoinInvite/KindExecInvite).
-const (
-	LifecycleActionRequest byte = 1
-	LifecycleActionConfirm byte = 2
-	LifecycleActionRevoke  byte = 3
-)
-
-// EncodeLifecycleWritePayload wraps kind and action around inner -- an
-// existing per-(kind,action) payload, exactly as its own predecessor event
-// already produced it (EncodePermitRequestPayload/EncodePermitConfirmPayload/
-// EncodeJoinInviteCreatePayload/EncodeJoinInviteRevokePayload/
-// EncodeExecInviteCreatePayload/EncodeExecInviteRevokePayload) -- into a
-// single EventLifecycleWrite Msg.Value: kind first, action second (both
-// fixed size), inner verbatim after. Permit-style inner payloads already
-// carry their own kind byte internally (EncodePermitRequestPayload/
-// EncodePermitConfirmPayload's own first field) -- that's harmless
-// redundancy with the envelope's own kind byte, not a conflict, and lets
-// every existing Decode function be reused completely unchanged. See
-// pkg/daemon's permitLifecycleSpecs/inviteLifecycleSpecs, which select the
-// right existing decode/key/op by (kind, action).
-func EncodeLifecycleWritePayload(kind, action byte, inner []byte) []byte {
-	buf := make([]byte, 2+len(inner))
-	buf[0] = kind
-	buf[1] = action
-	copy(buf[2:], inner)
-	return buf
-}
-
-// DecodeLifecycleWritePayload is the inverse of EncodeLifecycleWritePayload.
-func DecodeLifecycleWritePayload(payload []byte) (kind, action byte, inner []byte, err error) {
-	if len(payload) < 2 {
-		return 0, 0, nil, fmt.Errorf("shmevent: lifecycle write payload too short: %d bytes", len(payload))
+	m.SetPermitConfirm()
+	grp := m.PermitConfirm()
+	grp.SetKind(kind)
+	if err := grp.SetPeerId(peerID); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_permit_confirm: %w", err)
 	}
-	return payload[0], payload[1], payload[2:], nil
+	return m, nil
+}
+
+// NewPermitRevoke builds a permitRevoke Msg: deletes an already-confirmed
+// permit record outright.
+func NewPermitRevoke(kind byte, peerID string) (Msg, error) {
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
+	}
+	m.SetPermitRevoke()
+	grp := m.PermitRevoke()
+	grp.SetKind(kind)
+	if err := grp.SetPeerId(peerID); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_permit_revoke: %w", err)
+	}
+	return m, nil
 }

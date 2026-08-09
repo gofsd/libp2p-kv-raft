@@ -106,32 +106,33 @@ func TestAddLearnerRejectsSpoofedPeerID(t *testing.T) {
 
 	const setKeyID = 1
 	spoofedPeerID := "not-" + remote.ID().String()
-	setKeyResp, err := callClientProtocol(ctx, remote, leaderPeerID, shmevent.Msg{
-		EventType: shmevent.EventSetKey,
-		Value:     []byte(spoofedPeerID),
-		ID:        setKeyID,
-	}, remotePriv)
+	setKeyMsg, err := shmevent.NewSetKey([]byte(spoofedPeerID))
+	if err != nil {
+		t.Fatalf("NewSetKey: %v", err)
+	}
+	setKeyMsg.SetId(setKeyID)
+	setKeyResp, err := callClientProtocol(ctx, remote, leaderPeerID, setKeyMsg, remotePriv)
 	if err != nil {
 		t.Fatalf("set_key: %v", err)
 	}
-	if setKeyResp.EventType == shmevent.EventError {
-		t.Fatalf("set_key rejected: %s", setKeyResp.Value)
+	if setKeyResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("set_key rejected: %s", mustErrMessage(t, setKeyResp))
 	}
 
-	addResp, err := callClientProtocol(ctx, remote, leaderPeerID, shmevent.Msg{
-		EventType: shmevent.EventAdd,
-		SourceID:  setKeyID,
-		Value:     []byte("/ip4/127.0.0.1/tcp/1/p2p/" + spoofedPeerID),
-		ID:        2,
-	}, remotePriv)
+	addMsg, err := shmevent.NewAddLearner(setKeyID, "/ip4/127.0.0.1/tcp/1/p2p/"+spoofedPeerID)
+	if err != nil {
+		t.Fatalf("NewAddLearner: %v", err)
+	}
+	addMsg.SetId(2)
+	addResp, err := callClientProtocol(ctx, remote, leaderPeerID, addMsg, remotePriv)
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	if addResp.EventType != shmevent.EventError {
+	if addResp.Which() != shmevent.Event_Which_error {
 		t.Fatalf("add with spoofed peer id succeeded, want rejection")
 	}
-	if !strings.Contains(string(addResp.Value), "does not match") {
-		t.Fatalf("add rejection = %q, want it to mention the identity mismatch", addResp.Value)
+	if !strings.Contains(mustErrMessage(t, addResp), "does not match") {
+		t.Fatalf("add rejection = %q, want it to mention the identity mismatch", mustErrMessage(t, addResp))
 	}
 
 	rf := leader.getRaft()
@@ -162,16 +163,20 @@ func TestClientProtocolRejectsRemoteKeyFetch(t *testing.T) {
 	leader := startTestLeader(t, ctx, Config{})
 	remote, _, leaderPeerID := newTestRemoteHost(t, ctx, leader)
 
-	for _, evt := range []uint8{shmevent.EventGetPrivateKey, shmevent.EventGetPublicKey} {
-		resp, err := callClientProtocol(ctx, remote, leaderPeerID, shmevent.Msg{
-			EventType: evt,
-			ID:        1,
-		}, nil)
+	builders := []func() (shmevent.Msg, error){shmevent.NewGetPrivateKey, shmevent.NewGetPublicKey}
+	for _, build := range builders {
+		m, err := build()
 		if err != nil {
-			t.Fatalf("%s: %v", shmevent.EventName(evt), err)
+			t.Fatalf("build request: %v", err)
 		}
-		if resp.EventType != shmevent.EventError {
-			t.Fatalf("%s succeeded remotely, want rejection", shmevent.EventName(evt))
+		m.SetId(1)
+		want := shmevent.EventName(m.Which())
+		resp, err := callClientProtocol(ctx, remote, leaderPeerID, m, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", want, err)
+		}
+		if resp.Which() != shmevent.Event_Which_error {
+			t.Fatalf("%s succeeded remotely, want rejection", want)
 		}
 	}
 }
@@ -190,23 +195,23 @@ func TestRemoteGateUnconditional(t *testing.T) {
 	leader := startTestLeader(t, ctx, Config{})
 	remote, remotePriv, leaderPeerID := newTestRemoteHost(t, ctx, leader)
 
-	setPayload, err := shmevent.EncodeSetPayload([]byte("hello"), []byte("world"))
-	if err != nil {
-		t.Fatalf("EncodeSetPayload: %v", err)
+	newSetMsg := func(id uint16) shmevent.Msg {
+		m, err := shmevent.NewSet([]byte("hello"), []byte("world"))
+		if err != nil {
+			t.Fatalf("NewSet: %v", err)
+		}
+		m.SetId(id)
+		return m
 	}
-	resp, err := callClientProtocol(ctx, remote, leaderPeerID, shmevent.Msg{
-		EventType: shmevent.EventSet,
-		Value:     setPayload,
-		ID:        1,
-	}, remotePriv)
+	resp, err := callClientProtocol(ctx, remote, leaderPeerID, newSetMsg(1), remotePriv)
 	if err != nil {
 		t.Fatalf("set: %v", err)
 	}
-	if resp.EventType != shmevent.EventError {
+	if resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("set from a non-member, non-granted remote caller unexpectedly succeeded")
 	}
-	if !strings.Contains(string(resp.Value), "not permitted") {
-		t.Fatalf("set rejection = %q, want it to mention not being permitted", resp.Value)
+	if !strings.Contains(mustErrMessage(t, resp), "not permitted") {
+		t.Fatalf("set rejection = %q, want it to mention not being permitted", mustErrMessage(t, resp))
 	}
 
 	// Grant the remote caller shmevent.ReservedGroupRemote membership --
@@ -214,15 +219,12 @@ func TestRemoteGateUnconditional(t *testing.T) {
 	// (mirrors permit_test.go's "call" helper pattern); the true
 	// CLI-facing addpeertogroup round trip is covered separately by
 	// pkg/kvctl's own catalog tests.
-	groupPayload, err := shmevent.EncodePeerGroupPayload([]byte(remote.ID().String()), []byte(shmevent.ReservedGroupRemote))
+	groupMsg, err := shmevent.NewPeerGroupPut(remote.ID().String(), shmevent.ReservedGroupRemote)
 	if err != nil {
-		t.Fatalf("EncodePeerGroupPayload: %v", err)
+		t.Fatalf("NewPeerGroupPut: %v", err)
 	}
-	groupBuf, err := shmevent.Encode(shmevent.Msg{
-		EventType: shmevent.EventCatalogPut,
-		Value:     shmevent.EncodeCatalogPayload(shmevent.KindPeerGroup, groupPayload),
-		ID:        2,
-	}, leader.ed25519Priv)
+	groupMsg.SetId(2)
+	groupBuf, err := shmevent.Encode(groupMsg, leader.ed25519Priv)
 	if err != nil {
 		t.Fatalf("encode peer_group_put: %v", err)
 	}
@@ -231,19 +233,15 @@ func TestRemoteGateUnconditional(t *testing.T) {
 		t.Fatalf("decode peer_group_put: %v", err)
 	}
 	groupResp := leader.handleShmEvent(ctx, decodedGroup, crc, sig, leader.localCaller())
-	if groupResp.EventType == shmevent.EventError {
-		t.Fatalf("peer_group_put rejected: %s", groupResp.Value)
+	if groupResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("peer_group_put rejected: %s", mustErrMessage(t, groupResp))
 	}
 
-	resp2, err := callClientProtocol(ctx, remote, leaderPeerID, shmevent.Msg{
-		EventType: shmevent.EventSet,
-		Value:     setPayload,
-		ID:        3,
-	}, remotePriv)
+	resp2, err := callClientProtocol(ctx, remote, leaderPeerID, newSetMsg(3), remotePriv)
 	if err != nil {
 		t.Fatalf("set (after group grant): %v", err)
 	}
-	if resp2.EventType == shmevent.EventError {
-		t.Fatalf("set rejected after remote group granted: %s", resp2.Value)
+	if resp2.Which() == shmevent.Event_Which_error {
+		t.Fatalf("set rejected after remote group granted: %s", mustErrMessage(t, resp2))
 	}
 }

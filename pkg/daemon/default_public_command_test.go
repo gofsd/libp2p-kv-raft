@@ -53,11 +53,11 @@ func TestDefaultPublicCommandGrantsChannelRelayAccess(t *testing.T) {
 
 	openChannel := func(id uint16) shmevent.Msg {
 		t.Helper()
-		return callLocal(t, ctx, stranger, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(leader.peerID), ID: id}, stranger.ed25519Priv)
+		return callLocal(t, ctx, stranger, channelOpenMsg(t, leader.peerID, id), stranger.ed25519Priv)
 	}
 
 	// Before: no standing at all, on either resource.
-	if resp := openChannel(1); resp.EventType != shmevent.EventError {
+	if resp := openChannel(1); resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("channel_open from a totally unknown peer unexpectedly succeeded before submitting the public command")
 	}
 	if leader.isAuthorizedForGatedAccess(strangerPeerID, shmevent.ReservedGroupRelay) {
@@ -70,8 +70,8 @@ func TestDefaultPublicCommandGrantsChannelRelayAccess(t *testing.T) {
 	base := time.Date(2026, 7, 19, 0, 0, 0, 0, time.UTC)
 	instanceID := "default-public-command-instance"
 	submitResp := remoteAppend(t, ctx, stranger.host, stranger.ed25519Priv, leaderPeerID, shmevent.CommandRequestLogKind(shmevent.DefaultPublicCommandID), instanceID, base)
-	if submitResp.EventType == shmevent.EventError {
-		t.Fatalf("submitting the default public command was rejected: %s", submitResp.Value)
+	if submitResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("submitting the default public command was rejected: %s", mustErrMessage(t, submitResp))
 	}
 
 	// Checking success log: the CommandRequest record must actually be
@@ -79,17 +79,21 @@ func TestDefaultPublicCommandGrantsChannelRelayAccess(t *testing.T) {
 	// stranger submit it in the first place.
 	lo, hi := logrecord.ScanBounds(shmevent.CommandRequestLogKind(shmevent.DefaultPublicCommandID), instanceID, base.Add(-time.Hour), base.Add(time.Hour))
 	queryResp := remoteQuery(t, ctx, stranger.host, stranger.ed25519Priv, leaderPeerID, lo, hi)
-	if queryResp.EventType == shmevent.EventError {
-		t.Fatalf("reading back the submitted command's log entry was rejected: %s", queryResp.Value)
+	if queryResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("reading back the submitted command's log entry was rejected: %s", mustErrMessage(t, queryResp))
 	}
-	if len(queryResp.Value) == 0 {
+	queryKey, err := queryResp.ListRange().Key()
+	if err != nil {
+		t.Fatalf("ListRange key: %v", err)
+	}
+	if len(queryKey) == 0 {
 		t.Fatal("no log entry found for the submitted default public command -- submission did not actually land")
 	}
 
 	// After: the same peer now has real access to both resources, granted
 	// atomically as part of that same submission.
-	if resp := openChannel(2); resp.EventType == shmevent.EventError {
-		t.Fatalf("channel_open from the stranger was rejected after submitting the public command: %s", resp.Value)
+	if resp := openChannel(2); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("channel_open from the stranger was rejected after submitting the public command: %s", mustErrMessage(t, resp))
 	}
 	if !leader.isAuthorizedForGatedAccess(strangerPeerID, shmevent.ReservedGroupRelay) {
 		t.Fatal("stranger still has no relay access after submitting the public command")

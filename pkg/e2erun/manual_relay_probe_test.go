@@ -205,11 +205,12 @@ func submitPublicAccess(ctx context.Context, h lp2phost.Host, info peer.AddrInfo
 	if err != nil {
 		return err
 	}
-	payload, err := shmevent.EncodeSetPayload(key, value)
+	logMsg, err := shmevent.NewLogAppend(key, value)
 	if err != nil {
 		return err
 	}
-	buf, err := shmevent.Encode(shmevent.Msg{EventType: shmevent.EventLogAppend, Value: payload, ID: 1}, priv)
+	logMsg.SetId(1)
+	buf, err := shmevent.Encode(logMsg, priv)
 	if err != nil {
 		return err
 	}
@@ -232,8 +233,9 @@ func submitPublicAccess(ctx context.Context, h lp2phost.Host, info peer.AddrInfo
 	if err != nil {
 		return err
 	}
-	if resp.EventType == shmevent.EventError {
-		return fmt.Errorf("%s", resp.Value)
+	if resp.Which() == shmevent.Event_Which_error {
+		errMsg, _ := resp.Error().Message_()
+		return fmt.Errorf("%s", errMsg)
 	}
 	return nil
 }

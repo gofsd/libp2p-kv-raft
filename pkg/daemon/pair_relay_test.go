@@ -117,9 +117,14 @@ func TestPairThroughRelayCluster(t *testing.T) {
 	// requestpublicaccess` / kvmobile's RequestRelayAccess does. Until this
 	// lands, relayACL refuses their reservations outright.
 	for name, n := range map[string]*Node{"a": a, "b": b} {
-		resp := callLocal(t, ctx, n, shmevent.Msg{EventType: shmevent.EventPublicAccess, Value: []byte(relayAddr), ID: 1}, n.ed25519Priv)
-		if resp.EventType == shmevent.EventError {
-			t.Fatalf("public_access from %s rejected: %s", name, resp.Value)
+		accessMsg, err := shmevent.NewPublicAccess(relayAddr, "")
+		if err != nil {
+			t.Fatalf("NewPublicAccess: %v", err)
+		}
+		accessMsg.SetId(1)
+		resp := callLocal(t, ctx, n, accessMsg, n.ed25519Priv)
+		if resp.Which() == shmevent.Event_Which_error {
+			t.Fatalf("public_access from %s rejected: %s", name, mustErrMessage(t, resp))
 		}
 	}
 
@@ -173,21 +178,35 @@ func TestPairThroughRelayCluster(t *testing.T) {
 		t.Fatal("b unexpectedly already has a raft instance before pairing")
 	}
 
-	createResp := callLocal(t, ctx, b, shmevent.Msg{EventType: shmevent.EventJoinRequestCreate, ID: 2}, b.ed25519Priv)
-	if createResp.EventType == shmevent.EventError {
-		t.Fatalf("join_request_create on b rejected: %s", createResp.Value)
+	createMsg, err := shmevent.NewJoinRequestCreate()
+	if err != nil {
+		t.Fatalf("NewJoinRequestCreate: %v", err)
 	}
-	ticket := bAddr + "#" + hex.EncodeToString(createResp.Value)
+	createMsg.SetId(2)
+	createResp := callLocal(t, ctx, b, createMsg, b.ed25519Priv)
+	if createResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("join_request_create on b rejected: %s", mustErrMessage(t, createResp))
+	}
+	correlationToken, err := createResp.JoinRequestCreate().Token()
+	if err != nil {
+		t.Fatalf("JoinRequestCreate token: %v", err)
+	}
+	ticket := bAddr + "#" + hex.EncodeToString(correlationToken)
 
-	recruitResp := callLocal(t, ctx, a, shmevent.Msg{
-		EventType: shmevent.EventRecruit,
-		Value:     shmevent.EncodeRecruitPayload(ticket, shmevent.SuffrageVoter),
-		ID:        3,
-	}, a.ed25519Priv)
-	if recruitResp.EventType == shmevent.EventError {
-		t.Fatalf("recruit of b by a over the relay rejected: %s", recruitResp.Value)
+	recruitMsg, err := shmevent.NewRecruit(ticket, shmevent.SuffrageVoter)
+	if err != nil {
+		t.Fatalf("NewRecruit: %v", err)
 	}
-	if result := string(recruitResp.Value); !strings.HasSuffix(result, " ok") {
+	recruitMsg.SetId(3)
+	recruitResp := callLocal(t, ctx, a, recruitMsg, a.ed25519Priv)
+	if recruitResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("recruit of b by a over the relay rejected: %s", mustErrMessage(t, recruitResp))
+	}
+	result, err := recruitResp.Recruit().Ticket()
+	if err != nil {
+		t.Fatalf("Recruit ticket: %v", err)
+	}
+	if !strings.HasSuffix(result, " ok") {
 		t.Fatalf("got recruit result %q, want it to end in %q", result, " ok")
 	}
 

@@ -40,13 +40,14 @@ func appendRecord(t *testing.T, ctx context.Context, n *Node, kind, unitID strin
 	if err != nil {
 		t.Fatalf("Record.Encode: %v", err)
 	}
-	payload, err := shmevent.EncodeSetPayload(key, value)
+	m, err := shmevent.NewLogAppend(key, value)
 	if err != nil {
-		t.Fatalf("EncodeSetPayload: %v", err)
+		t.Fatalf("NewLogAppend: %v", err)
 	}
-	resp := callLocal(t, ctx, n, shmevent.Msg{EventType: shmevent.EventLogAppend, Value: payload, ID: 1}, n.ed25519Priv)
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("log_append rejected: %s", resp.Value)
+	m.SetId(1)
+	resp := callLocal(t, ctx, n, m, n.ed25519Priv)
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("log_append rejected: %s", mustErrMessage(t, resp))
 	}
 }
 
@@ -57,20 +58,26 @@ func queryRecords(t *testing.T, ctx context.Context, n *Node, kind, unitID strin
 	lo, hi := logrecord.ScanBounds(kind, unitID, start, end)
 	var records []logrecord.Record
 	for i := uint16(1); i <= 1000; i++ {
-		query, err := shmevent.EncodeListRangeQuery(lo, hi)
+		m, err := shmevent.NewListRange(lo, hi)
 		if err != nil {
-			t.Fatalf("EncodeListRangeQuery: %v", err)
+			t.Fatalf("NewListRange: %v", err)
 		}
-		resp := callLocal(t, ctx, n, shmevent.Msg{EventType: shmevent.EventListRange, Value: query, ID: i}, n.ed25519Priv)
-		if resp.EventType == shmevent.EventError {
-			t.Fatalf("list_range rejected: %s", resp.Value)
+		m.SetId(i)
+		resp := callLocal(t, ctx, n, m, n.ed25519Priv)
+		if resp.Which() == shmevent.Event_Which_error {
+			t.Fatalf("list_range rejected: %s", mustErrMessage(t, resp))
 		}
-		if len(resp.Value) == 0 {
+		grp := resp.ListRange()
+		key, err := grp.Key()
+		if err != nil {
+			t.Fatalf("ListRange key: %v", err)
+		}
+		if len(key) == 0 {
 			break
 		}
-		key, value, err := shmevent.DecodeListRangeQuery(resp.Value)
+		value, err := grp.Value()
 		if err != nil {
-			t.Fatalf("DecodeListRangeQuery: %v", err)
+			t.Fatalf("ListRange value: %v", err)
 		}
 		rec, err := logrecord.Decode(value)
 		if err != nil {
@@ -208,12 +215,13 @@ func TestLogAppendRejectsWrongPrefix(t *testing.T) {
 		t.Fatalf("bootstrap: %v", err)
 	}
 
-	payload, err := shmevent.EncodeSetPayload([]byte("ordinary-key"), []byte("value"))
+	m, err := shmevent.NewLogAppend([]byte("ordinary-key"), []byte("value"))
 	if err != nil {
-		t.Fatalf("EncodeSetPayload: %v", err)
+		t.Fatalf("NewLogAppend: %v", err)
 	}
-	resp := callLocal(t, ctx, n, shmevent.Msg{EventType: shmevent.EventLogAppend, Value: payload, ID: 1}, n.ed25519Priv)
-	if resp.EventType != shmevent.EventError {
+	m.SetId(1)
+	resp := callLocal(t, ctx, n, m, n.ed25519Priv)
+	if resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("log_append with a non-LogKeyPrefix key unexpectedly succeeded")
 	}
 }
@@ -248,16 +256,17 @@ func TestOrdinarySetRejectsReservedPrefixes(t *testing.T) {
 		{"system", []byte{shmevent.SystemKeyPrefix, 'x'}},
 		{"logrecord", []byte{logrecord.LogKeyPrefix, 'x'}},
 	} {
-		payload, err := shmevent.EncodeSetPayload(tc.key, []byte("value"))
+		m, err := shmevent.NewSet(tc.key, []byte("value"))
 		if err != nil {
-			t.Fatalf("[%s] EncodeSetPayload: %v", tc.name, err)
+			t.Fatalf("[%s] NewSet: %v", tc.name, err)
 		}
-		resp := callLocal(t, ctx, n, shmevent.Msg{EventType: shmevent.EventSet, Value: payload, ID: 1}, n.ed25519Priv)
-		if resp.EventType != shmevent.EventError {
+		m.SetId(1)
+		resp := callLocal(t, ctx, n, m, n.ed25519Priv)
+		if resp.Which() != shmevent.Event_Which_error {
 			t.Fatalf("[%s] ordinary Set with a reserved-prefix key unexpectedly succeeded", tc.name)
 		}
-		if !strings.Contains(string(resp.Value), "reserved") {
-			t.Fatalf("[%s] rejected for the wrong reason: %s", tc.name, resp.Value)
+		if !strings.Contains(mustErrMessage(t, resp), "reserved") {
+			t.Fatalf("[%s] rejected for the wrong reason: %s", tc.name, mustErrMessage(t, resp))
 		}
 	}
 }

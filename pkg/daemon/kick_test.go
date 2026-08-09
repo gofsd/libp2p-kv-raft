@@ -189,24 +189,16 @@ func TestKickRejectsNonVoterCaller(t *testing.T) {
 		t.Fatalf("learner join: %v", err)
 	}
 
-	call := func(n *Node, m shmevent.Msg) shmevent.Msg {
-		t.Helper()
-		buf, err := shmevent.Encode(m, n.ed25519Priv)
-		if err != nil {
-			t.Fatalf("encode: %v", err)
-		}
-		decoded, crc, sig, err := shmevent.Decode(buf)
-		if err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		return n.handleShmEvent(ctx, decoded, crc, sig, n.localCaller())
+	kickMsg, err := shmevent.NewKick(leader.peerID)
+	if err != nil {
+		t.Fatalf("NewKick: %v", err)
 	}
-
-	resp := call(learner, shmevent.Msg{EventType: shmevent.EventKick, Value: []byte(leader.peerID), ID: 1})
-	if resp.EventType != shmevent.EventError {
+	kickMsg.SetId(1)
+	resp := callLocal(t, ctx, learner, kickMsg, learner.ed25519Priv)
+	if resp.Which() != shmevent.Event_Which_error {
 		t.Fatalf("learner kick unexpectedly succeeded")
 	}
-	if !strings.Contains(string(resp.Value), "not a current raft voter") {
-		t.Fatalf("learner kick rejected for the wrong reason: %s", resp.Value)
+	if !strings.Contains(mustErrMessage(t, resp), "not a current raft voter") {
+		t.Fatalf("learner kick rejected for the wrong reason: %s", mustErrMessage(t, resp))
 	}
 }

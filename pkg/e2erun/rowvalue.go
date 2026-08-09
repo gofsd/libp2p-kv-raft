@@ -3,8 +3,35 @@ package e2erun
 import (
 	"strings"
 
-	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
+	"github.com/gofsd/libp2p-kv-raft/pkg/e2edata"
 )
+
+// withField returns a copy of ev with field set to value, leaving every
+// other field untouched.
+func withField(ev e2edata.Event, field, value string) e2edata.Event {
+	fields := make(map[string]string, len(ev.Fields)+1)
+	for k, v := range ev.Fields {
+		fields[k] = v
+	}
+	fields[field] = value
+	return e2edata.Event{Op: ev.Op, ID: ev.ID, Fields: fields}
+}
+
+// expandEventFields returns a copy of ev with transform applied to every
+// field value it carries -- the per-Event generalization of
+// ExpandRowValue/ResolveBootstrapPlaceholder, which only ever operated on
+// a single flat value string under the old (pre-union) wire design where
+// every event shared one opaque Value field.
+func expandEventFields(ev e2edata.Event, transform func(string) string) e2edata.Event {
+	if len(ev.Fields) == 0 {
+		return ev
+	}
+	fields := make(map[string]string, len(ev.Fields))
+	for k, v := range ev.Fields {
+		fields[k] = transform(v)
+	}
+	return e2edata.Event{Op: ev.Op, ID: ev.ID, Fields: fields}
+}
 
 // LargeValueToken is the sentinel a row uses in place of a literal
 // multi-kilobyte value -- the same idea as BootstrapToken, for a different
@@ -26,17 +53,23 @@ func ExpandRowValue(value string) string {
 	return value
 }
 
-// LargeValue is what LargeValueToken expands to: a value exactly at the
-// plain-KV ceiling (shmevent.KVValueSize), which is the interesting size
-// to send. Everything below it has been exercised since this suite
-// existed; the top of the range is where a transport that quietly assumed
-// the *old* 512-byte ceiling -- or, as actually happened, a ring sized to
-// the new ceiling but not to the framing around it -- gives way.
+// largeValueSize is the size LargeValueToken expands to -- the old
+// plain-KV ceiling (shmevent.KVValueSize) this test was originally built
+// around, kept as a literal now that the wire union enforces no ceiling
+// of its own: it's still the interesting size to send, since a transport
+// this large would have caught a ring sized too small for the framing
+// around it (as actually happened once) even though nothing rejects a
+// larger value outright anymore.
+const largeValueSize = 4096
+
+// LargeValue is what LargeValueToken expands to: a value exactly
+// largeValueSize bytes. Everything below it has been exercised since this
+// suite existed.
 //
 // Deliberately repeated readable text rather than random or zero bytes, so
 // a failure that surfaces as a truncated or corrupted value shows at a
 // glance where it was cut.
 func LargeValue() string {
 	const filler = "kvraft-large-value-"
-	return strings.Repeat(filler, shmevent.KVValueSize/len(filler)+1)[:shmevent.KVValueSize]
+	return strings.Repeat(filler, largeValueSize/len(filler)+1)[:largeValueSize]
 }

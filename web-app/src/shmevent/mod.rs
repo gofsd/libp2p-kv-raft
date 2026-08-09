@@ -19,6 +19,20 @@
 //! namespace's key-building and payload-framing helpers for permits and
 //! the Group/Command ACL catalog, layered on top of the event framing
 //! this file defines.
+//!
+//! # KNOWN BROKEN: out of sync with `api/shmevent.capnp`
+//!
+//! `api/shmevent.capnp` was rewritten from a flat `Event{event, sourceId,
+//! destinationId, value, crc32, signature, id}` struct into a real union
+//! (one variant per operation, each with its own named fields -- see that
+//! file's own doc comment). This crate, and every hand-packed
+//! byte-framing helper in `catalog_keys.rs`/`logpermit.rs`/`system.rs`,
+//! still assumes the old flat shape and has **not** been ported to the
+//! new one. A browser client built from this crate as it stands cannot
+//! talk to the rest of the mesh (every other client -- desktop, Android --
+//! was migrated in the same change). Porting this crate is its own
+//! follow-up plan, deliberately out of scope for the Go-side rewrite that
+//! left it in this state.
 #![allow(clippy::all)]
 
 pub mod catalog_keys;

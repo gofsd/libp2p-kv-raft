@@ -488,7 +488,7 @@ func TestRequestConfirmPermitAcrossNodes(t *testing.T) {
 	if err := kvctl.Use(followerID); err != nil {
 		t.Fatalf("Use(follower): %v", err)
 	}
-	if err := kvctl.RequestPermit(shmevent.KindBootstrapNode, []byte(targetPeerID), nil); err != nil {
+	if err := kvctl.RequestPermit(shmevent.KindBootstrapNode, []byte(targetPeerID), ""); err != nil {
 		t.Fatalf("RequestPermit: %v", err)
 	}
 

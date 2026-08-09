@@ -16,20 +16,27 @@ import (
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
 
-// buildJoinTicket signs sourceAddr+token as eventType (EventJoinTicket or
-// EventJoinRequestTicket -- both share EncodeJoinTicketPayload's wire
-// shape, see that function's doc comment) with priv, exactly the way
-// CreateJoinInviteTicket/CreateJoinRequestTicket do internally. Needed the
-// same way buildExecInviteTicket is: to mint a ticket "as" a specific
-// device other than whichever one is currently started via kvmobile in
-// this process (kvmobile runs exactly one daemon per process).
-func buildJoinTicket(t *testing.T, eventType uint8, priv shmevent.PrivateKey, sourceAddr string, token []byte) string {
+// buildJoinTicket signs sourceAddr+token as either a joinTicket (isRequest
+// false) or joinRequestTicket (isRequest true) -- both share the same
+// sourceAddr/token shape, see NewJoinTicket/NewJoinRequestTicket's doc
+// comments -- with priv, exactly the way CreateJoinInviteTicket/
+// CreateJoinRequestTicket do internally. Needed the same way
+// buildExecInviteTicket is: to mint a ticket "as" a specific device other
+// than whichever one is currently started via kvmobile in this process
+// (kvmobile runs exactly one daemon per process).
+func buildJoinTicket(t *testing.T, isRequest bool, priv shmevent.PrivateKey, sourceAddr string, token []byte) string {
 	t.Helper()
-	value, err := shmevent.EncodeJoinTicketPayload(sourceAddr, token)
-	if err != nil {
-		t.Fatalf("EncodeJoinTicketPayload: %v", err)
+	var m shmevent.Msg
+	var err error
+	if isRequest {
+		m, err = shmevent.NewJoinRequestTicket(sourceAddr, token)
+	} else {
+		m, err = shmevent.NewJoinTicket(sourceAddr, token)
 	}
-	wire, err := shmevent.Encode(shmevent.Msg{EventType: eventType, Value: value}, priv)
+	if err != nil {
+		t.Fatalf("build join ticket: %v", err)
+	}
+	wire, err := shmevent.Encode(m, priv)
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
@@ -133,12 +140,16 @@ func TestCreateJoinInviteTicketIsVerifiable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("shmevent.Decode: %v", err)
 	}
-	if m.EventType != shmevent.EventJoinTicket {
-		t.Fatalf("got event type %d, want %d", m.EventType, shmevent.EventJoinTicket)
+	if m.Which() != shmevent.Event_Which_joinTicket {
+		t.Fatalf("got event %s, want %s", shmevent.EventName(m.Which()), shmevent.EventName(shmevent.Event_Which_joinTicket))
 	}
-	addr, token, err := shmevent.DecodeJoinTicketPayload(m.Value)
+	addr, err := m.JoinTicket().SourceAddr()
 	if err != nil {
-		t.Fatalf("DecodeJoinTicketPayload: %v", err)
+		t.Fatalf("SourceAddr: %v", err)
+	}
+	token, err := m.JoinTicket().Token()
+	if err != nil {
+		t.Fatalf("Token: %v", err)
 	}
 	if len(token) != shmevent.JoinInviteTokenSize {
 		t.Fatalf("got token length %d, want %d", len(token), shmevent.JoinInviteTokenSize)
@@ -193,7 +204,7 @@ func TestVerifyJoinInviteTicketThenJoinSucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPrivateKey(leader): %v", err)
 	}
-	ticket := buildJoinTicket(t, shmevent.EventJoinTicket, leaderPriv, leaderAddr, token)
+	ticket := buildJoinTicket(t, false, leaderPriv, leaderAddr, token)
 
 	addrAndToken, err := VerifyJoinInviteTicket(ticket)
 	if err != nil {
@@ -259,7 +270,7 @@ func TestVerifyJoinInviteTicketWithForgedSignatureFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateIdentity: %v", err)
 	}
-	forgedTicket := buildJoinTicket(t, shmevent.EventJoinTicket, forgerPriv, leaderAddr, token)
+	forgedTicket := buildJoinTicket(t, false, forgerPriv, leaderAddr, token)
 
 	if _, err := VerifyJoinInviteTicket(forgedTicket); err == nil {
 		t.Fatal("VerifyJoinInviteTicket with a forged signature unexpectedly succeeded")
@@ -301,12 +312,16 @@ func TestCreateJoinRequestTicketIsVerifiable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("shmevent.Decode: %v", err)
 	}
-	if m.EventType != shmevent.EventJoinRequestTicket {
-		t.Fatalf("got event type %d, want %d", m.EventType, shmevent.EventJoinRequestTicket)
+	if m.Which() != shmevent.Event_Which_joinRequestTicket {
+		t.Fatalf("got event %s, want %s", shmevent.EventName(m.Which()), shmevent.EventName(shmevent.Event_Which_joinRequestTicket))
 	}
-	addr, token, err := shmevent.DecodeJoinTicketPayload(m.Value)
+	addr, err := m.JoinRequestTicket().SourceAddr()
 	if err != nil {
-		t.Fatalf("DecodeJoinTicketPayload: %v", err)
+		t.Fatalf("SourceAddr: %v", err)
+	}
+	token, err := m.JoinRequestTicket().Token()
+	if err != nil {
+		t.Fatalf("Token: %v", err)
 	}
 	if len(token) != shmevent.JoinInviteTokenSize {
 		t.Fatalf("got token length %d, want %d", len(token), shmevent.JoinInviteTokenSize)
@@ -377,7 +392,7 @@ func TestRedeemJoinRequestTicketAdmitsPendingDevice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPrivateKey(pending): %v", err)
 	}
-	ticket := buildJoinTicket(t, shmevent.EventJoinRequestTicket, pendingPriv, pendingAddr, token)
+	ticket := buildJoinTicket(t, true, pendingPriv, pendingAddr, token)
 
 	var result string
 	pollUntilTrue(t, 20*time.Second, func() (bool, error) {
@@ -444,7 +459,7 @@ func TestRedeemJoinRequestTicketWithForgedSignatureFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateIdentity: %v", err)
 	}
-	forgedTicket := buildJoinTicket(t, shmevent.EventJoinRequestTicket, forgerPriv, pendingAddr, token)
+	forgedTicket := buildJoinTicket(t, true, forgerPriv, pendingAddr, token)
 
 	if _, err := RedeemJoinRequestTicket(forgedTicket, "voter"); err == nil {
 		t.Fatal("RedeemJoinRequestTicket with a forged signature unexpectedly succeeded")

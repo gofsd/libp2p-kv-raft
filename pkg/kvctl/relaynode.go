@@ -115,7 +115,7 @@ func GetRelayNode(addr string) (RelayNode, error) {
 	if err != nil {
 		return RelayNode{}, fmt.Errorf("kvctl: relay node %s not found", addr)
 	}
-	multiaddrStr, priority, err := shmevent.DecodeBootstrapNodeMetadata([]byte(value))
+	multiaddrStr, priority, err := shmevent.DecodeBootstrapNodeMetadata(value)
 	if err != nil {
 		return RelayNode{}, fmt.Errorf("kvctl: decode relay node %s: %w", addr, err)
 	}
@@ -146,7 +146,7 @@ func ListRelayNodes() ([]RelayNode, error) {
 		if len(key) < systemKeyIDOffset {
 			return nil, fmt.Errorf("kvctl: malformed relay node key %x", key)
 		}
-		multiaddrStr, priority, err := shmevent.DecodeBootstrapNodeMetadata(value)
+		multiaddrStr, priority, err := shmevent.DecodeBootstrapNodeMetadata(string(value))
 		if err != nil {
 			return nil, fmt.Errorf("kvctl: decode relay node %x: %w", key, err)
 		}

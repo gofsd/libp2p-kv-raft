@@ -25,13 +25,18 @@ func TestGetVersionLocal(t *testing.T) {
 
 	leader := startTestLeader(t, ctx, Config{})
 
-	resp := callLocal(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventGetVersion, ID: 1}, leader.ed25519Priv)
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("get_version rejected: %s", resp.Value)
-	}
-	info, err := shmevent.DecodeVersionInfo(resp.Value)
+	m, err := shmevent.NewGetVersion()
 	if err != nil {
-		t.Fatalf("DecodeVersionInfo: %v", err)
+		t.Fatalf("NewGetVersion: %v", err)
+	}
+	m.SetId(1)
+	resp := callLocal(t, ctx, leader, m, leader.ed25519Priv)
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("get_version rejected: %s", mustErrMessage(t, resp))
+	}
+	info, err := shmevent.VersionInfoFrom(resp.GetVersion())
+	if err != nil {
+		t.Fatalf("VersionInfoFrom: %v", err)
 	}
 	if info.GoVersion == "" {
 		t.Fatal("GoVersion unexpectedly empty")
@@ -58,19 +63,21 @@ func TestGetVersionOpenToUnauthorizedRemoteStranger(t *testing.T) {
 		t.Fatalf("decode leader peer id: %v", err)
 	}
 
-	resp, err := callClientProtocol(ctx, stranger.host, leaderPeerID, shmevent.Msg{
-		EventType: shmevent.EventGetVersion,
-		ID:        1,
-	}, stranger.ed25519Priv)
+	m, err := shmevent.NewGetVersion()
+	if err != nil {
+		t.Fatalf("NewGetVersion: %v", err)
+	}
+	m.SetId(1)
+	resp, err := callClientProtocol(ctx, stranger.host, leaderPeerID, m, stranger.ed25519Priv)
 	if err != nil {
 		t.Fatalf("callClientProtocol: %v", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("get_version from an unauthorized stranger was rejected: %s", resp.Value)
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("get_version from an unauthorized stranger was rejected: %s", mustErrMessage(t, resp))
 	}
-	info, err := shmevent.DecodeVersionInfo(resp.Value)
+	info, err := shmevent.VersionInfoFrom(resp.GetVersion())
 	if err != nil {
-		t.Fatalf("DecodeVersionInfo: %v", err)
+		t.Fatalf("VersionInfoFrom: %v", err)
 	}
 	if info.GoVersion == "" {
 		t.Fatal("GoVersion unexpectedly empty")

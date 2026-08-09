@@ -739,7 +739,7 @@ func cmdRequestPermit(args []string) {
 		fmt.Fprintf(os.Stderr, "requestpermit: unknown permit kind %q (want \"bootstrap\")\n", args[0])
 		os.Exit(2)
 	}
-	if err := kvctl.RequestPermit(kind, []byte(args[1]), []byte(args[2])); err != nil {
+	if err := kvctl.RequestPermit(kind, []byte(args[1]), args[2]); err != nil {
 		fmt.Fprintf(os.Stderr, "requestpermit: %v\n", err)
 		os.Exit(1)
 	}
@@ -1424,15 +1424,25 @@ const sendEventTimeout = 60 * time.Second
 // isn't actually signed the same way an ordinary sendevent call is.
 func signEventForCurrentKey(ctx context.Context, peerID string, m shmevent.Msg) ([]byte, error) {
 	var priv shmevent.PrivateKey
-	if shmevent.RequiresSignature(m.EventType) {
-		keyResp, err := ipc.Call(ctx, peerID, shmevent.Msg{EventType: shmevent.EventGetPrivateKey, ID: randomID()}, nil)
+	if shmevent.RequiresSignature(m.Which()) {
+		keyMsg, err := shmevent.NewGetPrivateKey()
 		if err != nil {
 			return nil, fmt.Errorf("fetch signing key: %w", err)
 		}
-		if keyResp.EventType == shmevent.EventError {
-			return nil, fmt.Errorf("fetch signing key: %s", keyResp.Value)
+		keyMsg.SetId(randomID())
+		keyResp, err := ipc.Call(ctx, peerID, keyMsg, nil)
+		if err != nil {
+			return nil, fmt.Errorf("fetch signing key: %w", err)
 		}
-		priv = shmevent.PrivateKey(keyResp.Value)
+		if keyResp.Which() == shmevent.Event_Which_error {
+			errMsg, _ := keyResp.Error().Message_()
+			return nil, fmt.Errorf("fetch signing key: %s", errMsg)
+		}
+		privKey, err := keyResp.GetPrivateKey().PrivKey()
+		if err != nil {
+			return nil, fmt.Errorf("fetch signing key: %w", err)
+		}
+		priv = shmevent.PrivateKey(privKey)
 	}
 	return shmevent.Encode(m, priv)
 }
@@ -1448,7 +1458,11 @@ func parseEventArg(eventJSON string) (shmevent.Msg, error) {
 	if ev.ID == 0 {
 		ev.ID = randomID()
 	}
-	return ev.ToMsg(), nil
+	m, err := ev.ToMsg()
+	if err != nil {
+		return shmevent.Msg{}, err
+	}
+	return m, nil
 }
 
 func cmdSendEvent(args []string) {
@@ -1479,13 +1493,18 @@ func cmdSendEvent(args []string) {
 		os.Exit(1)
 	}
 
-	out, err := json.Marshal(e2edata.EventFromMsg(resp))
+	respEv, err := e2edata.EventFromMsg(resp)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sendevent: decode response: %v\n", err)
+		os.Exit(1)
+	}
+	out, err := json.Marshal(respEv)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sendevent: encode response: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Println(string(out))
-	if resp.EventType == shmevent.EventError {
+	if resp.Which() == shmevent.Event_Which_error {
 		os.Exit(1)
 	}
 }
@@ -1515,13 +1534,18 @@ func cmdSendRawEvent(args []string) {
 		os.Exit(1)
 	}
 
-	out, err := json.Marshal(e2edata.EventFromMsg(resp))
+	respEv, err := e2edata.EventFromMsg(resp)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sendrawevent: decode response: %v\n", err)
+		os.Exit(1)
+	}
+	out, err := json.Marshal(respEv)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sendrawevent: encode response: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Println(string(out))
-	if resp.EventType == shmevent.EventError {
+	if resp.Which() == shmevent.Event_Which_error {
 		os.Exit(1)
 	}
 }

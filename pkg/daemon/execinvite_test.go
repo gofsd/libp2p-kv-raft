@@ -24,15 +24,7 @@ func newExecInviteToken(t *testing.T) []byte {
 
 func execInviteCall(t *testing.T, ctx context.Context, n *Node, m shmevent.Msg) shmevent.Msg {
 	t.Helper()
-	buf, err := shmevent.Encode(m, n.ed25519Priv)
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
-	decoded, crc, sig, err := shmevent.Decode(buf)
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	return n.handleShmEvent(ctx, decoded, crc, sig, n.localCaller())
+	return callLocal(t, ctx, n, m, n.ed25519Priv)
 }
 
 func startExecInviteNode(t *testing.T, tmpDir, name string, cfg Config) *Node {
@@ -58,36 +50,40 @@ func startExecInviteNode(t *testing.T, tmpDir, name string, cfg Config) *Node {
 func setUpExecInviteACL(t *testing.T, ctx context.Context, leader *Node, commandID, groupID, redeemerPeerID string) {
 	t.Helper()
 
-	groupPayload, err := shmevent.EncodeGroupPutPayload(groupID, groupID, false)
+	groupMsg, err := shmevent.NewGroupPut(groupID, groupID, false)
 	if err != nil {
-		t.Fatalf("EncodeGroupPutPayload: %v", err)
+		t.Fatalf("NewGroupPut: %v", err)
 	}
-	if resp := execInviteCall(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: shmevent.EncodeCatalogPayload(shmevent.KindGroup, groupPayload), ID: 101}); resp.EventType == shmevent.EventError {
-		t.Fatalf("group_put rejected: %s", resp.Value)
+	groupMsg.SetId(101)
+	if resp := execInviteCall(t, ctx, leader, groupMsg); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("group_put rejected: %s", mustErrMessage(t, resp))
 	}
 
-	commandPayload, err := shmevent.EncodeCommandPutPayload(commandID, commandID, []byte(leader.peerID))
+	commandMsg, err := shmevent.NewCommandPut(commandID, commandID, leader.peerID)
 	if err != nil {
-		t.Fatalf("EncodeCommandPutPayload: %v", err)
+		t.Fatalf("NewCommandPut: %v", err)
 	}
-	if resp := execInviteCall(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: shmevent.EncodeCatalogPayload(shmevent.KindCommand, commandPayload), ID: 102}); resp.EventType == shmevent.EventError {
-		t.Fatalf("command_put rejected: %s", resp.Value)
+	commandMsg.SetId(102)
+	if resp := execInviteCall(t, ctx, leader, commandMsg); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("command_put rejected: %s", mustErrMessage(t, resp))
 	}
 
-	groupCommandPayload, err := shmevent.EncodeGroupCommandPayload([]byte(commandID), []byte(groupID))
+	groupCommandMsg, err := shmevent.NewGroupCommandPut(commandID, groupID)
 	if err != nil {
-		t.Fatalf("EncodeGroupCommandPayload: %v", err)
+		t.Fatalf("NewGroupCommandPut: %v", err)
 	}
-	if resp := execInviteCall(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: shmevent.EncodeCatalogPayload(shmevent.KindGroupCommand, groupCommandPayload), ID: 103}); resp.EventType == shmevent.EventError {
-		t.Fatalf("group_command_put rejected: %s", resp.Value)
+	groupCommandMsg.SetId(103)
+	if resp := execInviteCall(t, ctx, leader, groupCommandMsg); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("group_command_put rejected: %s", mustErrMessage(t, resp))
 	}
 
-	peerGroupPayload, err := shmevent.EncodePeerGroupPayload([]byte(redeemerPeerID), []byte(groupID))
+	peerGroupMsg, err := shmevent.NewPeerGroupPut(redeemerPeerID, groupID)
 	if err != nil {
-		t.Fatalf("EncodePeerGroupPayload: %v", err)
+		t.Fatalf("NewPeerGroupPut: %v", err)
 	}
-	if resp := execInviteCall(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: shmevent.EncodeCatalogPayload(shmevent.KindPeerGroup, peerGroupPayload), ID: 104}); resp.EventType == shmevent.EventError {
-		t.Fatalf("peer_group_put rejected: %s", resp.Value)
+	peerGroupMsg.SetId(104)
+	if resp := execInviteCall(t, ctx, leader, peerGroupMsg); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("peer_group_put rejected: %s", mustErrMessage(t, resp))
 	}
 }
 
@@ -128,23 +124,28 @@ func TestExecInviteRedeemByPermittedPeerSucceedsAndIsOneTime(t *testing.T) {
 	setUpExecInviteACL(t, ctx, leader, "cmd-1", "grp-1", redeemer.peerID)
 
 	token := newExecInviteToken(t)
-	createPayload, err := shmevent.EncodeExecInviteCreatePayload(token, "cmd-1", `{"x":1}`)
+	createMsg, err := shmevent.NewExecInviteCreate(token, "cmd-1", `{"x":1}`)
 	if err != nil {
-		t.Fatalf("EncodeExecInviteCreatePayload: %v", err)
+		t.Fatalf("NewExecInviteCreate: %v", err)
 	}
-	if resp := execInviteCall(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventLifecycleWrite, Value: shmevent.EncodeLifecycleWritePayload(shmevent.KindExecInvite, shmevent.LifecycleActionRequest, createPayload), ID: 1}); resp.EventType == shmevent.EventError {
-		t.Fatalf("exec_invite_create rejected: %s", resp.Value)
+	createMsg.SetId(1)
+	if resp := execInviteCall(t, ctx, leader, createMsg); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("exec_invite_create rejected: %s", mustErrMessage(t, resp))
 	}
 
-	redeemPayload, err := shmevent.EncodeExecInviteRedeemRequest(leaderAddr, token)
+	redeemMsg, err := shmevent.NewExecInviteRedeem(leaderAddr, token)
 	if err != nil {
-		t.Fatalf("EncodeExecInviteRedeemRequest: %v", err)
+		t.Fatalf("NewExecInviteRedeem: %v", err)
 	}
-	resp := execInviteCall(t, ctx, redeemer, shmevent.Msg{EventType: shmevent.EventExecInviteRedeem, Value: redeemPayload, ID: 2})
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("exec_invite_redeem rejected: %s", resp.Value)
+	redeemMsg.SetId(2)
+	resp := execInviteCall(t, ctx, redeemer, redeemMsg)
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("exec_invite_redeem rejected: %s", mustErrMessage(t, resp))
 	}
-	instanceID := string(resp.Value)
+	instanceID, err := resp.ExecInviteRedeem().InstanceId()
+	if err != nil {
+		t.Fatalf("ExecInviteRedeem instance_id: %v", err)
+	}
 	if instanceID == "" {
 		t.Fatal("exec_invite_redeem succeeded but returned an empty instance id")
 	}
@@ -174,8 +175,13 @@ func TestExecInviteRedeemByPermittedPeerSucceedsAndIsOneTime(t *testing.T) {
 
 	// Redeeming the identical token again -- even by the same, still
 	// permitted peer -- must fail: the invite is gone.
-	resp = execInviteCall(t, ctx, redeemer, shmevent.Msg{EventType: shmevent.EventExecInviteRedeem, Value: redeemPayload, ID: 3})
-	if resp.EventType != shmevent.EventError {
+	redeemMsg2, err := shmevent.NewExecInviteRedeem(leaderAddr, token)
+	if err != nil {
+		t.Fatalf("NewExecInviteRedeem: %v", err)
+	}
+	redeemMsg2.SetId(3)
+	resp = execInviteCall(t, ctx, redeemer, redeemMsg2)
+	if resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("second exec_invite_redeem with the already-consumed token unexpectedly succeeded")
 	}
 }
@@ -216,30 +222,40 @@ func TestExecInviteRedeemByUnpermittedPeerFailsAndKeepsInvite(t *testing.T) {
 	setUpExecInviteACL(t, ctx, leader, "cmd-2", "grp-2", permitted.peerID)
 
 	token := newExecInviteToken(t)
-	createPayload, err := shmevent.EncodeExecInviteCreatePayload(token, "cmd-2", "")
+	createMsg, err := shmevent.NewExecInviteCreate(token, "cmd-2", "")
 	if err != nil {
-		t.Fatalf("EncodeExecInviteCreatePayload: %v", err)
+		t.Fatalf("NewExecInviteCreate: %v", err)
 	}
-	if resp := execInviteCall(t, ctx, leader, shmevent.Msg{EventType: shmevent.EventLifecycleWrite, Value: shmevent.EncodeLifecycleWritePayload(shmevent.KindExecInvite, shmevent.LifecycleActionRequest, createPayload), ID: 1}); resp.EventType == shmevent.EventError {
-		t.Fatalf("exec_invite_create rejected: %s", resp.Value)
+	createMsg.SetId(1)
+	if resp := execInviteCall(t, ctx, leader, createMsg); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("exec_invite_create rejected: %s", mustErrMessage(t, resp))
 	}
 
-	redeemPayload, err := shmevent.EncodeExecInviteRedeemRequest(leaderAddr, token)
+	redeemMsg, err := shmevent.NewExecInviteRedeem(leaderAddr, token)
 	if err != nil {
-		t.Fatalf("EncodeExecInviteRedeemRequest: %v", err)
+		t.Fatalf("NewExecInviteRedeem: %v", err)
 	}
-
-	resp := execInviteCall(t, ctx, unpermitted, shmevent.Msg{EventType: shmevent.EventExecInviteRedeem, Value: redeemPayload, ID: 2})
-	if resp.EventType != shmevent.EventError {
+	redeemMsg.SetId(2)
+	resp := execInviteCall(t, ctx, unpermitted, redeemMsg)
+	if resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("exec_invite_redeem by an unpermitted peer unexpectedly succeeded")
 	}
 
 	// The invite must still be redeemable by a legitimately permitted peer.
-	resp = execInviteCall(t, ctx, permitted, shmevent.Msg{EventType: shmevent.EventExecInviteRedeem, Value: redeemPayload, ID: 3})
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("exec_invite_redeem by a permitted peer, after an earlier unpermitted attempt, was unexpectedly rejected: %s", resp.Value)
+	redeemMsg2, err := shmevent.NewExecInviteRedeem(leaderAddr, token)
+	if err != nil {
+		t.Fatalf("NewExecInviteRedeem: %v", err)
 	}
-	if string(resp.Value) == "" {
+	redeemMsg2.SetId(3)
+	resp = execInviteCall(t, ctx, permitted, redeemMsg2)
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("exec_invite_redeem by a permitted peer, after an earlier unpermitted attempt, was unexpectedly rejected: %s", mustErrMessage(t, resp))
+	}
+	instanceID, err := resp.ExecInviteRedeem().InstanceId()
+	if err != nil {
+		t.Fatalf("ExecInviteRedeem instance_id: %v", err)
+	}
+	if instanceID == "" {
 		t.Fatal("exec_invite_redeem by a permitted peer succeeded but returned an empty instance id")
 	}
 }

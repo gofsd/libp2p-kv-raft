@@ -43,69 +43,54 @@ func DecodeJoinInviteRecord(payload []byte) (suffrage byte, err error) {
 	return payload[0], nil
 }
 
-// EncodeJoinInviteCreatePayload packs a freshly generated token (see
-// JoinInviteTokenSize) and the suffrage it should grant into a single
-// EventJoinInviteCreate Msg.Value: token first (fixed size, so it needs no
-// length prefix), then suffrage as the trailing byte.
-func EncodeJoinInviteCreatePayload(token []byte, suffrage byte) ([]byte, error) {
+// NewJoinInviteCreate builds a joinInviteCreate Msg: mints a one-time
+// join-invite token, redeemable by any device presenting it.
+func NewJoinInviteCreate(token []byte, suffrage byte) (Msg, error) {
 	if len(token) != JoinInviteTokenSize {
-		return nil, fmt.Errorf("shmevent: join invite token must be %d bytes, got %d", JoinInviteTokenSize, len(token))
+		return Msg{}, fmt.Errorf("shmevent: join invite token must be %d bytes, got %d", JoinInviteTokenSize, len(token))
 	}
-	buf := make([]byte, JoinInviteTokenSize+1)
-	copy(buf, token)
-	buf[JoinInviteTokenSize] = suffrage
-	return buf, nil
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
+	}
+	m.SetJoinInviteCreate()
+	grp := m.JoinInviteCreate()
+	if err := grp.SetToken(token); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_join_invite_create: %w", err)
+	}
+	grp.SetSuffrage(suffrage)
+	return m, nil
 }
 
-// DecodeJoinInviteCreatePayload is the inverse of
-// EncodeJoinInviteCreatePayload.
-func DecodeJoinInviteCreatePayload(payload []byte) (token []byte, suffrage byte, err error) {
-	if len(payload) != JoinInviteTokenSize+1 {
-		return nil, 0, fmt.Errorf("shmevent: join invite create payload must be %d bytes, got %d", JoinInviteTokenSize+1, len(payload))
+// NewJoinInviteRevoke builds a joinInviteRevoke Msg: invalidates a
+// still-unredeemed join-invite token.
+func NewJoinInviteRevoke(token []byte) (Msg, error) {
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
 	}
-	return payload[:JoinInviteTokenSize], payload[JoinInviteTokenSize], nil
+	m.SetJoinInviteRevoke()
+	if err := m.JoinInviteRevoke().SetToken(token); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_join_invite_revoke: %w", err)
+	}
+	return m, nil
 }
 
-// EncodeJoinInviteRevokePayload packs token (the invite to revoke) as an
-// EventJoinInviteRevoke Msg.Value -- the whole payload is the token, no
-// other field, named for symmetry with this package's other
-// EncodeXPayload/DecodeXPayload pairs.
-func EncodeJoinInviteRevokePayload(token []byte) []byte {
-	buf := make([]byte, len(token))
-	copy(buf, token)
-	return buf
-}
-
-// DecodeJoinInviteRevokePayload is the inverse of
-// EncodeJoinInviteRevokePayload.
-func DecodeJoinInviteRevokePayload(payload []byte) (token []byte, err error) {
-	if len(payload) != JoinInviteTokenSize {
-		return nil, fmt.Errorf("shmevent: join invite revoke payload must be %d bytes, got %d", JoinInviteTokenSize, len(payload))
+// NewJoinTicket builds a joinTicket Msg: an offline signed-ticket wire
+// format (never dispatched live) -- see that variant's doc comment in
+// api/shmevent.capnp.
+func NewJoinTicket(sourceAddr string, token []byte) (Msg, error) {
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
 	}
-	return payload, nil
-}
-
-// EncodeJoinTicketPayload packs sourceAddr and token into a single
-// EventJoinTicket Msg.Value: token first (fixed size, no length prefix
-// needed), then sourceAddr as the trailing field -- the same shape
-// EncodeExecInviteRedeemRequest uses for its own addr+token pair (there's
-// no existing join-invite equivalent to alias here, since redemption
-// isn't a shmring IPC call the way exec-invite's is -- see
-// EventJoinTicket's doc comment).
-func EncodeJoinTicketPayload(sourceAddr string, token []byte) ([]byte, error) {
-	if len(token) != JoinInviteTokenSize {
-		return nil, fmt.Errorf("shmevent: join invite token must be %d bytes, got %d", JoinInviteTokenSize, len(token))
+	m.SetJoinTicket()
+	grp := m.JoinTicket()
+	if err := grp.SetSourceAddr(sourceAddr); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_join_ticket: %w", err)
 	}
-	buf := make([]byte, JoinInviteTokenSize+len(sourceAddr))
-	copy(buf, token)
-	copy(buf[JoinInviteTokenSize:], sourceAddr)
-	return buf, nil
-}
-
-// DecodeJoinTicketPayload is the inverse of EncodeJoinTicketPayload.
-func DecodeJoinTicketPayload(payload []byte) (sourceAddr string, token []byte, err error) {
-	if len(payload) < JoinInviteTokenSize {
-		return "", nil, fmt.Errorf("shmevent: join ticket payload too short: %d bytes", len(payload))
+	if err := grp.SetToken(token); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_join_ticket: %w", err)
 	}
-	return string(payload[JoinInviteTokenSize:]), payload[:JoinInviteTokenSize], nil
+	return m, nil
 }

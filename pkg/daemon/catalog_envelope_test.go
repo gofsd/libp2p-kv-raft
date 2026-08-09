@@ -11,13 +11,18 @@ import (
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
 
-// TestCatalogEnvelopePutDeleteRoundTrip proves EventCatalogPut/
-// EventCatalogDelete -- the generic envelope added alongside (not instead
-// of) EventGroupPut/Delete et al. -- reach the exact same store key/value
-// their kind-specific predecessor does, that an unrecognized entityKind is
-// rejected rather than silently ignored, and that the per-kind validation
-// hook (IsReservedGroupID, moved into catalogPutSpecs/catalogDeleteSpecs)
-// still applies when reached through the envelope.
+// TestCatalogEnvelopePutDeleteRoundTrip used to prove EventCatalogPut/
+// EventCatalogDelete -- a generic kind-byte envelope that dispatched to
+// catalogPutSpecs/catalogDeleteSpecs -- reached the same store key/value its
+// kind-specific predecessor (EventGroupPut/Delete) did. That generic
+// envelope, and the entity-kind byte it switched on, no longer exist: the
+// capnp rewrite gives every catalog kind its own top-level union variant
+// (groupPut/groupDelete/commandPut/...) instead of one shared envelope, so
+// there is no longer a way to submit "an unrecognized entity kind" at
+// all -- that sub-case has no surviving translation and is dropped here
+// rather than faked. What does still apply -- shmevent.IsReservedGroupID's
+// validation hook and a plain put/get/delete round trip -- is exercised
+// directly against groupPut/groupDelete below.
 func TestCatalogEnvelopePutDeleteRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -47,92 +52,85 @@ func TestCatalogEnvelopePutDeleteRoundTrip(t *testing.T) {
 
 	call := func(m shmevent.Msg) shmevent.Msg {
 		t.Helper()
-		buf, err := shmevent.Encode(m, leader.ed25519Priv)
-		if err != nil {
-			t.Fatalf("encode: %v", err)
-		}
-		decoded, crc, sig, err := shmevent.Decode(buf)
-		if err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		return leader.handleShmEvent(ctx, decoded, crc, sig, leader.localCaller())
+		return callLocal(t, ctx, leader, m, leader.ed25519Priv)
 	}
 
-	// An unrecognized entity kind must be rejected outright, not silently
-	// dropped or misrouted to the wrong table entry.
-	resp := call(shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: shmevent.EncodeCatalogPayload(0xEE, []byte("junk")), ID: 1})
-	if resp.EventType != shmevent.EventError {
-		t.Fatal("catalog_put with an unknown entity kind unexpectedly succeeded")
-	}
-	if !strings.Contains(string(resp.Value), "unrecognized entity kind") {
-		t.Fatalf("catalog_put with an unknown kind rejected for the wrong reason: %s", resp.Value)
-	}
-
-	// KindGroup through the envelope must land at the identical GroupKey a
-	// direct EventGroupPut would, and be readable there.
-	putPayload, err := shmevent.EncodeGroupPutPayload("grp-via-envelope", "Envelope Group", false)
+	// groupPut must land at the same GroupKey EventGroupPut always did, and
+	// be readable there.
+	putMsg, err := shmevent.NewGroupPut("grp-via-envelope", "Envelope Group", false)
 	if err != nil {
-		t.Fatalf("EncodeGroupPutPayload: %v", err)
+		t.Fatalf("NewGroupPut: %v", err)
 	}
-	resp = call(shmevent.Msg{
-		EventType: shmevent.EventCatalogPut,
-		Value:     shmevent.EncodeCatalogPayload(shmevent.KindGroup, putPayload),
-		ID:        2,
-	})
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("catalog_put(KindGroup) rejected: %s", resp.Value)
+	putMsg.SetId(2)
+	resp := call(putMsg)
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("group_put rejected: %s", mustErrMessage(t, resp))
 	}
 
 	groupKey := shmevent.GroupKey([]byte("grp-via-envelope"))
-	getResp := call(shmevent.Msg{EventType: shmevent.EventGetField, Value: groupKey, ID: 3})
-	if getResp.EventType == shmevent.EventError {
-		t.Fatalf("group put via envelope did not land at GroupKey: %s", getResp.Value)
+	getMsg, err := shmevent.NewGetFieldByKey(groupKey)
+	if err != nil {
+		t.Fatalf("NewGetFieldByKey: %v", err)
 	}
-	if name, _, err := shmevent.DecodeGroupPayload(getResp.Value); err != nil || name != "Envelope Group" {
+	getMsg.SetId(3)
+	getResp := call(getMsg)
+	if getResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("group put did not land at GroupKey: %s", mustErrMessage(t, getResp))
+	}
+	gotValue, err := getResp.GetFieldByKey().Value()
+	if err != nil {
+		t.Fatalf("GetFieldByKey value: %v", err)
+	}
+	if name, _, err := shmevent.DecodeGroupPayload(gotValue); err != nil || name != "Envelope Group" {
 		t.Fatalf("got name=%q err=%v, want name=%q", name, err, "Envelope Group")
 	}
 
-	// The reserved-group-id validation hook (previously inline in
-	// EventGroupPut's own case) must still apply when reached through the
-	// generic envelope.
-	reservedPayload, err := shmevent.EncodeGroupPutPayload(shmevent.ReservedGroupCluster, "renamed", false)
+	// The reserved-group-id validation hook must still apply.
+	reservedMsg, err := shmevent.NewGroupPut(shmevent.ReservedGroupCluster, "renamed", false)
 	if err != nil {
-		t.Fatalf("EncodeGroupPutPayload: %v", err)
+		t.Fatalf("NewGroupPut: %v", err)
 	}
-	resp = call(shmevent.Msg{
-		EventType: shmevent.EventCatalogPut,
-		Value:     shmevent.EncodeCatalogPayload(shmevent.KindGroup, reservedPayload),
-		ID:        4,
-	})
-	if resp.EventType != shmevent.EventError {
-		t.Fatal("catalog_put against a reserved group id unexpectedly succeeded")
+	reservedMsg.SetId(4)
+	resp = call(reservedMsg)
+	if resp.Which() != shmevent.Event_Which_error {
+		t.Fatal("group_put against a reserved group id unexpectedly succeeded")
 	}
-	if !strings.Contains(string(resp.Value), "reserved") {
-		t.Fatalf("reserved-group-id rejection had the wrong message: %s", resp.Value)
+	if !strings.Contains(mustErrMessage(t, resp), "reserved") {
+		t.Fatalf("reserved-group-id rejection had the wrong message: %s", mustErrMessage(t, resp))
 	}
 
-	// Deleting through the envelope must remove the same record.
-	resp = call(shmevent.Msg{
-		EventType: shmevent.EventCatalogDelete,
-		Value:     shmevent.EncodeCatalogPayload(shmevent.KindGroup, []byte("grp-via-envelope")),
-		ID:        5,
-	})
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("catalog_delete(KindGroup) rejected: %s", resp.Value)
+	// Deleting must remove the same record.
+	deleteMsg, err := shmevent.NewGroupDelete("grp-via-envelope")
+	if err != nil {
+		t.Fatalf("NewGroupDelete: %v", err)
 	}
-	getResp = call(shmevent.Msg{EventType: shmevent.EventGetField, Value: groupKey, ID: 6})
-	if getResp.EventType != shmevent.EventError {
+	deleteMsg.SetId(5)
+	resp = call(deleteMsg)
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("group_delete rejected: %s", mustErrMessage(t, resp))
+	}
+	getMsg2, err := shmevent.NewGetFieldByKey(groupKey)
+	if err != nil {
+		t.Fatalf("NewGetFieldByKey: %v", err)
+	}
+	getMsg2.SetId(6)
+	getResp = call(getMsg2)
+	if getResp.Which() != shmevent.Event_Which_error {
 		t.Fatal("group deleted via envelope is still readable")
 	}
 }
 
-// TestCatalogEnvelopeCommandPutAcceptsSpecOverPlainValueSize proves
-// EventCatalogPut carries EventCommandPut's own KVValueSize (4KB) ceiling,
+// TestCatalogEnvelopeCommandPutAcceptsSpecOverPlainValueSize used to prove
+// EventCatalogPut carried EventCommandPut's own KVValueSize (4KB) ceiling,
 // not the generic 512-byte ValueSize -- a command's form spec is
-// caller-authored content routinely bigger than 512 bytes, and this
-// envelope defaulting to the narrower ceiling would silently reject a
-// spec that fit fine through the direct EventCommandPut it replaces (see
-// valueSizeFor's EventCatalogPut case in pkg/shmevent/event.go).
+// caller-authored content routinely bigger than 512 bytes. Both ceilings
+// (shmevent.ValueSize/KVValueSize) are gone entirely in the capnp rewrite --
+// there is no artificial per-event size ceiling anymore, generic or
+// per-kind -- so the "which ceiling applies" question this test asked no
+// longer has an answer to check. What's still worth keeping is the
+// underlying behavior: a spec well over the old 512-byte ValueSize (1500
+// bytes, mirroring this test's original fixture) must still round-trip
+// intact through commandPut.
 func TestCatalogEnvelopeCommandPutAcceptsSpecOverPlainValueSize(t *testing.T) {
 	t.Parallel()
 
@@ -162,47 +160,42 @@ func TestCatalogEnvelopeCommandPutAcceptsSpecOverPlainValueSize(t *testing.T) {
 
 	call := func(m shmevent.Msg) shmevent.Msg {
 		t.Helper()
-		buf, err := shmevent.Encode(m, leader.ed25519Priv)
-		if err != nil {
-			t.Fatalf("encode: %v", err)
-		}
-		decoded, crc, sig, err := shmevent.Decode(buf)
-		if err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		return leader.handleShmEvent(ctx, decoded, crc, sig, leader.localCaller())
+		return callLocal(t, ctx, leader, m, leader.ed25519Priv)
 	}
 
-	// Bigger than plain ValueSize (512) but within KVValueSize (4096) --
-	// exactly the range that only a correct per-kind ceiling accepts.
 	spec := make([]byte, 1500)
 	for i := range spec {
 		spec[i] = byte('a' + i%26)
 	}
-	putPayload, err := shmevent.EncodeCommandPutPayloadWithSpec("cmd-big-spec", "Big Spec Command", []byte("peer1"), spec)
+	putMsg, err := shmevent.NewCommandPutWithSpec("cmd-big-spec", "Big Spec Command", "peer1", string(spec))
 	if err != nil {
-		t.Fatalf("EncodeCommandPutPayloadWithSpec: %v", err)
+		t.Fatalf("NewCommandPutWithSpec: %v", err)
 	}
-	resp := call(shmevent.Msg{
-		EventType: shmevent.EventCatalogPut,
-		Value:     shmevent.EncodeCatalogPayload(shmevent.KindCommand, putPayload),
-		ID:        1,
-	})
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("catalog_put(KindCommand) with a %d-byte spec rejected: %s", len(spec), resp.Value)
+	putMsg.SetId(1)
+	resp := call(putMsg)
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("command_put with a %d-byte spec rejected: %s", len(spec), mustErrMessage(t, resp))
 	}
 
 	commandKey := shmevent.CommandKey([]byte("cmd-big-spec"))
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		getResp := call(shmevent.Msg{EventType: shmevent.EventGetField, Value: commandKey, ID: 2})
-		if getResp.EventType != shmevent.EventError {
-			if _, _, gotSpec, err := shmevent.DecodeCommandPayloadFull(getResp.Value); err == nil && string(gotSpec) == string(spec) {
-				break
+		getMsg, err := shmevent.NewGetFieldByKey(commandKey)
+		if err != nil {
+			t.Fatalf("NewGetFieldByKey: %v", err)
+		}
+		getMsg.SetId(2)
+		getResp := call(getMsg)
+		if getResp.Which() != shmevent.Event_Which_error {
+			gotValue, err := getResp.GetFieldByKey().Value()
+			if err == nil {
+				if _, _, gotSpec, err := shmevent.DecodeCommandPayloadFull(gotValue); err == nil && string(gotSpec) == string(spec) {
+					break
+				}
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("command with a large spec, put via the catalog envelope, never became readable with an intact spec")
+			t.Fatal("command with a large spec never became readable with an intact spec")
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

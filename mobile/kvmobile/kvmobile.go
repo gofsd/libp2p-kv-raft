@@ -705,7 +705,7 @@ func RequestPermit(kind, targetPeerID, metadata string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
-	if err := sess.RequestPermit(ctx, k, []byte(targetPeerID), []byte(metadata)); err != nil {
+	if err := sess.RequestPermit(ctx, k, []byte(targetPeerID), metadata); err != nil {
 		return fmt.Errorf("kvmobile: request permit: %w", err)
 	}
 	return nil
@@ -1071,32 +1071,49 @@ func SendEvent(eventJSON string) (string, error) {
 	if err := json.Unmarshal([]byte(eventJSON), &ev); err != nil {
 		return "", fmt.Errorf("kvmobile: parse event json: %w", err)
 	}
+	if ev.ID == 0 {
+		ev.ID = randomID()
+	}
+	msg, err := ev.ToMsg()
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: %w", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
 
 	var priv shmevent.PrivateKey
-	if shmevent.RequiresSignature(ev.EventType) {
-		keyResp, err := ipc.Call(ctx, id, shmevent.Msg{EventType: shmevent.EventGetPrivateKey, ID: randomID()}, nil)
+	if shmevent.RequiresSignature(msg.Which()) {
+		keyMsg, err := shmevent.NewGetPrivateKey()
 		if err != nil {
 			return "", fmt.Errorf("kvmobile: fetch signing key: %w", err)
 		}
-		if keyResp.EventType == shmevent.EventError {
-			return "", fmt.Errorf("kvmobile: fetch signing key: %s", keyResp.Value)
+		keyMsg.SetId(randomID())
+		keyResp, err := ipc.Call(ctx, id, keyMsg, nil)
+		if err != nil {
+			return "", fmt.Errorf("kvmobile: fetch signing key: %w", err)
 		}
-		priv = shmevent.PrivateKey(keyResp.Value)
+		if keyResp.Which() == shmevent.Event_Which_error {
+			errMsg, _ := keyResp.Error().Message_()
+			return "", fmt.Errorf("kvmobile: fetch signing key: %s", errMsg)
+		}
+		privKey, err := keyResp.GetPrivateKey().PrivKey()
+		if err != nil {
+			return "", fmt.Errorf("kvmobile: fetch signing key: %w", err)
+		}
+		priv = shmevent.PrivateKey(privKey)
 	}
 
-	msg := ev.ToMsg()
-	if msg.ID == 0 {
-		msg.ID = randomID()
-	}
 	resp, err := ipc.Call(ctx, id, msg, priv)
 	if err != nil {
 		return "", fmt.Errorf("kvmobile: send event: %w", err)
 	}
 
-	out, err := json.Marshal(e2edata.EventFromMsg(resp))
+	respEv, err := e2edata.EventFromMsg(resp)
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: decode response: %w", err)
+	}
+	out, err := json.Marshal(respEv)
 	if err != nil {
 		return "", fmt.Errorf("kvmobile: encode response: %w", err)
 	}

@@ -19,18 +19,23 @@ func FuzzDecode(f *testing.F) {
 		f.Fatal(err)
 	}
 
-	seed := func(eventType uint8, sourceID, destID uint16, value []byte, id uint16) {
-		buf, err := Encode(Msg{EventType: eventType, SourceID: sourceID, DestinationID: destID, Value: value, ID: id}, priv)
+	seed := func(build func() (Msg, error), id uint16) {
+		m, err := build()
+		if err != nil {
+			f.Fatal(err)
+		}
+		m.SetId(id)
+		buf, err := Encode(m, priv)
 		if err != nil {
 			f.Fatal(err)
 		}
 		f.Add(buf)
 	}
-	seed(EventSetField, 42, 0, []byte("world"), 7)
-	seed(EventGetField, 0, 0, []byte("hello"), 1)
-	seed(EventChannelOpen, 0, 0, []byte("12D3KooWnotarealpeeridatall"), 0)
-	seed(EventChannelSend, 0, 0, nil, 0)
-	seed(EventGetPublicKey, 0, 0, nil, 0)
+	seed(func() (Msg, error) { return NewSetField(42, []byte("world")) }, 7)
+	seed(func() (Msg, error) { return NewGetFieldByKey([]byte("hello")) }, 1)
+	seed(func() (Msg, error) { return NewChannelOpen("12D3KooWnotarealpeeridatall") }, 0)
+	seed(func() (Msg, error) { return NewChannelSend("chan-1", ChannelPurposeData, nil) }, 0)
+	seed(func() (Msg, error) { return NewGetPublicKey() }, 0)
 
 	// Non-capnp garbage and edge-length inputs -- not valid encodings at
 	// all, exactly what a hostile or simply broken peer might actually
@@ -61,7 +66,11 @@ func FuzzVerify(f *testing.F) {
 	if err != nil {
 		f.Fatal(err)
 	}
-	m := Msg{EventType: EventSetField, Value: []byte("world"), ID: 7}
+	m, err := NewSetField(42, []byte("world"))
+	if err != nil {
+		f.Fatal(err)
+	}
+	m.SetId(7)
 	buf, err := Encode(m, priv)
 	if err != nil {
 		f.Fatal(err)

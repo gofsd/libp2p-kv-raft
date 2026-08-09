@@ -7,7 +7,6 @@ import (
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/kvctl"
 	"github.com/gofsd/libp2p-kv-raft/pkg/registry"
-	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
 
 // TestSubmitCommandIndexesExecutionsByPeer drives SubmitCommand and
@@ -211,9 +210,9 @@ func TestLatestCommandLog(t *testing.T) {
 
 // TestLatestCommandLogReturnsOutputIntact checks a normal-sized
 // AppendCommandLog entry round-trips through LatestCommandLog intact --
-// see mobile/kvmobile/dispatch_test.go's identical test for why this
-// doesn't need its own truncation logic (shmevent.ValueSize already
-// bounds every write).
+// see mobile/kvmobile/dispatch_test.go's identical test, and
+// TestAppendCommandLogHandlesLargeEntry above for the same guarantee at a
+// much larger size.
 func TestLatestCommandLogReturnsOutputIntact(t *testing.T) {
 	root := repoRoot(t)
 	home := t.TempDir()
@@ -247,10 +246,17 @@ func TestLatestCommandLogReturnsOutputIntact(t *testing.T) {
 	})
 }
 
-// TestAppendCommandLogRejectsOversizedEntry checks AppendCommandLog
-// surfaces a clear error for a narrative too large for
-// shmevent.ValueSize, rather than silently accepting or corrupting it.
-func TestAppendCommandLogRejectsOversizedEntry(t *testing.T) {
+// TestAppendCommandLogHandlesLargeEntry checks a large AppendCommandLog
+// narrative round-trips through LatestCommandLog intact rather than being
+// silently truncated or corrupted. This used to be
+// TestAppendCommandLogRejectsOversizedEntry: the old wire format enforced a
+// fixed per-event ceiling (shmevent.ValueSize/KVValueSize/ChannelValueSize),
+// and this test drove AppendCommandLog past it to check that was rejected
+// cleanly. The new capnp-based Msg union has no such ceiling at all, so
+// there's nothing left to reject at write time -- the closest surviving
+// assertion is that a write comfortably bigger than the old 4KB KVValueSize
+// tier still isn't lost or mangled.
+func TestAppendCommandLogHandlesLargeEntry(t *testing.T) {
 	root := repoRoot(t)
 	home := t.TempDir()
 	t.Setenv(registry.EnvHome, home)
@@ -265,12 +271,19 @@ func TestAppendCommandLogRejectsOversizedEntry(t *testing.T) {
 		t.Fatalf("AddNode: %v", err)
 	}
 
-	// Sized against KVValueSize, not ValueSize: EventLogAppend moved to the
-	// larger tier so a journal entry can hold a real execution result rather
-	// than only a one-line narration. The ceiling moved; that there *is* one,
-	// enforced at write time, did not.
-	hugeOutput := strings.Repeat("x", shmevent.KVValueSize*4)
-	if err := kvctl.AppendCommandLog("", "instance-oversized", nil, hugeOutput); err == nil {
-		t.Fatalf("AppendCommandLog with oversized narrative: want error, got none")
+	// 16KB -- 4x the old KVValueSize (4096 bytes) tier this test used to
+	// drive AppendCommandLog past to trigger a rejection.
+	const largeSize = 4096 * 4
+	largeOutput := strings.Repeat("x", largeSize)
+	const instanceID = "instance-large"
+	if err := kvctl.AppendCommandLog("", instanceID, nil, largeOutput); err != nil {
+		t.Fatalf("AppendCommandLog with large narrative: %v", err)
 	}
+	pollUntilTrue(t, 10*time.Second, func() (bool, error) {
+		rec, err := kvctl.LatestCommandLog(instanceID)
+		if err != nil {
+			return false, err
+		}
+		return rec.Narrative == largeOutput, nil
+	})
 }

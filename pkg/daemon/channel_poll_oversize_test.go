@@ -18,10 +18,10 @@ import (
 // 256KB) on the wire -- that is the whole point of the data plane, and
 // pumpChannelUpload really does forward chunks that size. Every such chunk
 // is also pushed into the session's poll inbox (pumpChannelReads calls
-// pushChunk unconditionally), and EventChannelPoll hands one whole inbox
-// entry back per call. But a poll *response* is an ordinary shmevent.Msg,
-// so its Value is bounded by valueSizeFor(EventChannelPoll) =
-// ChannelValueSize, 16KB.
+// pushChunk unconditionally), and channelPoll hands one whole inbox entry
+// back per call. But a poll *response* still has to survive the pkg/ipc
+// transport's own encode, bounded by maxPollChunkSize (16KB, see that
+// constant's doc comment in daemon.go).
 //
 // So a peer sending a chunk between those two limits produces a response
 // its own transport cannot encode: pkg/ipc.sendResponse fails with "value
@@ -50,19 +50,22 @@ func TestChannelPollDeliversAChunkTheDataPlaneAllows(t *testing.T) {
 	connectPeers(t, ctx, a, b)
 	grantChannelAccess(t, a, b)
 
-	openResp := callLocal(t, ctx, a, shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: []byte(b.peerID), ID: 1}, a.ed25519Priv)
-	if openResp.EventType == shmevent.EventError {
-		t.Fatalf("channel_open rejected: %s", openResp.Value)
+	openResp := callLocal(t, ctx, a, channelOpenMsg(t, b.peerID, 1), a.ed25519Priv)
+	if openResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("channel_open rejected: %s", mustErrMessage(t, openResp))
 	}
-	aChannelID := string(openResp.Value)
+	aChannelID := channelIDFromOpenResp(t, openResp)
 
 	// Sent through dispatchChannelSend directly, not a local IPC call: this
 	// is the same sess.write pumpChannelUpload uses for a chunk that came
 	// off a chandata ring, and it is the only way to put a chunk this size
-	// on the wire (an IPC EventChannelSend would be capped by its own
-	// encode long before reaching here). A local caller cannot cause this;
-	// a peer can, which is the point.
-	const oversize = shmevent.ChannelValueSize + 1
+	// on the wire (an IPC channelSend would be capped by its own encode
+	// long before reaching here). A local caller cannot cause this; a peer
+	// can, which is the point. maxPollChunkSize (unexported, this package)
+	// is channelPoll's own real ceiling now -- the old shared
+	// shmevent.ChannelValueSize constant this test used to size against is
+	// gone entirely.
+	const oversize = maxPollChunkSize + 1
 	big := make([]byte, oversize)
 	for i := range big {
 		big[i] = byte('a' + i%26)
@@ -87,10 +90,15 @@ func TestChannelPollDeliversAChunkTheDataPlaneAllows(t *testing.T) {
 	deadline := time.After(20 * time.Second)
 	var sawOversizeReport bool
 	for {
-		resp := callLocal(t, ctx, b, shmevent.Msg{EventType: shmevent.EventChannelPoll, Value: []byte(bChannelID), ID: 2}, b.ed25519Priv)
-		if resp.EventType == shmevent.EventError {
-			if !strings.Contains(string(resp.Value), "larger than a poll response can carry") {
-				t.Fatalf("channel_poll failed for an unexpected reason: %s", resp.Value)
+		pollMsg, err := shmevent.NewChannelPoll(bChannelID)
+		if err != nil {
+			t.Fatalf("NewChannelPoll: %v", err)
+		}
+		pollMsg.SetId(2)
+		resp := callLocal(t, ctx, b, pollMsg, b.ed25519Priv)
+		if resp.Which() == shmevent.Event_Which_error {
+			if !strings.Contains(mustErrMessage(t, resp), "larger than a poll response can carry") {
+				t.Fatalf("channel_poll failed for an unexpected reason: %s", mustErrMessage(t, resp))
 			}
 			sawOversizeReport = true
 			continue
@@ -98,9 +106,11 @@ func TestChannelPollDeliversAChunkTheDataPlaneAllows(t *testing.T) {
 		if _, err := shmevent.Encode(resp, b.ed25519Priv); err != nil {
 			t.Fatalf("channel_poll produced a response its own transport cannot encode: %v -- see this test's doc comment", err)
 		}
-		status, _, chunk, err := shmevent.DecodeChannelPollResponse(resp.Value)
+		grp := resp.ChannelPoll()
+		status := grp.Status()
+		chunk, err := grp.Chunk()
 		if err != nil {
-			t.Fatalf("DecodeChannelPollResponse: %v", err)
+			t.Fatalf("ChannelPoll chunk: %v", err)
 		}
 		if status == shmevent.ChannelPollChunk {
 			if string(chunk) == string(small) {

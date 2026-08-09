@@ -2,9 +2,10 @@ package shmevent
 
 import (
 	"crypto/ed25519"
-	"encoding/binary"
 	"fmt"
 	"hash/crc32"
+
+	capnp "capnproto.org/go/capnp/v3"
 )
 
 // PrivateKey and PublicKey are stdlib crypto/ed25519's types, not
@@ -19,104 +20,86 @@ type (
 	PublicKey  = ed25519.PublicKey
 )
 
-// canonicalWidth returns the width canonicalPayload zero-pads Value to.
-// It is deliberately *not* just valueSizeFor: this width is part of the
-// wire contract, so raising an event's ceiling must not change how a
-// message that would have fit the old ceiling gets checksummed and
-// signed.
-//
-// Every peer that ever signs or verifies has to agree on it byte for
-// byte, and peers do not upgrade together -- a deployed relay, an
-// installed Android build, an open browser tab and this process can all
-// be running different builds of this repo at once. When
-// EventSetKey/EventSetField/EventSet/EventGetField/EventTxn/
-// EventCommandPut/EventStationPut/EventLogAppend were raised from
-// ValueSize to KVValueSize, keying the width off the new ceiling silently
-// changed the signed bytes of every one of those events, and every peer
-// on an older build started rejecting them as CRC failures -- with no
-// error surfaced, since a message that fails to decode gets no response
-// at all (see pkg/daemon.handleClientStream). Found live against the
-// deployed relay in configs/bootstrap-nodes.json, which answered
-// zero-Value events normally and went silent on every raised one.
-//
-// So: a value that fits ValueSize is always padded to ValueSize, the
-// width every build of this project has ever used for it. Only a value
-// that genuinely needs the larger ceiling uses it -- such a message could
-// not have existed before the ceiling was raised, so there is no older
-// peer it could be incompatible with. Channel events keep
-// ChannelValueSize unconditionally, which is likewise the only width they
-// have ever used.
-//
-// web-app/src/shmevent/mod.rs's canonical_payload must implement this
-// identically -- nothing can enforce that from Go.
-func canonicalWidth(eventType uint8, valueLen int) int {
-	if eventType == EventChannelSend || eventType == EventChannelPoll {
-		return ChannelValueSize
+// marshalWithCrcAndEmptySig returns m's canonical capnp encoding
+// (capnp.Canonicalize, not a plain Message.Marshal) with crc32
+// temporarily set to crc and signature temporarily cleared, then
+// restores both fields to whatever they held before returning -- the one
+// primitive crc32Of/signedPayload below share. Canonicalization -- not
+// signing/verifying the marshaled struct bytes directly, an earlier
+// design here did -- matters because m's exact segment layout depends on
+// *how* it was built (a fresh NewXxx constructor vs. Decode's
+// unmarshal-then-copy, see event.go's writableCopy) even when the
+// logical field values are identical; two differently-built messages
+// with the same fields must still sign/verify identically, which only a
+// canonical encoding guarantees ("The result will be identical for
+// equivalent structs", see capnp.Canonicalize's own doc comment).
+func marshalWithCrcAndEmptySig(m Msg, crc uint32) (raw []byte, err error) {
+	savedCRC := m.Crc32()
+	savedSig, err := m.Signature()
+	if err != nil {
+		return nil, fmt.Errorf("shmevent: signature: %w", err)
 	}
-	if valueLen <= ValueSize {
-		return ValueSize
+	savedSigCopy := append([]byte(nil), savedSig...)
+	defer func() {
+		m.SetCrc32(savedCRC)
+		if sigErr := m.SetSignature(savedSigCopy); sigErr != nil && err == nil {
+			err = sigErr
+			raw = nil
+		}
+	}()
+
+	m.SetCrc32(crc)
+	if err := m.SetSignature(nil); err != nil {
+		return nil, fmt.Errorf("shmevent: clear signature: %w", err)
 	}
-	return valueSizeFor(eventType)
+	raw, err = capnp.Canonicalize(capnp.Struct(m))
+	if err != nil {
+		return nil, fmt.Errorf("shmevent: canonicalize: %w", err)
+	}
+	return raw, nil
 }
 
-// canonicalPayload returns the fixed-width byte sequence CRC32 and the
-// Ed25519 signature are computed over: event(1) || sourceId_BE(2) ||
-// destinationId_BE(2) || value, zero-padded/truncated to
-// canonicalWidth(m.EventType, len(m.Value)) || id_BE(2) -- see
-// api/shmevent.capnp's doc comment. The width is unambiguous to a
-// verifier for the reason valueSizeFor's own doc comment gives (the event
-// type sits at byte 0, ahead of Value) plus one more: Value's real length
-// is known from the decoded message itself, which is what picks between
-// the historical width and a raised ceiling.
-//
-// This is the *logical* field values, deliberately not capnp's own
-// encoded bytes: signing the transport encoding directly would make the
-// signature fragile to encoding-level changes (segment layout, padding)
-// that don't change the message's meaning.
-func canonicalPayload(m Msg) []byte {
-	vs := canonicalWidth(m.EventType, len(m.Value))
-	buf := make([]byte, 1+2+2+vs+2)
-	buf[0] = m.EventType
-	binary.BigEndian.PutUint16(buf[1:3], m.SourceID)
-	binary.BigEndian.PutUint16(buf[3:5], m.DestinationID)
-	copy(buf[5:5+vs], m.Value) // zero-padded; copy truncates if longer, but Encode already rejects that
-	binary.BigEndian.PutUint16(buf[5+vs:], m.ID)
-	return buf
+// crc32Of computes the CRC-32 (IEEE polynomial) over m's marshaled bytes
+// with crc32 zeroed and signature cleared -- see api/shmevent.capnp's doc
+// comment ("crc32 covers every other field except itself and signature").
+func crc32Of(m Msg) (uint32, error) {
+	raw, err := marshalWithCrcAndEmptySig(m, 0)
+	if err != nil {
+		return 0, err
+	}
+	return crc32.ChecksumIEEE(raw), nil
 }
 
-func crc32Of(m Msg) uint32 {
-	return crc32.ChecksumIEEE(canonicalPayload(m))
+// signedPayload is what Sign/Verify actually operate on: m's marshaled
+// bytes with crc32 set to crc and signature cleared -- see
+// api/shmevent.capnp's doc comment ("a real Ed25519 signature ... plus
+// the crc32 value itself").
+func signedPayload(m Msg, crc uint32) ([]byte, error) {
+	return marshalWithCrcAndEmptySig(m, crc)
 }
 
-// signedPayload is what Sign/Verify actually operate on: the CRC-covered
-// payload plus the CRC itself, big-endian -- see api/shmevent.capnp's doc
-// comment ("a real Ed25519 signature over the same payload, checked
-// against the sender's public key... plus the crc32 value itself").
-func signedPayload(m Msg, crc uint32) []byte {
-	payload := canonicalPayload(m)
-	out := make([]byte, len(payload)+4)
-	copy(out, payload)
-	binary.BigEndian.PutUint32(out[len(payload):], crc)
-	return out
-}
-
-// Sign signs ev (whose Crc32 must already be crc) with priv, returning the
+// Sign signs m (whose Crc32 must already be crc) with priv, returning the
 // 64-byte signature to place in Event.signature. priv may be nil only for
-// EventGetPublicKey/EventGetPrivateKey requests -- the two bootstrap
-// events a node accepts unsigned (see this package's doc comment) -- in
-// which case Sign returns a zero-filled signature rather than an error, so
-// Encode's call site doesn't need a special case.
+// getPublicKey/getPrivateKey requests -- the two bootstrap events a node
+// accepts unsigned (see this package's doc comment) -- in which case Sign
+// returns a zero-filled signature rather than an error, so Encode's call
+// site doesn't need a special case.
 func Sign(priv PrivateKey, m Msg, crc uint32) ([]byte, error) {
 	if priv == nil {
-		if m.EventType == EventGetPublicKey || m.EventType == EventGetPrivateKey {
+		w := m.Which()
+		if w == Event_Which_getPublicKey || w == Event_Which_getPrivateKey {
 			return make([]byte, SignatureSize), nil
 		}
-		return nil, fmt.Errorf("shmevent: signing key required for event %s", EventName(m.EventType))
+		return nil, fmt.Errorf("shmevent: signing key required for event %s", EventName(w))
 	}
 	if len(priv) != ed25519.PrivateKeySize {
 		return nil, fmt.Errorf("shmevent: private key must be %d bytes, got %d", ed25519.PrivateKeySize, len(priv))
 	}
-	return ed25519.Sign(priv, signedPayload(m, crc)), nil
+	payload, err := signedPayload(m, crc)
+	if err != nil {
+		return nil, err
+	}
+	return ed25519.Sign(priv, payload), nil
 }
 
 // Verify checks sig against m/crc and pub. Returns an error describing the
@@ -128,14 +111,18 @@ func Verify(pub PublicKey, m Msg, crc uint32, sig []byte) error {
 	if len(sig) != SignatureSize {
 		return fmt.Errorf("shmevent: signature must be %d bytes, got %d", SignatureSize, len(sig))
 	}
-	if !ed25519.Verify(pub, signedPayload(m, crc), sig) {
-		return fmt.Errorf("shmevent: signature verification failed for event %s (id %d)", EventName(m.EventType), m.ID)
+	payload, err := signedPayload(m, crc)
+	if err != nil {
+		return err
+	}
+	if !ed25519.Verify(pub, payload, sig) {
+		return fmt.Errorf("shmevent: signature verification failed for event %s (id %d)", EventName(m.Which()), m.Id())
 	}
 	return nil
 }
 
-// RequiresSignature reports whether e is one of the two bootstrap events a
+// RequiresSignature reports whether w is one of the two bootstrap events a
 // node accepts unsigned -- see this package's doc comment.
-func RequiresSignature(e uint8) bool {
-	return e != EventGetPublicKey && e != EventGetPrivateKey
+func RequiresSignature(w Event_Which) bool {
+	return w != Event_Which_getPublicKey && w != Event_Which_getPrivateKey
 }

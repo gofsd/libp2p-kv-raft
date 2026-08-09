@@ -51,97 +51,111 @@ func DecodeExecInviteRecord(payload []byte) (commandID, inputsJSON string, err e
 	return commandID, string(payload[off:]), nil
 }
 
-// EncodeExecInviteCreatePayload packs a freshly generated token (see
-// ExecInviteTokenSize) and the commandID+inputsJSON it should grant into a
-// single EventExecInviteCreate Msg.Value: token first (fixed size, no
-// length prefix needed), then EncodeExecInviteRecord's own encoding
-// trailing.
-func EncodeExecInviteCreatePayload(token []byte, commandID, inputsJSON string) ([]byte, error) {
+// NewExecInviteCreate builds an execInviteCreate Msg: mints a one-time
+// execution-invite token bound to commandID/inputsJSON.
+func NewExecInviteCreate(token []byte, commandID, inputsJSON string) (Msg, error) {
 	if len(token) != ExecInviteTokenSize {
-		return nil, fmt.Errorf("shmevent: exec invite token must be %d bytes, got %d", ExecInviteTokenSize, len(token))
+		return Msg{}, fmt.Errorf("shmevent: exec invite token must be %d bytes, got %d", ExecInviteTokenSize, len(token))
 	}
-	record := EncodeExecInviteRecord(commandID, inputsJSON)
-	buf := make([]byte, ExecInviteTokenSize+len(record))
-	copy(buf, token)
-	copy(buf[ExecInviteTokenSize:], record)
-	return buf, nil
-}
-
-// DecodeExecInviteCreatePayload is the inverse of
-// EncodeExecInviteCreatePayload.
-func DecodeExecInviteCreatePayload(payload []byte) (token []byte, commandID, inputsJSON string, err error) {
-	if len(payload) < ExecInviteTokenSize {
-		return nil, "", "", fmt.Errorf("shmevent: exec invite create payload too short: %d bytes", len(payload))
-	}
-	token = payload[:ExecInviteTokenSize]
-	commandID, inputsJSON, err = DecodeExecInviteRecord(payload[ExecInviteTokenSize:])
+	m, err := newMsg()
 	if err != nil {
-		return nil, "", "", err
+		return Msg{}, err
 	}
-	return token, commandID, inputsJSON, nil
-}
-
-// EncodeExecInviteRevokePayload packs token (the invite to revoke) as an
-// EventExecInviteRevoke Msg.Value -- the whole payload is the token, no
-// other field, mirroring EncodeJoinInviteRevokePayload.
-func EncodeExecInviteRevokePayload(token []byte) []byte {
-	buf := make([]byte, len(token))
-	copy(buf, token)
-	return buf
-}
-
-// DecodeExecInviteRevokePayload is the inverse of
-// EncodeExecInviteRevokePayload.
-func DecodeExecInviteRevokePayload(payload []byte) (token []byte, err error) {
-	if len(payload) != ExecInviteTokenSize {
-		return nil, fmt.Errorf("shmevent: exec invite revoke payload must be %d bytes, got %d", ExecInviteTokenSize, len(payload))
+	m.SetExecInviteCreate()
+	grp := m.ExecInviteCreate()
+	if err := grp.SetToken(token); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_exec_invite_create: %w", err)
 	}
-	return payload, nil
+	if err := grp.SetCommandId(commandID); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_exec_invite_create: %w", err)
+	}
+	if err := grp.SetInputsJson(inputsJSON); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_exec_invite_create: %w", err)
+	}
+	return m, nil
 }
 
-// EncodeExecInviteRedeemRequest packs sourceAddr and token into a single
-// EventExecInviteRedeem Msg.Value -- this is the *local-only* shmring
-// payload a redeeming peer's own CLI sends to its own daemon ("dial
-// sourceAddr and redeem token"), distinct from the signed, self-contained
-// message that daemon then sends over the network (see
-// EncodeExecuteNotification, reused as-is for that leg). token is
-// fixed-size so it can go first with no length prefix; sourceAddr trails
-// as the rest of the buffer.
-func EncodeExecInviteRedeemRequest(sourceAddr string, token []byte) ([]byte, error) {
+// NewExecInviteRevoke builds an execInviteRevoke Msg: invalidates a
+// still-unredeemed execution-invite token.
+func NewExecInviteRevoke(token []byte) (Msg, error) {
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
+	}
+	m.SetExecInviteRevoke()
+	if err := m.ExecInviteRevoke().SetToken(token); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_exec_invite_revoke: %w", err)
+	}
+	return m, nil
+}
+
+// NewExecInviteRedeem builds an execInviteRedeem request Msg: local-only,
+// tells this node's own daemon to dial sourceAddr and redeem token there
+// under this node's own identity. The response reuses this same variant
+// with instanceId filled in.
+func NewExecInviteRedeem(sourceAddr string, token []byte) (Msg, error) {
 	if len(token) != ExecInviteTokenSize {
-		return nil, fmt.Errorf("shmevent: exec invite token must be %d bytes, got %d", ExecInviteTokenSize, len(token))
+		return Msg{}, fmt.Errorf("shmevent: exec invite token must be %d bytes, got %d", ExecInviteTokenSize, len(token))
 	}
-	buf := make([]byte, ExecInviteTokenSize+len(sourceAddr))
-	copy(buf, token)
-	copy(buf[ExecInviteTokenSize:], sourceAddr)
-	return buf, nil
-}
-
-// DecodeExecInviteRedeemRequest is the inverse of
-// EncodeExecInviteRedeemRequest.
-func DecodeExecInviteRedeemRequest(payload []byte) (sourceAddr string, token []byte, err error) {
-	if len(payload) < ExecInviteTokenSize {
-		return "", nil, fmt.Errorf("shmevent: exec invite redeem request too short: %d bytes", len(payload))
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
 	}
-	return string(payload[ExecInviteTokenSize:]), payload[:ExecInviteTokenSize], nil
+	m.SetExecInviteRedeem()
+	grp := m.ExecInviteRedeem()
+	if err := grp.SetSourceAddr(sourceAddr); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_exec_invite_redeem: %w", err)
+	}
+	if err := grp.SetToken(token); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_exec_invite_redeem: %w", err)
+	}
+	return m, nil
 }
 
-// EncodeExecTicketPayload packs sourceAddr and token into a single
-// EventExecTicket Msg.Value -- byte-identical to
-// EncodeExecInviteRedeemRequest (same two fields, same order), just under
-// a name that reads correctly at the ticket call site, the same way
-// EncodeListRangeQuery is EncodeSetPayload under a different name. Kept
-// as a distinct wrapper rather than callers reusing
-// EncodeExecInviteRedeemRequest directly: that function's own doc
-// comment specifically describes the *local-only shmring* payload a
-// redeeming peer's CLI sends its own daemon, a different call site with
-// different trust assumptions than a signed, self-contained ticket
-// someone else's device produced.
-func EncodeExecTicketPayload(sourceAddr string, token []byte) ([]byte, error) {
-	return EncodeExecInviteRedeemRequest(sourceAddr, token)
+// NewExecInviteRedeemNotification builds an execInviteRedeem Msg in its
+// network-leg shape: redeemerPeerId/token set, sourceAddr/instanceId left
+// empty -- what pkg/daemon's dialAndRedeemExecInvite actually places on
+// the wire as ExecInviteRedeemProtocolID's request, naming this node's
+// own identity directly since the receiver has no way to look up a
+// registry entry across processes. The response on that leg is a bare
+// text line, not a shmevent Msg at all.
+func NewExecInviteRedeemNotification(redeemerPeerID string, token []byte) (Msg, error) {
+	if len(token) != ExecInviteTokenSize {
+		return Msg{}, fmt.Errorf("shmevent: exec invite token must be %d bytes, got %d", ExecInviteTokenSize, len(token))
+	}
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
+	}
+	m.SetExecInviteRedeem()
+	grp := m.ExecInviteRedeem()
+	if err := grp.SetRedeemerPeerId(redeemerPeerID); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_exec_invite_redeem_notification: %w", err)
+	}
+	if err := grp.SetToken(token); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_exec_invite_redeem_notification: %w", err)
+	}
+	return m, nil
 }
 
-// DecodeExecTicketPayload is the inverse of EncodeExecTicketPayload.
-func DecodeExecTicketPayload(payload []byte) (sourceAddr string, token []byte, err error) {
-	return DecodeExecInviteRedeemRequest(payload)
+// NewExecTicket builds an execTicket Msg: an offline signed-ticket wire
+// format (never dispatched live) -- see that variant's doc comment in
+// api/shmevent.capnp.
+func NewExecTicket(sourceAddr string, token []byte) (Msg, error) {
+	if len(token) != ExecInviteTokenSize {
+		return Msg{}, fmt.Errorf("shmevent: exec invite token must be %d bytes, got %d", ExecInviteTokenSize, len(token))
+	}
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
+	}
+	m.SetExecTicket()
+	grp := m.ExecTicket()
+	if err := grp.SetSourceAddr(sourceAddr); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_exec_ticket: %w", err)
+	}
+	if err := grp.SetToken(token); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_exec_ticket: %w", err)
+	}
+	return m, nil
 }

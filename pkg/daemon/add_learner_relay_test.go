@@ -152,29 +152,30 @@ func TestAddLearnerThroughRelay(t *testing.T) {
 	// connection's own libp2p-authenticated public key (remoteCaller),
 	// never a key it handed out itself.
 	const setKeyID = 2
-	setKeyResp, err := callClientProtocol(ctx, browser.Host, leaderPeerID, shmevent.Msg{
-		EventType: shmevent.EventSetKey,
-		Value:     []byte(browser.Host.ID().String()),
-		ID:        setKeyID,
-	}, browserPriv)
+	setKeyMsg, err := shmevent.NewSetKey([]byte(browser.Host.ID().String()))
+	if err != nil {
+		t.Fatalf("NewSetKey: %v", err)
+	}
+	setKeyMsg.SetId(setKeyID)
+	setKeyResp, err := callClientProtocol(ctx, browser.Host, leaderPeerID, setKeyMsg, browserPriv)
 	if err != nil {
 		t.Fatalf("set_key: %v", err)
 	}
-	if setKeyResp.EventType == shmevent.EventError {
-		t.Fatalf("set_key rejected: %s", setKeyResp.Value)
+	if setKeyResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("set_key rejected: %s", mustErrMessage(t, setKeyResp))
 	}
 
-	addResp, err := callClientProtocol(ctx, browser.Host, leaderPeerID, shmevent.Msg{
-		EventType: shmevent.EventAdd,
-		SourceID:  setKeyID,
-		Value:     []byte(browserAddr),
-		ID:        3,
-	}, browserPriv)
+	addMsg, err := shmevent.NewAddLearner(setKeyID, browserAddr)
+	if err != nil {
+		t.Fatalf("NewAddLearner: %v", err)
+	}
+	addMsg.SetId(3)
+	addResp, err := callClientProtocol(ctx, browser.Host, leaderPeerID, addMsg, browserPriv)
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	if addResp.EventType == shmevent.EventError {
-		t.Fatalf("add-learner rejected: %s", addResp.Value)
+	if addResp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("add-learner rejected: %s", mustErrMessage(t, addResp))
 	}
 
 	rf := leader.getRaft()

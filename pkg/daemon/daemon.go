@@ -619,17 +619,19 @@ var (
 // directly.
 const channelMaxChunkSize = chandata.MaxChunkSize
 
-// maxPollChunkSize is the largest chunk EventChannelPoll can hand back:
-// a poll response is an ordinary shmevent.Msg, so its whole Value --
-// EncodeChannelPollResponse's 2-byte status+purpose header plus the chunk
-// -- has to fit valueSizeFor(EventChannelPoll), i.e. ChannelValueSize.
+// maxPollChunkSize is the largest chunk channelPoll can hand back over
+// local IPC: pkg/ipc's shared-memory ring capacity (16-32KB depending on
+// transport) bounds the whole encoded response, not just the chunk field
+// itself, so this stays comfortably under that regardless of the small
+// fixed overhead (status/purpose bytes, capnp framing, CRC32, signature)
+// every response also carries.
 //
 // It is far below channelMaxChunkSize, and that gap is real rather than
 // theoretical: the data plane exists to move 256KB chunks, every one of
 // which pumpChannelReads also buffers for this poll path. See
 // dispatchChannelPoll for what happens to a buffered chunk that cannot fit
 // here, and why it is reported rather than silently swallowed.
-const maxPollChunkSize = shmevent.ChannelValueSize - 2
+const maxPollChunkSize = 16*1024 - 2
 
 // channelChunk is one entry in channelSession.inbox -- a purpose-tagged
 // chunk pumpChannelReads has already verified and unwrapped from one
@@ -1460,7 +1462,7 @@ func relayCandidates(cfg Config, st *store.Store) []peer.AddrInfo {
 			}
 			entries := make([]bootstrapEntry, 0, len(matches))
 			for _, kv := range matches {
-				addr, priority, err := shmevent.DecodeBootstrapNodeMetadata(kv.Value)
+				addr, priority, err := shmevent.DecodeBootstrapNodeMetadata(string(kv.Value))
 				if err != nil {
 					continue
 				}
@@ -2121,9 +2123,9 @@ func logKindOfBound(key []byte) (kind string, ok bool) {
 // function's remote surface -- is deliberately the only door a peer with
 // no other standing has into an otherwise closed cluster.
 func (n *Node) isCommandLogCarveOut(m shmevent.Msg, callerID peer.ID) bool {
-	switch m.EventType {
-	case shmevent.EventLogAppend:
-		key, _, err := shmevent.DecodeSetPayload(m.Value)
+	switch m.Which() {
+	case shmevent.Event_Which_logAppend:
+		key, err := m.LogAppend().Key()
 		if err != nil {
 			return false
 		}
@@ -2133,17 +2135,23 @@ func (n *Node) isCommandLogCarveOut(m shmevent.Msg, callerID peer.ID) bool {
 		}
 		_, ok = shmevent.ParseCommandRequestLogKind(kind)
 		return ok
-	case shmevent.EventGetField:
-		if m.SourceID != 0 {
+	case shmevent.Event_Which_getFieldByKey:
+		key, err := m.GetFieldByKey().Key()
+		if err != nil {
 			return false
 		}
-		kind, ok := logKindOfBound(m.Value)
+		kind, ok := logKindOfBound(key)
 		if !ok {
 			return false
 		}
 		return n.isCommandLogReadableKind(kind, callerID)
-	case shmevent.EventListRange:
-		start, end, err := shmevent.DecodeListRangeQuery(m.Value)
+	case shmevent.Event_Which_listRange:
+		grp := m.ListRange()
+		start, err := grp.Start()
+		if err != nil {
+			return false
+		}
+		end, err := grp.End()
 		if err != nil {
 			return false
 		}
@@ -2178,127 +2186,150 @@ func (n *Node) isCommandLogReadableKind(kind string, callerID peer.ID) bool {
 }
 
 func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, sig []byte, caller callerIdentity) shmevent.Msg {
-	if caller.remotePeer != "" && (m.EventType == shmevent.EventGetPrivateKey || m.EventType == shmevent.EventGetPublicKey) {
-		return errorMsg(m.ID, fmt.Errorf("%s: not available to a remote caller -- bring your own key", shmevent.EventName(m.EventType)))
+	which := m.Which()
+	if caller.remotePeer != "" && (which == shmevent.Event_Which_getPrivateKey || which == shmevent.Event_Which_getPublicKey) {
+		return errorMsg(m.Id(), fmt.Errorf("%s: not available to a remote caller -- bring your own key", shmevent.EventName(which)))
 	}
-	if caller.remotePeer != "" && m.EventType == shmevent.EventLeave {
-		return errorMsg(m.ID, fmt.Errorf("leave: not available to a remote caller -- only this node's own operator decides to leave"))
+	if caller.remotePeer != "" && which == shmevent.Event_Which_leave {
+		return errorMsg(m.Id(), fmt.Errorf("leave: not available to a remote caller -- only this node's own operator decides to leave"))
 	}
-	if caller.remotePeer != "" && m.EventType == shmevent.EventExecInviteRedeem {
-		return errorMsg(m.ID, fmt.Errorf("exec_invite_redeem: not available to a remote caller -- this node dials sourceAddr on its own operator's behalf, never on an arbitrary remote caller's"))
+	if caller.remotePeer != "" && which == shmevent.Event_Which_execInviteRedeem {
+		return errorMsg(m.Id(), fmt.Errorf("exec_invite_redeem: not available to a remote caller -- this node dials sourceAddr on its own operator's behalf, never on an arbitrary remote caller's"))
 	}
-	if caller.remotePeer != "" && (m.EventType == shmevent.EventJoinRequestCreate || m.EventType == shmevent.EventJoinRequestCancel) {
-		return errorMsg(m.ID, fmt.Errorf("%s: not available to a remote caller -- only this node's own operator mints or cancels its own join-request ticket", shmevent.EventName(m.EventType)))
+	if caller.remotePeer != "" && (which == shmevent.Event_Which_joinRequestCreate || which == shmevent.Event_Which_joinRequestCancel) {
+		return errorMsg(m.Id(), fmt.Errorf("%s: not available to a remote caller -- only this node's own operator mints or cancels its own join-request ticket", shmevent.EventName(which)))
 	}
-	if caller.remotePeer != "" && m.EventType == shmevent.EventRecruit {
-		return errorMsg(m.ID, fmt.Errorf("recruit: not available to a remote caller -- this node dials the ticket's device on its own operator's behalf, never on an arbitrary remote caller's"))
+	if caller.remotePeer != "" && which == shmevent.Event_Which_recruit {
+		return errorMsg(m.Id(), fmt.Errorf("recruit: not available to a remote caller -- this node dials the ticket's device on its own operator's behalf, never on an arbitrary remote caller's"))
 	}
-	if caller.remotePeer != "" && m.EventType == shmevent.EventPublicAccess {
-		return errorMsg(m.ID, fmt.Errorf("public_access: not available to a remote caller -- this node submits to the target cluster under its own identity, so letting a stranger trigger it would spend this node's standing on that stranger's behalf"))
+	if caller.remotePeer != "" && which == shmevent.Event_Which_publicAccess {
+		return errorMsg(m.Id(), fmt.Errorf("public_access: not available to a remote caller -- this node submits to the target cluster under its own identity, so letting a stranger trigger it would spend this node's standing on that stranger's behalf"))
 	}
-	if caller.remotePeer != "" && (m.EventType == shmevent.EventDialSubmitCommand || m.EventType == shmevent.EventDialQueryCommandLog) {
-		return errorMsg(m.ID, fmt.Errorf("%s: not available to a remote caller -- this node dials the target under its own identity, so letting a stranger trigger it would spend this node's standing on that stranger's behalf", shmevent.EventName(m.EventType)))
+	if caller.remotePeer != "" && (which == shmevent.Event_Which_dialSubmitCommand || which == shmevent.Event_Which_dialQueryCommandLog) {
+		return errorMsg(m.Id(), fmt.Errorf("%s: not available to a remote caller -- this node dials the target under its own identity, so letting a stranger trigger it would spend this node's standing on that stranger's behalf", shmevent.EventName(which)))
 	}
-	if caller.remotePeer != "" && (m.EventType == shmevent.EventChannelOpen || m.EventType == shmevent.EventChannelSend ||
-		m.EventType == shmevent.EventChannelPoll || m.EventType == shmevent.EventChannelListen || m.EventType == shmevent.EventChannelClose ||
-		m.EventType == shmevent.EventChannelCloseWrite || m.EventType == shmevent.EventChannelDataReady) {
-		return errorMsg(m.ID, fmt.Errorf("%s: not available to a remote caller -- only this node's own operator drives its own channel sessions", shmevent.EventName(m.EventType)))
+	if caller.remotePeer != "" && (which == shmevent.Event_Which_channelOpen || which == shmevent.Event_Which_channelSend ||
+		which == shmevent.Event_Which_channelPoll || which == shmevent.Event_Which_channelListen || which == shmevent.Event_Which_channelClose ||
+		which == shmevent.Event_Which_channelCloseWrite || which == shmevent.Event_Which_channelDataReady) {
+		return errorMsg(m.Id(), fmt.Errorf("%s: not available to a remote caller -- only this node's own operator drives its own channel sessions", shmevent.EventName(which)))
 	}
-	if shmevent.RequiresSignature(m.EventType) {
+	if shmevent.RequiresSignature(which) {
 		if err := shmevent.Verify(caller.verifyPub, m, crc, sig); err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
 	}
 	if caller.remotePeer != "" &&
-		// EventLifecycleWrite's Permit-style Request/Confirm actions must
-		// stay reachable by a remote caller with no standing at all -- a
-		// not-yet-permitted peer has no elevated standing to earn
-		// otherwise -- see isExemptPermitLifecycleWrite's own doc comment.
-		(m.EventType != shmevent.EventLifecycleWrite || !isExemptPermitLifecycleWrite(m.Value)) &&
-		// EventSetKey/EventGetKey never touch the store or any privileged
-		// state -- just a per-connection numeric-id relay of a value the
-		// caller itself already supplied (see EventSet's own doc comment on
-		// why this exists at all) -- and EventAdd is the actual join door
-		// for a brand-new peer that owns no standing yet at all (a web-app
-		// browser learner's first-ever call over this exact ClientProtocolID
-		// surface): handleAddDispatch already self-authenticates that
-		// remote case against the stream's own libp2p identity (see its own
-		// doc comment), so gating EventAdd here too would make joining
-		// impossible for the one caller class it exists to admit.
-		// EventGetVersion is likewise always open, remote or not -- see its
-		// own doc comment: build/version info carries no secret and no
-		// side effect, so it gets the same always-answered treatment as
-		// EventGetOwnAddr rather than gating it behind cluster/remote-group
-		// standing.
-		m.EventType != shmevent.EventSetKey && m.EventType != shmevent.EventGetKey && m.EventType != shmevent.EventAdd &&
-		m.EventType != shmevent.EventGetVersion &&
+		// permitRequest/permitConfirm must stay reachable by a remote
+		// caller with no standing at all -- a not-yet-permitted peer has
+		// no elevated standing to earn otherwise.
+		which != shmevent.Event_Which_permitRequest && which != shmevent.Event_Which_permitConfirm &&
+		// setKey/getKey never touch the store or any privileged state --
+		// just a per-connection numeric-id relay of a value the caller
+		// itself already supplied (see set's own doc comment on why this
+		// exists at all) -- and bootstrapOrJoinCluster/addLearner are the
+		// actual join door for a brand-new peer that owns no standing yet
+		// at all (a web-app browser learner's first-ever call over this
+		// exact ClientProtocolID surface): handleAddDispatch already
+		// self-authenticates that remote case against the stream's own
+		// libp2p identity (see its own doc comment), so gating it here too
+		// would make joining impossible for the one caller class it exists
+		// to admit. getVersion is likewise always open, remote or not --
+		// see its own doc comment: build/version info carries no secret
+		// and no side effect, so it gets the same always-answered
+		// treatment as getOwnAddr rather than gating it behind cluster/
+		// remote-group standing.
+		which != shmevent.Event_Which_setKey && which != shmevent.Event_Which_getKey &&
+		which != shmevent.Event_Which_bootstrapOrJoinCluster && which != shmevent.Event_Which_addLearner &&
+		which != shmevent.Event_Which_getVersion &&
 		!n.isAuthorizedForGatedAccess(caller.remotePeer, shmevent.ReservedGroupRemote) &&
 		!n.isCommandLogCarveOut(m, caller.remotePeer) {
-		return errorMsg(m.ID, fmt.Errorf("%s: not permitted -- not a cluster member, in the remote group, or granted access to %s, and not a recognized public-command submission or its own log readback", caller.remotePeer, n.peerID))
+		return errorMsg(m.Id(), fmt.Errorf("%s: not permitted -- not a cluster member, in the remote group, or granted access to %s, and not a recognized public-command submission or its own log readback", caller.remotePeer, n.peerID))
 	}
 
-	switch m.EventType {
-	case shmevent.EventSetKey:
-		n.registry.Register(m.ID, m.Value)
-		return shmevent.Msg{EventType: shmevent.EventSetKey, ID: m.ID, Value: m.Value}
-
-	case shmevent.EventGetKey:
-		v, ok := n.registry.Lookup(m.SourceID)
-		if !ok {
-			return errorMsg(m.ID, fmt.Errorf("no entry registered under id %d", m.SourceID))
-		}
-		return shmevent.Msg{EventType: shmevent.EventGetKey, ID: m.ID, Value: v}
-
-	case shmevent.EventSetField:
-		key, ok := n.registry.Lookup(m.SourceID)
-		if !ok {
-			return errorMsg(m.ID, fmt.Errorf("no key registered under id %d -- send SetKey first", m.SourceID))
-		}
-		if err := rejectReservedKey(key); err != nil {
-			return errorMsg(m.ID, err)
-		}
-		if err := n.handleSetForward(ctx, key, m.Value, true); err != nil {
-			return errorMsg(m.ID, err)
-		}
-		return shmevent.Msg{EventType: shmevent.EventSetField, ID: m.ID}
-
-	case shmevent.EventSet:
-		key, value, err := shmevent.DecodeSetPayload(m.Value)
+	switch which {
+	case shmevent.Event_Which_setKey:
+		value, err := m.SetKey().Value()
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
+		}
+		n.registry.Register(m.Id(), value)
+		return m
+
+	case shmevent.Event_Which_getKey:
+		grp := m.GetKey()
+		v, ok := n.registry.Lookup(grp.SourceId())
+		if !ok {
+			return errorMsg(m.Id(), fmt.Errorf("no entry registered under id %d", grp.SourceId()))
+		}
+		if err := grp.SetKey(v); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
+
+	case shmevent.Event_Which_setField:
+		grp := m.SetField()
+		key, ok := n.registry.Lookup(grp.SourceId())
+		if !ok {
+			return errorMsg(m.Id(), fmt.Errorf("no key registered under id %d -- send SetKey first", grp.SourceId()))
 		}
 		if err := rejectReservedKey(key); err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
+		}
+		value, err := grp.Value()
+		if err != nil {
+			return errorMsg(m.Id(), err)
 		}
 		if err := n.handleSetForward(ctx, key, value, true); err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
-		return shmevent.Msg{EventType: shmevent.EventSet, ID: m.ID}
+		return m
 
-	case shmevent.EventTxn:
-		ops, err := shmevent.DecodeTxnPayload(m.Value)
+	case shmevent.Event_Which_set:
+		grp := m.Set()
+		key, err := grp.Key()
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
+		}
+		value, err := grp.Value()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		if err := rejectReservedKey(key); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		if err := n.handleSetForward(ctx, key, value, true); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
+
+	case shmevent.Event_Which_txn:
+		ops, err := shmevent.TxnOps(m.Txn())
+		if err != nil {
+			return errorMsg(m.Id(), err)
 		}
 		for _, op := range ops {
 			if err := rejectReservedKey(op.Key); err != nil {
-				return errorMsg(m.ID, err)
+				return errorMsg(m.Id(), err)
 			}
 		}
-		if _, err := n.handleOpForward(ctx, kvfsm.OpTxn, nil, m.Value, true); err != nil {
-			return errorMsg(m.ID, err)
+		raftValue, err := shmevent.EncodeTxnPayload(ops)
+		if err != nil {
+			return errorMsg(m.Id(), err)
 		}
-		return shmevent.Msg{EventType: shmevent.EventTxn, ID: m.ID}
+		if _, err := n.handleOpForward(ctx, kvfsm.OpTxn, nil, raftValue, true); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
 
-	case shmevent.EventLeave:
+	case shmevent.Event_Which_leave:
 		if err := n.leaveCluster(ctx); err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
-		return shmevent.Msg{EventType: shmevent.EventLeave, ID: m.ID}
+		return m
 
-	case shmevent.EventKick:
-		// Same "only a raft voter may act" check EventPermitConfirm's own
-		// doc comment explains -- skipped for a local caller (trusted
+	case shmevent.Event_Which_kick:
+		// Same "only a raft voter may act" check permitConfirm's own doc
+		// comment explains -- skipped for a local caller (trusted
 		// implicitly, see that comment), enforced here for a remote one
 		// since this is the only place that authenticates who *actually*
 		// asked, not just whichever node last relayed the request one hop
@@ -2306,285 +2337,664 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		if caller.remotePeer != "" {
 			rf := n.getRaft()
 			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
-				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
+				return errorMsg(m.Id(), fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
 			}
 		}
-		if err := n.kickPeer(ctx, string(m.Value)); err != nil {
-			return errorMsg(m.ID, err)
+		peerID, err := m.Kick().PeerId()
+		if err != nil {
+			return errorMsg(m.Id(), err)
 		}
-		return shmevent.Msg{EventType: shmevent.EventKick, ID: m.ID}
+		if err := n.kickPeer(ctx, peerID); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
 
-	// EventCatalogPut/EventCatalogDelete are the one generic envelope pair
-	// for the group-based ACL catalog's single-step CRUD (see
-	// shmevent.EventCatalogPut's own doc comment in pkg/shmevent/event.go).
-	// catalogPutSpecs/catalogDeleteSpecs (pkg/daemon/catalog_envelope.go)
-	// select the right decode/key/validation/op by kind, so the voter
-	// guard is done once here regardless of which kind is being written.
-	case shmevent.EventCatalogPut:
-		if caller.remotePeer != "" {
-			rf := n.getRaft()
-			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
-				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
-			}
+	// groupPut/groupDelete/commandPut/commandDelete/stationPut/
+	// stationDelete/groupCommandPut/groupCommandDelete/peerGroupPut/
+	// peerGroupDelete are the group-based ACL catalog's single-step CRUD
+	// (see those variants' own doc comments in api/shmevent.capnp) --
+	// voter-gated identically regardless of which.
+	case shmevent.Event_Which_groupPut:
+		if err := requireVoter(n, caller); err != nil {
+			return errorMsg(m.Id(), err)
 		}
-		kind, inner, err := shmevent.DecodeCatalogPayload(m.Value)
+		grp := m.GroupPut()
+		id, err := grp.Id()
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
-		spec, ok := catalogPutSpecs[kind]
-		if !ok {
-			return errorMsg(m.ID, fmt.Errorf("catalog_put: unrecognized entity kind %d", kind))
-		}
-		key, value, err := spec.build(inner)
+		name, err := grp.Name()
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
-		if err := n.handleConfirmForward(ctx, spec.op, key, value, true); err != nil {
-			return errorMsg(m.ID, err)
+		if shmevent.IsReservedGroupID(id) || isPeerIdentityGroupID(id) {
+			return errorMsg(m.Id(), fmt.Errorf("group id %q is reserved and managed automatically", id))
 		}
-		return shmevent.Msg{EventType: shmevent.EventCatalogPut, ID: m.ID}
+		key := shmevent.GroupKey([]byte(id))
+		value := shmevent.EncodeGroupPayload(name, grp.Public())
+		if err := n.handleConfirmForward(ctx, kvfsm.OpSet, key, value, true); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
 
-	case shmevent.EventCatalogDelete:
-		if caller.remotePeer != "" {
-			rf := n.getRaft()
-			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
-				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
-			}
+	case shmevent.Event_Which_groupDelete:
+		if err := requireVoter(n, caller); err != nil {
+			return errorMsg(m.Id(), err)
 		}
-		kind, inner, err := shmevent.DecodeCatalogPayload(m.Value)
+		id, err := m.GroupDelete().Id()
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
-		spec, ok := catalogDeleteSpecs[kind]
-		if !ok {
-			return errorMsg(m.ID, fmt.Errorf("catalog_delete: unrecognized entity kind %d", kind))
+		if shmevent.IsReservedGroupID(id) || isPeerIdentityGroupID(id) {
+			return errorMsg(m.Id(), fmt.Errorf("group id %q is reserved and cannot be deleted", id))
 		}
-		key, err := spec.build(inner)
-		if err != nil {
-			return errorMsg(m.ID, err)
+		if err := n.handleConfirmForward(ctx, kvfsm.OpCascadeDelete, shmevent.GroupKey([]byte(id)), nil, true); err != nil {
+			return errorMsg(m.Id(), err)
 		}
-		if err := n.handleConfirmForward(ctx, spec.op, key, nil, true); err != nil {
-			return errorMsg(m.ID, err)
-		}
-		return shmevent.Msg{EventType: shmevent.EventCatalogDelete, ID: m.ID}
+		return m
 
-	// EventLifecycleWrite is one generic envelope covering
-	// EventPermitRequest/Confirm/Revoke and EventJoinInviteCreate/Revoke/
-	// EventExecInviteCreate/Revoke immediately below -- added additively,
-	// alongside them, not in place of them; see EventLifecycleWrite's own
-	// doc comment in pkg/shmevent/event.go. lookupLifecycleWriteSpec
-	// (pkg/daemon/lifecycle_envelope.go) selects the right existing
-	// decode/key/op/forwarding-path by (kind, action), including
-	// EventPermitRequest's deliberately-ungated handleSetForward path --
-	// see that spec's own voterGated/viaSetForward fields.
-	case shmevent.EventLifecycleWrite:
-		kind, action, inner, err := shmevent.DecodeLifecycleWritePayload(m.Value)
+	case shmevent.Event_Which_commandPut:
+		if err := requireVoter(n, caller); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		grp := m.CommandPut()
+		id, err := grp.Id()
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
-		spec, ok := lookupLifecycleWriteSpec(kind, action)
-		if !ok {
-			return errorMsg(m.ID, unrecognizedLifecycleWriteError(kind, action))
+		name, err := grp.Name()
+		if err != nil {
+			return errorMsg(m.Id(), err)
 		}
-		if spec.voterGated && caller.remotePeer != "" {
-			rf := n.getRaft()
-			if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
-				return errorMsg(m.ID, fmt.Errorf("%s is not a current raft voter", caller.remotePeer))
+		peerID, err := grp.PeerId()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		var value []byte
+		if grp.HasSpec() {
+			spec, err := grp.Spec()
+			if err != nil {
+				return errorMsg(m.Id(), err)
+			}
+			// "Carried an empty spec" and "didn't mention the spec" must
+			// stay distinguishable all the way to the FSM.
+			if spec == "" {
+				value, err = shmevent.EncodeCommandPayloadClearingSpec(name, []byte(peerID))
+			} else {
+				value, err = shmevent.EncodeCommandPayloadWithSpec(name, []byte(peerID), []byte(spec))
+			}
+			if err != nil {
+				return errorMsg(m.Id(), err)
+			}
+		} else {
+			value, err = shmevent.EncodeCommandPayload(name, []byte(peerID))
+			if err != nil {
+				return errorMsg(m.Id(), err)
 			}
 		}
-		key1, key2, err := spec.build(inner)
-		if err != nil {
-			return errorMsg(m.ID, err)
+		if err := n.handleConfirmForward(ctx, kvfsm.OpSet, shmevent.CommandKey([]byte(id)), value, true); err != nil {
+			return errorMsg(m.Id(), err)
 		}
-		if spec.viaSetForward {
-			if err := n.handleSetForward(ctx, key1, key2, true); err != nil {
-				return errorMsg(m.ID, err)
-			}
-		} else if err := n.handleConfirmForward(ctx, spec.op, key1, key2, true); err != nil {
-			return errorMsg(m.ID, err)
-		}
-		return shmevent.Msg{EventType: shmevent.EventLifecycleWrite, ID: m.ID}
+		return m
 
-	// EventJoinRequestCreate/Cancel manage this node's own in-memory
-	// join-request ticket (see that event pair's doc comment) -- never
-	// raft/store writes, so unlike every case above there's no voter check
-	// here at all (this node itself may have no raft instance yet); the
-	// remote-caller rejection already happened at the top of this
-	// function.
-	case shmevent.EventJoinRequestCreate:
+	case shmevent.Event_Which_commandDelete:
+		if err := requireVoter(n, caller); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		id, err := m.CommandDelete().Id()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		if err := n.handleConfirmForward(ctx, kvfsm.OpCascadeDelete, shmevent.CommandKey([]byte(id)), nil, true); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
+
+	case shmevent.Event_Which_stationPut:
+		if err := requireVoter(n, caller); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		grp := m.StationPut()
+		peerID, err := grp.PeerId()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		if peerID == "" {
+			return errorMsg(m.Id(), fmt.Errorf("station peer id must not be empty"))
+		}
+		name, err := grp.Name()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		attrs, err := grp.Attrs()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		value, err := shmevent.EncodeStationPayload(name, []byte(attrs))
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		if err := n.handleConfirmForward(ctx, kvfsm.OpSet, shmevent.StationKey([]byte(peerID)), value, true); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
+
+	case shmevent.Event_Which_stationDelete:
+		if err := requireVoter(n, caller); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		peerID, err := m.StationDelete().PeerId()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		// Plain OpDel, not OpCascadeDelete: nothing references a station
+		// record.
+		if err := n.handleConfirmForward(ctx, kvfsm.OpDel, shmevent.StationKey([]byte(peerID)), nil, true); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
+
+	case shmevent.Event_Which_groupCommandPut:
+		if err := requireVoter(n, caller); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		grp := m.GroupCommandPut()
+		commandID, err := grp.CommandId()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		groupID, err := grp.GroupId()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		key, err := shmevent.GroupCommandKey([]byte(commandID), []byte(groupID))
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		if err := n.handleConfirmForward(ctx, kvfsm.OpSet, key, nil, true); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
+
+	case shmevent.Event_Which_groupCommandDelete:
+		if err := requireVoter(n, caller); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		grp := m.GroupCommandDelete()
+		commandID, err := grp.CommandId()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		groupID, err := grp.GroupId()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		key, err := shmevent.GroupCommandKey([]byte(commandID), []byte(groupID))
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		if err := n.handleConfirmForward(ctx, kvfsm.OpDel, key, nil, true); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
+
+	case shmevent.Event_Which_peerGroupPut:
+		if err := requireVoter(n, caller); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		grp := m.PeerGroupPut()
+		peerID, err := grp.PeerId()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		groupID, err := grp.GroupId()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		if shmevent.IsAutoManagedGroupID(groupID) {
+			return errorMsg(m.Id(), fmt.Errorf("group %q membership is managed automatically", groupID))
+		}
+		key, err := shmevent.PeerGroupKey([]byte(peerID), []byte(groupID))
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		if err := n.handleConfirmForward(ctx, kvfsm.OpSet, key, nil, true); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
+
+	case shmevent.Event_Which_peerGroupDelete:
+		if err := requireVoter(n, caller); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		grp := m.PeerGroupDelete()
+		peerID, err := grp.PeerId()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		groupID, err := grp.GroupId()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		if shmevent.IsAutoManagedGroupID(groupID) {
+			return errorMsg(m.Id(), fmt.Errorf("group %q membership is managed automatically", groupID))
+		}
+		key, err := shmevent.PeerGroupKey([]byte(peerID), []byte(groupID))
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		if err := n.handleConfirmForward(ctx, kvfsm.OpDel, key, nil, true); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
+
+	// permitRequest is deliberately ungated (any raft node may relay, no
+	// voter check anywhere -- a not-yet-permitted peer has no elevated
+	// standing to earn otherwise) and goes through handleSetForward, not
+	// handleConfirmForward.
+	case shmevent.Event_Which_permitRequest:
+		grp := m.PermitRequest()
+		peerID, err := grp.PeerId()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		metadata, err := grp.Metadata()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		key := shmevent.SystemKey(grp.Kind(), shmevent.StatusPending, []byte(peerID))
+		if err := n.handleSetForward(ctx, key, []byte(metadata), true); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
+
+	case shmevent.Event_Which_permitConfirm:
+		if err := requireVoter(n, caller); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		grp := m.PermitConfirm()
+		peerID, err := grp.PeerId()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		pendingKey := shmevent.SystemKey(grp.Kind(), shmevent.StatusPending, []byte(peerID))
+		confirmedKey := shmevent.SystemKey(grp.Kind(), shmevent.StatusConfirmed, []byte(peerID))
+		if err := n.handleConfirmForward(ctx, kvfsm.OpConfirm, pendingKey, confirmedKey, true); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
+
+	case shmevent.Event_Which_permitRevoke:
+		if err := requireVoter(n, caller); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		grp := m.PermitRevoke()
+		peerID, err := grp.PeerId()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		key := shmevent.SystemKey(grp.Kind(), shmevent.StatusConfirmed, []byte(peerID))
+		if err := n.handleConfirmForward(ctx, kvfsm.OpDel, key, nil, true); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
+
+	case shmevent.Event_Which_joinInviteCreate:
+		if err := requireVoter(n, caller); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		grp := m.JoinInviteCreate()
+		token, err := grp.Token()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		value := shmevent.EncodeJoinInviteRecord(grp.Suffrage())
+		if err := n.handleConfirmForward(ctx, kvfsm.OpSet, shmevent.JoinInviteKey(token), value, true); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
+
+	case shmevent.Event_Which_joinInviteRevoke:
+		if err := requireVoter(n, caller); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		token, err := m.JoinInviteRevoke().Token()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		if err := n.handleConfirmForward(ctx, kvfsm.OpDel, shmevent.JoinInviteKey(token), nil, true); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
+
+	case shmevent.Event_Which_execInviteCreate:
+		if err := requireVoter(n, caller); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		grp := m.ExecInviteCreate()
+		token, err := grp.Token()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		commandID, err := grp.CommandId()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		inputsJSON, err := grp.InputsJson()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		value := shmevent.EncodeExecInviteRecord(commandID, inputsJSON)
+		if err := n.handleConfirmForward(ctx, kvfsm.OpSet, shmevent.ExecInviteKey(token), value, true); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
+
+	case shmevent.Event_Which_execInviteRevoke:
+		if err := requireVoter(n, caller); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		token, err := m.ExecInviteRevoke().Token()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		if err := n.handleConfirmForward(ctx, kvfsm.OpDel, shmevent.ExecInviteKey(token), nil, true); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
+
+	// joinRequestCreate/joinRequestCancel manage this node's own in-memory
+	// join-request ticket -- never raft/store writes, so unlike every case
+	// above there's no voter check here at all (this node itself may have
+	// no raft instance yet); the remote-caller rejection already happened
+	// at the top of this function.
+	case shmevent.Event_Which_joinRequestCreate:
 		token := make([]byte, shmevent.JoinInviteTokenSize)
 		if _, err := cryptorand.Read(token); err != nil {
-			return errorMsg(m.ID, fmt.Errorf("generate join request token: %w", err))
+			return errorMsg(m.Id(), fmt.Errorf("generate join request token: %w", err))
 		}
 		n.setJoinRequestToken(token)
-		return shmevent.Msg{EventType: shmevent.EventJoinRequestCreate, ID: m.ID, Value: token}
+		if err := m.JoinRequestCreate().SetToken(token); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
 
-	case shmevent.EventJoinRequestCancel:
-		token, err := shmevent.DecodeJoinRequestCancelPayload(m.Value)
+	case shmevent.Event_Which_joinRequestCancel:
+		token, err := m.JoinRequestCancel().Token()
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
 		n.cancelJoinRequestToken(token)
-		return shmevent.Msg{EventType: shmevent.EventJoinRequestCancel, ID: m.ID}
+		return m
 
-	// EventRecruit is the reverse of a JoinInvite: this node
-	// (already a raft voter, enforced by mintJoinInvite's own
-	// handleConfirmForward the same way a JoinInvite's own write is)
-	// mints a normal join invite on its own cluster and hand-delivers it
-	// directly to the device named in the ticket -- see
-	// dialAndPushRecruit/handleRecruitStream for the actual network leg.
-	case shmevent.EventRecruit:
-		ticket, suffrage, err := shmevent.DecodeRecruitPayload(m.Value)
+	// recruit is the reverse of a JoinInvite: this node (already a raft
+	// voter, enforced by mintJoinInvite's own handleConfirmForward the
+	// same way a JoinInvite's own write is) mints a normal join invite on
+	// its own cluster and hand-delivers it directly to the device named in
+	// the ticket -- see dialAndPushRecruit/handleRecruitStream for the
+	// actual network leg.
+	case shmevent.Event_Which_recruit:
+		grp := m.Recruit()
+		ticket, err := grp.Ticket()
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
-		result, err := n.dialAndPushRecruit(ctx, ticket, suffrage)
+		result, err := n.dialAndPushRecruit(ctx, ticket, grp.Suffrage())
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
-		return shmevent.Msg{EventType: shmevent.EventRecruit, ID: m.ID, Value: []byte(result)}
+		if err := grp.SetTicket(result); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
 
-	// EventExecInviteRedeem is local-only (rejected above if
+	// execInviteRedeem is local-only (rejected above if
 	// caller.remotePeer != ""): it tells this node's own daemon to dial
-	// sourceAddr and redeem token there on its own operator's behalf -- see
-	// dialAndRedeemExecInvite for the actual network leg.
-	case shmevent.EventExecInviteRedeem:
-		sourceAddr, token, err := shmevent.DecodeExecInviteRedeemRequest(m.Value)
+	// sourceAddr and redeem token there on its own operator's behalf --
+	// see dialAndRedeemExecInvite for the actual network leg.
+	case shmevent.Event_Which_execInviteRedeem:
+		grp := m.ExecInviteRedeem()
+		sourceAddr, err := grp.SourceAddr()
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
+		}
+		token, err := grp.Token()
+		if err != nil {
+			return errorMsg(m.Id(), err)
 		}
 		instanceID, err := n.dialAndRedeemExecInvite(ctx, sourceAddr, token)
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
-		return shmevent.Msg{EventType: shmevent.EventExecInviteRedeem, ID: m.ID, Value: []byte(instanceID)}
+		if err := grp.SetInstanceId(instanceID); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
 
-	// EventPublicAccess is local-only for the same reason
-	// EventExecInviteRedeem above is: it makes this node act as a client of
-	// somebody else's cluster, under this node's own identity -- see that
-	// event's doc comment and dialAndSubmitPublicAccess.
-	case shmevent.EventPublicAccess:
-		targetAddr, note, _ := strings.Cut(string(m.Value), "#")
-		instanceID, err := n.dialAndSubmitPublicAccess(ctx, targetAddr, note)
+	// publicAccess is local-only for the same reason execInviteRedeem
+	// above is: it makes this node act as a client of somebody else's
+	// cluster, under this node's own identity -- see that variant's doc
+	// comment and dialAndSubmitPublicAccess.
+	case shmevent.Event_Which_publicAccess:
+		grp := m.PublicAccess()
+		targetPeer, err := grp.TargetPeer()
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
-		return shmevent.Msg{EventType: shmevent.EventPublicAccess, ID: m.ID, Value: []byte(instanceID)}
+		note, err := grp.Note()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		instanceID, err := n.dialAndSubmitPublicAccess(ctx, targetPeer, note)
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		if err := grp.SetInstanceId(instanceID); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
 
-	// EventDialSubmitCommand/EventDialQueryCommandLog are local-only for the
-	// same reason EventPublicAccess above is -- see their doc comments and
+	// dialSubmitCommand/dialQueryCommandLog are local-only for the same
+	// reason publicAccess above is -- see their doc comments and
 	// dialAndSubmitCommand/dialAndQueryCommandLog.
-	case shmevent.EventDialSubmitCommand:
-		targetAddr, commandID, inputsJSON, note, err := shmevent.DecodeDialSubmitCommandRequest(m.Value)
+	case shmevent.Event_Which_dialSubmitCommand:
+		grp := m.DialSubmitCommand()
+		targetPeer, err := grp.TargetPeer()
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
-		instanceID, err := n.dialAndSubmitCommand(ctx, targetAddr, commandID, inputsJSON, note)
+		commandID, err := grp.CommandId()
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
-		return shmevent.Msg{EventType: shmevent.EventDialSubmitCommand, ID: m.ID, Value: []byte(instanceID)}
+		inputsJSON, err := grp.InputsJson()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		note, err := grp.Note()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		instanceID, err := n.dialAndSubmitCommand(ctx, targetPeer, commandID, inputsJSON, note)
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		if err := grp.SetInstanceId(instanceID); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
 
-	case shmevent.EventDialQueryCommandLog:
-		targetAddr, instanceID, since, until, limit, err := shmevent.DecodeDialQueryCommandLogRequest(m.Value)
+	case shmevent.Event_Which_dialQueryCommandLog:
+		grp := m.DialQueryCommandLog()
+		targetPeer, err := grp.TargetPeer()
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
-		records, err := n.dialAndQueryCommandLog(ctx, targetAddr, instanceID, since, until, limit)
+		instanceID, err := grp.InstanceId()
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
-		value, err := shmevent.EncodeLogRecordList(records)
+		since := time.Unix(0, grp.Since())
+		until := time.Unix(0, grp.Until())
+		records, err := n.dialAndQueryCommandLog(ctx, targetPeer, instanceID, since, until, int(grp.Limit()))
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
-		return shmevent.Msg{EventType: shmevent.EventDialQueryCommandLog, ID: m.ID, Value: value}
+		resp, err := shmevent.NewDialQueryCommandLogResponse(records)
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		resp.SetId(m.Id())
+		return resp
 
-	case shmevent.EventExecute:
+	case shmevent.Event_Which_execute:
 		if err := n.dispatchExecute(ctx, m); err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
-		return shmevent.Msg{EventType: shmevent.EventExecute, ID: m.ID}
+		return m
 
-	case shmevent.EventPollExecute:
+	case shmevent.Event_Which_pollExecute:
 		notif, ok := n.executeInbox.pop()
 		if !ok {
-			return shmevent.Msg{EventType: shmevent.EventPollExecute, ID: m.ID}
+			return m
 		}
-		value, err := shmevent.EncodeExecuteNotification(notif.senderPeerID, notif.payload)
+		if err := m.PollExecute().SetSenderPeerId(string(notif.senderPeerID)); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		if err := m.PollExecute().SetValue(notif.payload); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
+
+	case shmevent.Event_Which_channelOpen:
+		peerID, err := m.ChannelOpen().PeerId()
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
-		return shmevent.Msg{EventType: shmevent.EventPollExecute, Value: value, ID: m.ID}
-
-	case shmevent.EventChannelOpen:
-		channelID, err := n.dispatchChannelOpen(ctx, string(m.Value))
+		channelID, err := n.dispatchChannelOpen(ctx, peerID)
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
-		return shmevent.Msg{EventType: shmevent.EventChannelOpen, ID: m.ID, Value: []byte(channelID)}
+		if err := m.ChannelOpen().SetPeerId(channelID); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
 
-	case shmevent.EventChannelSend:
-		channelID, purpose, chunk, err := shmevent.DecodeChannelSendPayload(m.Value)
+	case shmevent.Event_Which_channelSend:
+		grp := m.ChannelSend()
+		channelID, err := grp.ChannelId()
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
-		if err := n.dispatchChannelSend(string(channelID), purpose, chunk); err != nil {
-			return errorMsg(m.ID, err)
-		}
-		return shmevent.Msg{EventType: shmevent.EventChannelSend, ID: m.ID}
-
-	case shmevent.EventChannelPoll:
-		resp, err := n.dispatchChannelPoll(string(m.Value))
+		chunk, err := grp.Chunk()
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
-		return shmevent.Msg{EventType: shmevent.EventChannelPoll, ID: m.ID, Value: resp}
+		if err := n.dispatchChannelSend(channelID, grp.Purpose(), chunk); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
 
-	case shmevent.EventChannelListen:
-		resp, err := n.dispatchChannelListen()
+	case shmevent.Event_Which_channelPoll:
+		grp := m.ChannelPoll()
+		channelID, err := grp.ChannelId()
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
-		return shmevent.Msg{EventType: shmevent.EventChannelListen, ID: m.ID, Value: resp}
-
-	case shmevent.EventChannelClose:
-		if err := n.dispatchChannelClose(string(m.Value)); err != nil {
-			return errorMsg(m.ID, err)
+		status, purpose, chunk, err := n.dispatchChannelPoll(channelID)
+		if err != nil {
+			return errorMsg(m.Id(), err)
 		}
-		return shmevent.Msg{EventType: shmevent.EventChannelClose, ID: m.ID}
-
-	case shmevent.EventChannelCloseWrite:
-		if err := n.dispatchChannelCloseWrite(ctx, string(m.Value)); err != nil {
-			return errorMsg(m.ID, err)
+		grp.SetStatus(status)
+		grp.SetPurpose(purpose)
+		if err := grp.SetChunk(chunk); err != nil {
+			return errorMsg(m.Id(), err)
 		}
-		return shmevent.Msg{EventType: shmevent.EventChannelCloseWrite, ID: m.ID}
+		return m
 
-	case shmevent.EventChannelDataReady:
-		if err := n.dispatchChannelDataReady(ctx, string(m.Value)); err != nil {
-			return errorMsg(m.ID, err)
+	case shmevent.Event_Which_channelListen:
+		channelID, remotePeerID, err := n.dispatchChannelListen()
+		if err != nil {
+			return errorMsg(m.Id(), err)
 		}
-		return shmevent.Msg{EventType: shmevent.EventChannelDataReady, ID: m.ID}
+		grp := m.ChannelListen()
+		if err := grp.SetChannelId(channelID); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		if err := grp.SetRemotePeerId(remotePeerID); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
 
-	case shmevent.EventGetField:
-		key := m.Value
-		if m.SourceID != 0 {
-			k, ok := n.registry.Lookup(m.SourceID)
-			if !ok {
-				return errorMsg(m.ID, fmt.Errorf("no key registered under id %d -- send SetKey first", m.SourceID))
-			}
-			key = k
+	case shmevent.Event_Which_channelClose:
+		channelID, err := m.ChannelClose().ChannelId()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		if err := n.dispatchChannelClose(channelID); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
+
+	case shmevent.Event_Which_channelCloseWrite:
+		channelID, err := m.ChannelCloseWrite().ChannelId()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		if err := n.dispatchChannelCloseWrite(ctx, channelID); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
+
+	case shmevent.Event_Which_channelDataReady:
+		channelID, err := m.ChannelDataReady().ChannelId()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		if err := n.dispatchChannelDataReady(ctx, channelID); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
+
+	case shmevent.Event_Which_getFieldByRegistry:
+		grp := m.GetFieldByRegistry()
+		key, ok := n.registry.Lookup(grp.SourceId())
+		if !ok {
+			return errorMsg(m.Id(), fmt.Errorf("no key registered under id %d -- send SetKey first", grp.SourceId()))
 		}
 		value, err := n.handleGet(key)
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
-		return shmevent.Msg{EventType: shmevent.EventGetField, ID: m.ID, Value: value}
+		if err := grp.SetValue(value); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
 
-	case shmevent.EventListRange:
-		start, end, err := shmevent.DecodeListRangeQuery(m.Value)
+	case shmevent.Event_Which_getFieldByKey:
+		grp := m.GetFieldByKey()
+		key, err := grp.Key()
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
+		}
+		value, err := n.handleGet(key)
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		if err := grp.SetValue(value); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
+
+	case shmevent.Event_Which_listRange:
+		grp := m.ListRange()
+		start, err := grp.Start()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		end, err := grp.End()
+		if err != nil {
+			return errorMsg(m.Id(), err)
 		}
 		// A non-cluster-member remote caller already had to clear
 		// isCommandLogCarveOut above (the top-of-function gate) to reach
@@ -2594,35 +3004,41 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		// "remote"-group grantee needs no additional per-kind restriction.
 		matches, err := n.store.ScanRange(start, end, 1)
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
 		if len(matches) == 0 {
-			return shmevent.Msg{EventType: shmevent.EventListRange, ID: m.ID}
+			return m
 		}
-		value, err := shmevent.EncodeListRangeQuery(matches[0].Key, matches[0].Value)
-		if err != nil {
-			return errorMsg(m.ID, err)
+		if err := grp.SetKey(matches[0].Key); err != nil {
+			return errorMsg(m.Id(), err)
 		}
-		return shmevent.Msg{EventType: shmevent.EventListRange, ID: m.ID, Value: value}
+		if err := grp.SetValue(matches[0].Value); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
 
-	case shmevent.EventLogAppend:
-		key, value, err := shmevent.DecodeSetPayload(m.Value)
+	case shmevent.Event_Which_logAppend:
+		grp := m.LogAppend()
+		key, err := grp.Key()
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
+		}
+		value, err := grp.Value()
+		if err != nil {
+			return errorMsg(m.Id(), err)
 		}
 		if len(key) == 0 || key[0] != logrecord.LogKeyPrefix {
-			return errorMsg(m.ID, fmt.Errorf("log_append: key must start with the reserved logrecord prefix"))
+			return errorMsg(m.Id(), fmt.Errorf("log_append: key must start with the reserved logrecord prefix"))
 		}
 		kind, _, _, err := logrecord.ParseKey(key)
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
-		// Same reasoning as EventListRange above: a non-cluster-member
-		// remote caller already had to clear isCommandLogCarveOut to reach
-		// here, which only ever admits a CommandRequestLogKind append --
-		// nothing further to check for any other kind, since only a
-		// cluster member or a "remote"-group grantee can reach this case
-		// with one.
+		// Same reasoning as listRange above: a non-cluster-member remote
+		// caller already had to clear isCommandLogCarveOut to reach here,
+		// which only ever admits a CommandRequestLogKind append -- nothing
+		// further to check for any other kind, since only a cluster
+		// member or a "remote"-group grantee can reach this case with one.
 		// A CommandRequest append (SubmitCommand's actual write) gets its
 		// own op, OpAppendCommandRequest, instead of the plain OpSet every
 		// other log kind uses below -- it's what makes the submitting
@@ -2632,7 +3048,7 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		// only pkg/kvctl/mobile/kvmobile's own SubmitCommand client
 		// enforces client-side -- see OpAppendCommandRequest's doc
 		// comment. authorPeerID is this call's own connection-authenticated
-		// identity (never anything m.Value itself claims): caller.remotePeer
+		// identity (never anything the message itself claims): caller.remotePeer
 		// for a remote caller, this node's own peer id for a local one --
 		// SubmitCommand's ACL applies uniformly regardless of which. Goes
 		// through handleOpForward/ForwardProtocolID, same as the plain
@@ -2649,81 +3065,128 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 			}
 			payload, err := shmevent.EncodeCommandRequestApplyPayload(authorPeerID, value)
 			if err != nil {
-				return errorMsg(m.ID, err)
+				return errorMsg(m.Id(), err)
 			}
 			if _, err := n.handleOpForward(ctx, kvfsm.OpAppendCommandRequest, key, payload, true); err != nil {
-				return errorMsg(m.ID, err)
+				return errorMsg(m.Id(), err)
 			}
-			return shmevent.Msg{EventType: shmevent.EventLogAppend, ID: m.ID}
+			return m
 		}
 		if err := n.handleSetForward(ctx, key, value, true); err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
-		return shmevent.Msg{EventType: shmevent.EventLogAppend, ID: m.ID}
+		return m
 
-	case shmevent.EventGetPublicKey:
-		return shmevent.Msg{EventType: shmevent.EventGetPublicKey, ID: m.ID, Value: n.ed25519Pub}
+	case shmevent.Event_Which_getPublicKey:
+		if err := m.GetPublicKey().SetPubKey(n.ed25519Pub); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
 
-	case shmevent.EventGetPrivateKey:
-		return shmevent.Msg{EventType: shmevent.EventGetPrivateKey, ID: m.ID, Value: n.ed25519Priv}
+	case shmevent.Event_Which_getPrivateKey:
+		if err := m.GetPrivateKey().SetPrivKey(n.ed25519Priv); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
 
-	case shmevent.EventGetOwnAddr:
-		return shmevent.Msg{EventType: shmevent.EventGetOwnAddr, ID: m.ID, Value: []byte(n.advertisedAddrs()[0])}
+	case shmevent.Event_Which_getOwnAddr:
+		if err := m.GetOwnAddr().SetAddr(n.advertisedAddrs()[0]); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
 
-	case shmevent.EventGetVersion:
-		return shmevent.Msg{EventType: shmevent.EventGetVersion, ID: m.ID, Value: shmevent.EncodeVersionInfo(currentBuildInfo())}
+	case shmevent.Event_Which_getVersion:
+		resp, err := shmevent.NewGetVersionResponse(currentBuildInfo())
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		resp.SetId(m.Id())
+		return resp
 
-	case shmevent.EventAdd:
+	case shmevent.Event_Which_bootstrapOrJoinCluster:
+		leaderAddr, err := m.BootstrapOrJoinCluster().LeaderAddr()
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		peerID, err := n.handleAdd(ctx, leaderAddr)
+		if err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		if err := m.BootstrapOrJoinCluster().SetLeaderAddr(peerID); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
+
+	case shmevent.Event_Which_addLearner:
 		peerID, err := n.handleAddDispatch(ctx, m, caller.remotePeer)
 		if err != nil {
-			return errorMsg(m.ID, err)
+			return errorMsg(m.Id(), err)
 		}
-		return shmevent.Msg{EventType: shmevent.EventAdd, ID: m.ID, Value: []byte(peerID)}
+		if err := m.AddLearner().SetAddr(peerID); err != nil {
+			return errorMsg(m.Id(), err)
+		}
+		return m
 
 	default:
-		return errorMsg(m.ID, fmt.Errorf("unknown event %d", m.EventType))
+		return errorMsg(m.Id(), fmt.Errorf("unknown event %s", shmevent.EventName(which)))
 	}
 }
 
-// errorMsg builds the response for a failed request -- see
-// shmevent.EventError's doc comment for why this event exists even though
-// it isn't part of api/shmevent.capnp's originally specified field set.
+// requireVoter enforces "only a raft voter may act" for a remote caller
+// -- skipped for a local caller (trusted implicitly). Shared by every
+// catalog/permit case above that needs it.
+func requireVoter(n *Node, caller callerIdentity) error {
+	if caller.remotePeer == "" {
+		return nil
+	}
+	rf := n.getRaft()
+	if rf == nil || !isVoter(rf, raft.ServerID(caller.remotePeer.String())) {
+		return fmt.Errorf("%s is not a current raft voter", caller.remotePeer)
+	}
+	return nil
+}
+
+// errorMsg builds the response for a failed request -- see the error
+// variant's doc comment in api/shmevent.capnp for why this exists even
+// though it isn't part of the fields the protocol was originally
+// specified with.
 func errorMsg(id uint16, err error) shmevent.Msg {
-	msg := err.Error()
-	if len(msg) > shmevent.ValueSize {
-		msg = msg[:shmevent.ValueSize]
+	resp, buildErr := shmevent.NewError(err.Error())
+	if buildErr != nil {
+		resp, _ = shmevent.NewError("")
 	}
-	return shmevent.Msg{EventType: shmevent.EventError, ID: id, Value: []byte(msg)}
+	resp.SetId(id)
+	return resp
 }
 
-// handleAddDispatch implements EventAdd's three shapes -- see
-// EventAdd's doc comment in pkg/shmevent -- and returns this node's own
-// peer id on success, mirroring the pre-shmevent ipcproto.ActionAdd
-// response. remotePeer is the caller's own libp2p-authenticated identity
-// ("" for a local pkg/ipc caller, see callerIdentity) -- checked against
-// the learner-join branch's claimed peer id below.
+// handleAddDispatch implements addLearner -- see that variant's doc
+// comment in api/shmevent.capnp -- and returns this node's own peer id on
+// success, mirroring the pre-shmevent ipcproto.ActionAdd response.
+// remotePeer is the caller's own libp2p-authenticated identity ("" for a
+// local pkg/ipc caller, see callerIdentity) -- checked against the
+// claimed peer id below.
 func (n *Node) handleAddDispatch(ctx context.Context, m shmevent.Msg, remotePeer peer.ID) (string, error) {
-	// Learner join (remote browser caller, via ClientProtocolID): SourceID
-	// references a prior EventSetKey holding the caller's own peer id,
-	// Value is the caller's own reachable address.
-	if m.SourceID != 0 {
-		joinPeerID, ok := n.registry.Lookup(m.SourceID)
-		if !ok {
-			return "", fmt.Errorf("no peer id registered under id %d -- send SetKey first", m.SourceID)
-		}
-		// A remote caller could otherwise register any peer id string it
-		// likes via EventSetKey -- not necessarily its own -- and get it
-		// added to the raft configuration at an address of its choosing.
-		// Binding the claim to the stream's own authenticated identity
-		// (unforgeable -- established by the libp2p handshake, not
-		// anything the message itself carries) closes that.
-		if remotePeer != "" && string(joinPeerID) != remotePeer.String() {
-			return "", fmt.Errorf("add: claimed peer id %q does not match the authenticated connection identity %s", joinPeerID, remotePeer)
-		}
-		return n.handleAddLearner(ctx, string(joinPeerID), string(m.Value))
+	grp := m.AddLearner()
+	// claimedPeerId references a prior setKey holding the caller's own
+	// peer id; addr is the caller's own reachable address.
+	joinPeerID, ok := n.registry.Lookup(grp.ClaimedPeerId())
+	if !ok {
+		return "", fmt.Errorf("no peer id registered under id %d -- send SetKey first", grp.ClaimedPeerId())
 	}
-	// Bootstrap (Value empty) or voter join (Value = leader peer id/multiaddr).
-	return n.handleAdd(ctx, string(m.Value))
+	// A remote caller could otherwise register any peer id string it
+	// likes via setKey -- not necessarily its own -- and get it added to
+	// the raft configuration at an address of its choosing. Binding the
+	// claim to the stream's own authenticated identity (unforgeable --
+	// established by the libp2p handshake, not anything the message
+	// itself carries) closes that.
+	if remotePeer != "" && string(joinPeerID) != remotePeer.String() {
+		return "", fmt.Errorf("add: claimed peer id %q does not match the authenticated connection identity %s", joinPeerID, remotePeer)
+	}
+	addr, err := grp.Addr()
+	if err != nil {
+		return "", err
+	}
+	return n.handleAddLearner(ctx, string(joinPeerID), addr)
 }
 
 // splitInviteToken splits a trailing "#<inviteTokenHex>" off addr, if
@@ -3136,7 +3599,7 @@ func (n *Node) consumeJoinInvite(rf *raft.Raft, token []byte) (raft.ServerSuffra
 // ExecInviteRedeemProtocolID directly at sourceAddr. Returns the new
 // instance id on success.
 func (n *Node) dialAndRedeemExecInvite(ctx context.Context, sourceAddr string, token []byte) (string, error) {
-	info, err := resolveDialAddr(sourceAddr)
+	info, err := resolveDialAddr(n.cfg, n.store, sourceAddr)
 	if err != nil {
 		return "", err
 	}
@@ -3148,11 +3611,11 @@ func (n *Node) dialAndRedeemExecInvite(ctx context.Context, sourceAddr string, t
 		return "", fmt.Errorf("connect to %s: %w", info.ID, err)
 	}
 
-	value, err := shmevent.EncodeExecuteNotification([]byte(n.peerID), token)
+	notif, err := shmevent.NewExecInviteRedeemNotification(n.peerID, token)
 	if err != nil {
-		return "", fmt.Errorf("exec invite redeem: encode notification: %w", err)
+		return "", fmt.Errorf("exec invite redeem: build notification: %w", err)
 	}
-	buf, err := shmevent.Encode(shmevent.Msg{EventType: shmevent.EventExecInviteRedeem, Value: value}, n.ed25519Priv)
+	buf, err := shmevent.Encode(notif, n.ed25519Priv)
 	if err != nil {
 		return "", fmt.Errorf("exec invite redeem: encode message: %w", err)
 	}
@@ -3184,28 +3647,68 @@ func (n *Node) dialAndRedeemExecInvite(ctx context.Context, sourceAddr string, t
 	return "", fmt.Errorf("exec invite redeem rejected: %s", strings.TrimPrefix(line, "ERR: "))
 }
 
-// resolveDialAddr turns addr -- a multiaddr, or a bare peer id this
-// machine's local registry knows -- into the peer.AddrInfo to dial, the
-// resolution dialAndRedeemExecInvite/dialAndPushRecruit each open with.
-func resolveDialAddr(addr string) (*peer.AddrInfo, error) {
-	resolved := addr
-	if !registry.IsMultiaddr(resolved) {
-		reg, err := registry.Open()
+// resolveDialAddr turns addr -- a multiaddr, or a bare peer id -- into the
+// peer.AddrInfo to dial. A bare peer id resolves two ways, tried in
+// order: first against this machine's own local registry (an identity
+// *this machine* itself created or joined via addnode/addfollower/etc --
+// see pkg/registry's doc comment), then, if that fails, as a genuinely
+// external peer id reachable only through one of this node's own known
+// relay candidates (relayCandidates -- the same Config.RelayPeers/
+// confirmed-KindBootstrapNode list newHost's own AutoRelay setup already
+// draws from), on the working assumption that a peer worth dialing this
+// way holds a reservation on one of those relays the same way every other
+// NATed device in this mesh does. Every resolveDialAddr caller (dial-and-
+// act helpers like dialAndSubmitCommand/dialAndQueryCommandLog/
+// dialAndSubmitPublicAccess/dialAndRedeemExecInvite) benefits from this
+// uniformly -- bare-peer-id dialing needs no per-caller opt-in.
+func resolveDialAddr(cfg Config, st *store.Store, addr string) (*peer.AddrInfo, error) {
+	if registry.IsMultiaddr(addr) {
+		maddr, err := multiaddr.NewMultiaddr(addr)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("invalid address %q: %w", addr, err)
 		}
-		resolved, err = reg.ResolveAddress(resolved)
+		info, err := peer.AddrInfoFromP2pAddr(maddr)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("address %q missing peer id: %w", addr, err)
+		}
+		return info, nil
+	}
+
+	reg, err := registry.Open()
+	if err == nil {
+		if resolved, resolveErr := reg.ResolveAddress(addr); resolveErr == nil {
+			maddr, err := multiaddr.NewMultiaddr(resolved)
+			if err != nil {
+				return nil, fmt.Errorf("invalid address %q: %w", resolved, err)
+			}
+			info, err := peer.AddrInfoFromP2pAddr(maddr)
+			if err != nil {
+				return nil, fmt.Errorf("address %q missing peer id: %w", resolved, err)
+			}
+			return info, nil
 		}
 	}
-	maddr, err := multiaddr.NewMultiaddr(resolved)
+
+	targetID, err := peer.Decode(addr)
 	if err != nil {
-		return nil, fmt.Errorf("invalid address %q: %w", resolved, err)
+		return nil, fmt.Errorf("%q is neither a multiaddr, a peer id created on this machine, nor a valid peer id: %w", addr, err)
 	}
-	info, err := peer.AddrInfoFromP2pAddr(maddr)
-	if err != nil {
-		return nil, fmt.Errorf("address %q missing peer id: %w", resolved, err)
+	candidates := relayCandidates(cfg, st)
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("%q is not a peer id created on this machine, and this node has no relay candidates to try reaching it through", addr)
+	}
+	info := &peer.AddrInfo{ID: targetID}
+	for _, relay := range candidates {
+		for _, relayAddr := range relay.Addrs {
+			circuit, err := multiaddr.NewMultiaddr(relayAddr.String() + "/p2p/" + relay.ID.String() + "/p2p-circuit/p2p/" + targetID.String())
+			if err != nil {
+				continue
+			}
+			info.Addrs = append(info.Addrs, circuit)
+		}
+	}
+	if len(info.Addrs) == 0 {
+		return nil, fmt.Errorf("%q is not a peer id created on this machine, and no usable relay-circuit address could be built for it", addr)
 	}
 	return info, nil
 }
@@ -3443,12 +3946,12 @@ func dialAttempts(ctx context.Context, h lp2phost.Host, info peer.AddrInfo, atte
 // note, if non-empty, rides along as the request's "note" field -- purely
 // informational (who/what asked), never consulted by permission checks.
 func (n *Node) dialAndSubmitCommand(ctx context.Context, targetAddr, commandID, inputsJSON, note string) (string, error) {
-	info, err := resolveDialAddr(targetAddr)
+	info, err := resolveDialAddr(n.cfg, n.store, targetAddr)
 	if err != nil {
 		return "", err
 	}
 	if info.ID.String() == n.peerID {
-		return "", fmt.Errorf("%s: %s is this node itself -- a node already has every standing in its own cluster", shmevent.EventName(shmevent.EventDialSubmitCommand), n.peerID)
+		return "", fmt.Errorf("dial_submit_command: %s is this node itself -- a node already has every standing in its own cluster", n.peerID)
 	}
 	if err := connectWithRetry(ctx, n.host, *info); err != nil {
 		return "", fmt.Errorf("connect to %s: %w", info.ID, err)
@@ -3487,11 +3990,11 @@ func (n *Node) dialAndSubmitCommand(ctx context.Context, targetAddr, commandID, 
 	if err != nil {
 		return "", fmt.Errorf("dial_submit_command: encode record: %w", err)
 	}
-	payload, err := shmevent.EncodeSetPayload(key, value)
+	logMsg, err := shmevent.NewLogAppend(key, value)
 	if err != nil {
-		return "", fmt.Errorf("dial_submit_command: encode payload: %w", err)
+		return "", fmt.Errorf("dial_submit_command: build message: %w", err)
 	}
-	buf, err := shmevent.Encode(shmevent.Msg{EventType: shmevent.EventLogAppend, Value: payload}, n.ed25519Priv)
+	buf, err := shmevent.Encode(logMsg, n.ed25519Priv)
 	if err != nil {
 		return "", fmt.Errorf("dial_submit_command: encode message: %w", err)
 	}
@@ -3520,8 +4023,9 @@ func (n *Node) dialAndSubmitCommand(ctx context.Context, targetAddr, commandID, 
 	if err != nil {
 		return "", fmt.Errorf("dial_submit_command: decode response from %s: %w", info.ID, err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return "", fmt.Errorf("%s rejected by %s: %s", commandID, info.ID, resp.Value)
+	if resp.Which() == shmevent.Event_Which_error {
+		errMsg, _ := resp.Error().Message_()
+		return "", fmt.Errorf("%s rejected by %s: %s", commandID, info.ID, errMsg)
 	}
 	return instanceID, nil
 }
@@ -3558,7 +4062,7 @@ func (n *Node) dialAndSubmitCommand(ctx context.Context, targetAddr, commandID, 
 // commandID dialAndSubmitCommand's other callers submit -- see that
 // function's doc comment.
 func (n *Node) dialAndSubmitPublicAccess(ctx context.Context, targetAddr, note string) (string, error) {
-	info, err := resolveDialAddr(targetAddr)
+	info, err := resolveDialAddr(n.cfg, n.store, targetAddr)
 	if err != nil {
 		return "", err
 	}
@@ -3621,12 +4125,12 @@ func (n *Node) dialAndSubmitPublicAccess(ctx context.Context, targetAddr, note s
 // per-call dial pkg/shmclient.Session.ListRange's remote counterpart would
 // need if it existed.
 func (n *Node) dialAndQueryCommandLog(ctx context.Context, targetAddr, instanceID string, since, until time.Time, limit int) ([]logrecord.Record, error) {
-	info, err := resolveDialAddr(targetAddr)
+	info, err := resolveDialAddr(n.cfg, n.store, targetAddr)
 	if err != nil {
 		return nil, err
 	}
 	if info.ID.String() == n.peerID {
-		return nil, fmt.Errorf("%s: %s is this node itself -- read its command log locally instead", shmevent.EventName(shmevent.EventDialQueryCommandLog), n.peerID)
+		return nil, fmt.Errorf("dial_query_command_log: %s is this node itself -- read its command log locally instead", n.peerID)
 	}
 	if err := connectWithRetry(ctx, n.host, *info); err != nil {
 		return nil, fmt.Errorf("connect to %s: %w", info.ID, err)
@@ -3635,11 +4139,11 @@ func (n *Node) dialAndQueryCommandLog(ctx context.Context, targetAddr, instanceI
 	lo, hi := logrecord.ScanBounds(shmevent.CommandExecLogKind, instanceID, since, until)
 	var records []logrecord.Record
 	for limit <= 0 || len(records) < limit {
-		query, err := shmevent.EncodeListRangeQuery(lo, hi)
+		queryMsg, err := shmevent.NewListRange(lo, hi)
 		if err != nil {
-			return nil, fmt.Errorf("dial_query_command_log: encode query: %w", err)
+			return nil, fmt.Errorf("dial_query_command_log: build query: %w", err)
 		}
-		buf, err := shmevent.Encode(shmevent.Msg{EventType: shmevent.EventListRange, Value: query}, n.ed25519Priv)
+		buf, err := shmevent.Encode(queryMsg, n.ed25519Priv)
 		if err != nil {
 			return nil, fmt.Errorf("dial_query_command_log: encode message: %w", err)
 		}
@@ -3667,15 +4171,21 @@ func (n *Node) dialAndQueryCommandLog(ctx context.Context, targetAddr, instanceI
 		if err != nil {
 			return nil, fmt.Errorf("dial_query_command_log: decode response from %s: %w", info.ID, err)
 		}
-		if resp.EventType == shmevent.EventError {
-			return nil, fmt.Errorf("dial_query_command_log rejected by %s: %s", info.ID, resp.Value)
+		if resp.Which() == shmevent.Event_Which_error {
+			errMsg, _ := resp.Error().Message_()
+			return nil, fmt.Errorf("dial_query_command_log rejected by %s: %s", info.ID, errMsg)
 		}
-		if len(resp.Value) == 0 {
+		respGrp := resp.ListRange()
+		key, err := respGrp.Key()
+		if err != nil {
+			return nil, fmt.Errorf("dial_query_command_log: response key: %w", err)
+		}
+		if len(key) == 0 {
 			break
 		}
-		key, value, err := shmevent.DecodeListRangeQuery(resp.Value)
+		value, err := respGrp.Value()
 		if err != nil {
-			return nil, fmt.Errorf("dial_query_command_log: decode list range response: %w", err)
+			return nil, fmt.Errorf("dial_query_command_log: response value: %w", err)
 		}
 		rec, err := logrecord.Decode(value)
 		if err != nil {
@@ -3997,16 +4507,21 @@ func (n *Node) processExecInviteRedeem(ctx context.Context, buf []byte) (string,
 	if err != nil {
 		return "", fmt.Errorf("exec invite redeem: decode: %w", err)
 	}
-	if m.EventType != shmevent.EventExecInviteRedeem {
-		return "", fmt.Errorf("exec invite redeem: expected EventExecInviteRedeem, got %s", shmevent.EventName(m.EventType))
+	if m.Which() != shmevent.Event_Which_execInviteRedeem {
+		return "", fmt.Errorf("exec invite redeem: expected execInviteRedeem, got %s", shmevent.EventName(m.Which()))
 	}
-	redeemerPeerIDBytes, token, err := shmevent.DecodeExecuteNotification(m.Value)
+	grp := m.ExecInviteRedeem()
+	redeemerPeerIDStr, err := grp.RedeemerPeerId()
 	if err != nil {
-		return "", fmt.Errorf("exec invite redeem: decode notification: %w", err)
+		return "", fmt.Errorf("exec invite redeem: redeemer peer id: %w", err)
 	}
-	redeemerPeer, err := peer.Decode(string(redeemerPeerIDBytes))
+	token, err := grp.Token()
 	if err != nil {
-		return "", fmt.Errorf("exec invite redeem: invalid redeemer peer id %q: %w", redeemerPeerIDBytes, err)
+		return "", fmt.Errorf("exec invite redeem: token: %w", err)
+	}
+	redeemerPeer, err := peer.Decode(redeemerPeerIDStr)
+	if err != nil {
+		return "", fmt.Errorf("exec invite redeem: invalid redeemer peer id %q: %w", redeemerPeerIDStr, err)
 	}
 	redeemerPub, err := redeemerPeer.ExtractPublicKey()
 	if err != nil {
@@ -4291,7 +4806,7 @@ func (n *Node) lodgeJoinRequest(ctx context.Context, joinPeerID, joinAddr string
 	}
 	key := shmevent.SystemKey(shmevent.KindClusterJoin, shmevent.StatusPending, []byte(joinPeerID))
 	metadata := shmevent.EncodeClusterJoinMetadata(joinAddr, sf)
-	if err := n.handleSetForward(ctx, key, metadata, true); err != nil {
+	if err := n.handleSetForward(ctx, key, []byte(metadata), true); err != nil {
 		return fmt.Sprintf("ERR: %v", err)
 	}
 	return "PENDING"
@@ -4960,7 +5475,7 @@ func (n *Node) admitClusterJoinIfConfirmed(ctx context.Context, rf *raft.Raft, c
 	if err != nil {
 		return fmt.Errorf("cluster join: read confirmed record for %s: %w", peerID, err)
 	}
-	addr, sf, err := shmevent.DecodeClusterJoinMetadata(value)
+	addr, sf, err := shmevent.DecodeClusterJoinMetadata(string(value))
 	if err != nil {
 		return fmt.Errorf("cluster join: decode confirmed record for %s: %w", peerID, err)
 	}
@@ -5272,22 +5787,27 @@ func (n *Node) handleForwardKickStream(s network.Stream) {
 // its own identity, since that's the key it signs with), then delivers
 // it. Never touches n.store or raft.
 func (n *Node) dispatchExecute(ctx context.Context, m shmevent.Msg) error {
-	senderKey, ok := n.registry.Lookup(m.SourceID)
+	grp := m.Execute()
+	senderKey, ok := n.registry.Lookup(grp.SourceId())
 	if !ok {
-		return fmt.Errorf("execute: no peer id registered under source id %d -- send SetKey first", m.SourceID)
+		return fmt.Errorf("execute: no peer id registered under source id %d -- send SetKey first", grp.SourceId())
 	}
 	if string(senderKey) != n.peerID {
 		return fmt.Errorf("execute: source %q is not this node's own peer id (%s)", senderKey, n.peerID)
 	}
-	destKey, ok := n.registry.Lookup(m.DestinationID)
+	destKey, ok := n.registry.Lookup(grp.DestinationId())
 	if !ok {
-		return fmt.Errorf("execute: no peer id registered under destination id %d -- send SetKey first", m.DestinationID)
+		return fmt.Errorf("execute: no peer id registered under destination id %d -- send SetKey first", grp.DestinationId())
 	}
 	destPeerID, err := peer.Decode(string(destKey))
 	if err != nil {
 		return fmt.Errorf("execute: invalid destination peer id %q: %w", destKey, err)
 	}
-	return n.sendExecute(ctx, destPeerID, m.Value)
+	value, err := grp.Value()
+	if err != nil {
+		return fmt.Errorf("execute: value: %w", err)
+	}
+	return n.sendExecute(ctx, destPeerID, value)
 }
 
 // sendExecute dials dest directly over ExecuteProtocolID -- a fresh
@@ -5309,11 +5829,11 @@ func (n *Node) sendExecute(ctx context.Context, dest peer.ID, payload []byte) er
 	}
 	defer s.Close()
 
-	value, err := shmevent.EncodeExecuteNotification([]byte(n.peerID), payload)
+	notif, err := shmevent.NewExecuteNotification(n.peerID, payload)
 	if err != nil {
-		return fmt.Errorf("execute: encode notification: %w", err)
+		return fmt.Errorf("execute: build notification: %w", err)
 	}
-	buf, err := shmevent.Encode(shmevent.Msg{EventType: shmevent.EventExecute, Value: value}, n.ed25519Priv)
+	buf, err := shmevent.Encode(notif, n.ed25519Priv)
 	if err != nil {
 		return fmt.Errorf("execute: encode message: %w", err)
 	}
@@ -5363,16 +5883,22 @@ func (n *Node) handleExecuteStream(s network.Stream) {
 		fmt.Fprintf(s, "execute: decode: %v", err)
 		return
 	}
-	if m.EventType != shmevent.EventExecute {
-		fmt.Fprintf(s, "execute: expected EventExecute, got %s", shmevent.EventName(m.EventType))
+	if m.Which() != shmevent.Event_Which_execute {
+		fmt.Fprintf(s, "execute: expected execute, got %s", shmevent.EventName(m.Which()))
 		return
 	}
-	senderPeerID, payload, err := shmevent.DecodeExecuteNotification(m.Value)
+	grp := m.Execute()
+	senderPeerID, err := grp.SenderPeerId()
 	if err != nil {
-		fmt.Fprintf(s, "execute: decode notification: %v", err)
+		fmt.Fprintf(s, "execute: sender peer id: %v", err)
 		return
 	}
-	senderPeer, err := peer.Decode(string(senderPeerID))
+	payload, err := grp.Value()
+	if err != nil {
+		fmt.Fprintf(s, "execute: value: %v", err)
+		return
+	}
+	senderPeer, err := peer.Decode(senderPeerID)
 	if err != nil {
 		fmt.Fprintf(s, "execute: invalid sender peer id %q: %v", senderPeerID, err)
 		return
@@ -5398,7 +5924,7 @@ func (n *Node) handleExecuteStream(s network.Stream) {
 		fmt.Fprintf(s, "execute: %s is not a cluster member, in the execute group, or granted access to %s", senderPeer, n.peerID)
 		return
 	}
-	n.executeInbox.push(senderPeerID, payload)
+	n.executeInbox.push([]byte(senderPeerID), payload)
 }
 
 // maxFramedMessage caps readFramed's length prefix before allocating, so
@@ -5528,12 +6054,12 @@ func (n *Node) dispatchChannelOpen(ctx context.Context, destPeerIDStr string) (s
 	// doc comment.
 	_ = s.SetDeadline(time.Now().Add(streamRequestTimeout))
 
-	notifValue, err := shmevent.EncodeExecuteNotification([]byte(n.peerID), nil)
+	notif, err := shmevent.NewChannelOpenHandshake(n.peerID)
 	if err != nil {
 		s.Close()
-		return "", fmt.Errorf("channel: encode handshake: %w", err)
+		return "", fmt.Errorf("channel: build handshake: %w", err)
 	}
-	buf, err := shmevent.Encode(shmevent.Msg{EventType: shmevent.EventChannelOpen, Value: notifValue}, n.ed25519Priv)
+	buf, err := shmevent.Encode(notif, n.ed25519Priv)
 	if err != nil {
 		s.Close()
 		return "", fmt.Errorf("channel: encode handshake message: %w", err)
@@ -5610,16 +6136,16 @@ func (n *Node) handleChannelStream(s network.Stream) {
 		s.Close()
 		return
 	}
-	if m.EventType != shmevent.EventChannelOpen {
+	if m.Which() != shmevent.Event_Which_channelOpen {
 		s.Close()
 		return
 	}
-	senderPeerID, _, err := shmevent.DecodeExecuteNotification(m.Value)
+	senderPeerID, err := m.ChannelOpen().SenderPeerId()
 	if err != nil {
 		s.Close()
 		return
 	}
-	senderPeer, err := peer.Decode(string(senderPeerID))
+	senderPeer, err := peer.Decode(senderPeerID)
 	if err != nil {
 		s.Close()
 		return
@@ -5817,15 +6343,14 @@ func (n *Node) dispatchChannelSend(channelID string, purpose byte, chunk []byte)
 	return sess.write(n.ed25519Priv, purpose, chunk)
 }
 
-// dispatchChannelPoll implements EventChannelPoll: pops the oldest
-// buffered chunk from channelID's inbox, if any -- see
-// shmevent.EncodeChannelPollResponse's status byte for the three-way
-// result.
-func (n *Node) dispatchChannelPoll(channelID string) ([]byte, error) {
+// dispatchChannelPoll implements channelPoll: pops the oldest buffered
+// chunk from channelID's inbox, if any -- see ChannelPollNoData/Chunk/
+// Closed for the three-way result.
+func (n *Node) dispatchChannelPoll(channelID string) (status, purpose byte, chunk []byte, err error) {
 	n.channels.reap()
 	sess, ok := n.channels.get(channelID)
 	if !ok {
-		return nil, fmt.Errorf("channel: no such channel %q", channelID)
+		return 0, 0, nil, fmt.Errorf("channel: no such channel %q", channelID)
 	}
 	if purpose, chunk, ok := sess.popChunk(); ok {
 		// A chunk the wire accepts (up to channelMaxChunkSize) can be far
@@ -5841,33 +6366,33 @@ func (n *Node) dispatchChannelPoll(channelID string) ([]byte, error) {
 		// deliberate -- a chunk this reader can never take would otherwise
 		// block every later one behind it forever.
 		if len(chunk) > maxPollChunkSize {
-			return nil, fmt.Errorf("channel: buffered chunk is %d bytes, larger than a poll response can carry (max %d) -- read this channel through its data-plane ring (see pkg/chandata) instead", len(chunk), maxPollChunkSize)
+			return 0, 0, nil, fmt.Errorf("channel: buffered chunk is %d bytes, larger than a poll response can carry (max %d) -- read this channel through its data-plane ring (see pkg/chandata) instead", len(chunk), maxPollChunkSize)
 		}
-		return shmevent.EncodeChannelPollResponse(shmevent.ChannelPollChunk, purpose, chunk), nil
+		return shmevent.ChannelPollChunk, purpose, chunk, nil
 	}
 	if closed, _ := sess.status(); closed {
-		return shmevent.EncodeChannelPollResponse(shmevent.ChannelPollClosed, shmevent.ChannelPurposeData, nil), nil
+		return shmevent.ChannelPollClosed, shmevent.ChannelPurposeData, nil, nil
 	}
-	return shmevent.EncodeChannelPollResponse(shmevent.ChannelPollNoData, shmevent.ChannelPurposeData, nil), nil
+	return shmevent.ChannelPollNoData, shmevent.ChannelPurposeData, nil, nil
 }
 
-// dispatchChannelListen implements EventChannelListen: claims the oldest
-// pending (accepted-but-unclaimed) incoming channel, if any. A nil,nil
-// return (empty response) means none pending yet -- a local caller polls
-// this in a loop, exactly EventPollExecute's documented convention.
-func (n *Node) dispatchChannelListen() ([]byte, error) {
+// dispatchChannelListen implements channelListen: claims the oldest
+// pending (accepted-but-unclaimed) incoming channel, if any. Empty
+// channelID means none pending yet -- a local caller polls this in a
+// loop, exactly pollExecute's documented convention.
+func (n *Node) dispatchChannelListen() (channelID, remotePeerID string, err error) {
 	n.channels.reap()
 	channelID, ok := n.channels.popPending()
 	if !ok {
-		return nil, nil
+		return "", "", nil
 	}
 	sess, ok := n.channels.get(channelID)
 	if !ok {
 		// Reaped between popPending and here -- vanishingly unlikely, but
 		// safe to treat the same as "nothing pending yet."
-		return nil, nil
+		return "", "", nil
 	}
-	return shmevent.EncodeChannelAccept(channelID, sess.remotePeerID)
+	return channelID, sess.remotePeerID, nil
 }
 
 // dispatchChannelClose implements EventChannelClose: closes channelID's
@@ -5977,7 +6502,7 @@ func (n *Node) handleClientStream(s network.Stream) {
 
 	caller, err := remoteCaller(s)
 	if err != nil {
-		respBuf, encErr := shmevent.Encode(errorMsg(m.ID, err), n.ed25519Priv)
+		respBuf, encErr := shmevent.Encode(errorMsg(m.Id(), err), n.ed25519Priv)
 		if encErr == nil {
 			s.Write(respBuf)
 		}

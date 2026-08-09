@@ -71,52 +71,48 @@ func TestCommandRequestSubmitFromNonVoterForwardsWithoutVoterCheck(t *testing.T)
 
 	call := func(n *Node, m shmevent.Msg) shmevent.Msg {
 		t.Helper()
-		buf, err := shmevent.Encode(m, n.ed25519Priv)
-		if err != nil {
-			t.Fatalf("encode: %v", err)
-		}
-		decoded, crc, sig, err := shmevent.Decode(buf)
-		if err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		return n.handleShmEvent(ctx, decoded, crc, sig, n.localCaller())
+		return callLocal(t, ctx, n, m, n.ed25519Priv)
 	}
 
 	const groupID = "grp-nonvoter-submit"
 	const commandID = "cmd-nonvoter-submit"
 
-	groupPayload, err := shmevent.EncodeGroupPutPayload(groupID, "Non-Voter Submit Group", false)
+	groupMsg, err := shmevent.NewGroupPut(groupID, "Non-Voter Submit Group", false)
 	if err != nil {
-		t.Fatalf("EncodeGroupPutPayload: %v", err)
+		t.Fatalf("NewGroupPut: %v", err)
 	}
-	if resp := call(leader, shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: shmevent.EncodeCatalogPayload(shmevent.KindGroup, groupPayload), ID: 1}); resp.EventType == shmevent.EventError {
-		t.Fatalf("group_put: %s", resp.Value)
+	groupMsg.SetId(1)
+	if resp := call(leader, groupMsg); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("group_put: %s", mustErrMessage(t, resp))
 	}
 
-	cmdPayload, err := shmevent.EncodeCommandPutPayload(commandID, "Echo", []byte(leader.peerID))
+	cmdMsg, err := shmevent.NewCommandPut(commandID, "Echo", leader.peerID)
 	if err != nil {
-		t.Fatalf("EncodeCommandPutPayload: %v", err)
+		t.Fatalf("NewCommandPut: %v", err)
 	}
-	if resp := call(leader, shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: shmevent.EncodeCatalogPayload(shmevent.KindCommand, cmdPayload), ID: 2}); resp.EventType == shmevent.EventError {
-		t.Fatalf("command_put: %s", resp.Value)
+	cmdMsg.SetId(2)
+	if resp := call(leader, cmdMsg); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("command_put: %s", mustErrMessage(t, resp))
 	}
 
-	gcPayload, err := shmevent.EncodeGroupCommandPayload([]byte(commandID), []byte(groupID))
+	gcMsg, err := shmevent.NewGroupCommandPut(commandID, groupID)
 	if err != nil {
-		t.Fatalf("EncodeGroupCommandPayload: %v", err)
+		t.Fatalf("NewGroupCommandPut: %v", err)
 	}
-	if resp := call(leader, shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: shmevent.EncodeCatalogPayload(shmevent.KindGroupCommand, gcPayload), ID: 3}); resp.EventType == shmevent.EventError {
-		t.Fatalf("group_command_put: %s", resp.Value)
+	gcMsg.SetId(3)
+	if resp := call(leader, gcMsg); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("group_command_put: %s", mustErrMessage(t, resp))
 	}
 
 	// Grant the learner -- never a raft voter -- real ACL standing for
 	// commandID via the group just created.
-	pgPayload, err := shmevent.EncodePeerGroupPayload([]byte(learner.peerID), []byte(groupID))
+	pgMsg, err := shmevent.NewPeerGroupPut(learner.peerID, groupID)
 	if err != nil {
-		t.Fatalf("EncodePeerGroupPayload: %v", err)
+		t.Fatalf("NewPeerGroupPut: %v", err)
 	}
-	if resp := call(leader, shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: shmevent.EncodeCatalogPayload(shmevent.KindPeerGroup, pgPayload), ID: 4}); resp.EventType == shmevent.EventError {
-		t.Fatalf("peer_group_put: %s", resp.Value)
+	pgMsg.SetId(4)
+	if resp := call(leader, pgMsg); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("peer_group_put: %s", mustErrMessage(t, resp))
 	}
 
 	// Give raft a moment to replicate the ACL state to the learner before
@@ -140,18 +136,19 @@ func TestCommandRequestSubmitFromNonVoterForwardsWithoutVoterCheck(t *testing.T)
 	if err != nil {
 		t.Fatalf("logrecord.BuildKey: %v", err)
 	}
-	setPayload, err := shmevent.EncodeSetPayload(recKey, recValue)
+	logAppendMsg, err := shmevent.NewLogAppend(recKey, recValue)
 	if err != nil {
-		t.Fatalf("EncodeSetPayload: %v", err)
+		t.Fatalf("NewLogAppend: %v", err)
 	}
+	logAppendMsg.SetId(5)
 
 	// The learner is never a raft voter -- if this were still routed
 	// through handleConfirmForward's voter-gated ForwardConfirmProtocolID,
 	// it would fail here with "not a current raft voter" instead of
 	// succeeding on the merits of the PeerGroup grant above.
-	resp := call(learner, shmevent.Msg{EventType: shmevent.EventLogAppend, Value: setPayload, ID: 5})
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("learner log_append (command request submit) rejected: %s", resp.Value)
+	resp := call(learner, logAppendMsg)
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("learner log_append (command request submit) rejected: %s", mustErrMessage(t, resp))
 	}
 
 	deadline := time.Now().Add(10 * time.Second)

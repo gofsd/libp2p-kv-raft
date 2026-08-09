@@ -99,56 +99,6 @@ func DecodeStationPayload(payload []byte) (name string, attrs []byte, err error)
 	return name, payload[off:], nil
 }
 
-// EncodeStationPutPayload packs peerID, name and attrs into a single
-// EventStationPut Msg.Value: 2-byte length prefix + peerID, then 2-byte
-// length prefix + name, then attrs verbatim. Distinct from
-// EncodeStationPayload (the record's stored *value*), same reasoning as
-// EncodeGroupPutPayload.
-func EncodeStationPutPayload(peerID []byte, name string, attrs []byte) ([]byte, error) {
-	if len(peerID) > 0xFFFF {
-		return nil, fmt.Errorf("shmevent: station put peer id too long: %d bytes", len(peerID))
-	}
-	if len(name) > 0xFFFF {
-		return nil, fmt.Errorf("shmevent: station put name too long: %d bytes", len(name))
-	}
-	buf := make([]byte, 2+len(peerID)+2+len(name)+len(attrs))
-	buf[0] = byte(len(peerID) >> 8)
-	buf[1] = byte(len(peerID))
-	off := 2
-	off += copy(buf[off:], peerID)
-	buf[off] = byte(len(name) >> 8)
-	buf[off+1] = byte(len(name))
-	off += 2
-	off += copy(buf[off:], name)
-	copy(buf[off:], attrs)
-	return buf, nil
-}
-
-// DecodeStationPutPayload is the inverse of EncodeStationPutPayload.
-func DecodeStationPutPayload(payload []byte) (peerID []byte, name string, attrs []byte, err error) {
-	if len(payload) < 2 {
-		return nil, "", nil, fmt.Errorf("shmevent: station put payload too short: %d bytes", len(payload))
-	}
-	peerLen := int(payload[0])<<8 | int(payload[1])
-	off := 2
-	if off+peerLen > len(payload) {
-		return nil, "", nil, fmt.Errorf("shmevent: station put peer id length %d exceeds payload size %d", peerLen, len(payload))
-	}
-	peerID = payload[off : off+peerLen]
-	off += peerLen
-	if off+2 > len(payload) {
-		return nil, "", nil, fmt.Errorf("shmevent: station put payload too short for name length")
-	}
-	nameLen := int(payload[off])<<8 | int(payload[off+1])
-	off += 2
-	if off+nameLen > len(payload) {
-		return nil, "", nil, fmt.Errorf("shmevent: station put name length %d exceeds payload size %d", nameLen, len(payload))
-	}
-	name = string(payload[off : off+nameLen])
-	off += nameLen
-	return peerID, name, payload[off:], nil
-}
-
 // GroupCommandKey builds the pkg/store key for one Group<->Command
 // relation record: commandID first (length-prefixed, so it alone can be
 // prefix-scanned -- see GroupCommandBounds -- to answer "every group this
@@ -469,255 +419,6 @@ func DecodeCommandPayloadFull(payload []byte) (name string, peerID, spec []byte,
 	return name, peerID, payload[off:], nil
 }
 
-// EncodeGroupPutPayload packs public, id, and name into a single
-// EventGroupPut Msg.Value: public first (fixed size), then a 2-byte
-// big-endian length prefix for id, then id, then name verbatim (last
-// field, no prefix needed). Distinct from EncodeGroupPayload (the record's
-// stored *value*, keyed separately by GroupKey(id)): this is the
-// wire-level request, which needs all three fields in one message.
-func EncodeGroupPutPayload(id, name string, public bool) ([]byte, error) {
-	if len(id) > 0xFFFF {
-		return nil, fmt.Errorf("shmevent: group put id too long: %d bytes", len(id))
-	}
-	buf := make([]byte, 1+2+len(id)+len(name))
-	if public {
-		buf[0] = groupPublicByte
-	} else {
-		buf[0] = groupPrivateByte
-	}
-	buf[1] = byte(len(id) >> 8)
-	buf[2] = byte(len(id))
-	off := 3
-	off += copy(buf[off:], id)
-	copy(buf[off:], name)
-	return buf, nil
-}
-
-// DecodeGroupPutPayload is the inverse of EncodeGroupPutPayload.
-func DecodeGroupPutPayload(payload []byte) (id, name string, public bool, err error) {
-	if len(payload) < 3 {
-		return "", "", false, fmt.Errorf("shmevent: group put payload too short: %d bytes", len(payload))
-	}
-	public = payload[0] == groupPublicByte
-	idLen := int(payload[1])<<8 | int(payload[2])
-	off := 3
-	if off+idLen > len(payload) {
-		return "", "", false, fmt.Errorf("shmevent: group put id length %d exceeds payload size %d", idLen, len(payload))
-	}
-	id = string(payload[off : off+idLen])
-	off += idLen
-	return id, string(payload[off:]), public, nil
-}
-
-// EncodeCommandPutPayload packs id, name, and peerID into a single
-// EventCommandPut Msg.Value: 2-byte length prefix + id, then 2-byte
-// length prefix + name, then peerID verbatim (last field, no prefix
-// needed). Distinct from EncodeCommandPayload (the record's stored
-// *value*), same reasoning as EncodeGroupPutPayload.
-func EncodeCommandPutPayload(id, name string, peerID []byte) ([]byte, error) {
-	if len(id) > 0xFFFF {
-		return nil, fmt.Errorf("shmevent: command put id too long: %d bytes", len(id))
-	}
-	if len(name) > 0xFFFF {
-		return nil, fmt.Errorf("shmevent: command put name too long: %d bytes", len(name))
-	}
-	buf := make([]byte, 2+len(id)+2+len(name)+len(peerID))
-	buf[0] = byte(len(id) >> 8)
-	buf[1] = byte(len(id))
-	off := 2
-	off += copy(buf[off:], id)
-	buf[off] = byte(len(name) >> 8)
-	buf[off+1] = byte(len(name))
-	off += 2
-	off += copy(buf[off:], name)
-	copy(buf[off:], peerID)
-	return buf, nil
-}
-
-// EncodeCommandPutPayloadWithSpec is EncodeCommandPutPayload carrying the
-// command's spec as well, versioned by the same sentinel and for the same
-// reason as EncodeCommandPayloadWithSpec: peerID is v1's trailing field, so
-// a fourth field can only follow a length prefix that v1 doesn't have.
-// Emits v1 byte-for-byte when spec is empty.
-//
-// v2 layout: [0xFF 0xFF][2-byte id len][id][2-byte name len][name]
-// [2-byte peerID len][peerID][spec, taking the rest].
-func EncodeCommandPutPayloadWithSpec(id, name string, peerID, spec []byte) ([]byte, error) {
-	if len(spec) == 0 {
-		return EncodeCommandPutPayload(id, name, peerID)
-	}
-	if len(id) > 0xFFFF {
-		return nil, fmt.Errorf("shmevent: command put id too long: %d bytes", len(id))
-	}
-	if len(name) > 0xFFFF {
-		return nil, fmt.Errorf("shmevent: command put name too long: %d bytes", len(name))
-	}
-	if len(peerID) > 0xFFFF {
-		return nil, fmt.Errorf("shmevent: command put peer id too long: %d bytes", len(peerID))
-	}
-	buf := make([]byte, 2+2+len(id)+2+len(name)+2+len(peerID)+len(spec))
-	buf[0], buf[1] = 0xFF, 0xFF
-	off := 2
-	buf[off] = byte(len(id) >> 8)
-	buf[off+1] = byte(len(id))
-	off += 2
-	off += copy(buf[off:], id)
-	buf[off] = byte(len(name) >> 8)
-	buf[off+1] = byte(len(name))
-	off += 2
-	off += copy(buf[off:], name)
-	buf[off] = byte(len(peerID) >> 8)
-	buf[off+1] = byte(len(peerID))
-	off += 2
-	off += copy(buf[off:], peerID)
-	copy(buf[off:], spec)
-	return buf, nil
-}
-
-// DecodeCommandPutPayload is the inverse of EncodeCommandPutPayload, reading
-// either format and discarding any spec.
-func DecodeCommandPutPayload(payload []byte) (id, name string, peerID []byte, err error) {
-	id, name, peerID, _, err = DecodeCommandPutPayloadFull(payload)
-	return id, name, peerID, err
-}
-
-// DecodeCommandPutPayloadFull decodes either format, returning the spec as
-// well (nil for a v1 payload).
-func DecodeCommandPutPayloadFull(payload []byte) (id, name string, peerID, spec []byte, err error) {
-	if len(payload) < 2 {
-		return "", "", nil, nil, fmt.Errorf("shmevent: command put payload too short: %d bytes", len(payload))
-	}
-	v2 := int(payload[0])<<8|int(payload[1]) == commandPayloadV2Sentinel
-	off := 0
-	if v2 {
-		off = 2
-	}
-
-	if off+2 > len(payload) {
-		return "", "", nil, nil, fmt.Errorf("shmevent: command put payload too short for id length")
-	}
-	idLen := int(payload[off])<<8 | int(payload[off+1])
-	off += 2
-	if off+idLen > len(payload) {
-		return "", "", nil, nil, fmt.Errorf("shmevent: command put id length %d exceeds payload size %d", idLen, len(payload))
-	}
-	id = string(payload[off : off+idLen])
-	off += idLen
-
-	if off+2 > len(payload) {
-		return "", "", nil, nil, fmt.Errorf("shmevent: command put payload too short for name length")
-	}
-	nameLen := int(payload[off])<<8 | int(payload[off+1])
-	off += 2
-	if off+nameLen > len(payload) {
-		return "", "", nil, nil, fmt.Errorf("shmevent: command put name length %d exceeds payload size %d", nameLen, len(payload))
-	}
-	name = string(payload[off : off+nameLen])
-	off += nameLen
-
-	if !v2 {
-		return id, name, payload[off:], nil, nil
-	}
-
-	if off+2 > len(payload) {
-		return "", "", nil, nil, fmt.Errorf("shmevent: command put payload too short for peer id length")
-	}
-	peerLen := int(payload[off])<<8 | int(payload[off+1])
-	off += 2
-	if off+peerLen > len(payload) {
-		return "", "", nil, nil, fmt.Errorf("shmevent: command put peer id length %d exceeds payload size %d", peerLen, len(payload))
-	}
-	peerID = payload[off : off+peerLen]
-	off += peerLen
-	return id, name, peerID, payload[off:], nil
-}
-
-// EncodeGroupCommandPayload packs commandID and groupID into a single
-// EventGroupCommandPut/EventGroupCommandDelete Msg.Value: a 2-byte
-// big-endian length prefix for commandID, then commandID, then groupID
-// verbatim (last field, no prefix needed) -- mirrors GroupCommandKey's own
-// field order exactly, so decoding this payload and passing the results
-// straight to GroupCommandKey builds the record's key.
-func EncodeGroupCommandPayload(commandID, groupID []byte) ([]byte, error) {
-	if len(commandID) > 0xFFFF {
-		return nil, fmt.Errorf("shmevent: group-command commandID too long: %d bytes", len(commandID))
-	}
-	buf := make([]byte, 2+len(commandID)+len(groupID))
-	buf[0] = byte(len(commandID) >> 8)
-	buf[1] = byte(len(commandID))
-	off := 2
-	off += copy(buf[off:], commandID)
-	copy(buf[off:], groupID)
-	return buf, nil
-}
-
-// DecodeGroupCommandPayload is the inverse of EncodeGroupCommandPayload.
-func DecodeGroupCommandPayload(payload []byte) (commandID, groupID []byte, err error) {
-	if len(payload) < 2 {
-		return nil, nil, fmt.Errorf("shmevent: group-command payload too short: %d bytes", len(payload))
-	}
-	cmdLen := int(payload[0])<<8 | int(payload[1])
-	off := 2
-	if off+cmdLen > len(payload) {
-		return nil, nil, fmt.Errorf("shmevent: group-command commandID length %d exceeds payload size %d", cmdLen, len(payload))
-	}
-	return payload[off : off+cmdLen], payload[off+cmdLen:], nil
-}
-
-// EncodePeerGroupPayload is EncodeGroupCommandPayload's PeerGroup
-// counterpart: peerID first (length-prefixed), groupID last.
-func EncodePeerGroupPayload(peerID, groupID []byte) ([]byte, error) {
-	if len(peerID) > 0xFFFF {
-		return nil, fmt.Errorf("shmevent: peer-group peerID too long: %d bytes", len(peerID))
-	}
-	buf := make([]byte, 2+len(peerID)+len(groupID))
-	buf[0] = byte(len(peerID) >> 8)
-	buf[1] = byte(len(peerID))
-	off := 2
-	off += copy(buf[off:], peerID)
-	copy(buf[off:], groupID)
-	return buf, nil
-}
-
-// DecodePeerGroupPayload is the inverse of EncodePeerGroupPayload.
-func DecodePeerGroupPayload(payload []byte) (peerID, groupID []byte, err error) {
-	if len(payload) < 2 {
-		return nil, nil, fmt.Errorf("shmevent: peer-group payload too short: %d bytes", len(payload))
-	}
-	idLen := int(payload[0])<<8 | int(payload[1])
-	off := 2
-	if off+idLen > len(payload) {
-		return nil, nil, fmt.Errorf("shmevent: peer-group peerID length %d exceeds payload size %d", idLen, len(payload))
-	}
-	return payload[off : off+idLen], payload[off+idLen:], nil
-}
-
-// EncodeCatalogPayload wraps kind (one of KindGroup/KindCommand/
-// KindGroupCommand/KindPeerGroup/KindStation) and inner -- an existing
-// per-kind payload, exactly as its own Encode<Kind>PutPayload produces it
-// for a Put, or exactly as its own Delete case already used as Msg.Value
-// (a bare id for Group/Command/Station, EncodeGroupCommandPayload/
-// EncodePeerGroupPayload's output for the two relation kinds) -- into a
-// single EventCatalogPut/EventCatalogDelete Msg.Value: kind first (fixed
-// size), inner verbatim after it. Both events share this one framing since
-// neither needs anything beyond "which kind, then that kind's own existing
-// payload" -- see pkg/daemon's catalogPutSpecs/catalogDeleteSpecs, which
-// select the right existing Decode/Key function by kind.
-func EncodeCatalogPayload(kind byte, inner []byte) []byte {
-	buf := make([]byte, 1+len(inner))
-	buf[0] = kind
-	copy(buf[1:], inner)
-	return buf
-}
-
-// DecodeCatalogPayload is the inverse of EncodeCatalogPayload.
-func DecodeCatalogPayload(payload []byte) (kind byte, inner []byte, err error) {
-	if len(payload) < 1 {
-		return 0, nil, fmt.Errorf("shmevent: catalog payload empty")
-	}
-	return payload[0], payload[1:], nil
-}
-
 // Reserved Group ids that pkg/daemon creates once, at cluster bootstrap,
 // and keeps current automatically from then on -- see that package's
 // syncMemberGroups/clearMemberGroups/ensureReservedGroups. Every current
@@ -818,3 +519,189 @@ const (
 	DefaultPublicGroupID   = "public"
 	DefaultPublicCommandID = "public-access"
 )
+
+// NewGroupPut builds a groupPut Msg: Group catalog upsert.
+func NewGroupPut(id, name string, public bool) (Msg, error) {
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
+	}
+	m.SetGroupPut()
+	grp := m.GroupPut()
+	if err := grp.SetId(id); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_group_put: %w", err)
+	}
+	if err := grp.SetName(name); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_group_put: %w", err)
+	}
+	grp.SetPublic(public)
+	return m, nil
+}
+
+// NewGroupDelete builds a groupDelete Msg: Group catalog delete.
+func NewGroupDelete(id string) (Msg, error) {
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
+	}
+	m.SetGroupDelete()
+	if err := m.GroupDelete().SetId(id); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_group_delete: %w", err)
+	}
+	return m, nil
+}
+
+// NewCommandPut builds a commandPut Msg leaving any existing spec
+// unchanged (HasSpec() false on the result) -- use NewCommandPutWithSpec
+// to set or clear one.
+func NewCommandPut(id, name, peerID string) (Msg, error) {
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
+	}
+	m.SetCommandPut()
+	grp := m.CommandPut()
+	if err := grp.SetId(id); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_command_put: %w", err)
+	}
+	if err := grp.SetName(name); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_command_put: %w", err)
+	}
+	if err := grp.SetPeerId(peerID); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_command_put: %w", err)
+	}
+	return m, nil
+}
+
+// NewCommandPutWithSpec builds a commandPut Msg carrying spec explicitly
+// (HasSpec() true on the result, even when spec == "") -- the only way to
+// clear an existing spec, since NewCommandPut leaves it untouched. spec is
+// caller-defined opaque JSON (the command's form definition).
+func NewCommandPutWithSpec(id, name, peerID, spec string) (Msg, error) {
+	m, err := NewCommandPut(id, name, peerID)
+	if err != nil {
+		return Msg{}, err
+	}
+	if err := m.CommandPut().SetSpec(spec); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_command_put_with_spec: %w", err)
+	}
+	return m, nil
+}
+
+// NewCommandDelete builds a commandDelete Msg: Command catalog delete.
+func NewCommandDelete(id string) (Msg, error) {
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
+	}
+	m.SetCommandDelete()
+	if err := m.CommandDelete().SetId(id); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_command_delete: %w", err)
+	}
+	return m, nil
+}
+
+// NewStationPut builds a stationPut Msg: Station catalog upsert. attrs is
+// caller-defined opaque JSON.
+func NewStationPut(peerID, name, attrs string) (Msg, error) {
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
+	}
+	m.SetStationPut()
+	grp := m.StationPut()
+	if err := grp.SetPeerId(peerID); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_station_put: %w", err)
+	}
+	if err := grp.SetName(name); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_station_put: %w", err)
+	}
+	if err := grp.SetAttrs(attrs); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_station_put: %w", err)
+	}
+	return m, nil
+}
+
+// NewStationDelete builds a stationDelete Msg: Station catalog delete.
+func NewStationDelete(peerID string) (Msg, error) {
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
+	}
+	m.SetStationDelete()
+	if err := m.StationDelete().SetPeerId(peerID); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_station_delete: %w", err)
+	}
+	return m, nil
+}
+
+// NewGroupCommandPut builds a groupCommandPut Msg: links commandID into
+// groupID.
+func NewGroupCommandPut(commandID, groupID string) (Msg, error) {
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
+	}
+	m.SetGroupCommandPut()
+	grp := m.GroupCommandPut()
+	if err := grp.SetCommandId(commandID); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_group_command_put: %w", err)
+	}
+	if err := grp.SetGroupId(groupID); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_group_command_put: %w", err)
+	}
+	return m, nil
+}
+
+// NewGroupCommandDelete builds a groupCommandDelete Msg: unlinks
+// commandID from groupID.
+func NewGroupCommandDelete(commandID, groupID string) (Msg, error) {
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
+	}
+	m.SetGroupCommandDelete()
+	grp := m.GroupCommandDelete()
+	if err := grp.SetCommandId(commandID); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_group_command_delete: %w", err)
+	}
+	if err := grp.SetGroupId(groupID); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_group_command_delete: %w", err)
+	}
+	return m, nil
+}
+
+// NewPeerGroupPut builds a peerGroupPut Msg: adds peerID to groupID.
+func NewPeerGroupPut(peerID, groupID string) (Msg, error) {
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
+	}
+	m.SetPeerGroupPut()
+	grp := m.PeerGroupPut()
+	if err := grp.SetPeerId(peerID); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_peer_group_put: %w", err)
+	}
+	if err := grp.SetGroupId(groupID); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_peer_group_put: %w", err)
+	}
+	return m, nil
+}
+
+// NewPeerGroupDelete builds a peerGroupDelete Msg: removes peerID from
+// groupID.
+func NewPeerGroupDelete(peerID, groupID string) (Msg, error) {
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
+	}
+	m.SetPeerGroupDelete()
+	grp := m.PeerGroupDelete()
+	if err := grp.SetPeerId(peerID); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_peer_group_delete: %w", err)
+	}
+	if err := grp.SetGroupId(groupID); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_peer_group_delete: %w", err)
+	}
+	return m, nil
+}

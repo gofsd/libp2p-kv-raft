@@ -75,46 +75,49 @@ func TestGroupPutRequiresVoter(t *testing.T) {
 
 	call := func(n *Node, m shmevent.Msg) shmevent.Msg {
 		t.Helper()
-		buf, err := shmevent.Encode(m, n.ed25519Priv)
-		if err != nil {
-			t.Fatalf("encode: %v", err)
-		}
-		decoded, crc, sig, err := shmevent.Decode(buf)
-		if err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		return n.handleShmEvent(ctx, decoded, crc, sig, n.localCaller())
+		return callLocal(t, ctx, n, m, n.ed25519Priv)
 	}
 
-	putPayload, err := shmevent.EncodeGroupPutPayload("grp-voter-only", "Voter Only Group", false)
-	if err != nil {
-		t.Fatalf("EncodeGroupPutPayload: %v", err)
+	newPutMsg := func(id uint16) shmevent.Msg {
+		m, err := shmevent.NewGroupPut("grp-voter-only", "Voter Only Group", false)
+		if err != nil {
+			t.Fatalf("NewGroupPut: %v", err)
+		}
+		m.SetId(id)
+		return m
 	}
-	catalogPutPayload := shmevent.EncodeCatalogPayload(shmevent.KindGroup, putPayload)
 
 	// A learner (nonvoter) putting a group must be rejected.
-	resp := call(learner, shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: catalogPutPayload, ID: 1})
-	if resp.EventType != shmevent.EventError {
+	resp := call(learner, newPutMsg(1))
+	if resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("learner group_put unexpectedly succeeded")
 	}
-	if !strings.Contains(string(resp.Value), "not a current raft voter") {
-		t.Fatalf("learner group_put rejected for the wrong reason: %s", resp.Value)
+	if !strings.Contains(mustErrMessage(t, resp), "not a current raft voter") {
+		t.Fatalf("learner group_put rejected for the wrong reason: %s", mustErrMessage(t, resp))
 	}
 
 	// A real voter putting a group must succeed, and be readable
 	// afterward via a plain get_field against shmevent.GroupKey.
-	resp = call(voter, shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: catalogPutPayload, ID: 2})
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("voter group_put rejected: %s", resp.Value)
+	resp = call(voter, newPutMsg(2))
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("voter group_put rejected: %s", mustErrMessage(t, resp))
 	}
 
 	deadline := time.Now().Add(10 * time.Second)
 	groupKey := shmevent.GroupKey([]byte("grp-voter-only"))
 	for {
-		getResp := call(leader, shmevent.Msg{EventType: shmevent.EventGetField, Value: groupKey, ID: 3})
-		if getResp.EventType != shmevent.EventError {
-			if name, _, err := shmevent.DecodeGroupPayload(getResp.Value); err == nil && name == "Voter Only Group" {
-				break
+		getMsg, err := shmevent.NewGetFieldByKey(groupKey)
+		if err != nil {
+			t.Fatalf("NewGetFieldByKey: %v", err)
+		}
+		getMsg.SetId(3)
+		getResp := call(leader, getMsg)
+		if getResp.Which() != shmevent.Event_Which_error {
+			gotValue, err := getResp.GetFieldByKey().Value()
+			if err == nil {
+				if name, _, err := shmevent.DecodeGroupPayload(gotValue); err == nil && name == "Voter Only Group" {
+					break
+				}
 			}
 		}
 		if time.Now().After(deadline) {
@@ -125,19 +128,31 @@ func TestGroupPutRequiresVoter(t *testing.T) {
 
 	// Deleting it (also voter-gated, via OpCascadeDelete) must likewise be
 	// rejected for the learner and succeed for the voter.
-	catalogDeletePayload := shmevent.EncodeCatalogPayload(shmevent.KindGroup, []byte("grp-voter-only"))
-	resp = call(learner, shmevent.Msg{EventType: shmevent.EventCatalogDelete, Value: catalogDeletePayload, ID: 4})
-	if resp.EventType != shmevent.EventError {
+	newDeleteMsg := func(id uint16) shmevent.Msg {
+		m, err := shmevent.NewGroupDelete("grp-voter-only")
+		if err != nil {
+			t.Fatalf("NewGroupDelete: %v", err)
+		}
+		m.SetId(id)
+		return m
+	}
+	resp = call(learner, newDeleteMsg(4))
+	if resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("learner group_delete unexpectedly succeeded")
 	}
-	resp = call(voter, shmevent.Msg{EventType: shmevent.EventCatalogDelete, Value: catalogDeletePayload, ID: 5})
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("voter group_delete rejected: %s", resp.Value)
+	resp = call(voter, newDeleteMsg(5))
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("voter group_delete rejected: %s", mustErrMessage(t, resp))
 	}
 	deadline = time.Now().Add(10 * time.Second)
 	for {
-		getResp := call(leader, shmevent.Msg{EventType: shmevent.EventGetField, Value: groupKey, ID: 6})
-		if getResp.EventType == shmevent.EventError {
+		getMsg, err := shmevent.NewGetFieldByKey(groupKey)
+		if err != nil {
+			t.Fatalf("NewGetFieldByKey: %v", err)
+		}
+		getMsg.SetId(6)
+		getResp := call(leader, getMsg)
+		if getResp.Which() == shmevent.Event_Which_error {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -185,15 +200,7 @@ func TestPersonalGroupPutDeleteRejected(t *testing.T) {
 
 	call := func(m shmevent.Msg) shmevent.Msg {
 		t.Helper()
-		buf, err := shmevent.Encode(m, leader.ed25519Priv)
-		if err != nil {
-			t.Fatalf("encode: %v", err)
-		}
-		decoded, crc, sig, err := shmevent.Decode(buf)
-		if err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		return leader.handleShmEvent(ctx, decoded, crc, sig, leader.localCaller())
+		return callLocal(t, ctx, leader, m, leader.ed25519Priv)
 	}
 
 	// Some arbitrary other peer's id (never seen by this daemon at all --
@@ -210,16 +217,22 @@ func TestPersonalGroupPutDeleteRejected(t *testing.T) {
 	}
 
 	for _, id := range []string{leader.peerID, otherPeerID.String()} {
-		putPayload, err := shmevent.EncodeGroupPutPayload(id, "renamed", false)
+		putMsg, err := shmevent.NewGroupPut(id, "renamed", false)
 		if err != nil {
-			t.Fatalf("EncodeGroupPutPayload: %v", err)
+			t.Fatalf("NewGroupPut: %v", err)
 		}
-		resp := call(shmevent.Msg{EventType: shmevent.EventCatalogPut, Value: shmevent.EncodeCatalogPayload(shmevent.KindGroup, putPayload), ID: 1})
-		if resp.EventType != shmevent.EventError {
+		putMsg.SetId(1)
+		resp := call(putMsg)
+		if resp.Which() != shmevent.Event_Which_error {
 			t.Fatalf("group_put against peer-identity-shaped id %q unexpectedly succeeded", id)
 		}
-		resp = call(shmevent.Msg{EventType: shmevent.EventCatalogDelete, Value: shmevent.EncodeCatalogPayload(shmevent.KindGroup, []byte(id)), ID: 2})
-		if resp.EventType != shmevent.EventError {
+		deleteMsg, err := shmevent.NewGroupDelete(id)
+		if err != nil {
+			t.Fatalf("NewGroupDelete: %v", err)
+		}
+		deleteMsg.SetId(2)
+		resp = call(deleteMsg)
+		if resp.Which() != shmevent.Event_Which_error {
 			t.Fatalf("group_delete against peer-identity-shaped id %q unexpectedly succeeded", id)
 		}
 	}

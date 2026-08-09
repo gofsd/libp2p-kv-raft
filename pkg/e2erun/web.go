@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/e2edata"
-	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
 
 // webUnavailable checks that the web-app crate's dev dependencies are all
@@ -111,7 +110,7 @@ func runWebNode(webDir string, node e2edata.Node, bootstrapWebTransportAddr stri
 	// runRow's desktop branch documents for why it can request this
 	// before the row loop rather than needing a GrantRelayAccess-style
 	// admin grant beforehand.
-	publicAccessJSON, err := json.Marshal(e2edata.NewEvent(shmevent.EventPublicAccess, 0, 0, []byte(bootstrapWebTransportAddr), 0))
+	publicAccessJSON, err := json.Marshal(e2edata.Event{Op: "public_access", Fields: map[string]string{"target_peer": bootstrapWebTransportAddr}})
 	if err != nil {
 		return fail(fmt.Errorf("e2erun: encode web public_access event: %w", err))
 	}
@@ -119,13 +118,11 @@ func runWebNode(webDir string, node e2edata.Node, bootstrapWebTransportAddr stri
 	eventJSONs[0] = string(publicAccessJSON)
 	for i, idx := range rowIdxs {
 		ev := f.Rows[idx].Event
-		if ev.EventType == shmevent.EventAdd {
-			resolved := ResolveBootstrapPlaceholder(string(ev.Value()), bootstrapWebTransportAddr)
-			ev = e2edata.NewEvent(ev.EventType, ev.SourceID, ev.DestinationID, []byte(resolved), ev.ID)
+		if ev.Op == "bootstrap_or_join_cluster" {
+			resolved := ResolveBootstrapPlaceholder(ev.Fields["leader_addr"], bootstrapWebTransportAddr)
+			ev = withField(ev, "leader_addr", resolved)
 		}
-		if expanded := ExpandRowValue(string(ev.Value())); expanded != string(ev.Value()) {
-			ev = e2edata.NewEvent(ev.EventType, ev.SourceID, ev.DestinationID, []byte(expanded), ev.ID)
-		}
+		ev = expandEventFields(ev, ExpandRowValue)
 		data, err := json.Marshal(ev)
 		if err != nil {
 			return fail(fmt.Errorf("e2erun: encode web row event: %w", err))

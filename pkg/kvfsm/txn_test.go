@@ -30,7 +30,7 @@ func TestApplyOpTxnAppliesAllOpsAtomically(t *testing.T) {
 		t.Fatalf("seed to-delete: %v", err)
 	}
 
-	ops := []shmevent.TxnOp{
+	ops := []shmevent.TxnOpSpec{
 		{Op: shmevent.TxnOpSet, Key: []byte("k1"), Value: []byte("v1")},
 		{Op: shmevent.TxnOpSet, Key: []byte("k2"), Value: []byte("v2")},
 		{Op: shmevent.TxnOpDelete, Key: []byte("to-delete")},
@@ -74,7 +74,7 @@ func TestApplyOpTxnRejectsUnknownOpKindWithNoPartialEffect(t *testing.T) {
 	// Set for k1, then a second op with an unrecognized kind byte (99) --
 	// EncodeTxnPayload itself refuses to build this, so it's assembled by
 	// hand to exercise Apply's own validation independently.
-	valid, err := shmevent.EncodeTxnPayload([]shmevent.TxnOp{{Op: shmevent.TxnOpSet, Key: []byte("k1"), Value: []byte("v1")}})
+	valid, err := shmevent.EncodeTxnPayload([]shmevent.TxnOpSpec{{Op: shmevent.TxnOpSet, Key: []byte("k1"), Value: []byte("v1")}})
 	if err != nil {
 		t.Fatalf("EncodeTxnPayload: %v", err)
 	}

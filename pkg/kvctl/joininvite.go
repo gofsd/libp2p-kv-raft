@@ -90,7 +90,7 @@ func CreateJoinInviteTicket(suffrage byte) (string, error) {
 		return "", fmt.Errorf("create join invite ticket: get own addr: %w", err)
 	}
 
-	value, err := shmevent.EncodeJoinTicketPayload(addr, token)
+	m, err := shmevent.NewJoinTicket(addr, token)
 	if err != nil {
 		return "", fmt.Errorf("create join invite ticket: %w", err)
 	}
@@ -98,7 +98,7 @@ func CreateJoinInviteTicket(suffrage byte) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("create join invite ticket: fetch signing key: %w", err)
 	}
-	wire, err := shmevent.Encode(shmevent.Msg{EventType: shmevent.EventJoinTicket, Value: value}, priv)
+	wire, err := shmevent.Encode(m, priv)
 	if err != nil {
 		return "", fmt.Errorf("create join invite ticket: sign: %w", err)
 	}
@@ -127,10 +127,15 @@ func VerifyJoinInviteTicket(ticketB64 string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("decode join invite ticket: %w", err)
 	}
-	if m.EventType != shmevent.EventJoinTicket {
-		return "", fmt.Errorf("not a join invite ticket (event %s)", shmevent.EventName(m.EventType))
+	if m.Which() != shmevent.Event_Which_joinTicket {
+		return "", fmt.Errorf("not a join invite ticket (event %s)", shmevent.EventName(m.Which()))
 	}
-	addr, token, err := shmevent.DecodeJoinTicketPayload(m.Value)
+	grp := m.JoinTicket()
+	addr, err := grp.SourceAddr()
+	if err != nil {
+		return "", fmt.Errorf("decode join invite ticket: %w", err)
+	}
+	token, err := grp.Token()
 	if err != nil {
 		return "", fmt.Errorf("decode join invite ticket: %w", err)
 	}

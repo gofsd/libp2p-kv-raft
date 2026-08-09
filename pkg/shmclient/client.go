@@ -55,9 +55,9 @@ func Open(ctx context.Context, peerID string) (*Session, error) {
 }
 
 // newID returns a random non-zero id for a new message -- 0 is reserved
-// meaning "SourceID/DestinationID not used" (see api/shmevent.capnp), so a
-// real message's own id avoids it too, even though nothing currently cites
-// these particular ids by SourceID.
+// meaning "not used" (see api/shmevent.capnp), so a real message's own id
+// avoids it too, even though nothing currently cites these particular ids
+// by sourceId.
 func newID() uint16 {
 	for {
 		var b [2]byte
@@ -70,55 +70,57 @@ func newID() uint16 {
 	}
 }
 
+// call builds m (via one of shmevent's NewXxx constructors), sets a fresh
+// id, sends it through ipc.Call, and returns the response -- shared by
+// every Session method below.
+func (s *Session) call(ctx context.Context, m shmevent.Msg) (shmevent.Msg, error) {
+	m.SetId(newID())
+	return ipc.Call(ctx, s.peerID, m, s.priv)
+}
+
+// respErr returns an error if resp is an error response, formatted as
+// "shmclient: <name>: <message>" -- shared by every Session method below.
+func respErr(name string, resp shmevent.Msg) error {
+	if resp.Which() != shmevent.Event_Which_error {
+		return nil
+	}
+	msg, _ := resp.Error().Message_()
+	return fmt.Errorf("shmclient: %s: %s", name, msg)
+}
+
 // Set applies key=value through raft on the session's node, in a single
-// EventSet round trip (key and value packed together via
-// shmevent.EncodeSetPayload) rather than the SetKey+SetField pair --
-// see EventSet's doc comment for why: pkg/ipc.Call pays a real,
-// non-negligible cost (a fresh shmring segment pair) per round trip, so a
-// caller in this package's position halves Set's cost by not needing two.
+// set round trip rather than the setKey+setField pair -- see that
+// variant's doc comment in api/shmevent.capnp for why: pkg/ipc.Call pays
+// a real, non-negligible cost (a fresh shmring segment pair) per round
+// trip, so a caller in this package's position halves Set's cost by not
+// needing two.
 func (s *Session) Set(ctx context.Context, key, value string) error {
-	payload, err := shmevent.EncodeSetPayload([]byte(key), []byte(value))
+	m, err := shmevent.NewSet([]byte(key), []byte(value))
 	if err != nil {
 		return fmt.Errorf("shmclient: set: %w", err)
 	}
-	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventSet,
-		Value:     payload,
-		ID:        newID(),
-	}, s.priv)
+	resp, err := s.call(ctx, m)
 	if err != nil {
 		return fmt.Errorf("shmclient: set: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return fmt.Errorf("shmclient: set: %s", resp.Value)
-	}
-	return nil
+	return respErr("set", resp)
 }
 
 // LogAppend writes one pkg/logrecord record -- key must start with
 // logrecord.LogKeyPrefix (typically built via logrecord.BuildKey) and
-// value its encoded pkg/logrecord.Record. Unlike Set, key/value are
-// []byte rather than string: a log record's key is raw binary (a packed
-// length-prefixed kind/unitID plus a binary timestamp and random
-// suffix), not text. See shmevent.EventLogAppend's doc comment for why
-// this needs its own event rather than reusing EventSet.
+// value its encoded pkg/logrecord.Record. See logAppend's doc comment in
+// api/shmevent.capnp for why this needs its own variant rather than
+// reusing set.
 func (s *Session) LogAppend(ctx context.Context, key, value []byte) error {
-	payload, err := shmevent.EncodeSetPayload(key, value)
+	m, err := shmevent.NewLogAppend(key, value)
 	if err != nil {
 		return fmt.Errorf("shmclient: log_append: %w", err)
 	}
-	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventLogAppend,
-		Value:     payload,
-		ID:        newID(),
-	}, s.priv)
+	resp, err := s.call(ctx, m)
 	if err != nil {
 		return fmt.Errorf("shmclient: log_append: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return fmt.Errorf("shmclient: log_append: %s", resp.Value)
-	}
-	return nil
+	return respErr("log_append", resp)
 }
 
 // ErrCompareFailed is what Txn/CompareAndSwap return when a
@@ -130,31 +132,28 @@ func (s *Session) LogAppend(ctx context.Context, key, value []byte) error {
 var ErrCompareFailed = errors.New("shmclient: " + shmevent.CompareFailedMarker)
 
 // Txn atomically applies every op in ops through raft on the session's
-// node, in a single EventTxn round trip: either all of them land, or none
-// do (see shmevent.EventTxn's doc comment). Each op is a plain Set
+// node, in a single txn round trip: either all of them land, or none do
+// (see txn's doc comment in api/shmevent.capnp). Each op is a plain Set
 // (shmevent.TxnOpSet, key and value both required), Delete
 // (shmevent.TxnOpDelete, value ignored), or one of the two compare
 // preconditions (shmevent.TxnOpCompare/TxnOpCompareAbsent) -- a
 // transaction whose preconditions don't hold applies nothing and returns
 // an error matching [ErrCompareFailed].
-func (s *Session) Txn(ctx context.Context, ops []shmevent.TxnOp) error {
-	payload, err := shmevent.EncodeTxnPayload(ops)
+func (s *Session) Txn(ctx context.Context, ops []shmevent.TxnOpSpec) error {
+	m, err := shmevent.NewTxn(ops)
 	if err != nil {
 		return fmt.Errorf("shmclient: txn: %w", err)
 	}
-	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventTxn,
-		Value:     payload,
-		ID:        newID(),
-	}, s.priv)
+	resp, err := s.call(ctx, m)
 	if err != nil {
 		return fmt.Errorf("shmclient: txn: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		if strings.Contains(string(resp.Value), shmevent.CompareFailedMarker) {
-			return fmt.Errorf("%w: %s", ErrCompareFailed, resp.Value)
+	if resp.Which() == shmevent.Event_Which_error {
+		msg, _ := resp.Error().Message_()
+		if strings.Contains(msg, shmevent.CompareFailedMarker) {
+			return fmt.Errorf("%w: %s", ErrCompareFailed, msg)
 		}
-		return fmt.Errorf("shmclient: txn: %s", resp.Value)
+		return fmt.Errorf("shmclient: txn: %s", msg)
 	}
 	return nil
 }
@@ -173,11 +172,11 @@ func (s *Session) Txn(ctx context.Context, ops []shmevent.TxnOp) error {
 // case), so it is serialized against every other write in the cluster;
 // nothing this function does client-side has a window in it.
 func (s *Session) CompareAndSwap(ctx context.Context, key, expected, value string, absent bool) (bool, error) {
-	compare := shmevent.TxnOp{Op: shmevent.TxnOpCompare, Key: []byte(key), Value: []byte(expected)}
+	compare := shmevent.TxnOpSpec{Op: shmevent.TxnOpCompare, Key: []byte(key), Value: []byte(expected)}
 	if absent {
-		compare = shmevent.TxnOp{Op: shmevent.TxnOpCompareAbsent, Key: []byte(key)}
+		compare = shmevent.TxnOpSpec{Op: shmevent.TxnOpCompareAbsent, Key: []byte(key)}
 	}
-	err := s.Txn(ctx, []shmevent.TxnOp{
+	err := s.Txn(ctx, []shmevent.TxnOpSpec{
 		compare,
 		{Op: shmevent.TxnOpSet, Key: []byte(key), Value: []byte(value)},
 	})
@@ -190,44 +189,52 @@ func (s *Session) CompareAndSwap(ctx context.Context, key, expected, value strin
 	return true, nil
 }
 
-// Get reads key from the session's node -- a one-shot GetField carrying
-// key directly in Value (SourceID left 0), skipping the registry
-// round-trip Set needs -- which, like any raft follower's local read, may
-// lag a moment behind a Set that just committed on the leader.
+// Get reads key from the session's node -- a one-shot getFieldByKey,
+// skipping the registry round-trip Set needs -- which, like any raft
+// follower's local read, may lag a moment behind a Set that just
+// committed on the leader.
 func (s *Session) Get(ctx context.Context, key string) (string, error) {
-	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventGetField,
-		Value:     []byte(key),
-		ID:        newID(),
-	}, s.priv)
+	m, err := shmevent.NewGetFieldByKey([]byte(key))
 	if err != nil {
-		return "", fmt.Errorf("shmclient: get_field: %w", err)
+		return "", fmt.Errorf("shmclient: get_field_by_key: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return "", fmt.Errorf("shmclient: get_field: %s", resp.Value)
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return "", fmt.Errorf("shmclient: get_field_by_key: %w", err)
 	}
-	return string(resp.Value), nil
+	if err := respErr("get_field_by_key", resp); err != nil {
+		return "", err
+	}
+	value, err := resp.GetFieldByKey().Value()
+	if err != nil {
+		return "", fmt.Errorf("shmclient: get_field_by_key: %w", err)
+	}
+	return string(value), nil
 }
 
 // Add bootstraps this node as the cluster's sole leader (leaderPeerID ==
 // "") or joins it to the cluster led by leaderPeerID as a voter. Returns
 // this node's own peer id, mirroring the pre-shmevent
-// ipcproto.ActionAdd response. See pkg/shmevent.EventAdd's doc comment for
-// the (unused here) learner-join shape a remote browser caller uses
-// instead.
+// ipcproto.ActionAdd response. See bootstrapOrJoinCluster's doc comment in
+// api/shmevent.capnp for the (unused here) learner-join shape a remote
+// browser caller uses instead (addLearner).
 func (s *Session) Add(ctx context.Context, leaderPeerID string) (string, error) {
-	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventAdd,
-		Value:     []byte(leaderPeerID),
-		ID:        newID(),
-	}, s.priv)
+	m, err := shmevent.NewBootstrapOrJoinCluster(leaderPeerID)
 	if err != nil {
 		return "", fmt.Errorf("shmclient: add: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return "", fmt.Errorf("shmclient: add: %s", resp.Value)
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return "", fmt.Errorf("shmclient: add: %w", err)
 	}
-	return string(resp.Value), nil
+	if err := respErr("add", resp); err != nil {
+		return "", err
+	}
+	result, err := resp.BootstrapOrJoinCluster().LeaderAddr()
+	if err != nil {
+		return "", fmt.Errorf("shmclient: add: %w", err)
+	}
+	return result, nil
 }
 
 // GetOwnAddr returns the session's node's own current best-advertised
@@ -237,534 +244,613 @@ func (s *Session) Add(ctx context.Context, leaderPeerID string) (string, error) 
 // startup returns the up-to-date circuit address on a later call even if
 // an earlier one didn't have it yet.
 func (s *Session) GetOwnAddr(ctx context.Context) (string, error) {
-	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventGetOwnAddr,
-		ID:        newID(),
-	}, s.priv)
+	m, err := shmevent.NewGetOwnAddr()
 	if err != nil {
 		return "", fmt.Errorf("shmclient: get_own_addr: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return "", fmt.Errorf("shmclient: get_own_addr: %s", resp.Value)
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return "", fmt.Errorf("shmclient: get_own_addr: %w", err)
 	}
-	return string(resp.Value), nil
+	if err := respErr("get_own_addr", resp); err != nil {
+		return "", err
+	}
+	addr, err := resp.GetOwnAddr().Addr()
+	if err != nil {
+		return "", fmt.Errorf("shmclient: get_own_addr: %w", err)
+	}
+	return addr, nil
 }
 
 // GetVersion returns the session's node's own build/version info -- see
-// shmevent.EventGetVersion's doc comment. Queried live, never cached.
+// getVersion's doc comment in api/shmevent.capnp. Queried live, never
+// cached.
 func (s *Session) GetVersion(ctx context.Context) (shmevent.VersionInfo, error) {
-	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventGetVersion,
-		ID:        newID(),
-	}, s.priv)
+	m, err := shmevent.NewGetVersion()
 	if err != nil {
 		return shmevent.VersionInfo{}, fmt.Errorf("shmclient: get_version: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return shmevent.VersionInfo{}, fmt.Errorf("shmclient: get_version: %s", resp.Value)
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return shmevent.VersionInfo{}, fmt.Errorf("shmclient: get_version: %w", err)
 	}
-	return shmevent.DecodeVersionInfo(resp.Value)
+	if err := respErr("get_version", resp); err != nil {
+		return shmevent.VersionInfo{}, err
+	}
+	v, err := shmevent.VersionInfoFrom(resp.GetVersion())
+	if err != nil {
+		return shmevent.VersionInfo{}, fmt.Errorf("shmclient: get_version: %w", err)
+	}
+	return v, nil
 }
 
 // Leave asks the raft cluster the session's node currently belongs to to
-// remove it (raft.RemoveServer) -- see shmevent.EventLeave's doc comment.
-// Unlike Add, it takes no target: there's only ever one cluster this
-// node's own live raft handle currently belongs to.
+// remove it (raft.RemoveServer) -- see leave's doc comment in
+// api/shmevent.capnp. Unlike Add, it takes no target: there's only ever
+// one cluster this node's own live raft handle currently belongs to.
 func (s *Session) Leave(ctx context.Context) error {
-	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventLeave,
-		ID:        newID(),
-	}, s.priv)
+	m, err := shmevent.NewLeave()
 	if err != nil {
 		return fmt.Errorf("shmclient: leave: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return fmt.Errorf("shmclient: leave: %s", resp.Value)
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return fmt.Errorf("shmclient: leave: %w", err)
 	}
-	return nil
+	return respErr("leave", resp)
 }
 
 // Kick asks the raft cluster the session's node currently belongs to to
 // force-remove targetPeerID (raft.RemoveServer), without that peer's own
-// cooperation -- see shmevent.EventKick's doc comment. Only takes effect
-// if the session's node is itself a raft voter (or forwards to one),
-// same restriction ConfirmPermit/RevokePermit have.
+// cooperation -- see kick's doc comment in api/shmevent.capnp. Only takes
+// effect if the session's node is itself a raft voter (or forwards to
+// one), same restriction ConfirmPermit/RevokePermit have.
 func (s *Session) Kick(ctx context.Context, targetPeerID string) error {
-	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventKick,
-		Value:     []byte(targetPeerID),
-		ID:        newID(),
-	}, s.priv)
+	m, err := shmevent.NewKick(targetPeerID)
 	if err != nil {
 		return fmt.Errorf("shmclient: kick: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return fmt.Errorf("shmclient: kick: %s", resp.Value)
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return fmt.Errorf("shmclient: kick: %w", err)
 	}
-	return nil
+	return respErr("kick", resp)
 }
 
 // RequestPermit lodges a pending permit request for peerID (of the given
-// kind -- shmevent.KindPermitPeer or shmevent.KindBootstrapNode) on the
-// session's node. metadata is opaque, kind-specific data (e.g. a dialable
-// multiaddr for KindBootstrapNode). See shmevent.EventPermitRequest's doc
-// comment: any raft node may receive and relay this.
-func (s *Session) RequestPermit(ctx context.Context, kind byte, peerID, metadata []byte) error {
-	inner, err := shmevent.EncodePermitRequestPayload(kind, peerID, metadata)
+// kind -- shmevent.KindBootstrapNode or shmevent.KindClusterJoin).
+// metadata is opaque, kind-specific JSON (e.g. see
+// shmevent.EncodeBootstrapNodeMetadata). See permitRequest's doc comment
+// in api/shmevent.capnp: any raft node may receive and relay this.
+func (s *Session) RequestPermit(ctx context.Context, kind byte, peerID []byte, metadata string) error {
+	m, err := shmevent.NewPermitRequest(kind, string(peerID), metadata)
 	if err != nil {
 		return fmt.Errorf("shmclient: permit_request: %w", err)
 	}
-	payload := shmevent.EncodeLifecycleWritePayload(kind, shmevent.LifecycleActionRequest, inner)
-	return s.catalogCallNamed(ctx, shmevent.EventLifecycleWrite, "permit_request", payload)
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return fmt.Errorf("shmclient: permit_request: %w", err)
+	}
+	return respErr("permit_request", resp)
 }
 
 // ConfirmPermit promotes a pending permit request for peerID (of the
-// given kind) from pending to confirmed. See
-// shmevent.EventPermitConfirm's doc comment: only a peer that is
-// currently a raft voter may confirm -- the session's node will reject
-// this (surfaced as an error here) if it forwards to a leader that
-// determines the confirming node isn't one.
+// given kind) from pending to confirmed. See permitConfirm's doc comment
+// in api/shmevent.capnp: only a peer that is currently a raft voter may
+// confirm -- the session's node will reject this (surfaced as an error
+// here) if it forwards to a leader that determines the confirming node
+// isn't one.
 func (s *Session) ConfirmPermit(ctx context.Context, kind byte, peerID []byte) error {
-	inner := shmevent.EncodePermitConfirmPayload(kind, peerID)
-	payload := shmevent.EncodeLifecycleWritePayload(kind, shmevent.LifecycleActionConfirm, inner)
-	return s.catalogCallNamed(ctx, shmevent.EventLifecycleWrite, "permit_confirm", payload)
+	m, err := shmevent.NewPermitConfirm(kind, string(peerID))
+	if err != nil {
+		return fmt.Errorf("shmclient: permit_confirm: %w", err)
+	}
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return fmt.Errorf("shmclient: permit_confirm: %w", err)
+	}
+	return respErr("permit_confirm", resp)
 }
 
 // RevokePermit deletes a confirmed permit record for peerID (of the given
-// kind) outright. See shmevent.EventPermitRevoke's doc comment: only a
-// peer that is currently a raft voter may revoke -- the session's node
-// will reject this (surfaced as an error here) if it forwards to a
+// kind) outright. See permitRevoke's doc comment in api/shmevent.capnp:
+// only a peer that is currently a raft voter may revoke -- the session's
+// node will reject this (surfaced as an error here) if it forwards to a
 // leader that determines the revoking node isn't one, the same as
 // ConfirmPermit.
 func (s *Session) RevokePermit(ctx context.Context, kind byte, peerID []byte) error {
-	inner := shmevent.EncodePermitConfirmPayload(kind, peerID)
-	payload := shmevent.EncodeLifecycleWritePayload(kind, shmevent.LifecycleActionRevoke, inner)
-	return s.catalogCallNamed(ctx, shmevent.EventLifecycleWrite, "permit_revoke", payload)
-}
-
-// catalogCallNamed is catalogCall's underlying implementation, taking an
-// explicit name for error text instead of deriving one from eventType --
-// needed once more than one Session method can share the same wire
-// eventType (EventCatalogPut/EventCatalogDelete, see below), where
-// shmevent.EventName would otherwise report every one of them as just
-// "catalog_put"/"catalog_delete".
-func (s *Session) catalogCallNamed(ctx context.Context, eventType uint8, name string, payload []byte) error {
-	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: eventType,
-		Value:     payload,
-		ID:        newID(),
-	}, s.priv)
+	m, err := shmevent.NewPermitRevoke(kind, string(peerID))
 	if err != nil {
-		return fmt.Errorf("shmclient: %s: %w", name, err)
+		return fmt.Errorf("shmclient: permit_revoke: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return fmt.Errorf("shmclient: %s: %s", name, resp.Value)
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return fmt.Errorf("shmclient: permit_revoke: %w", err)
 	}
-	return nil
-}
-
-// catalogCall is the shared round trip behind every group-based ACL
-// catalog Session method below (PutGroup, DeleteGroupCommand, etc.) --
-// each just builds its own payload and event type, then reduces to this
-// one send-and-check-for-EventError call.
-func (s *Session) catalogCall(ctx context.Context, eventType uint8, payload []byte) error {
-	return s.catalogCallNamed(ctx, eventType, shmevent.EventName(eventType), payload)
+	return respErr("permit_revoke", resp)
 }
 
 // PutGroup creates or updates (single-step, no separate create/update --
 // see shmevent.KindGroup's doc comment) the Group record id=name on the
 // session's node, granting unconditional access to its linked commands to
 // any peer if public is true (see pkg/kvfsm's isPermittedForCommand). Only
-// a current raft voter may do this -- see shmevent.EventGroupPut's doc
-// comment.
+// a current raft voter may do this -- see groupPut's doc comment in
+// api/shmevent.capnp.
 func (s *Session) PutGroup(ctx context.Context, id, name string, public bool) error {
-	payload, err := shmevent.EncodeGroupPutPayload(id, name, public)
+	m, err := shmevent.NewGroupPut(id, name, public)
 	if err != nil {
 		return fmt.Errorf("shmclient: group_put: %w", err)
 	}
-	return s.catalogCallNamed(ctx, shmevent.EventCatalogPut, "group_put", shmevent.EncodeCatalogPayload(shmevent.KindGroup, payload))
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return fmt.Errorf("shmclient: group_put: %w", err)
+	}
+	return respErr("group_put", resp)
 }
 
 // DeleteGroup deletes the Group record id, cascading to every
 // GroupCommand/PeerGroup record referencing it (see
 // kvfsm.OpCascadeDelete). Only a current raft voter may do this.
 func (s *Session) DeleteGroup(ctx context.Context, id string) error {
-	return s.catalogCallNamed(ctx, shmevent.EventCatalogDelete, "group_delete", shmevent.EncodeCatalogPayload(shmevent.KindGroup, []byte(id)))
+	m, err := shmevent.NewGroupDelete(id)
+	if err != nil {
+		return fmt.Errorf("shmclient: group_delete: %w", err)
+	}
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return fmt.Errorf("shmclient: group_delete: %w", err)
+	}
+	return respErr("group_delete", resp)
 }
 
 // PutCommand creates or updates the Command record id={name, peerID}
-// (peerID is where the command may be executed) on the session's node.
-// Only a current raft voter may do this.
+// (peerID is where the command may be executed) on the session's node,
+// leaving any existing spec unchanged. Only a current raft voter may do
+// this.
 func (s *Session) PutCommand(ctx context.Context, id, name string, peerID []byte) error {
-	return s.PutCommandWithSpec(ctx, id, name, peerID, nil)
-}
-
-// PutCommandWithSpec is PutCommand carrying the command's spec as well --
-// the form definition a client renders inputs from (see
-// shmevent.EncodeCommandPayloadWithSpec). Opaque to the daemon and the FSM,
-// which store and replicate it without parsing it. Passing a nil spec is
-// byte-for-byte identical to PutCommand.
-//
-// This is what lets a cluster gain a new command without any device gaining
-// new code: the definition replicates through raft like any other catalog
-// record, and every device renders it from the same bytes.
-func (s *Session) PutCommandWithSpec(ctx context.Context, id, name string, peerID, spec []byte) error {
-	payload, err := shmevent.EncodeCommandPutPayloadWithSpec(id, name, peerID, spec)
+	m, err := shmevent.NewCommandPut(id, name, string(peerID))
 	if err != nil {
 		return fmt.Errorf("shmclient: command_put: %w", err)
 	}
-	return s.catalogCallNamed(ctx, shmevent.EventCatalogPut, "command_put", shmevent.EncodeCatalogPayload(shmevent.KindCommand, payload))
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return fmt.Errorf("shmclient: command_put: %w", err)
+	}
+	return respErr("command_put", resp)
+}
+
+// PutCommandWithSpec is PutCommand carrying the command's spec as well --
+// the form definition a client renders inputs from. Opaque to the daemon
+// and the FSM, which store and replicate it without parsing it. Passing
+// an empty spec is ClearCommandSpec's job, not this one's -- see that
+// method.
+//
+// This is what lets a cluster gain a new command without any device
+// gaining new code: the definition replicates through raft like any other
+// catalog record, and every device renders it from the same bytes.
+func (s *Session) PutCommandWithSpec(ctx context.Context, id, name string, peerID, spec []byte) error {
+	m, err := shmevent.NewCommandPutWithSpec(id, name, string(peerID), string(spec))
+	if err != nil {
+		return fmt.Errorf("shmclient: command_put: %w", err)
+	}
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return fmt.Errorf("shmclient: command_put: %w", err)
+	}
+	return respErr("command_put", resp)
 }
 
 // ClearCommandSpec rewrites command id with an explicitly empty spec,
 // removing whatever form definition it held. Needed as its own call because
-// a plain PutCommand deliberately leaves an existing spec alone (see kvfsm's
-// preserveCommandSpec), so "send no spec" can no longer mean "delete it".
+// a plain PutCommand deliberately leaves an existing spec alone, so "send
+// no spec" can no longer mean "delete it".
 func (s *Session) ClearCommandSpec(ctx context.Context, id, name string, peerID []byte) error {
-	payload, err := shmevent.EncodeCommandPutPayloadWithSpec(id, name, peerID, []byte{0})
-	if err != nil {
-		return fmt.Errorf("shmclient: command_put: %w", err)
-	}
-	// Trim the one placeholder byte: the encoder treats an empty spec as
-	// "no spec" and would emit v1, which is exactly the payload that means
-	// "preserve" rather than "clear".
-	payload = payload[:len(payload)-1]
-	return s.catalogCallNamed(ctx, shmevent.EventCatalogPut, "command_put", shmevent.EncodeCatalogPayload(shmevent.KindCommand, payload))
+	return s.PutCommandWithSpec(ctx, id, name, peerID, []byte(""))
 }
 
 // PutStation creates or updates the KindStation record describing the device
 // peerID -- a human-readable name plus opaque attrs (JSON, in practice).
 // Only a current raft voter may do this, so a device cannot name itself.
 func (s *Session) PutStation(ctx context.Context, peerID []byte, name string, attrs []byte) error {
-	payload, err := shmevent.EncodeStationPutPayload(peerID, name, attrs)
+	m, err := shmevent.NewStationPut(string(peerID), name, string(attrs))
 	if err != nil {
 		return fmt.Errorf("shmclient: station_put: %w", err)
 	}
-	return s.catalogCallNamed(ctx, shmevent.EventCatalogPut, "station_put", shmevent.EncodeCatalogPayload(shmevent.KindStation, payload))
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return fmt.Errorf("shmclient: station_put: %w", err)
+	}
+	return respErr("station_put", resp)
 }
 
 // DeleteStation removes the station description for peerID. The device's
 // cluster membership and group memberships are untouched -- this deletes
 // what it's *called*, not what it *is*.
 func (s *Session) DeleteStation(ctx context.Context, peerID []byte) error {
-	return s.catalogCallNamed(ctx, shmevent.EventCatalogDelete, "station_delete", shmevent.EncodeCatalogPayload(shmevent.KindStation, peerID))
+	m, err := shmevent.NewStationDelete(string(peerID))
+	if err != nil {
+		return fmt.Errorf("shmclient: station_delete: %w", err)
+	}
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return fmt.Errorf("shmclient: station_delete: %w", err)
+	}
+	return respErr("station_delete", resp)
 }
 
 // DeleteCommand deletes the Command record id, cascading to every
 // GroupCommand record referencing it. Only a current raft voter may do
 // this.
 func (s *Session) DeleteCommand(ctx context.Context, id string) error {
-	return s.catalogCallNamed(ctx, shmevent.EventCatalogDelete, "command_delete", shmevent.EncodeCatalogPayload(shmevent.KindCommand, []byte(id)))
+	m, err := shmevent.NewCommandDelete(id)
+	if err != nil {
+		return fmt.Errorf("shmclient: command_delete: %w", err)
+	}
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return fmt.Errorf("shmclient: command_delete: %w", err)
+	}
+	return respErr("command_delete", resp)
 }
 
 // PutGroupCommand links commandID to groupID -- peers in groupID (see
 // PutPeerGroup) become permitted to submit/execute commandID. Only a
 // current raft voter may do this.
 func (s *Session) PutGroupCommand(ctx context.Context, commandID, groupID []byte) error {
-	payload, err := shmevent.EncodeGroupCommandPayload(commandID, groupID)
+	m, err := shmevent.NewGroupCommandPut(string(commandID), string(groupID))
 	if err != nil {
 		return fmt.Errorf("shmclient: group_command_put: %w", err)
 	}
-	return s.catalogCallNamed(ctx, shmevent.EventCatalogPut, "group_command_put", shmevent.EncodeCatalogPayload(shmevent.KindGroupCommand, payload))
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return fmt.Errorf("shmclient: group_command_put: %w", err)
+	}
+	return respErr("group_command_put", resp)
 }
 
 // DeleteGroupCommand unlinks commandID from groupID. Only a current raft
 // voter may do this.
 func (s *Session) DeleteGroupCommand(ctx context.Context, commandID, groupID []byte) error {
-	payload, err := shmevent.EncodeGroupCommandPayload(commandID, groupID)
+	m, err := shmevent.NewGroupCommandDelete(string(commandID), string(groupID))
 	if err != nil {
 		return fmt.Errorf("shmclient: group_command_delete: %w", err)
 	}
-	return s.catalogCallNamed(ctx, shmevent.EventCatalogDelete, "group_command_delete", shmevent.EncodeCatalogPayload(shmevent.KindGroupCommand, payload))
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return fmt.Errorf("shmclient: group_command_delete: %w", err)
+	}
+	return respErr("group_command_delete", resp)
 }
 
 // PutPeerGroup adds peerID as a member of groupID -- see PutGroupCommand
 // for what that grants. Only a current raft voter may do this.
 func (s *Session) PutPeerGroup(ctx context.Context, peerID, groupID []byte) error {
-	payload, err := shmevent.EncodePeerGroupPayload(peerID, groupID)
+	m, err := shmevent.NewPeerGroupPut(string(peerID), string(groupID))
 	if err != nil {
 		return fmt.Errorf("shmclient: peer_group_put: %w", err)
 	}
-	return s.catalogCallNamed(ctx, shmevent.EventCatalogPut, "peer_group_put", shmevent.EncodeCatalogPayload(shmevent.KindPeerGroup, payload))
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return fmt.Errorf("shmclient: peer_group_put: %w", err)
+	}
+	return respErr("peer_group_put", resp)
 }
 
 // DeletePeerGroup removes peerID from groupID. Only a current raft voter
 // may do this.
 func (s *Session) DeletePeerGroup(ctx context.Context, peerID, groupID []byte) error {
-	payload, err := shmevent.EncodePeerGroupPayload(peerID, groupID)
+	m, err := shmevent.NewPeerGroupDelete(string(peerID), string(groupID))
 	if err != nil {
 		return fmt.Errorf("shmclient: peer_group_delete: %w", err)
 	}
-	return s.catalogCallNamed(ctx, shmevent.EventCatalogDelete, "peer_group_delete", shmevent.EncodeCatalogPayload(shmevent.KindPeerGroup, payload))
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return fmt.Errorf("shmclient: peer_group_delete: %w", err)
+	}
+	return respErr("peer_group_delete", resp)
 }
 
 // CreateJoinInvite lodges a one-time shmevent.KindJoinInvite record for
 // token, granting suffrage, on the session's node. Only a current raft
-// voter may do this -- see shmevent.EventJoinInviteCreate's doc comment.
+// voter may do this -- see joinInviteCreate's doc comment in
+// api/shmevent.capnp.
 func (s *Session) CreateJoinInvite(ctx context.Context, token []byte, suffrage byte) error {
-	inner, err := shmevent.EncodeJoinInviteCreatePayload(token, suffrage)
+	m, err := shmevent.NewJoinInviteCreate(token, suffrage)
 	if err != nil {
 		return fmt.Errorf("shmclient: join_invite_create: %w", err)
 	}
-	payload := shmevent.EncodeLifecycleWritePayload(shmevent.KindJoinInvite, shmevent.LifecycleActionRequest, inner)
-	return s.catalogCallNamed(ctx, shmevent.EventLifecycleWrite, "join_invite_create", payload)
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return fmt.Errorf("shmclient: join_invite_create: %w", err)
+	}
+	return respErr("join_invite_create", resp)
 }
 
 // RevokeJoinInvite deletes the KindJoinInvite record for token outright,
 // before it's ever redeemed. Only a current raft voter may do this.
 func (s *Session) RevokeJoinInvite(ctx context.Context, token []byte) error {
-	inner := shmevent.EncodeJoinInviteRevokePayload(token)
-	payload := shmevent.EncodeLifecycleWritePayload(shmevent.KindJoinInvite, shmevent.LifecycleActionRevoke, inner)
-	return s.catalogCallNamed(ctx, shmevent.EventLifecycleWrite, "join_invite_revoke", payload)
+	m, err := shmevent.NewJoinInviteRevoke(token)
+	if err != nil {
+		return fmt.Errorf("shmclient: join_invite_revoke: %w", err)
+	}
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return fmt.Errorf("shmclient: join_invite_revoke: %w", err)
+	}
+	return respErr("join_invite_revoke", resp)
 }
 
 // CreateJoinRequest mints a fresh join-request ticket on the session's own
 // node -- the reverse of CreateJoinInvite, for a node with no cluster of
-// its own yet to hand some other cluster's voter (see
-// shmevent.EventJoinRequestCreate's doc comment). Returns the new token.
+// its own yet to hand some other cluster's voter (see joinRequestCreate's
+// doc comment in api/shmevent.capnp). Returns the new token.
 func (s *Session) CreateJoinRequest(ctx context.Context) ([]byte, error) {
-	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventJoinRequestCreate,
-		ID:        newID(),
-	}, s.priv)
+	m, err := shmevent.NewJoinRequestCreate()
 	if err != nil {
 		return nil, fmt.Errorf("shmclient: join_request_create: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return nil, fmt.Errorf("shmclient: join_request_create: %s", resp.Value)
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return nil, fmt.Errorf("shmclient: join_request_create: %w", err)
 	}
-	return resp.Value, nil
+	if err := respErr("join_request_create", resp); err != nil {
+		return nil, err
+	}
+	token, err := resp.JoinRequestCreate().Token()
+	if err != nil {
+		return nil, fmt.Errorf("shmclient: join_request_create: %w", err)
+	}
+	return token, nil
 }
 
 // CancelJoinRequest clears the session's own pending join-request ticket
 // (a no-op if token no longer matches -- already consumed or superseded).
 func (s *Session) CancelJoinRequest(ctx context.Context, token []byte) error {
-	return s.catalogCall(ctx, shmevent.EventJoinRequestCancel, shmevent.EncodeJoinRequestCancelPayload(token))
+	m, err := shmevent.NewJoinRequestCancel(token)
+	if err != nil {
+		return fmt.Errorf("shmclient: join_request_cancel: %w", err)
+	}
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return fmt.Errorf("shmclient: join_request_cancel: %w", err)
+	}
+	return respErr("join_request_cancel", resp)
 }
 
 // Recruit tells the session's own node (an existing raft voter) to mint a
 // normal join invite on its own cluster and hand-deliver it directly to
 // the device named in ticket ("<device's own multiaddr>#<tokenHex>", from
-// that device's own CreateJoinRequest) -- see shmevent.EventRecruit's doc
-// comment. Returns the recruited device's own join result ("<peerID>
-// ok"/"<peerID> pending") on success.
+// that device's own CreateJoinRequest) -- see recruit's doc comment in
+// api/shmevent.capnp. Returns the recruited device's own join result
+// ("<peerID> ok"/"<peerID> pending") on success.
 func (s *Session) Recruit(ctx context.Context, ticket string, suffrage byte) (string, error) {
-	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventRecruit,
-		Value:     shmevent.EncodeRecruitPayload(ticket, suffrage),
-		ID:        newID(),
-	}, s.priv)
+	m, err := shmevent.NewRecruit(ticket, suffrage)
 	if err != nil {
 		return "", fmt.Errorf("shmclient: recruit: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return "", fmt.Errorf("shmclient: recruit: %s", resp.Value)
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return "", fmt.Errorf("shmclient: recruit: %w", err)
 	}
-	return string(resp.Value), nil
+	if err := respErr("recruit", resp); err != nil {
+		return "", err
+	}
+	result, err := resp.Recruit().Ticket()
+	if err != nil {
+		return "", fmt.Errorf("shmclient: recruit: %w", err)
+	}
+	return result, nil
 }
 
 // CreateExecInvite lodges a one-time shmevent.KindExecInvite record for
 // token, binding commandID+inputsJSON, on the session's node. Only a
-// current raft voter may do this -- see shmevent.EventExecInviteCreate's
-// doc comment.
+// current raft voter may do this -- see execInviteCreate's doc comment in
+// api/shmevent.capnp.
 func (s *Session) CreateExecInvite(ctx context.Context, token []byte, commandID, inputsJSON string) error {
-	inner, err := shmevent.EncodeExecInviteCreatePayload(token, commandID, inputsJSON)
+	m, err := shmevent.NewExecInviteCreate(token, commandID, inputsJSON)
 	if err != nil {
 		return fmt.Errorf("shmclient: exec_invite_create: %w", err)
 	}
-	payload := shmevent.EncodeLifecycleWritePayload(shmevent.KindExecInvite, shmevent.LifecycleActionRequest, inner)
-	return s.catalogCallNamed(ctx, shmevent.EventLifecycleWrite, "exec_invite_create", payload)
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return fmt.Errorf("shmclient: exec_invite_create: %w", err)
+	}
+	return respErr("exec_invite_create", resp)
 }
 
 // RevokeExecInvite deletes the KindExecInvite record for token outright,
 // before it's ever redeemed. Only a current raft voter may do this.
 func (s *Session) RevokeExecInvite(ctx context.Context, token []byte) error {
-	inner := shmevent.EncodeExecInviteRevokePayload(token)
-	payload := shmevent.EncodeLifecycleWritePayload(shmevent.KindExecInvite, shmevent.LifecycleActionRevoke, inner)
-	return s.catalogCallNamed(ctx, shmevent.EventLifecycleWrite, "exec_invite_revoke", payload)
+	m, err := shmevent.NewExecInviteRevoke(token)
+	if err != nil {
+		return fmt.Errorf("shmclient: exec_invite_revoke: %w", err)
+	}
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return fmt.Errorf("shmclient: exec_invite_revoke: %w", err)
+	}
+	return respErr("exec_invite_revoke", resp)
 }
 
 // RedeemExecInvite tells the session's own node to dial sourceAddr and
-// redeem token there on this node's own behalf -- see
-// shmevent.EventExecInviteRedeem's doc comment. Returns the new instance
-// id on success.
+// redeem token there on this node's own behalf -- see execInviteRedeem's
+// doc comment in api/shmevent.capnp. Returns the new instance id on
+// success.
 func (s *Session) RedeemExecInvite(ctx context.Context, sourceAddr string, token []byte) (string, error) {
-	payload, err := shmevent.EncodeExecInviteRedeemRequest(sourceAddr, token)
+	m, err := shmevent.NewExecInviteRedeem(sourceAddr, token)
 	if err != nil {
 		return "", fmt.Errorf("shmclient: exec_invite_redeem: %w", err)
 	}
-	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventExecInviteRedeem,
-		Value:     payload,
-		ID:        newID(),
-	}, s.priv)
+	resp, err := s.call(ctx, m)
 	if err != nil {
 		return "", fmt.Errorf("shmclient: exec_invite_redeem: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return "", fmt.Errorf("shmclient: exec_invite_redeem: %s", resp.Value)
+	if err := respErr("exec_invite_redeem", resp); err != nil {
+		return "", err
 	}
-	return string(resp.Value), nil
+	instanceID, err := resp.ExecInviteRedeem().InstanceId()
+	if err != nil {
+		return "", fmt.Errorf("shmclient: exec_invite_redeem: %w", err)
+	}
+	return instanceID, nil
 }
 
 // PublicAccess tells the session's own node to submit
 // shmevent.DefaultPublicCommandID -- the always-public front door every
-// cluster bootstraps -- to the cluster at targetAddr, which grants this
-// node Channel and relay standing there. note is an optional free-text
-// tag stored on the request. See shmevent.EventPublicAccess's doc comment
-// for the full design; returns the new dispatch's instance id.
+// cluster bootstraps -- to the cluster at targetPeer (a multiaddr or bare
+// peer id), which grants this node Channel and relay standing there. note
+// is an optional free-text tag stored on the request. See publicAccess's
+// doc comment in api/shmevent.capnp for the full design; returns the new
+// dispatch's instance id.
 //
 // This is what a device with no standing in a cluster it needs the relay
 // service of (a phone reserving a circuit-relay v2 slot on one of
 // configs/bootstrap-nodes.json's nodes) calls once, instead of an operator
 // running mage addpeertogroup by hand for every such device.
-func (s *Session) PublicAccess(ctx context.Context, targetAddr, note string) (string, error) {
-	if strings.Contains(targetAddr, "#") {
-		return "", fmt.Errorf("shmclient: public_access: target address %q must not contain '#' (the note separator)", targetAddr)
-	}
-	value := targetAddr
-	if note != "" {
-		value += "#" + note
-	}
-	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventPublicAccess,
-		Value:     []byte(value),
-		ID:        newID(),
-	}, s.priv)
+func (s *Session) PublicAccess(ctx context.Context, targetPeer, note string) (string, error) {
+	m, err := shmevent.NewPublicAccess(targetPeer, note)
 	if err != nil {
 		return "", fmt.Errorf("shmclient: public_access: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return "", fmt.Errorf("shmclient: public_access: %s", resp.Value)
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return "", fmt.Errorf("shmclient: public_access: %w", err)
 	}
-	return string(resp.Value), nil
+	if err := respErr("public_access", resp); err != nil {
+		return "", err
+	}
+	instanceID, err := resp.PublicAccess().InstanceId()
+	if err != nil {
+		return "", fmt.Errorf("shmclient: public_access: %w", err)
+	}
+	return instanceID, nil
 }
 
-// DialSubmitCommand asks this session's own node to dial targetAddr
-// directly and submit commandID/inputsJSON there as a CommandRequestLogKind
-// write into *that* cluster's own log -- PublicAccess generalized from one
-// hardcoded command to any commandID, see shmevent.EventDialSubmitCommand's
-// doc comment. Returns the new dispatch's instance id, usable with
-// DialQueryCommandLog to read back its result.
-func (s *Session) DialSubmitCommand(ctx context.Context, targetAddr, commandID, inputsJSON, note string) (string, error) {
-	value, err := shmevent.EncodeDialSubmitCommandRequest(targetAddr, commandID, inputsJSON, note)
+// DialSubmitCommand asks this session's own node to dial targetPeer (a
+// multiaddr or bare peer id) directly and submit commandID/inputsJSON
+// there as a CommandRequestLogKind write into *that* cluster's own log --
+// PublicAccess generalized from one hardcoded command to any commandID,
+// see dialSubmitCommand's doc comment in api/shmevent.capnp. Returns the
+// new dispatch's instance id, usable with DialQueryCommandLog to read
+// back its result.
+func (s *Session) DialSubmitCommand(ctx context.Context, targetPeer, commandID, inputsJSON, note string) (string, error) {
+	m, err := shmevent.NewDialSubmitCommand(targetPeer, commandID, inputsJSON, note)
 	if err != nil {
 		return "", fmt.Errorf("shmclient: dial_submit_command: %w", err)
 	}
-	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventDialSubmitCommand,
-		Value:     value,
-		ID:        newID(),
-	}, s.priv)
+	resp, err := s.call(ctx, m)
 	if err != nil {
 		return "", fmt.Errorf("shmclient: dial_submit_command: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return "", fmt.Errorf("shmclient: dial_submit_command: %s", resp.Value)
+	if err := respErr("dial_submit_command", resp); err != nil {
+		return "", err
 	}
-	return string(resp.Value), nil
+	instanceID, err := resp.DialSubmitCommand().InstanceId()
+	if err != nil {
+		return "", fmt.Errorf("shmclient: dial_submit_command: %w", err)
+	}
+	return instanceID, nil
 }
 
-// DialQueryCommandLog asks this session's own node to dial targetAddr
+// DialQueryCommandLog asks this session's own node to dial targetPeer
 // directly and read back instanceID's own CommandExecLogKind entries in
 // [since, until], up to limit records (0 meaning unbounded) --
-// DialSubmitCommand's read-back counterpart, see
-// shmevent.EventDialQueryCommandLog's doc comment.
-func (s *Session) DialQueryCommandLog(ctx context.Context, targetAddr, instanceID string, since, until time.Time, limit int) ([]logrecord.Record, error) {
-	value, err := shmevent.EncodeDialQueryCommandLogRequest(targetAddr, instanceID, since, until, limit)
+// DialSubmitCommand's read-back counterpart, see dialQueryCommandLog's
+// doc comment in api/shmevent.capnp.
+func (s *Session) DialQueryCommandLog(ctx context.Context, targetPeer, instanceID string, since, until time.Time, limit int) ([]logrecord.Record, error) {
+	m, err := shmevent.NewDialQueryCommandLog(targetPeer, instanceID, since, until, limit)
 	if err != nil {
 		return nil, fmt.Errorf("shmclient: dial_query_command_log: %w", err)
 	}
-	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventDialQueryCommandLog,
-		Value:     value,
-		ID:        newID(),
-	}, s.priv)
+	resp, err := s.call(ctx, m)
 	if err != nil {
 		return nil, fmt.Errorf("shmclient: dial_query_command_log: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return nil, fmt.Errorf("shmclient: dial_query_command_log: %s", resp.Value)
+	if err := respErr("dial_query_command_log", resp); err != nil {
+		return nil, err
 	}
-	records, err := shmevent.DecodeLogRecordList(resp.Value)
+	records, err := shmevent.DialQueryCommandLogRecords(resp.DialQueryCommandLog())
 	if err != nil {
 		return nil, fmt.Errorf("shmclient: dial_query_command_log: decode response: %w", err)
 	}
 	return records, nil
 }
 
-// Execute sends payload as a direct peer-to-peer EventExecute notification
+// Execute sends payload as a direct peer-to-peer execute notification
 // from the session's own node to destPeerID -- bypassing raft and the
-// store entirely, see shmevent.EventExecute's doc comment. Needs two
-// EventSetKey round trips first (registering the session's own peer id
-// and destPeerID under fresh ids) since dispatchExecute requires both
-// SourceID and DestinationID to reference prior registrations, unlike
+// store entirely, see execute's doc comment in api/shmevent.capnp. Needs
+// two setKey round trips first (registering the session's own peer id and
+// destPeerID under fresh ids) since dispatchExecute requires both
+// sourceId and destinationId to reference prior registrations, unlike
 // Set/Get's single-round-trip forms.
 func (s *Session) Execute(ctx context.Context, destPeerID string, payload []byte) error {
 	sourceID := newID()
-	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventSetKey,
-		Value:     []byte(s.peerID),
-		ID:        sourceID,
-	}, s.priv)
+	srcMsg, err := shmevent.NewSetKey([]byte(s.peerID))
 	if err != nil {
 		return fmt.Errorf("shmclient: execute: register source: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return fmt.Errorf("shmclient: execute: register source: %s", resp.Value)
+	srcMsg.SetId(sourceID)
+	resp, err := ipc.Call(ctx, s.peerID, srcMsg, s.priv)
+	if err != nil {
+		return fmt.Errorf("shmclient: execute: register source: %w", err)
+	}
+	if err := respErr("execute: register source", resp); err != nil {
+		return err
 	}
 
 	destID := newID()
-	resp, err = ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventSetKey,
-		Value:     []byte(destPeerID),
-		ID:        destID,
-	}, s.priv)
+	destMsg, err := shmevent.NewSetKey([]byte(destPeerID))
 	if err != nil {
 		return fmt.Errorf("shmclient: execute: register destination: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return fmt.Errorf("shmclient: execute: register destination: %s", resp.Value)
+	destMsg.SetId(destID)
+	resp, err = ipc.Call(ctx, s.peerID, destMsg, s.priv)
+	if err != nil {
+		return fmt.Errorf("shmclient: execute: register destination: %w", err)
+	}
+	if err := respErr("execute: register destination", resp); err != nil {
+		return err
 	}
 
-	resp, err = ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType:     shmevent.EventExecute,
-		SourceID:      sourceID,
-		DestinationID: destID,
-		Value:         payload,
-		ID:            newID(),
-	}, s.priv)
+	execMsg, err := shmevent.NewExecute(sourceID, destID, payload)
 	if err != nil {
 		return fmt.Errorf("shmclient: execute: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return fmt.Errorf("shmclient: execute: %s", resp.Value)
+	resp, err = s.call(ctx, execMsg)
+	if err != nil {
+		return fmt.Errorf("shmclient: execute: %w", err)
 	}
-	return nil
+	return respErr("execute", resp)
 }
 
-// PollExecute drains one queued EventExecute notification delivered to
-// the session's node -- see shmevent.EventPollExecute's doc comment. ok
-// is false if nothing is currently queued.
+// PollExecute drains one queued execute notification delivered to the
+// session's node -- see pollExecute's doc comment in api/shmevent.capnp.
+// ok is false if nothing is currently queued.
 func (s *Session) PollExecute(ctx context.Context) (senderPeerID string, payload []byte, ok bool, err error) {
-	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventPollExecute,
-		ID:        newID(),
-	}, s.priv)
+	m, err := shmevent.NewPollExecute()
 	if err != nil {
 		return "", nil, false, fmt.Errorf("shmclient: poll_execute: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return "", nil, false, fmt.Errorf("shmclient: poll_execute: %s", resp.Value)
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return "", nil, false, fmt.Errorf("shmclient: poll_execute: %w", err)
 	}
-	if len(resp.Value) == 0 {
+	if err := respErr("poll_execute", resp); err != nil {
+		return "", nil, false, err
+	}
+	grp := resp.PollExecute()
+	sender, err := grp.SenderPeerId()
+	if err != nil {
+		return "", nil, false, fmt.Errorf("shmclient: poll_execute: %w", err)
+	}
+	if sender == "" {
 		return "", nil, false, nil
 	}
-	sender, notifPayload, err := shmevent.DecodeExecuteNotification(resp.Value)
+	notifPayload, err := grp.Value()
 	if err != nil {
-		return "", nil, false, fmt.Errorf("shmclient: poll_execute: decode notification: %w", err)
+		return "", nil, false, fmt.Errorf("shmclient: poll_execute: %w", err)
 	}
-	return string(sender), notifPayload, true, nil
+	return sender, notifPayload, true, nil
 }
 
 // channelPipe is one open channel's pkg/chandata data-plane handles from
@@ -877,8 +963,8 @@ func mergeCancel(a, b context.Context) (context.Context, context.CancelFunc) {
 const pollWaitCap = 150 * time.Millisecond
 
 // setupChannelData creates/opens channelID's pkg/chandata ring pair and
-// registers it in s.channels, then sends shmevent.EventChannelDataReady so
-// the daemon opens its own end and starts forwarding -- shared by
+// registers it in s.channels, then sends channelDataReady so the daemon
+// opens its own end and starts forwarding -- shared by
 // OpenChannel/ListenChannel once each has a channelID in hand. On any
 // failure it tears down whatever it already created/opened before
 // returning the error, so a caller that gives up on a failed Open/Listen
@@ -904,16 +990,16 @@ func (s *Session) setupChannelData(ctx context.Context, channelID string) (err e
 		}
 	}()
 
-	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventChannelDataReady,
-		Value:     []byte(channelID),
-		ID:        newID(),
-	}, s.priv)
+	m, err := shmevent.NewChannelDataReady(channelID)
 	if err != nil {
 		return fmt.Errorf("shmclient: channel_data_ready: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return fmt.Errorf("shmclient: channel_data_ready: %s", resp.Value)
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return fmt.Errorf("shmclient: channel_data_ready: %w", err)
+	}
+	if err := respErr("channel_data_ready", resp); err != nil {
+		return err
 	}
 
 	s.channelsMu.Lock()
@@ -923,27 +1009,31 @@ func (s *Session) setupChannelData(ctx context.Context, channelID string) (err e
 }
 
 // OpenChannel opens a raw, persistent, bidirectional byte pipe from the
-// session's own node to destPeerID -- see shmevent.EventChannelOpen's doc
-// comment. Unlike Execute, this needs no prior EventSetKey registration:
-// EventChannelOpen's Value is just destPeerID directly. Returns the
-// freshly minted channelID every subsequent SendChannel/PollChannel/
-// CloseChannel call on this channel needs. Also sets up channelID's
-// pkg/chandata data-plane ring pair (setupChannelData) before returning,
-// so every channelID this method ever hands back is immediately usable
-// with SendChannel/PollChannel's high-throughput ring path.
+// session's own node to destPeerID -- see channelOpen's doc comment in
+// api/shmevent.capnp. Unlike Execute, this needs no prior setKey
+// registration: channelOpen's peerId field is just destPeerID directly.
+// Returns the freshly minted channelID every subsequent
+// SendChannel/PollChannel/CloseChannel call on this channel needs. Also
+// sets up channelID's pkg/chandata data-plane ring pair
+// (setupChannelData) before returning, so every channelID this method
+// ever hands back is immediately usable with SendChannel/PollChannel's
+// high-throughput ring path.
 func (s *Session) OpenChannel(ctx context.Context, destPeerID string) (channelID string, err error) {
-	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventChannelOpen,
-		Value:     []byte(destPeerID),
-		ID:        newID(),
-	}, s.priv)
+	m, err := shmevent.NewChannelOpen(destPeerID)
 	if err != nil {
 		return "", fmt.Errorf("shmclient: open_channel: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return "", fmt.Errorf("shmclient: open_channel: %s", resp.Value)
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return "", fmt.Errorf("shmclient: open_channel: %w", err)
 	}
-	channelID = string(resp.Value)
+	if err := respErr("open_channel", resp); err != nil {
+		return "", err
+	}
+	channelID, err = resp.ChannelOpen().PeerId()
+	if err != nil {
+		return "", fmt.Errorf("shmclient: open_channel: %w", err)
+	}
 	if err := s.setupChannelData(ctx, channelID); err != nil {
 		return "", fmt.Errorf("shmclient: open_channel: %w", err)
 	}
@@ -955,9 +1045,9 @@ func (s *Session) OpenChannel(ctx context.Context, destPeerID string) (channelID
 // is a pkg/chandata ring write (see OpenChannel/ListenChannel's own doc
 // comments), not a per-chunk IPC round trip: it returns once chunk has
 // been copied into the ring, which may be before the daemon has actually
-// forwarded it onto the wire (see shmevent.EventChannelDataReady's doc
-// comment on why CloseChannelWrite, not this call, is where that
-// distinction matters).
+// forwarded it onto the wire (see channelDataReady's doc comment in
+// api/shmevent.capnp on why CloseChannelWrite, not this call, is where
+// that distinction matters).
 func (s *Session) SendChannel(ctx context.Context, channelID string, purpose byte, chunk []byte) error {
 	pipe, ok := s.channelPipe(channelID)
 	if !ok {
@@ -975,8 +1065,8 @@ func (s *Session) SendChannel(ctx context.Context, channelID string, purpose byt
 	return nil
 }
 
-// ChannelStatus is PollChannel's three-way result -- see
-// shmevent.EventChannelPoll's doc comment.
+// ChannelStatus is PollChannel's three-way result -- see channelPoll's
+// doc comment in api/shmevent.capnp.
 type ChannelStatus byte
 
 const (
@@ -1028,50 +1118,56 @@ func (s *Session) PollChannel(ctx context.Context, channelID string) (chunk []by
 	return chunk, purpose, ChannelChunk, nil
 }
 
-// ListenChannel claims one pending incoming channel -- see
-// shmevent.EventChannelListen's doc comment. ok is false if none are
-// currently pending; a caller loops this the same way PollChannel loops
-// for incoming traffic. Also sets up channelID's pkg/chandata data-plane
-// ring pair (setupChannelData) before returning, same as OpenChannel.
+// ListenChannel claims one pending incoming channel -- see channelListen's
+// doc comment in api/shmevent.capnp. ok is false if none are currently
+// pending; a caller loops this the same way PollChannel loops for
+// incoming traffic. Also sets up channelID's pkg/chandata data-plane ring
+// pair (setupChannelData) before returning, same as OpenChannel.
 func (s *Session) ListenChannel(ctx context.Context) (channelID, remotePeerID string, ok bool, err error) {
-	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventChannelListen,
-		ID:        newID(),
-	}, s.priv)
+	m, err := shmevent.NewChannelListen()
 	if err != nil {
 		return "", "", false, fmt.Errorf("shmclient: listen_channel: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return "", "", false, fmt.Errorf("shmclient: listen_channel: %s", resp.Value)
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return "", "", false, fmt.Errorf("shmclient: listen_channel: %w", err)
 	}
-	if len(resp.Value) == 0 {
+	if err := respErr("listen_channel", resp); err != nil {
+		return "", "", false, err
+	}
+	grp := resp.ChannelListen()
+	id, err := grp.ChannelId()
+	if err != nil {
+		return "", "", false, fmt.Errorf("shmclient: listen_channel: %w", err)
+	}
+	if id == "" {
 		return "", "", false, nil
 	}
-	id, peer, err := shmevent.DecodeChannelAccept(resp.Value)
+	remote, err := grp.RemotePeerId()
 	if err != nil {
-		return "", "", false, fmt.Errorf("shmclient: listen_channel: decode: %w", err)
-	}
-	if err := s.setupChannelData(ctx, string(id)); err != nil {
 		return "", "", false, fmt.Errorf("shmclient: listen_channel: %w", err)
 	}
-	return string(id), string(peer), true, nil
+	if err := s.setupChannelData(ctx, id); err != nil {
+		return "", "", false, fmt.Errorf("shmclient: listen_channel: %w", err)
+	}
+	return id, remote, true, nil
 }
 
-// CloseChannel ends channelID outright -- see shmevent.EventChannelClose's
-// doc comment. Also releases channelID's pkg/chandata ring pair, if this
-// session ever set one up for it (OpenChannel/ListenChannel) -- this side
-// created the upload ring, so it releases its storage outright
-// (ChunkWriter.CloseStorage); it only ever opened the download ring as a
-// reader, so it just releases its own mapping (ChunkReader.Close). Best-
-// effort regardless of whether the EventChannelClose call itself
-// succeeds, so a daemon that's already gone doesn't leak this side's own
-// ring storage.
+// CloseChannel ends channelID outright -- see channelClose's doc comment
+// in api/shmevent.capnp. Also releases channelID's pkg/chandata ring
+// pair, if this session ever set one up for it (OpenChannel/
+// ListenChannel) -- this side created the upload ring, so it releases its
+// storage outright (ChunkWriter.CloseStorage); it only ever opened the
+// download ring as a reader, so it just releases its own mapping
+// (ChunkReader.Close). Best-effort regardless of whether the wire call
+// itself succeeds, so a daemon that's already gone doesn't leak this
+// side's own ring storage.
 func (s *Session) CloseChannel(ctx context.Context, channelID string) error {
-	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventChannelClose,
-		Value:     []byte(channelID),
-		ID:        newID(),
-	}, s.priv)
+	m, err := shmevent.NewChannelClose(channelID)
+	var resp shmevent.Msg
+	if err == nil {
+		resp, err = s.call(ctx, m)
+	}
 
 	s.channelsMu.Lock()
 	pipe, ok := s.channels[channelID]
@@ -1084,10 +1180,7 @@ func (s *Session) CloseChannel(ctx context.Context, channelID string) error {
 	if err != nil {
 		return fmt.Errorf("shmclient: close_channel: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return fmt.Errorf("shmclient: close_channel: %s", resp.Value)
-	}
-	return nil
+	return respErr("close_channel", resp)
 }
 
 // CloseChannelWrite half-closes channelID's outgoing direction only --
@@ -1096,29 +1189,26 @@ func (s *Session) CloseChannel(ctx context.Context, channelID string) error {
 // reaches a clean EOF should call this rather than CloseChannel, then
 // keep polling for whatever the remote peer still has left to send. First
 // closes (not releases -- see CloseChannel) this side's own upload ring
-// writer, then sends shmevent.EventChannelCloseWrite -- see that event's
-// doc comment for why the daemon deliberately delays its response until
-// every chunk this call's Close just made visible has actually been
-// forwarded onto the wire, so this call returning is still a genuine
-// "everything I sent already reached the network" guarantee, the same
-// one the old per-chunk-synchronous design had for free.
+// writer, then sends channelCloseWrite -- see that variant's doc comment
+// in api/shmevent.capnp for why the daemon deliberately delays its
+// response until every chunk this call's Close just made visible has
+// actually been forwarded onto the wire, so this call returning is still
+// a genuine "everything I sent already reached the network" guarantee,
+// the same one the old per-chunk-synchronous design had for free.
 func (s *Session) CloseChannelWrite(ctx context.Context, channelID string) error {
 	if pipe, ok := s.channelPipe(channelID); ok {
 		pipe.closeUpload()
 	}
 
-	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventChannelCloseWrite,
-		Value:     []byte(channelID),
-		ID:        newID(),
-	}, s.priv)
+	m, err := shmevent.NewChannelCloseWrite(channelID)
 	if err != nil {
 		return fmt.Errorf("shmclient: close_channel_write: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return fmt.Errorf("shmclient: close_channel_write: %s", resp.Value)
+	resp, err := s.call(ctx, m)
+	if err != nil {
+		return fmt.Errorf("shmclient: close_channel_write: %w", err)
 	}
-	return nil
+	return respErr("close_channel_write", resp)
 }
 
 // channelPipe looks up channelID's data-plane ring pair, set up by
@@ -1132,32 +1222,33 @@ func (s *Session) channelPipe(channelID string) (*channelPipe, bool) {
 
 // ListRange returns the first stored key/value pair with start <= key <=
 // end (both inclusive), or ok=false if none remain in that range -- see
-// shmevent.EventListRange's doc comment. A caller wanting every match
-// calls this in a loop, each time narrowing start to just past the
-// previously returned key (e.g. append a 0x00 byte to it), the same
-// "loop rather than a bulk response" shape PollExecute already uses.
+// listRange's doc comment in api/shmevent.capnp. A caller wanting every
+// match calls this in a loop, each time narrowing start to just past the
+// previously returned key (e.g. append a 0x00 byte to it), the same "loop
+// rather than a bulk response" shape PollExecute already uses.
 func (s *Session) ListRange(ctx context.Context, start, end []byte) (key, value []byte, ok bool, err error) {
-	query, err := shmevent.EncodeListRangeQuery(start, end)
+	m, err := shmevent.NewListRange(start, end)
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("shmclient: list_range: %w", err)
 	}
-	resp, err := ipc.Call(ctx, s.peerID, shmevent.Msg{
-		EventType: shmevent.EventListRange,
-		Value:     query,
-		ID:        newID(),
-	}, s.priv)
+	resp, err := s.call(ctx, m)
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("shmclient: list_range: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return nil, nil, false, fmt.Errorf("shmclient: list_range: %s", resp.Value)
+	if err := respErr("list_range", resp); err != nil {
+		return nil, nil, false, err
 	}
-	if len(resp.Value) == 0 {
+	grp := resp.ListRange()
+	key, err = grp.Key()
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("shmclient: list_range: %w", err)
+	}
+	if len(key) == 0 {
 		return nil, nil, false, nil
 	}
-	key, value, err = shmevent.DecodeListRangeQuery(resp.Value)
+	value, err = grp.Value()
 	if err != nil {
-		return nil, nil, false, fmt.Errorf("shmclient: list_range: decode result: %w", err)
+		return nil, nil, false, fmt.Errorf("shmclient: list_range: %w", err)
 	}
 	return key, value, true, nil
 }
@@ -1166,33 +1257,45 @@ func (s *Session) ListRange(ctx context.Context, start, end []byte) (key, value 
 // one of the two bootstrap events a node accepts without a key to check a
 // signature against yet (see pkg/shmevent.RequiresSignature).
 func GetPublicKey(ctx context.Context, peerID string) (shmevent.PublicKey, error) {
-	resp, err := ipc.Call(ctx, peerID, shmevent.Msg{
-		EventType: shmevent.EventGetPublicKey,
-		ID:        newID(),
-	}, nil)
+	m, err := shmevent.NewGetPublicKey()
 	if err != nil {
 		return nil, fmt.Errorf("shmclient: get_public_key: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return nil, fmt.Errorf("shmclient: get_public_key: %s", resp.Value)
+	m.SetId(newID())
+	resp, err := ipc.Call(ctx, peerID, m, nil)
+	if err != nil {
+		return nil, fmt.Errorf("shmclient: get_public_key: %w", err)
 	}
-	return shmevent.PublicKey(resp.Value), nil
+	if err := respErr("get_public_key", resp); err != nil {
+		return nil, err
+	}
+	pub, err := resp.GetPublicKey().PubKey()
+	if err != nil {
+		return nil, fmt.Errorf("shmclient: get_public_key: %w", err)
+	}
+	return shmevent.PublicKey(pub), nil
 }
 
 // GetPrivateKey fetches peerID's Ed25519 private key -- unsigned, same
 // bootstrap exception as GetPublicKey.
 func GetPrivateKey(ctx context.Context, peerID string) (shmevent.PrivateKey, error) {
-	resp, err := ipc.Call(ctx, peerID, shmevent.Msg{
-		EventType: shmevent.EventGetPrivateKey,
-		ID:        newID(),
-	}, nil)
+	m, err := shmevent.NewGetPrivateKey()
 	if err != nil {
 		return nil, fmt.Errorf("shmclient: get_private_key: %w", err)
 	}
-	if resp.EventType == shmevent.EventError {
-		return nil, fmt.Errorf("shmclient: get_private_key: %s", resp.Value)
+	m.SetId(newID())
+	resp, err := ipc.Call(ctx, peerID, m, nil)
+	if err != nil {
+		return nil, fmt.Errorf("shmclient: get_private_key: %w", err)
 	}
-	return shmevent.PrivateKey(resp.Value), nil
+	if err := respErr("get_private_key", resp); err != nil {
+		return nil, err
+	}
+	priv, err := resp.GetPrivateKey().PrivKey()
+	if err != nil {
+		return nil, fmt.Errorf("shmclient: get_private_key: %w", err)
+	}
+	return shmevent.PrivateKey(priv), nil
 }
 
 // Set is a one-shot convenience wrapper around Open+Session.Set, for a
@@ -1217,7 +1320,7 @@ func LogAppend(ctx context.Context, peerID string, key, value []byte) error {
 }
 
 // Txn is the one-shot convenience wrapper around Open+Session.Txn.
-func Txn(ctx context.Context, peerID string, ops []shmevent.TxnOp) error {
+func Txn(ctx context.Context, peerID string, ops []shmevent.TxnOpSpec) error {
 	s, err := Open(ctx, peerID)
 	if err != nil {
 		return err
@@ -1278,7 +1381,7 @@ func Kick(ctx context.Context, peerID, targetPeerID string) error {
 
 // RequestPermit is the one-shot convenience wrapper around
 // Open+Session.RequestPermit.
-func RequestPermit(ctx context.Context, peerID string, kind byte, targetPeerID, metadata []byte) error {
+func RequestPermit(ctx context.Context, peerID string, kind byte, targetPeerID []byte, metadata string) error {
 	s, err := Open(ctx, peerID)
 	if err != nil {
 		return err

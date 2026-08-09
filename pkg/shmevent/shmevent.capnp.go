@@ -6,20 +6,346 @@ import (
 	capnp "capnproto.org/go/capnp/v3"
 	text "capnproto.org/go/capnp/v3/encoding/text"
 	schemas "capnproto.org/go/capnp/v3/schemas"
+	strconv "strconv"
 )
 
+type TxnOp capnp.Struct
+
+// TxnOp_TypeID is the unique identifier for the type TxnOp.
+const TxnOp_TypeID = 0xed35f00219acd20d
+
+func NewTxnOp(s *capnp.Segment) (TxnOp, error) {
+	st, err := capnp.NewStruct(s, capnp.ObjectSize{DataSize: 8, PointerCount: 2})
+	return TxnOp(st), err
+}
+
+func NewRootTxnOp(s *capnp.Segment) (TxnOp, error) {
+	st, err := capnp.NewRootStruct(s, capnp.ObjectSize{DataSize: 8, PointerCount: 2})
+	return TxnOp(st), err
+}
+
+func ReadRootTxnOp(msg *capnp.Message) (TxnOp, error) {
+	root, err := msg.Root()
+	return TxnOp(root.Struct()), err
+}
+
+func (s TxnOp) String() string {
+	str, _ := text.Marshal(0xed35f00219acd20d, capnp.Struct(s))
+	return str
+}
+
+func (s TxnOp) EncodeAsPtr(seg *capnp.Segment) capnp.Ptr {
+	return capnp.Struct(s).EncodeAsPtr(seg)
+}
+
+func (TxnOp) DecodeFromPtr(p capnp.Ptr) TxnOp {
+	return TxnOp(capnp.Struct{}.DecodeFromPtr(p))
+}
+
+func (s TxnOp) ToPtr() capnp.Ptr {
+	return capnp.Struct(s).ToPtr()
+}
+func (s TxnOp) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s TxnOp) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s TxnOp) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s TxnOp) Op() uint8 {
+	return capnp.Struct(s).Uint8(0)
+}
+
+func (s TxnOp) SetOp(v uint8) {
+	capnp.Struct(s).SetUint8(0, v)
+}
+
+func (s TxnOp) Key() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(0)
+	return []byte(p.Data()), err
+}
+
+func (s TxnOp) HasKey() bool {
+	return capnp.Struct(s).HasPtr(0)
+}
+
+func (s TxnOp) SetKey(v []byte) error {
+	return capnp.Struct(s).SetData(0, v)
+}
+
+func (s TxnOp) Value() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return []byte(p.Data()), err
+}
+
+func (s TxnOp) HasValue() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s TxnOp) SetValue(v []byte) error {
+	return capnp.Struct(s).SetData(1, v)
+}
+
+// TxnOp_List is a list of TxnOp.
+type TxnOp_List = capnp.StructList[TxnOp]
+
+// NewTxnOp creates a new list of TxnOp.
+func NewTxnOp_List(s *capnp.Segment, sz int32) (TxnOp_List, error) {
+	l, err := capnp.NewCompositeList(s, capnp.ObjectSize{DataSize: 8, PointerCount: 2}, sz)
+	return capnp.StructList[TxnOp](l), err
+}
+
+// TxnOp_Future is a wrapper for a TxnOp promised by a client call.
+type TxnOp_Future struct{ *capnp.Future }
+
+func (f TxnOp_Future) Struct() (TxnOp, error) {
+	p, err := f.Future.Ptr()
+	return TxnOp(p.Struct()), err
+}
+
 type Event capnp.Struct
+type Event_setKey Event
+type Event_setField Event
+type Event_getKey Event
+type Event_getFieldByRegistry Event
+type Event_getFieldByKey Event
+type Event_getPublicKey Event
+type Event_getPrivateKey Event
+type Event_bootstrapOrJoinCluster Event
+type Event_addLearner Event
+type Event_set Event
+type Event_execute Event
+type Event_pollExecute Event
+type Event_listRange Event
+type Event_logAppend Event
+type Event_execInviteRedeem Event
+type Event_joinRequestCreate Event
+type Event_joinRequestCancel Event
+type Event_recruit Event
+type Event_getOwnAddr Event
+type Event_channelOpen Event
+type Event_channelSend Event
+type Event_channelPoll Event
+type Event_channelListen Event
+type Event_channelClose Event
+type Event_channelCloseWrite Event
+type Event_channelDataReady Event
+type Event_kick Event
+type Event_txn Event
+type Event_getVersion Event
+type Event_publicAccess Event
+type Event_execTicket Event
+type Event_joinTicket Event
+type Event_joinRequestTicket Event
+type Event_dialSubmitCommand Event
+type Event_dialQueryCommandLog Event
+type Event_error Event
+type Event_groupPut Event
+type Event_groupDelete Event
+type Event_commandPut Event
+type Event_commandDelete Event
+type Event_stationPut Event
+type Event_stationDelete Event
+type Event_groupCommandPut Event
+type Event_groupCommandDelete Event
+type Event_peerGroupPut Event
+type Event_peerGroupDelete Event
+type Event_permitRequest Event
+type Event_permitConfirm Event
+type Event_permitRevoke Event
+type Event_joinInviteCreate Event
+type Event_joinInviteRevoke Event
+type Event_execInviteCreate Event
+type Event_execInviteRevoke Event
+type Event_Which uint16
+
+const (
+	Event_Which_setKey                 Event_Which = 0
+	Event_Which_setField               Event_Which = 1
+	Event_Which_getKey                 Event_Which = 2
+	Event_Which_getFieldByRegistry     Event_Which = 3
+	Event_Which_getFieldByKey          Event_Which = 4
+	Event_Which_getPublicKey           Event_Which = 5
+	Event_Which_getPrivateKey          Event_Which = 6
+	Event_Which_bootstrapOrJoinCluster Event_Which = 7
+	Event_Which_addLearner             Event_Which = 8
+	Event_Which_set                    Event_Which = 9
+	Event_Which_execute                Event_Which = 10
+	Event_Which_pollExecute            Event_Which = 11
+	Event_Which_listRange              Event_Which = 12
+	Event_Which_logAppend              Event_Which = 13
+	Event_Which_leave                  Event_Which = 14
+	Event_Which_execInviteRedeem       Event_Which = 15
+	Event_Which_joinRequestCreate      Event_Which = 16
+	Event_Which_joinRequestCancel      Event_Which = 17
+	Event_Which_recruit                Event_Which = 18
+	Event_Which_getOwnAddr             Event_Which = 19
+	Event_Which_channelOpen            Event_Which = 20
+	Event_Which_channelSend            Event_Which = 21
+	Event_Which_channelPoll            Event_Which = 22
+	Event_Which_channelListen          Event_Which = 23
+	Event_Which_channelClose           Event_Which = 24
+	Event_Which_channelCloseWrite      Event_Which = 25
+	Event_Which_channelDataReady       Event_Which = 26
+	Event_Which_kick                   Event_Which = 27
+	Event_Which_txn                    Event_Which = 28
+	Event_Which_getVersion             Event_Which = 29
+	Event_Which_publicAccess           Event_Which = 30
+	Event_Which_execTicket             Event_Which = 31
+	Event_Which_joinTicket             Event_Which = 32
+	Event_Which_joinRequestTicket      Event_Which = 33
+	Event_Which_dialSubmitCommand      Event_Which = 34
+	Event_Which_dialQueryCommandLog    Event_Which = 35
+	Event_Which_error                  Event_Which = 36
+	Event_Which_groupPut               Event_Which = 37
+	Event_Which_groupDelete            Event_Which = 38
+	Event_Which_commandPut             Event_Which = 39
+	Event_Which_commandDelete          Event_Which = 40
+	Event_Which_stationPut             Event_Which = 41
+	Event_Which_stationDelete          Event_Which = 42
+	Event_Which_groupCommandPut        Event_Which = 43
+	Event_Which_groupCommandDelete     Event_Which = 44
+	Event_Which_peerGroupPut           Event_Which = 45
+	Event_Which_peerGroupDelete        Event_Which = 46
+	Event_Which_permitRequest          Event_Which = 47
+	Event_Which_permitConfirm          Event_Which = 48
+	Event_Which_permitRevoke           Event_Which = 49
+	Event_Which_joinInviteCreate       Event_Which = 50
+	Event_Which_joinInviteRevoke       Event_Which = 51
+	Event_Which_execInviteCreate       Event_Which = 52
+	Event_Which_execInviteRevoke       Event_Which = 53
+)
+
+func (w Event_Which) String() string {
+	const s = "setKeysetFieldgetKeygetFieldByRegistrygetFieldByKeygetPublicKeygetPrivateKeybootstrapOrJoinClusteraddLearnersetexecutepollExecutelistRangelogAppendleaveexecInviteRedeemjoinRequestCreatejoinRequestCancelrecruitgetOwnAddrchannelOpenchannelSendchannelPollchannelListenchannelClosechannelCloseWritechannelDataReadykicktxngetVersionpublicAccessexecTicketjoinTicketjoinRequestTicketdialSubmitCommanddialQueryCommandLogerrorgroupPutgroupDeletecommandPutcommandDeletestationPutstationDeletegroupCommandPutgroupCommandDeletepeerGroupPutpeerGroupDeletepermitRequestpermitConfirmpermitRevokejoinInviteCreatejoinInviteRevokeexecInviteCreateexecInviteRevoke"
+	switch w {
+	case Event_Which_setKey:
+		return s[0:6]
+	case Event_Which_setField:
+		return s[6:14]
+	case Event_Which_getKey:
+		return s[14:20]
+	case Event_Which_getFieldByRegistry:
+		return s[20:38]
+	case Event_Which_getFieldByKey:
+		return s[38:51]
+	case Event_Which_getPublicKey:
+		return s[51:63]
+	case Event_Which_getPrivateKey:
+		return s[63:76]
+	case Event_Which_bootstrapOrJoinCluster:
+		return s[76:98]
+	case Event_Which_addLearner:
+		return s[98:108]
+	case Event_Which_set:
+		return s[108:111]
+	case Event_Which_execute:
+		return s[111:118]
+	case Event_Which_pollExecute:
+		return s[118:129]
+	case Event_Which_listRange:
+		return s[129:138]
+	case Event_Which_logAppend:
+		return s[138:147]
+	case Event_Which_leave:
+		return s[147:152]
+	case Event_Which_execInviteRedeem:
+		return s[152:168]
+	case Event_Which_joinRequestCreate:
+		return s[168:185]
+	case Event_Which_joinRequestCancel:
+		return s[185:202]
+	case Event_Which_recruit:
+		return s[202:209]
+	case Event_Which_getOwnAddr:
+		return s[209:219]
+	case Event_Which_channelOpen:
+		return s[219:230]
+	case Event_Which_channelSend:
+		return s[230:241]
+	case Event_Which_channelPoll:
+		return s[241:252]
+	case Event_Which_channelListen:
+		return s[252:265]
+	case Event_Which_channelClose:
+		return s[265:277]
+	case Event_Which_channelCloseWrite:
+		return s[277:294]
+	case Event_Which_channelDataReady:
+		return s[294:310]
+	case Event_Which_kick:
+		return s[310:314]
+	case Event_Which_txn:
+		return s[314:317]
+	case Event_Which_getVersion:
+		return s[317:327]
+	case Event_Which_publicAccess:
+		return s[327:339]
+	case Event_Which_execTicket:
+		return s[339:349]
+	case Event_Which_joinTicket:
+		return s[349:359]
+	case Event_Which_joinRequestTicket:
+		return s[359:376]
+	case Event_Which_dialSubmitCommand:
+		return s[376:393]
+	case Event_Which_dialQueryCommandLog:
+		return s[393:412]
+	case Event_Which_error:
+		return s[412:417]
+	case Event_Which_groupPut:
+		return s[417:425]
+	case Event_Which_groupDelete:
+		return s[425:436]
+	case Event_Which_commandPut:
+		return s[436:446]
+	case Event_Which_commandDelete:
+		return s[446:459]
+	case Event_Which_stationPut:
+		return s[459:469]
+	case Event_Which_stationDelete:
+		return s[469:482]
+	case Event_Which_groupCommandPut:
+		return s[482:497]
+	case Event_Which_groupCommandDelete:
+		return s[497:515]
+	case Event_Which_peerGroupPut:
+		return s[515:527]
+	case Event_Which_peerGroupDelete:
+		return s[527:542]
+	case Event_Which_permitRequest:
+		return s[542:555]
+	case Event_Which_permitConfirm:
+		return s[555:568]
+	case Event_Which_permitRevoke:
+		return s[568:580]
+	case Event_Which_joinInviteCreate:
+		return s[580:596]
+	case Event_Which_joinInviteRevoke:
+		return s[596:612]
+	case Event_Which_execInviteCreate:
+		return s[612:628]
+	case Event_Which_execInviteRevoke:
+		return s[628:644]
+
+	}
+	return "Event_Which(" + strconv.FormatUint(uint64(w), 10) + ")"
+}
 
 // Event_TypeID is the unique identifier for the type Event.
 const Event_TypeID = 0xbb2a03e5edba191a
 
 func NewEvent(s *capnp.Segment) (Event, error) {
-	st, err := capnp.NewStruct(s, capnp.ObjectSize{DataSize: 16, PointerCount: 2})
+	st, err := capnp.NewStruct(s, capnp.ObjectSize{DataSize: 32, PointerCount: 6})
 	return Event(st), err
 }
 
 func NewRootEvent(s *capnp.Segment) (Event, error) {
-	st, err := capnp.NewRootStruct(s, capnp.ObjectSize{DataSize: 16, PointerCount: 2})
+	st, err := capnp.NewRootStruct(s, capnp.ObjectSize{DataSize: 32, PointerCount: 6})
 	return Event(st), err
 }
 
@@ -44,6 +370,10 @@ func (Event) DecodeFromPtr(p capnp.Ptr) Event {
 func (s Event) ToPtr() capnp.Ptr {
 	return capnp.Struct(s).ToPtr()
 }
+
+func (s Event) Which() Event_Which {
+	return Event_Which(capnp.Struct(s).Uint16(2))
+}
 func (s Event) IsValid() bool {
 	return capnp.Struct(s).IsValid()
 }
@@ -55,70 +385,2663 @@ func (s Event) Message() *capnp.Message {
 func (s Event) Segment() *capnp.Segment {
 	return capnp.Struct(s).Segment()
 }
-func (s Event) Event() uint8 {
-	return capnp.Struct(s).Uint8(0)
+func (s Event) Id() uint16 {
+	return capnp.Struct(s).Uint16(0)
 }
 
-func (s Event) SetEvent(v uint8) {
-	capnp.Struct(s).SetUint8(0, v)
+func (s Event) SetId(v uint16) {
+	capnp.Struct(s).SetUint16(0, v)
 }
 
-func (s Event) SourceId() uint16 {
-	return capnp.Struct(s).Uint16(2)
+func (s Event) Crc32() uint32 {
+	return capnp.Struct(s).Uint32(4)
 }
 
-func (s Event) SetSourceId(v uint16) {
-	capnp.Struct(s).SetUint16(2, v)
+func (s Event) SetCrc32(v uint32) {
+	capnp.Struct(s).SetUint32(4, v)
 }
 
-func (s Event) DestinationId() uint16 {
-	return capnp.Struct(s).Uint16(4)
-}
-
-func (s Event) SetDestinationId(v uint16) {
-	capnp.Struct(s).SetUint16(4, v)
-}
-
-func (s Event) Value() ([]byte, error) {
+func (s Event) Signature() ([]byte, error) {
 	p, err := capnp.Struct(s).Ptr(0)
 	return []byte(p.Data()), err
 }
 
-func (s Event) HasValue() bool {
+func (s Event) HasSignature() bool {
 	return capnp.Struct(s).HasPtr(0)
 }
 
-func (s Event) SetValue(v []byte) error {
+func (s Event) SetSignature(v []byte) error {
 	return capnp.Struct(s).SetData(0, v)
 }
 
-func (s Event) Crc32() uint32 {
-	return capnp.Struct(s).Uint32(8)
+func (s Event) SetKey() Event_setKey { return Event_setKey(s) }
+
+func (s Event) SetSetKey() {
+	capnp.Struct(s).SetUint16(2, 0)
 }
 
-func (s Event) SetCrc32(v uint32) {
-	capnp.Struct(s).SetUint32(8, v)
+func (s Event_setKey) IsValid() bool {
+	return capnp.Struct(s).IsValid()
 }
 
-func (s Event) Signature() ([]byte, error) {
+func (s Event_setKey) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_setKey) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_setKey) Value() ([]byte, error) {
 	p, err := capnp.Struct(s).Ptr(1)
 	return []byte(p.Data()), err
 }
 
-func (s Event) HasSignature() bool {
+func (s Event_setKey) HasValue() bool {
 	return capnp.Struct(s).HasPtr(1)
 }
 
-func (s Event) SetSignature(v []byte) error {
+func (s Event_setKey) SetValue(v []byte) error {
 	return capnp.Struct(s).SetData(1, v)
 }
 
-func (s Event) Id() uint16 {
-	return capnp.Struct(s).Uint16(6)
+func (s Event) SetField() Event_setField { return Event_setField(s) }
+
+func (s Event) SetSetField() {
+	capnp.Struct(s).SetUint16(2, 1)
 }
 
-func (s Event) SetId(v uint16) {
-	capnp.Struct(s).SetUint16(6, v)
+func (s Event_setField) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_setField) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_setField) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_setField) SourceId() uint16 {
+	return capnp.Struct(s).Uint16(8)
+}
+
+func (s Event_setField) SetSourceId(v uint16) {
+	capnp.Struct(s).SetUint16(8, v)
+}
+
+func (s Event_setField) Value() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return []byte(p.Data()), err
+}
+
+func (s Event_setField) HasValue() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_setField) SetValue(v []byte) error {
+	return capnp.Struct(s).SetData(1, v)
+}
+
+func (s Event) GetKey() Event_getKey { return Event_getKey(s) }
+
+func (s Event) SetGetKey() {
+	capnp.Struct(s).SetUint16(2, 2)
+}
+
+func (s Event_getKey) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_getKey) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_getKey) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_getKey) SourceId() uint16 {
+	return capnp.Struct(s).Uint16(8)
+}
+
+func (s Event_getKey) SetSourceId(v uint16) {
+	capnp.Struct(s).SetUint16(8, v)
+}
+
+func (s Event_getKey) Key() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return []byte(p.Data()), err
+}
+
+func (s Event_getKey) HasKey() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_getKey) SetKey(v []byte) error {
+	return capnp.Struct(s).SetData(1, v)
+}
+
+func (s Event) GetFieldByRegistry() Event_getFieldByRegistry { return Event_getFieldByRegistry(s) }
+
+func (s Event) SetGetFieldByRegistry() {
+	capnp.Struct(s).SetUint16(2, 3)
+}
+
+func (s Event_getFieldByRegistry) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_getFieldByRegistry) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_getFieldByRegistry) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_getFieldByRegistry) SourceId() uint16 {
+	return capnp.Struct(s).Uint16(8)
+}
+
+func (s Event_getFieldByRegistry) SetSourceId(v uint16) {
+	capnp.Struct(s).SetUint16(8, v)
+}
+
+func (s Event_getFieldByRegistry) Value() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return []byte(p.Data()), err
+}
+
+func (s Event_getFieldByRegistry) HasValue() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_getFieldByRegistry) SetValue(v []byte) error {
+	return capnp.Struct(s).SetData(1, v)
+}
+
+func (s Event) GetFieldByKey() Event_getFieldByKey { return Event_getFieldByKey(s) }
+
+func (s Event) SetGetFieldByKey() {
+	capnp.Struct(s).SetUint16(2, 4)
+}
+
+func (s Event_getFieldByKey) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_getFieldByKey) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_getFieldByKey) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_getFieldByKey) Key() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return []byte(p.Data()), err
+}
+
+func (s Event_getFieldByKey) HasKey() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_getFieldByKey) SetKey(v []byte) error {
+	return capnp.Struct(s).SetData(1, v)
+}
+
+func (s Event_getFieldByKey) Value() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return []byte(p.Data()), err
+}
+
+func (s Event_getFieldByKey) HasValue() bool {
+	return capnp.Struct(s).HasPtr(2)
+}
+
+func (s Event_getFieldByKey) SetValue(v []byte) error {
+	return capnp.Struct(s).SetData(2, v)
+}
+
+func (s Event) GetPublicKey() Event_getPublicKey { return Event_getPublicKey(s) }
+
+func (s Event) SetGetPublicKey() {
+	capnp.Struct(s).SetUint16(2, 5)
+}
+
+func (s Event_getPublicKey) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_getPublicKey) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_getPublicKey) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_getPublicKey) PubKey() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return []byte(p.Data()), err
+}
+
+func (s Event_getPublicKey) HasPubKey() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_getPublicKey) SetPubKey(v []byte) error {
+	return capnp.Struct(s).SetData(1, v)
+}
+
+func (s Event) GetPrivateKey() Event_getPrivateKey { return Event_getPrivateKey(s) }
+
+func (s Event) SetGetPrivateKey() {
+	capnp.Struct(s).SetUint16(2, 6)
+}
+
+func (s Event_getPrivateKey) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_getPrivateKey) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_getPrivateKey) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_getPrivateKey) PrivKey() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return []byte(p.Data()), err
+}
+
+func (s Event_getPrivateKey) HasPrivKey() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_getPrivateKey) SetPrivKey(v []byte) error {
+	return capnp.Struct(s).SetData(1, v)
+}
+
+func (s Event) BootstrapOrJoinCluster() Event_bootstrapOrJoinCluster {
+	return Event_bootstrapOrJoinCluster(s)
+}
+
+func (s Event) SetBootstrapOrJoinCluster() {
+	capnp.Struct(s).SetUint16(2, 7)
+}
+
+func (s Event_bootstrapOrJoinCluster) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_bootstrapOrJoinCluster) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_bootstrapOrJoinCluster) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_bootstrapOrJoinCluster) LeaderAddr() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_bootstrapOrJoinCluster) HasLeaderAddr() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_bootstrapOrJoinCluster) LeaderAddrBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_bootstrapOrJoinCluster) SetLeaderAddr(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event) AddLearner() Event_addLearner { return Event_addLearner(s) }
+
+func (s Event) SetAddLearner() {
+	capnp.Struct(s).SetUint16(2, 8)
+}
+
+func (s Event_addLearner) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_addLearner) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_addLearner) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_addLearner) ClaimedPeerId() uint16 {
+	return capnp.Struct(s).Uint16(8)
+}
+
+func (s Event_addLearner) SetClaimedPeerId(v uint16) {
+	capnp.Struct(s).SetUint16(8, v)
+}
+
+func (s Event_addLearner) Addr() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_addLearner) HasAddr() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_addLearner) AddrBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_addLearner) SetAddr(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event) Set() Event_set { return Event_set(s) }
+
+func (s Event) SetSet() {
+	capnp.Struct(s).SetUint16(2, 9)
+}
+
+func (s Event_set) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_set) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_set) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_set) Key() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return []byte(p.Data()), err
+}
+
+func (s Event_set) HasKey() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_set) SetKey(v []byte) error {
+	return capnp.Struct(s).SetData(1, v)
+}
+
+func (s Event_set) Value() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return []byte(p.Data()), err
+}
+
+func (s Event_set) HasValue() bool {
+	return capnp.Struct(s).HasPtr(2)
+}
+
+func (s Event_set) SetValue(v []byte) error {
+	return capnp.Struct(s).SetData(2, v)
+}
+
+func (s Event) Execute() Event_execute { return Event_execute(s) }
+
+func (s Event) SetExecute() {
+	capnp.Struct(s).SetUint16(2, 10)
+}
+
+func (s Event_execute) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_execute) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_execute) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_execute) SourceId() uint16 {
+	return capnp.Struct(s).Uint16(8)
+}
+
+func (s Event_execute) SetSourceId(v uint16) {
+	capnp.Struct(s).SetUint16(8, v)
+}
+
+func (s Event_execute) DestinationId() uint16 {
+	return capnp.Struct(s).Uint16(10)
+}
+
+func (s Event_execute) SetDestinationId(v uint16) {
+	capnp.Struct(s).SetUint16(10, v)
+}
+
+func (s Event_execute) SenderPeerId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_execute) HasSenderPeerId() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_execute) SenderPeerIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_execute) SetSenderPeerId(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event_execute) Value() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return []byte(p.Data()), err
+}
+
+func (s Event_execute) HasValue() bool {
+	return capnp.Struct(s).HasPtr(2)
+}
+
+func (s Event_execute) SetValue(v []byte) error {
+	return capnp.Struct(s).SetData(2, v)
+}
+
+func (s Event) PollExecute() Event_pollExecute { return Event_pollExecute(s) }
+
+func (s Event) SetPollExecute() {
+	capnp.Struct(s).SetUint16(2, 11)
+}
+
+func (s Event_pollExecute) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_pollExecute) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_pollExecute) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_pollExecute) SenderPeerId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_pollExecute) HasSenderPeerId() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_pollExecute) SenderPeerIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_pollExecute) SetSenderPeerId(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event_pollExecute) Value() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return []byte(p.Data()), err
+}
+
+func (s Event_pollExecute) HasValue() bool {
+	return capnp.Struct(s).HasPtr(2)
+}
+
+func (s Event_pollExecute) SetValue(v []byte) error {
+	return capnp.Struct(s).SetData(2, v)
+}
+
+func (s Event) ListRange() Event_listRange { return Event_listRange(s) }
+
+func (s Event) SetListRange() {
+	capnp.Struct(s).SetUint16(2, 12)
+}
+
+func (s Event_listRange) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_listRange) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_listRange) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_listRange) Start() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return []byte(p.Data()), err
+}
+
+func (s Event_listRange) HasStart() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_listRange) SetStart(v []byte) error {
+	return capnp.Struct(s).SetData(1, v)
+}
+
+func (s Event_listRange) End() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return []byte(p.Data()), err
+}
+
+func (s Event_listRange) HasEnd() bool {
+	return capnp.Struct(s).HasPtr(2)
+}
+
+func (s Event_listRange) SetEnd(v []byte) error {
+	return capnp.Struct(s).SetData(2, v)
+}
+
+func (s Event_listRange) Key() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(3)
+	return []byte(p.Data()), err
+}
+
+func (s Event_listRange) HasKey() bool {
+	return capnp.Struct(s).HasPtr(3)
+}
+
+func (s Event_listRange) SetKey(v []byte) error {
+	return capnp.Struct(s).SetData(3, v)
+}
+
+func (s Event_listRange) Value() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(4)
+	return []byte(p.Data()), err
+}
+
+func (s Event_listRange) HasValue() bool {
+	return capnp.Struct(s).HasPtr(4)
+}
+
+func (s Event_listRange) SetValue(v []byte) error {
+	return capnp.Struct(s).SetData(4, v)
+}
+
+func (s Event) LogAppend() Event_logAppend { return Event_logAppend(s) }
+
+func (s Event) SetLogAppend() {
+	capnp.Struct(s).SetUint16(2, 13)
+}
+
+func (s Event_logAppend) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_logAppend) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_logAppend) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_logAppend) Key() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return []byte(p.Data()), err
+}
+
+func (s Event_logAppend) HasKey() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_logAppend) SetKey(v []byte) error {
+	return capnp.Struct(s).SetData(1, v)
+}
+
+func (s Event_logAppend) Value() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return []byte(p.Data()), err
+}
+
+func (s Event_logAppend) HasValue() bool {
+	return capnp.Struct(s).HasPtr(2)
+}
+
+func (s Event_logAppend) SetValue(v []byte) error {
+	return capnp.Struct(s).SetData(2, v)
+}
+
+func (s Event) SetLeave() {
+	capnp.Struct(s).SetUint16(2, 14)
+
+}
+
+func (s Event) ExecInviteRedeem() Event_execInviteRedeem { return Event_execInviteRedeem(s) }
+
+func (s Event) SetExecInviteRedeem() {
+	capnp.Struct(s).SetUint16(2, 15)
+}
+
+func (s Event_execInviteRedeem) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_execInviteRedeem) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_execInviteRedeem) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_execInviteRedeem) SourceAddr() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_execInviteRedeem) HasSourceAddr() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_execInviteRedeem) SourceAddrBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_execInviteRedeem) SetSourceAddr(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event_execInviteRedeem) Token() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return []byte(p.Data()), err
+}
+
+func (s Event_execInviteRedeem) HasToken() bool {
+	return capnp.Struct(s).HasPtr(2)
+}
+
+func (s Event_execInviteRedeem) SetToken(v []byte) error {
+	return capnp.Struct(s).SetData(2, v)
+}
+
+func (s Event_execInviteRedeem) InstanceId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(3)
+	return p.Text(), err
+}
+
+func (s Event_execInviteRedeem) HasInstanceId() bool {
+	return capnp.Struct(s).HasPtr(3)
+}
+
+func (s Event_execInviteRedeem) InstanceIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(3)
+	return p.TextBytes(), err
+}
+
+func (s Event_execInviteRedeem) SetInstanceId(v string) error {
+	return capnp.Struct(s).SetText(3, v)
+}
+
+func (s Event_execInviteRedeem) RedeemerPeerId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(4)
+	return p.Text(), err
+}
+
+func (s Event_execInviteRedeem) HasRedeemerPeerId() bool {
+	return capnp.Struct(s).HasPtr(4)
+}
+
+func (s Event_execInviteRedeem) RedeemerPeerIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(4)
+	return p.TextBytes(), err
+}
+
+func (s Event_execInviteRedeem) SetRedeemerPeerId(v string) error {
+	return capnp.Struct(s).SetText(4, v)
+}
+
+func (s Event) JoinRequestCreate() Event_joinRequestCreate { return Event_joinRequestCreate(s) }
+
+func (s Event) SetJoinRequestCreate() {
+	capnp.Struct(s).SetUint16(2, 16)
+}
+
+func (s Event_joinRequestCreate) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_joinRequestCreate) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_joinRequestCreate) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_joinRequestCreate) Token() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return []byte(p.Data()), err
+}
+
+func (s Event_joinRequestCreate) HasToken() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_joinRequestCreate) SetToken(v []byte) error {
+	return capnp.Struct(s).SetData(1, v)
+}
+
+func (s Event) JoinRequestCancel() Event_joinRequestCancel { return Event_joinRequestCancel(s) }
+
+func (s Event) SetJoinRequestCancel() {
+	capnp.Struct(s).SetUint16(2, 17)
+}
+
+func (s Event_joinRequestCancel) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_joinRequestCancel) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_joinRequestCancel) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_joinRequestCancel) Token() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return []byte(p.Data()), err
+}
+
+func (s Event_joinRequestCancel) HasToken() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_joinRequestCancel) SetToken(v []byte) error {
+	return capnp.Struct(s).SetData(1, v)
+}
+
+func (s Event) Recruit() Event_recruit { return Event_recruit(s) }
+
+func (s Event) SetRecruit() {
+	capnp.Struct(s).SetUint16(2, 18)
+}
+
+func (s Event_recruit) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_recruit) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_recruit) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_recruit) Ticket() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_recruit) HasTicket() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_recruit) TicketBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_recruit) SetTicket(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event_recruit) Suffrage() uint8 {
+	return capnp.Struct(s).Uint8(8)
+}
+
+func (s Event_recruit) SetSuffrage(v uint8) {
+	capnp.Struct(s).SetUint8(8, v)
+}
+
+func (s Event) GetOwnAddr() Event_getOwnAddr { return Event_getOwnAddr(s) }
+
+func (s Event) SetGetOwnAddr() {
+	capnp.Struct(s).SetUint16(2, 19)
+}
+
+func (s Event_getOwnAddr) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_getOwnAddr) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_getOwnAddr) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_getOwnAddr) Addr() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_getOwnAddr) HasAddr() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_getOwnAddr) AddrBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_getOwnAddr) SetAddr(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event) ChannelOpen() Event_channelOpen { return Event_channelOpen(s) }
+
+func (s Event) SetChannelOpen() {
+	capnp.Struct(s).SetUint16(2, 20)
+}
+
+func (s Event_channelOpen) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_channelOpen) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_channelOpen) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_channelOpen) PeerId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_channelOpen) HasPeerId() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_channelOpen) PeerIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_channelOpen) SetPeerId(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event_channelOpen) SenderPeerId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.Text(), err
+}
+
+func (s Event_channelOpen) HasSenderPeerId() bool {
+	return capnp.Struct(s).HasPtr(2)
+}
+
+func (s Event_channelOpen) SenderPeerIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.TextBytes(), err
+}
+
+func (s Event_channelOpen) SetSenderPeerId(v string) error {
+	return capnp.Struct(s).SetText(2, v)
+}
+
+func (s Event) ChannelSend() Event_channelSend { return Event_channelSend(s) }
+
+func (s Event) SetChannelSend() {
+	capnp.Struct(s).SetUint16(2, 21)
+}
+
+func (s Event_channelSend) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_channelSend) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_channelSend) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_channelSend) ChannelId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_channelSend) HasChannelId() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_channelSend) ChannelIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_channelSend) SetChannelId(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event_channelSend) Purpose() uint8 {
+	return capnp.Struct(s).Uint8(8)
+}
+
+func (s Event_channelSend) SetPurpose(v uint8) {
+	capnp.Struct(s).SetUint8(8, v)
+}
+
+func (s Event_channelSend) Chunk() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return []byte(p.Data()), err
+}
+
+func (s Event_channelSend) HasChunk() bool {
+	return capnp.Struct(s).HasPtr(2)
+}
+
+func (s Event_channelSend) SetChunk(v []byte) error {
+	return capnp.Struct(s).SetData(2, v)
+}
+
+func (s Event) ChannelPoll() Event_channelPoll { return Event_channelPoll(s) }
+
+func (s Event) SetChannelPoll() {
+	capnp.Struct(s).SetUint16(2, 22)
+}
+
+func (s Event_channelPoll) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_channelPoll) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_channelPoll) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_channelPoll) ChannelId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_channelPoll) HasChannelId() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_channelPoll) ChannelIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_channelPoll) SetChannelId(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event_channelPoll) Status() uint8 {
+	return capnp.Struct(s).Uint8(8)
+}
+
+func (s Event_channelPoll) SetStatus(v uint8) {
+	capnp.Struct(s).SetUint8(8, v)
+}
+
+func (s Event_channelPoll) Purpose() uint8 {
+	return capnp.Struct(s).Uint8(9)
+}
+
+func (s Event_channelPoll) SetPurpose(v uint8) {
+	capnp.Struct(s).SetUint8(9, v)
+}
+
+func (s Event_channelPoll) Chunk() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return []byte(p.Data()), err
+}
+
+func (s Event_channelPoll) HasChunk() bool {
+	return capnp.Struct(s).HasPtr(2)
+}
+
+func (s Event_channelPoll) SetChunk(v []byte) error {
+	return capnp.Struct(s).SetData(2, v)
+}
+
+func (s Event) ChannelListen() Event_channelListen { return Event_channelListen(s) }
+
+func (s Event) SetChannelListen() {
+	capnp.Struct(s).SetUint16(2, 23)
+}
+
+func (s Event_channelListen) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_channelListen) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_channelListen) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_channelListen) ChannelId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_channelListen) HasChannelId() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_channelListen) ChannelIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_channelListen) SetChannelId(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event_channelListen) RemotePeerId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.Text(), err
+}
+
+func (s Event_channelListen) HasRemotePeerId() bool {
+	return capnp.Struct(s).HasPtr(2)
+}
+
+func (s Event_channelListen) RemotePeerIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.TextBytes(), err
+}
+
+func (s Event_channelListen) SetRemotePeerId(v string) error {
+	return capnp.Struct(s).SetText(2, v)
+}
+
+func (s Event) ChannelClose() Event_channelClose { return Event_channelClose(s) }
+
+func (s Event) SetChannelClose() {
+	capnp.Struct(s).SetUint16(2, 24)
+}
+
+func (s Event_channelClose) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_channelClose) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_channelClose) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_channelClose) ChannelId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_channelClose) HasChannelId() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_channelClose) ChannelIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_channelClose) SetChannelId(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event) ChannelCloseWrite() Event_channelCloseWrite { return Event_channelCloseWrite(s) }
+
+func (s Event) SetChannelCloseWrite() {
+	capnp.Struct(s).SetUint16(2, 25)
+}
+
+func (s Event_channelCloseWrite) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_channelCloseWrite) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_channelCloseWrite) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_channelCloseWrite) ChannelId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_channelCloseWrite) HasChannelId() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_channelCloseWrite) ChannelIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_channelCloseWrite) SetChannelId(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event) ChannelDataReady() Event_channelDataReady { return Event_channelDataReady(s) }
+
+func (s Event) SetChannelDataReady() {
+	capnp.Struct(s).SetUint16(2, 26)
+}
+
+func (s Event_channelDataReady) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_channelDataReady) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_channelDataReady) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_channelDataReady) ChannelId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_channelDataReady) HasChannelId() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_channelDataReady) ChannelIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_channelDataReady) SetChannelId(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event) Kick() Event_kick { return Event_kick(s) }
+
+func (s Event) SetKick() {
+	capnp.Struct(s).SetUint16(2, 27)
+}
+
+func (s Event_kick) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_kick) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_kick) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_kick) PeerId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_kick) HasPeerId() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_kick) PeerIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_kick) SetPeerId(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event) Txn() Event_txn { return Event_txn(s) }
+
+func (s Event) SetTxn() {
+	capnp.Struct(s).SetUint16(2, 28)
+}
+
+func (s Event_txn) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_txn) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_txn) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_txn) Ops() (TxnOp_List, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return TxnOp_List(p.List()), err
+}
+
+func (s Event_txn) HasOps() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_txn) SetOps(v TxnOp_List) error {
+	return capnp.Struct(s).SetPtr(1, v.ToPtr())
+}
+
+// NewOps sets the ops field to a newly
+// allocated TxnOp_List, preferring placement in s's segment.
+func (s Event_txn) NewOps(n int32) (TxnOp_List, error) {
+	l, err := NewTxnOp_List(capnp.Struct(s).Segment(), n)
+	if err != nil {
+		return TxnOp_List{}, err
+	}
+	err = capnp.Struct(s).SetPtr(1, l.ToPtr())
+	return l, err
+}
+func (s Event) GetVersion() Event_getVersion { return Event_getVersion(s) }
+
+func (s Event) SetGetVersion() {
+	capnp.Struct(s).SetUint16(2, 29)
+}
+
+func (s Event_getVersion) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_getVersion) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_getVersion) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_getVersion) Commit() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_getVersion) HasCommit() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_getVersion) CommitBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_getVersion) SetCommit(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event_getVersion) Dirty() bool {
+	return capnp.Struct(s).Bit(64)
+}
+
+func (s Event_getVersion) SetDirty(v bool) {
+	capnp.Struct(s).SetBit(64, v)
+}
+
+func (s Event_getVersion) BuildTime() (string, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.Text(), err
+}
+
+func (s Event_getVersion) HasBuildTime() bool {
+	return capnp.Struct(s).HasPtr(2)
+}
+
+func (s Event_getVersion) BuildTimeBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.TextBytes(), err
+}
+
+func (s Event_getVersion) SetBuildTime(v string) error {
+	return capnp.Struct(s).SetText(2, v)
+}
+
+func (s Event_getVersion) GoVersion() (string, error) {
+	p, err := capnp.Struct(s).Ptr(3)
+	return p.Text(), err
+}
+
+func (s Event_getVersion) HasGoVersion() bool {
+	return capnp.Struct(s).HasPtr(3)
+}
+
+func (s Event_getVersion) GoVersionBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(3)
+	return p.TextBytes(), err
+}
+
+func (s Event_getVersion) SetGoVersion(v string) error {
+	return capnp.Struct(s).SetText(3, v)
+}
+
+func (s Event_getVersion) Libp2pVersion() (string, error) {
+	p, err := capnp.Struct(s).Ptr(4)
+	return p.Text(), err
+}
+
+func (s Event_getVersion) HasLibp2pVersion() bool {
+	return capnp.Struct(s).HasPtr(4)
+}
+
+func (s Event_getVersion) Libp2pVersionBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(4)
+	return p.TextBytes(), err
+}
+
+func (s Event_getVersion) SetLibp2pVersion(v string) error {
+	return capnp.Struct(s).SetText(4, v)
+}
+
+func (s Event) PublicAccess() Event_publicAccess { return Event_publicAccess(s) }
+
+func (s Event) SetPublicAccess() {
+	capnp.Struct(s).SetUint16(2, 30)
+}
+
+func (s Event_publicAccess) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_publicAccess) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_publicAccess) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_publicAccess) TargetPeer() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_publicAccess) HasTargetPeer() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_publicAccess) TargetPeerBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_publicAccess) SetTargetPeer(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event_publicAccess) Note() (string, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.Text(), err
+}
+
+func (s Event_publicAccess) HasNote() bool {
+	return capnp.Struct(s).HasPtr(2)
+}
+
+func (s Event_publicAccess) NoteBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.TextBytes(), err
+}
+
+func (s Event_publicAccess) SetNote(v string) error {
+	return capnp.Struct(s).SetText(2, v)
+}
+
+func (s Event_publicAccess) InstanceId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(3)
+	return p.Text(), err
+}
+
+func (s Event_publicAccess) HasInstanceId() bool {
+	return capnp.Struct(s).HasPtr(3)
+}
+
+func (s Event_publicAccess) InstanceIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(3)
+	return p.TextBytes(), err
+}
+
+func (s Event_publicAccess) SetInstanceId(v string) error {
+	return capnp.Struct(s).SetText(3, v)
+}
+
+func (s Event) ExecTicket() Event_execTicket { return Event_execTicket(s) }
+
+func (s Event) SetExecTicket() {
+	capnp.Struct(s).SetUint16(2, 31)
+}
+
+func (s Event_execTicket) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_execTicket) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_execTicket) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_execTicket) SourceAddr() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_execTicket) HasSourceAddr() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_execTicket) SourceAddrBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_execTicket) SetSourceAddr(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event_execTicket) Token() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return []byte(p.Data()), err
+}
+
+func (s Event_execTicket) HasToken() bool {
+	return capnp.Struct(s).HasPtr(2)
+}
+
+func (s Event_execTicket) SetToken(v []byte) error {
+	return capnp.Struct(s).SetData(2, v)
+}
+
+func (s Event) JoinTicket() Event_joinTicket { return Event_joinTicket(s) }
+
+func (s Event) SetJoinTicket() {
+	capnp.Struct(s).SetUint16(2, 32)
+}
+
+func (s Event_joinTicket) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_joinTicket) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_joinTicket) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_joinTicket) SourceAddr() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_joinTicket) HasSourceAddr() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_joinTicket) SourceAddrBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_joinTicket) SetSourceAddr(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event_joinTicket) Token() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return []byte(p.Data()), err
+}
+
+func (s Event_joinTicket) HasToken() bool {
+	return capnp.Struct(s).HasPtr(2)
+}
+
+func (s Event_joinTicket) SetToken(v []byte) error {
+	return capnp.Struct(s).SetData(2, v)
+}
+
+func (s Event) JoinRequestTicket() Event_joinRequestTicket { return Event_joinRequestTicket(s) }
+
+func (s Event) SetJoinRequestTicket() {
+	capnp.Struct(s).SetUint16(2, 33)
+}
+
+func (s Event_joinRequestTicket) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_joinRequestTicket) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_joinRequestTicket) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_joinRequestTicket) SourceAddr() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_joinRequestTicket) HasSourceAddr() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_joinRequestTicket) SourceAddrBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_joinRequestTicket) SetSourceAddr(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event_joinRequestTicket) Token() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return []byte(p.Data()), err
+}
+
+func (s Event_joinRequestTicket) HasToken() bool {
+	return capnp.Struct(s).HasPtr(2)
+}
+
+func (s Event_joinRequestTicket) SetToken(v []byte) error {
+	return capnp.Struct(s).SetData(2, v)
+}
+
+func (s Event) DialSubmitCommand() Event_dialSubmitCommand { return Event_dialSubmitCommand(s) }
+
+func (s Event) SetDialSubmitCommand() {
+	capnp.Struct(s).SetUint16(2, 34)
+}
+
+func (s Event_dialSubmitCommand) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_dialSubmitCommand) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_dialSubmitCommand) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_dialSubmitCommand) TargetPeer() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_dialSubmitCommand) HasTargetPeer() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_dialSubmitCommand) TargetPeerBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_dialSubmitCommand) SetTargetPeer(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event_dialSubmitCommand) CommandId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.Text(), err
+}
+
+func (s Event_dialSubmitCommand) HasCommandId() bool {
+	return capnp.Struct(s).HasPtr(2)
+}
+
+func (s Event_dialSubmitCommand) CommandIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.TextBytes(), err
+}
+
+func (s Event_dialSubmitCommand) SetCommandId(v string) error {
+	return capnp.Struct(s).SetText(2, v)
+}
+
+func (s Event_dialSubmitCommand) InputsJson() (string, error) {
+	p, err := capnp.Struct(s).Ptr(3)
+	return p.Text(), err
+}
+
+func (s Event_dialSubmitCommand) HasInputsJson() bool {
+	return capnp.Struct(s).HasPtr(3)
+}
+
+func (s Event_dialSubmitCommand) InputsJsonBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(3)
+	return p.TextBytes(), err
+}
+
+func (s Event_dialSubmitCommand) SetInputsJson(v string) error {
+	return capnp.Struct(s).SetText(3, v)
+}
+
+func (s Event_dialSubmitCommand) Note() (string, error) {
+	p, err := capnp.Struct(s).Ptr(4)
+	return p.Text(), err
+}
+
+func (s Event_dialSubmitCommand) HasNote() bool {
+	return capnp.Struct(s).HasPtr(4)
+}
+
+func (s Event_dialSubmitCommand) NoteBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(4)
+	return p.TextBytes(), err
+}
+
+func (s Event_dialSubmitCommand) SetNote(v string) error {
+	return capnp.Struct(s).SetText(4, v)
+}
+
+func (s Event_dialSubmitCommand) InstanceId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(5)
+	return p.Text(), err
+}
+
+func (s Event_dialSubmitCommand) HasInstanceId() bool {
+	return capnp.Struct(s).HasPtr(5)
+}
+
+func (s Event_dialSubmitCommand) InstanceIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(5)
+	return p.TextBytes(), err
+}
+
+func (s Event_dialSubmitCommand) SetInstanceId(v string) error {
+	return capnp.Struct(s).SetText(5, v)
+}
+
+func (s Event) DialQueryCommandLog() Event_dialQueryCommandLog { return Event_dialQueryCommandLog(s) }
+
+func (s Event) SetDialQueryCommandLog() {
+	capnp.Struct(s).SetUint16(2, 35)
+}
+
+func (s Event_dialQueryCommandLog) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_dialQueryCommandLog) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_dialQueryCommandLog) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_dialQueryCommandLog) TargetPeer() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_dialQueryCommandLog) HasTargetPeer() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_dialQueryCommandLog) TargetPeerBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_dialQueryCommandLog) SetTargetPeer(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event_dialQueryCommandLog) InstanceId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.Text(), err
+}
+
+func (s Event_dialQueryCommandLog) HasInstanceId() bool {
+	return capnp.Struct(s).HasPtr(2)
+}
+
+func (s Event_dialQueryCommandLog) InstanceIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.TextBytes(), err
+}
+
+func (s Event_dialQueryCommandLog) SetInstanceId(v string) error {
+	return capnp.Struct(s).SetText(2, v)
+}
+
+func (s Event_dialQueryCommandLog) Since() int64 {
+	return int64(capnp.Struct(s).Uint64(8))
+}
+
+func (s Event_dialQueryCommandLog) SetSince(v int64) {
+	capnp.Struct(s).SetUint64(8, uint64(v))
+}
+
+func (s Event_dialQueryCommandLog) Until() int64 {
+	return int64(capnp.Struct(s).Uint64(16))
+}
+
+func (s Event_dialQueryCommandLog) SetUntil(v int64) {
+	capnp.Struct(s).SetUint64(16, uint64(v))
+}
+
+func (s Event_dialQueryCommandLog) Limit() int32 {
+	return int32(capnp.Struct(s).Uint32(24))
+}
+
+func (s Event_dialQueryCommandLog) SetLimit(v int32) {
+	capnp.Struct(s).SetUint32(24, uint32(v))
+}
+
+func (s Event_dialQueryCommandLog) Records() (capnp.DataList, error) {
+	p, err := capnp.Struct(s).Ptr(3)
+	return capnp.DataList(p.List()), err
+}
+
+func (s Event_dialQueryCommandLog) HasRecords() bool {
+	return capnp.Struct(s).HasPtr(3)
+}
+
+func (s Event_dialQueryCommandLog) SetRecords(v capnp.DataList) error {
+	return capnp.Struct(s).SetPtr(3, v.ToPtr())
+}
+
+// NewRecords sets the records field to a newly
+// allocated capnp.DataList, preferring placement in s's segment.
+func (s Event_dialQueryCommandLog) NewRecords(n int32) (capnp.DataList, error) {
+	l, err := capnp.NewDataList(capnp.Struct(s).Segment(), n)
+	if err != nil {
+		return capnp.DataList{}, err
+	}
+	err = capnp.Struct(s).SetPtr(3, l.ToPtr())
+	return l, err
+}
+func (s Event) Error() Event_error { return Event_error(s) }
+
+func (s Event) SetError() {
+	capnp.Struct(s).SetUint16(2, 36)
+}
+
+func (s Event_error) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_error) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_error) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_error) Message_() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_error) HasMessage_() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_error) Message_Bytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_error) SetMessage_(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event) GroupPut() Event_groupPut { return Event_groupPut(s) }
+
+func (s Event) SetGroupPut() {
+	capnp.Struct(s).SetUint16(2, 37)
+}
+
+func (s Event_groupPut) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_groupPut) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_groupPut) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_groupPut) Id() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_groupPut) HasId() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_groupPut) IdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_groupPut) SetId(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event_groupPut) Name() (string, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.Text(), err
+}
+
+func (s Event_groupPut) HasName() bool {
+	return capnp.Struct(s).HasPtr(2)
+}
+
+func (s Event_groupPut) NameBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.TextBytes(), err
+}
+
+func (s Event_groupPut) SetName(v string) error {
+	return capnp.Struct(s).SetText(2, v)
+}
+
+func (s Event_groupPut) Public() bool {
+	return capnp.Struct(s).Bit(192)
+}
+
+func (s Event_groupPut) SetPublic(v bool) {
+	capnp.Struct(s).SetBit(192, v)
+}
+
+func (s Event) GroupDelete() Event_groupDelete { return Event_groupDelete(s) }
+
+func (s Event) SetGroupDelete() {
+	capnp.Struct(s).SetUint16(2, 38)
+}
+
+func (s Event_groupDelete) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_groupDelete) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_groupDelete) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_groupDelete) Id() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_groupDelete) HasId() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_groupDelete) IdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_groupDelete) SetId(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event) CommandPut() Event_commandPut { return Event_commandPut(s) }
+
+func (s Event) SetCommandPut() {
+	capnp.Struct(s).SetUint16(2, 39)
+}
+
+func (s Event_commandPut) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_commandPut) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_commandPut) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_commandPut) Id() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_commandPut) HasId() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_commandPut) IdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_commandPut) SetId(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event_commandPut) Name() (string, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.Text(), err
+}
+
+func (s Event_commandPut) HasName() bool {
+	return capnp.Struct(s).HasPtr(2)
+}
+
+func (s Event_commandPut) NameBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.TextBytes(), err
+}
+
+func (s Event_commandPut) SetName(v string) error {
+	return capnp.Struct(s).SetText(2, v)
+}
+
+func (s Event_commandPut) PeerId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(3)
+	return p.Text(), err
+}
+
+func (s Event_commandPut) HasPeerId() bool {
+	return capnp.Struct(s).HasPtr(3)
+}
+
+func (s Event_commandPut) PeerIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(3)
+	return p.TextBytes(), err
+}
+
+func (s Event_commandPut) SetPeerId(v string) error {
+	return capnp.Struct(s).SetText(3, v)
+}
+
+func (s Event_commandPut) Spec() (string, error) {
+	p, err := capnp.Struct(s).Ptr(4)
+	return p.Text(), err
+}
+
+func (s Event_commandPut) HasSpec() bool {
+	return capnp.Struct(s).HasPtr(4)
+}
+
+func (s Event_commandPut) SpecBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(4)
+	return p.TextBytes(), err
+}
+
+func (s Event_commandPut) SetSpec(v string) error {
+	return capnp.Struct(s).SetText(4, v)
+}
+
+func (s Event) CommandDelete() Event_commandDelete { return Event_commandDelete(s) }
+
+func (s Event) SetCommandDelete() {
+	capnp.Struct(s).SetUint16(2, 40)
+}
+
+func (s Event_commandDelete) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_commandDelete) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_commandDelete) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_commandDelete) Id() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_commandDelete) HasId() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_commandDelete) IdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_commandDelete) SetId(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event) StationPut() Event_stationPut { return Event_stationPut(s) }
+
+func (s Event) SetStationPut() {
+	capnp.Struct(s).SetUint16(2, 41)
+}
+
+func (s Event_stationPut) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_stationPut) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_stationPut) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_stationPut) PeerId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_stationPut) HasPeerId() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_stationPut) PeerIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_stationPut) SetPeerId(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event_stationPut) Name() (string, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.Text(), err
+}
+
+func (s Event_stationPut) HasName() bool {
+	return capnp.Struct(s).HasPtr(2)
+}
+
+func (s Event_stationPut) NameBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.TextBytes(), err
+}
+
+func (s Event_stationPut) SetName(v string) error {
+	return capnp.Struct(s).SetText(2, v)
+}
+
+func (s Event_stationPut) Attrs() (string, error) {
+	p, err := capnp.Struct(s).Ptr(3)
+	return p.Text(), err
+}
+
+func (s Event_stationPut) HasAttrs() bool {
+	return capnp.Struct(s).HasPtr(3)
+}
+
+func (s Event_stationPut) AttrsBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(3)
+	return p.TextBytes(), err
+}
+
+func (s Event_stationPut) SetAttrs(v string) error {
+	return capnp.Struct(s).SetText(3, v)
+}
+
+func (s Event) StationDelete() Event_stationDelete { return Event_stationDelete(s) }
+
+func (s Event) SetStationDelete() {
+	capnp.Struct(s).SetUint16(2, 42)
+}
+
+func (s Event_stationDelete) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_stationDelete) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_stationDelete) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_stationDelete) PeerId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_stationDelete) HasPeerId() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_stationDelete) PeerIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_stationDelete) SetPeerId(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event) GroupCommandPut() Event_groupCommandPut { return Event_groupCommandPut(s) }
+
+func (s Event) SetGroupCommandPut() {
+	capnp.Struct(s).SetUint16(2, 43)
+}
+
+func (s Event_groupCommandPut) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_groupCommandPut) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_groupCommandPut) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_groupCommandPut) CommandId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_groupCommandPut) HasCommandId() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_groupCommandPut) CommandIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_groupCommandPut) SetCommandId(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event_groupCommandPut) GroupId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.Text(), err
+}
+
+func (s Event_groupCommandPut) HasGroupId() bool {
+	return capnp.Struct(s).HasPtr(2)
+}
+
+func (s Event_groupCommandPut) GroupIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.TextBytes(), err
+}
+
+func (s Event_groupCommandPut) SetGroupId(v string) error {
+	return capnp.Struct(s).SetText(2, v)
+}
+
+func (s Event) GroupCommandDelete() Event_groupCommandDelete { return Event_groupCommandDelete(s) }
+
+func (s Event) SetGroupCommandDelete() {
+	capnp.Struct(s).SetUint16(2, 44)
+}
+
+func (s Event_groupCommandDelete) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_groupCommandDelete) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_groupCommandDelete) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_groupCommandDelete) CommandId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_groupCommandDelete) HasCommandId() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_groupCommandDelete) CommandIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_groupCommandDelete) SetCommandId(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event_groupCommandDelete) GroupId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.Text(), err
+}
+
+func (s Event_groupCommandDelete) HasGroupId() bool {
+	return capnp.Struct(s).HasPtr(2)
+}
+
+func (s Event_groupCommandDelete) GroupIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.TextBytes(), err
+}
+
+func (s Event_groupCommandDelete) SetGroupId(v string) error {
+	return capnp.Struct(s).SetText(2, v)
+}
+
+func (s Event) PeerGroupPut() Event_peerGroupPut { return Event_peerGroupPut(s) }
+
+func (s Event) SetPeerGroupPut() {
+	capnp.Struct(s).SetUint16(2, 45)
+}
+
+func (s Event_peerGroupPut) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_peerGroupPut) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_peerGroupPut) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_peerGroupPut) PeerId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_peerGroupPut) HasPeerId() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_peerGroupPut) PeerIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_peerGroupPut) SetPeerId(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event_peerGroupPut) GroupId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.Text(), err
+}
+
+func (s Event_peerGroupPut) HasGroupId() bool {
+	return capnp.Struct(s).HasPtr(2)
+}
+
+func (s Event_peerGroupPut) GroupIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.TextBytes(), err
+}
+
+func (s Event_peerGroupPut) SetGroupId(v string) error {
+	return capnp.Struct(s).SetText(2, v)
+}
+
+func (s Event) PeerGroupDelete() Event_peerGroupDelete { return Event_peerGroupDelete(s) }
+
+func (s Event) SetPeerGroupDelete() {
+	capnp.Struct(s).SetUint16(2, 46)
+}
+
+func (s Event_peerGroupDelete) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_peerGroupDelete) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_peerGroupDelete) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_peerGroupDelete) PeerId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_peerGroupDelete) HasPeerId() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_peerGroupDelete) PeerIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_peerGroupDelete) SetPeerId(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event_peerGroupDelete) GroupId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.Text(), err
+}
+
+func (s Event_peerGroupDelete) HasGroupId() bool {
+	return capnp.Struct(s).HasPtr(2)
+}
+
+func (s Event_peerGroupDelete) GroupIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.TextBytes(), err
+}
+
+func (s Event_peerGroupDelete) SetGroupId(v string) error {
+	return capnp.Struct(s).SetText(2, v)
+}
+
+func (s Event) PermitRequest() Event_permitRequest { return Event_permitRequest(s) }
+
+func (s Event) SetPermitRequest() {
+	capnp.Struct(s).SetUint16(2, 47)
+}
+
+func (s Event_permitRequest) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_permitRequest) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_permitRequest) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_permitRequest) Kind() uint8 {
+	return capnp.Struct(s).Uint8(24)
+}
+
+func (s Event_permitRequest) SetKind(v uint8) {
+	capnp.Struct(s).SetUint8(24, v)
+}
+
+func (s Event_permitRequest) PeerId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_permitRequest) HasPeerId() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_permitRequest) PeerIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_permitRequest) SetPeerId(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event_permitRequest) Metadata() (string, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.Text(), err
+}
+
+func (s Event_permitRequest) HasMetadata() bool {
+	return capnp.Struct(s).HasPtr(2)
+}
+
+func (s Event_permitRequest) MetadataBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.TextBytes(), err
+}
+
+func (s Event_permitRequest) SetMetadata(v string) error {
+	return capnp.Struct(s).SetText(2, v)
+}
+
+func (s Event) PermitConfirm() Event_permitConfirm { return Event_permitConfirm(s) }
+
+func (s Event) SetPermitConfirm() {
+	capnp.Struct(s).SetUint16(2, 48)
+}
+
+func (s Event_permitConfirm) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_permitConfirm) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_permitConfirm) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_permitConfirm) Kind() uint8 {
+	return capnp.Struct(s).Uint8(24)
+}
+
+func (s Event_permitConfirm) SetKind(v uint8) {
+	capnp.Struct(s).SetUint8(24, v)
+}
+
+func (s Event_permitConfirm) PeerId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_permitConfirm) HasPeerId() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_permitConfirm) PeerIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_permitConfirm) SetPeerId(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event) PermitRevoke() Event_permitRevoke { return Event_permitRevoke(s) }
+
+func (s Event) SetPermitRevoke() {
+	capnp.Struct(s).SetUint16(2, 49)
+}
+
+func (s Event_permitRevoke) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_permitRevoke) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_permitRevoke) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_permitRevoke) Kind() uint8 {
+	return capnp.Struct(s).Uint8(24)
+}
+
+func (s Event_permitRevoke) SetKind(v uint8) {
+	capnp.Struct(s).SetUint8(24, v)
+}
+
+func (s Event_permitRevoke) PeerId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.Text(), err
+}
+
+func (s Event_permitRevoke) HasPeerId() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_permitRevoke) PeerIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return p.TextBytes(), err
+}
+
+func (s Event_permitRevoke) SetPeerId(v string) error {
+	return capnp.Struct(s).SetText(1, v)
+}
+
+func (s Event) JoinInviteCreate() Event_joinInviteCreate { return Event_joinInviteCreate(s) }
+
+func (s Event) SetJoinInviteCreate() {
+	capnp.Struct(s).SetUint16(2, 50)
+}
+
+func (s Event_joinInviteCreate) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_joinInviteCreate) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_joinInviteCreate) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_joinInviteCreate) Token() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return []byte(p.Data()), err
+}
+
+func (s Event_joinInviteCreate) HasToken() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_joinInviteCreate) SetToken(v []byte) error {
+	return capnp.Struct(s).SetData(1, v)
+}
+
+func (s Event_joinInviteCreate) Suffrage() uint8 {
+	return capnp.Struct(s).Uint8(24)
+}
+
+func (s Event_joinInviteCreate) SetSuffrage(v uint8) {
+	capnp.Struct(s).SetUint8(24, v)
+}
+
+func (s Event) JoinInviteRevoke() Event_joinInviteRevoke { return Event_joinInviteRevoke(s) }
+
+func (s Event) SetJoinInviteRevoke() {
+	capnp.Struct(s).SetUint16(2, 51)
+}
+
+func (s Event_joinInviteRevoke) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_joinInviteRevoke) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_joinInviteRevoke) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_joinInviteRevoke) Token() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return []byte(p.Data()), err
+}
+
+func (s Event_joinInviteRevoke) HasToken() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_joinInviteRevoke) SetToken(v []byte) error {
+	return capnp.Struct(s).SetData(1, v)
+}
+
+func (s Event) ExecInviteCreate() Event_execInviteCreate { return Event_execInviteCreate(s) }
+
+func (s Event) SetExecInviteCreate() {
+	capnp.Struct(s).SetUint16(2, 52)
+}
+
+func (s Event_execInviteCreate) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_execInviteCreate) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_execInviteCreate) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_execInviteCreate) Token() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return []byte(p.Data()), err
+}
+
+func (s Event_execInviteCreate) HasToken() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_execInviteCreate) SetToken(v []byte) error {
+	return capnp.Struct(s).SetData(1, v)
+}
+
+func (s Event_execInviteCreate) CommandId() (string, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.Text(), err
+}
+
+func (s Event_execInviteCreate) HasCommandId() bool {
+	return capnp.Struct(s).HasPtr(2)
+}
+
+func (s Event_execInviteCreate) CommandIdBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(2)
+	return p.TextBytes(), err
+}
+
+func (s Event_execInviteCreate) SetCommandId(v string) error {
+	return capnp.Struct(s).SetText(2, v)
+}
+
+func (s Event_execInviteCreate) InputsJson() (string, error) {
+	p, err := capnp.Struct(s).Ptr(3)
+	return p.Text(), err
+}
+
+func (s Event_execInviteCreate) HasInputsJson() bool {
+	return capnp.Struct(s).HasPtr(3)
+}
+
+func (s Event_execInviteCreate) InputsJsonBytes() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(3)
+	return p.TextBytes(), err
+}
+
+func (s Event_execInviteCreate) SetInputsJson(v string) error {
+	return capnp.Struct(s).SetText(3, v)
+}
+
+func (s Event) ExecInviteRevoke() Event_execInviteRevoke { return Event_execInviteRevoke(s) }
+
+func (s Event) SetExecInviteRevoke() {
+	capnp.Struct(s).SetUint16(2, 53)
+}
+
+func (s Event_execInviteRevoke) IsValid() bool {
+	return capnp.Struct(s).IsValid()
+}
+
+func (s Event_execInviteRevoke) Message() *capnp.Message {
+	return capnp.Struct(s).Message()
+}
+
+func (s Event_execInviteRevoke) Segment() *capnp.Segment {
+	return capnp.Struct(s).Segment()
+}
+func (s Event_execInviteRevoke) Token() ([]byte, error) {
+	p, err := capnp.Struct(s).Ptr(1)
+	return []byte(p.Data()), err
+}
+
+func (s Event_execInviteRevoke) HasToken() bool {
+	return capnp.Struct(s).HasPtr(1)
+}
+
+func (s Event_execInviteRevoke) SetToken(v []byte) error {
+	return capnp.Struct(s).SetData(1, v)
 }
 
 // Event_List is a list of Event.
@@ -126,7 +3049,7 @@ type Event_List = capnp.StructList[Event]
 
 // NewEvent creates a new list of Event.
 func NewEvent_List(s *capnp.Segment, sz int32) (Event_List, error) {
-	l, err := capnp.NewCompositeList(s, capnp.ObjectSize{DataSize: 16, PointerCount: 2}, sz)
+	l, err := capnp.NewCompositeList(s, capnp.ObjectSize{DataSize: 32, PointerCount: 6}, sz)
 	return capnp.StructList[Event](l), err
 }
 
@@ -137,32 +3060,880 @@ func (f Event_Future) Struct() (Event, error) {
 	p, err := f.Future.Ptr()
 	return Event(p.Struct()), err
 }
+func (p Event_Future) SetKey() Event_setKey_Future { return Event_setKey_Future{p.Future} }
 
-const schema_907f33b2bf56870e = "x\xda<\x8e=K#a\x1c\xc4g\xfe\xcf\xbe\xa4\xc9" +
-	"\xe5\x1e\xd8\xe6\xc2\xc1\xf6\x07w\x90\xa4\xbb\xca\xc6\"V" +
-	"\xfe-\xec\x97\xcd\xa2\x0b\xba\x09\x9bMZKK\xfd\x1c" +
-	"\x16\"\x82\xe0\x1bD!\x82\x01\x03\x11\xd2\x08\x166\x96" +
-	"~\x86\x95EL9?\xe67\xcc\xcf\xd35\xa7U\x9f" +
-	"\x10\xa2\x81\xeb\x95\xcd_\xd7\x1f\xef\xe6\xcf\x0d\xb4A)" +
-	"\x7f\x1cnO\xce;\x07\xc7p\xc5\x07\xec\xc3\x89\x9d\xfb" +
-	"@kvD\xfc-\x87\xbb\xfb\xc98\xc9\x0a\xfe\x8b\xa3" +
-	"A6\xf8\xbf\xde\xa8\xd2&\xa9\xbf\x8d\x038\x04\xecE" +
-	"\x1b\xd03C\xbd\x15Z2`\x05\xaf6\x00\xbd4\xd4" +
-	"\xa9\xd0\x8a\x04\x14\xc0\xde\xe7\x80\xde\x19\xea\x93\x90&\xa0" +
-	"\x01\xec\xac\xb2\xa7\x86\xba\x10ZG\x02:\x80\x9dW\xf0" +
-	"\xd1P\x97B\xeb2\xa0\x0b\xd8\xe7-@\x17\x86\xfa*" +
-	"\xb4\x9e\x09\xe8\x01\xf6\xa5\x09\xe8\xd2P\xdf\x84\xe1\xd7U" +
-	"\x0fB\x0f,\x87\xfdQ\x1e'\xdd\x1e\x00\xfa\x10\xfa`" +
-	"\xd9K\x86E\x9aE\x05\xc2\xb4\x9fu{\xdf<\x1cG" +
-	"{\xa3\x84u\x08\xeb`\x18\xe7q\xa7\xcd\x1a\x84\xb5j" +
-	"'\xdd\xc9\xa2b\x94\x83\xab\x86IW\xeag\x00\x00\x00" +
-	"\xff\xff\xa3\xaeIs"
+// Event_setKey_Future is a wrapper for a Event_setKey promised by a client call.
+type Event_setKey_Future struct{ *capnp.Future }
+
+func (f Event_setKey_Future) Struct() (Event_setKey, error) {
+	p, err := f.Future.Ptr()
+	return Event_setKey(p.Struct()), err
+}
+func (p Event_Future) SetField() Event_setField_Future { return Event_setField_Future{p.Future} }
+
+// Event_setField_Future is a wrapper for a Event_setField promised by a client call.
+type Event_setField_Future struct{ *capnp.Future }
+
+func (f Event_setField_Future) Struct() (Event_setField, error) {
+	p, err := f.Future.Ptr()
+	return Event_setField(p.Struct()), err
+}
+func (p Event_Future) GetKey() Event_getKey_Future { return Event_getKey_Future{p.Future} }
+
+// Event_getKey_Future is a wrapper for a Event_getKey promised by a client call.
+type Event_getKey_Future struct{ *capnp.Future }
+
+func (f Event_getKey_Future) Struct() (Event_getKey, error) {
+	p, err := f.Future.Ptr()
+	return Event_getKey(p.Struct()), err
+}
+func (p Event_Future) GetFieldByRegistry() Event_getFieldByRegistry_Future {
+	return Event_getFieldByRegistry_Future{p.Future}
+}
+
+// Event_getFieldByRegistry_Future is a wrapper for a Event_getFieldByRegistry promised by a client call.
+type Event_getFieldByRegistry_Future struct{ *capnp.Future }
+
+func (f Event_getFieldByRegistry_Future) Struct() (Event_getFieldByRegistry, error) {
+	p, err := f.Future.Ptr()
+	return Event_getFieldByRegistry(p.Struct()), err
+}
+func (p Event_Future) GetFieldByKey() Event_getFieldByKey_Future {
+	return Event_getFieldByKey_Future{p.Future}
+}
+
+// Event_getFieldByKey_Future is a wrapper for a Event_getFieldByKey promised by a client call.
+type Event_getFieldByKey_Future struct{ *capnp.Future }
+
+func (f Event_getFieldByKey_Future) Struct() (Event_getFieldByKey, error) {
+	p, err := f.Future.Ptr()
+	return Event_getFieldByKey(p.Struct()), err
+}
+func (p Event_Future) GetPublicKey() Event_getPublicKey_Future {
+	return Event_getPublicKey_Future{p.Future}
+}
+
+// Event_getPublicKey_Future is a wrapper for a Event_getPublicKey promised by a client call.
+type Event_getPublicKey_Future struct{ *capnp.Future }
+
+func (f Event_getPublicKey_Future) Struct() (Event_getPublicKey, error) {
+	p, err := f.Future.Ptr()
+	return Event_getPublicKey(p.Struct()), err
+}
+func (p Event_Future) GetPrivateKey() Event_getPrivateKey_Future {
+	return Event_getPrivateKey_Future{p.Future}
+}
+
+// Event_getPrivateKey_Future is a wrapper for a Event_getPrivateKey promised by a client call.
+type Event_getPrivateKey_Future struct{ *capnp.Future }
+
+func (f Event_getPrivateKey_Future) Struct() (Event_getPrivateKey, error) {
+	p, err := f.Future.Ptr()
+	return Event_getPrivateKey(p.Struct()), err
+}
+func (p Event_Future) BootstrapOrJoinCluster() Event_bootstrapOrJoinCluster_Future {
+	return Event_bootstrapOrJoinCluster_Future{p.Future}
+}
+
+// Event_bootstrapOrJoinCluster_Future is a wrapper for a Event_bootstrapOrJoinCluster promised by a client call.
+type Event_bootstrapOrJoinCluster_Future struct{ *capnp.Future }
+
+func (f Event_bootstrapOrJoinCluster_Future) Struct() (Event_bootstrapOrJoinCluster, error) {
+	p, err := f.Future.Ptr()
+	return Event_bootstrapOrJoinCluster(p.Struct()), err
+}
+func (p Event_Future) AddLearner() Event_addLearner_Future { return Event_addLearner_Future{p.Future} }
+
+// Event_addLearner_Future is a wrapper for a Event_addLearner promised by a client call.
+type Event_addLearner_Future struct{ *capnp.Future }
+
+func (f Event_addLearner_Future) Struct() (Event_addLearner, error) {
+	p, err := f.Future.Ptr()
+	return Event_addLearner(p.Struct()), err
+}
+func (p Event_Future) Set() Event_set_Future { return Event_set_Future{p.Future} }
+
+// Event_set_Future is a wrapper for a Event_set promised by a client call.
+type Event_set_Future struct{ *capnp.Future }
+
+func (f Event_set_Future) Struct() (Event_set, error) {
+	p, err := f.Future.Ptr()
+	return Event_set(p.Struct()), err
+}
+func (p Event_Future) Execute() Event_execute_Future { return Event_execute_Future{p.Future} }
+
+// Event_execute_Future is a wrapper for a Event_execute promised by a client call.
+type Event_execute_Future struct{ *capnp.Future }
+
+func (f Event_execute_Future) Struct() (Event_execute, error) {
+	p, err := f.Future.Ptr()
+	return Event_execute(p.Struct()), err
+}
+func (p Event_Future) PollExecute() Event_pollExecute_Future {
+	return Event_pollExecute_Future{p.Future}
+}
+
+// Event_pollExecute_Future is a wrapper for a Event_pollExecute promised by a client call.
+type Event_pollExecute_Future struct{ *capnp.Future }
+
+func (f Event_pollExecute_Future) Struct() (Event_pollExecute, error) {
+	p, err := f.Future.Ptr()
+	return Event_pollExecute(p.Struct()), err
+}
+func (p Event_Future) ListRange() Event_listRange_Future { return Event_listRange_Future{p.Future} }
+
+// Event_listRange_Future is a wrapper for a Event_listRange promised by a client call.
+type Event_listRange_Future struct{ *capnp.Future }
+
+func (f Event_listRange_Future) Struct() (Event_listRange, error) {
+	p, err := f.Future.Ptr()
+	return Event_listRange(p.Struct()), err
+}
+func (p Event_Future) LogAppend() Event_logAppend_Future { return Event_logAppend_Future{p.Future} }
+
+// Event_logAppend_Future is a wrapper for a Event_logAppend promised by a client call.
+type Event_logAppend_Future struct{ *capnp.Future }
+
+func (f Event_logAppend_Future) Struct() (Event_logAppend, error) {
+	p, err := f.Future.Ptr()
+	return Event_logAppend(p.Struct()), err
+}
+func (p Event_Future) ExecInviteRedeem() Event_execInviteRedeem_Future {
+	return Event_execInviteRedeem_Future{p.Future}
+}
+
+// Event_execInviteRedeem_Future is a wrapper for a Event_execInviteRedeem promised by a client call.
+type Event_execInviteRedeem_Future struct{ *capnp.Future }
+
+func (f Event_execInviteRedeem_Future) Struct() (Event_execInviteRedeem, error) {
+	p, err := f.Future.Ptr()
+	return Event_execInviteRedeem(p.Struct()), err
+}
+func (p Event_Future) JoinRequestCreate() Event_joinRequestCreate_Future {
+	return Event_joinRequestCreate_Future{p.Future}
+}
+
+// Event_joinRequestCreate_Future is a wrapper for a Event_joinRequestCreate promised by a client call.
+type Event_joinRequestCreate_Future struct{ *capnp.Future }
+
+func (f Event_joinRequestCreate_Future) Struct() (Event_joinRequestCreate, error) {
+	p, err := f.Future.Ptr()
+	return Event_joinRequestCreate(p.Struct()), err
+}
+func (p Event_Future) JoinRequestCancel() Event_joinRequestCancel_Future {
+	return Event_joinRequestCancel_Future{p.Future}
+}
+
+// Event_joinRequestCancel_Future is a wrapper for a Event_joinRequestCancel promised by a client call.
+type Event_joinRequestCancel_Future struct{ *capnp.Future }
+
+func (f Event_joinRequestCancel_Future) Struct() (Event_joinRequestCancel, error) {
+	p, err := f.Future.Ptr()
+	return Event_joinRequestCancel(p.Struct()), err
+}
+func (p Event_Future) Recruit() Event_recruit_Future { return Event_recruit_Future{p.Future} }
+
+// Event_recruit_Future is a wrapper for a Event_recruit promised by a client call.
+type Event_recruit_Future struct{ *capnp.Future }
+
+func (f Event_recruit_Future) Struct() (Event_recruit, error) {
+	p, err := f.Future.Ptr()
+	return Event_recruit(p.Struct()), err
+}
+func (p Event_Future) GetOwnAddr() Event_getOwnAddr_Future { return Event_getOwnAddr_Future{p.Future} }
+
+// Event_getOwnAddr_Future is a wrapper for a Event_getOwnAddr promised by a client call.
+type Event_getOwnAddr_Future struct{ *capnp.Future }
+
+func (f Event_getOwnAddr_Future) Struct() (Event_getOwnAddr, error) {
+	p, err := f.Future.Ptr()
+	return Event_getOwnAddr(p.Struct()), err
+}
+func (p Event_Future) ChannelOpen() Event_channelOpen_Future {
+	return Event_channelOpen_Future{p.Future}
+}
+
+// Event_channelOpen_Future is a wrapper for a Event_channelOpen promised by a client call.
+type Event_channelOpen_Future struct{ *capnp.Future }
+
+func (f Event_channelOpen_Future) Struct() (Event_channelOpen, error) {
+	p, err := f.Future.Ptr()
+	return Event_channelOpen(p.Struct()), err
+}
+func (p Event_Future) ChannelSend() Event_channelSend_Future {
+	return Event_channelSend_Future{p.Future}
+}
+
+// Event_channelSend_Future is a wrapper for a Event_channelSend promised by a client call.
+type Event_channelSend_Future struct{ *capnp.Future }
+
+func (f Event_channelSend_Future) Struct() (Event_channelSend, error) {
+	p, err := f.Future.Ptr()
+	return Event_channelSend(p.Struct()), err
+}
+func (p Event_Future) ChannelPoll() Event_channelPoll_Future {
+	return Event_channelPoll_Future{p.Future}
+}
+
+// Event_channelPoll_Future is a wrapper for a Event_channelPoll promised by a client call.
+type Event_channelPoll_Future struct{ *capnp.Future }
+
+func (f Event_channelPoll_Future) Struct() (Event_channelPoll, error) {
+	p, err := f.Future.Ptr()
+	return Event_channelPoll(p.Struct()), err
+}
+func (p Event_Future) ChannelListen() Event_channelListen_Future {
+	return Event_channelListen_Future{p.Future}
+}
+
+// Event_channelListen_Future is a wrapper for a Event_channelListen promised by a client call.
+type Event_channelListen_Future struct{ *capnp.Future }
+
+func (f Event_channelListen_Future) Struct() (Event_channelListen, error) {
+	p, err := f.Future.Ptr()
+	return Event_channelListen(p.Struct()), err
+}
+func (p Event_Future) ChannelClose() Event_channelClose_Future {
+	return Event_channelClose_Future{p.Future}
+}
+
+// Event_channelClose_Future is a wrapper for a Event_channelClose promised by a client call.
+type Event_channelClose_Future struct{ *capnp.Future }
+
+func (f Event_channelClose_Future) Struct() (Event_channelClose, error) {
+	p, err := f.Future.Ptr()
+	return Event_channelClose(p.Struct()), err
+}
+func (p Event_Future) ChannelCloseWrite() Event_channelCloseWrite_Future {
+	return Event_channelCloseWrite_Future{p.Future}
+}
+
+// Event_channelCloseWrite_Future is a wrapper for a Event_channelCloseWrite promised by a client call.
+type Event_channelCloseWrite_Future struct{ *capnp.Future }
+
+func (f Event_channelCloseWrite_Future) Struct() (Event_channelCloseWrite, error) {
+	p, err := f.Future.Ptr()
+	return Event_channelCloseWrite(p.Struct()), err
+}
+func (p Event_Future) ChannelDataReady() Event_channelDataReady_Future {
+	return Event_channelDataReady_Future{p.Future}
+}
+
+// Event_channelDataReady_Future is a wrapper for a Event_channelDataReady promised by a client call.
+type Event_channelDataReady_Future struct{ *capnp.Future }
+
+func (f Event_channelDataReady_Future) Struct() (Event_channelDataReady, error) {
+	p, err := f.Future.Ptr()
+	return Event_channelDataReady(p.Struct()), err
+}
+func (p Event_Future) Kick() Event_kick_Future { return Event_kick_Future{p.Future} }
+
+// Event_kick_Future is a wrapper for a Event_kick promised by a client call.
+type Event_kick_Future struct{ *capnp.Future }
+
+func (f Event_kick_Future) Struct() (Event_kick, error) {
+	p, err := f.Future.Ptr()
+	return Event_kick(p.Struct()), err
+}
+func (p Event_Future) Txn() Event_txn_Future { return Event_txn_Future{p.Future} }
+
+// Event_txn_Future is a wrapper for a Event_txn promised by a client call.
+type Event_txn_Future struct{ *capnp.Future }
+
+func (f Event_txn_Future) Struct() (Event_txn, error) {
+	p, err := f.Future.Ptr()
+	return Event_txn(p.Struct()), err
+}
+func (p Event_Future) GetVersion() Event_getVersion_Future { return Event_getVersion_Future{p.Future} }
+
+// Event_getVersion_Future is a wrapper for a Event_getVersion promised by a client call.
+type Event_getVersion_Future struct{ *capnp.Future }
+
+func (f Event_getVersion_Future) Struct() (Event_getVersion, error) {
+	p, err := f.Future.Ptr()
+	return Event_getVersion(p.Struct()), err
+}
+func (p Event_Future) PublicAccess() Event_publicAccess_Future {
+	return Event_publicAccess_Future{p.Future}
+}
+
+// Event_publicAccess_Future is a wrapper for a Event_publicAccess promised by a client call.
+type Event_publicAccess_Future struct{ *capnp.Future }
+
+func (f Event_publicAccess_Future) Struct() (Event_publicAccess, error) {
+	p, err := f.Future.Ptr()
+	return Event_publicAccess(p.Struct()), err
+}
+func (p Event_Future) ExecTicket() Event_execTicket_Future { return Event_execTicket_Future{p.Future} }
+
+// Event_execTicket_Future is a wrapper for a Event_execTicket promised by a client call.
+type Event_execTicket_Future struct{ *capnp.Future }
+
+func (f Event_execTicket_Future) Struct() (Event_execTicket, error) {
+	p, err := f.Future.Ptr()
+	return Event_execTicket(p.Struct()), err
+}
+func (p Event_Future) JoinTicket() Event_joinTicket_Future { return Event_joinTicket_Future{p.Future} }
+
+// Event_joinTicket_Future is a wrapper for a Event_joinTicket promised by a client call.
+type Event_joinTicket_Future struct{ *capnp.Future }
+
+func (f Event_joinTicket_Future) Struct() (Event_joinTicket, error) {
+	p, err := f.Future.Ptr()
+	return Event_joinTicket(p.Struct()), err
+}
+func (p Event_Future) JoinRequestTicket() Event_joinRequestTicket_Future {
+	return Event_joinRequestTicket_Future{p.Future}
+}
+
+// Event_joinRequestTicket_Future is a wrapper for a Event_joinRequestTicket promised by a client call.
+type Event_joinRequestTicket_Future struct{ *capnp.Future }
+
+func (f Event_joinRequestTicket_Future) Struct() (Event_joinRequestTicket, error) {
+	p, err := f.Future.Ptr()
+	return Event_joinRequestTicket(p.Struct()), err
+}
+func (p Event_Future) DialSubmitCommand() Event_dialSubmitCommand_Future {
+	return Event_dialSubmitCommand_Future{p.Future}
+}
+
+// Event_dialSubmitCommand_Future is a wrapper for a Event_dialSubmitCommand promised by a client call.
+type Event_dialSubmitCommand_Future struct{ *capnp.Future }
+
+func (f Event_dialSubmitCommand_Future) Struct() (Event_dialSubmitCommand, error) {
+	p, err := f.Future.Ptr()
+	return Event_dialSubmitCommand(p.Struct()), err
+}
+func (p Event_Future) DialQueryCommandLog() Event_dialQueryCommandLog_Future {
+	return Event_dialQueryCommandLog_Future{p.Future}
+}
+
+// Event_dialQueryCommandLog_Future is a wrapper for a Event_dialQueryCommandLog promised by a client call.
+type Event_dialQueryCommandLog_Future struct{ *capnp.Future }
+
+func (f Event_dialQueryCommandLog_Future) Struct() (Event_dialQueryCommandLog, error) {
+	p, err := f.Future.Ptr()
+	return Event_dialQueryCommandLog(p.Struct()), err
+}
+func (p Event_Future) Error() Event_error_Future { return Event_error_Future{p.Future} }
+
+// Event_error_Future is a wrapper for a Event_error promised by a client call.
+type Event_error_Future struct{ *capnp.Future }
+
+func (f Event_error_Future) Struct() (Event_error, error) {
+	p, err := f.Future.Ptr()
+	return Event_error(p.Struct()), err
+}
+func (p Event_Future) GroupPut() Event_groupPut_Future { return Event_groupPut_Future{p.Future} }
+
+// Event_groupPut_Future is a wrapper for a Event_groupPut promised by a client call.
+type Event_groupPut_Future struct{ *capnp.Future }
+
+func (f Event_groupPut_Future) Struct() (Event_groupPut, error) {
+	p, err := f.Future.Ptr()
+	return Event_groupPut(p.Struct()), err
+}
+func (p Event_Future) GroupDelete() Event_groupDelete_Future {
+	return Event_groupDelete_Future{p.Future}
+}
+
+// Event_groupDelete_Future is a wrapper for a Event_groupDelete promised by a client call.
+type Event_groupDelete_Future struct{ *capnp.Future }
+
+func (f Event_groupDelete_Future) Struct() (Event_groupDelete, error) {
+	p, err := f.Future.Ptr()
+	return Event_groupDelete(p.Struct()), err
+}
+func (p Event_Future) CommandPut() Event_commandPut_Future { return Event_commandPut_Future{p.Future} }
+
+// Event_commandPut_Future is a wrapper for a Event_commandPut promised by a client call.
+type Event_commandPut_Future struct{ *capnp.Future }
+
+func (f Event_commandPut_Future) Struct() (Event_commandPut, error) {
+	p, err := f.Future.Ptr()
+	return Event_commandPut(p.Struct()), err
+}
+func (p Event_Future) CommandDelete() Event_commandDelete_Future {
+	return Event_commandDelete_Future{p.Future}
+}
+
+// Event_commandDelete_Future is a wrapper for a Event_commandDelete promised by a client call.
+type Event_commandDelete_Future struct{ *capnp.Future }
+
+func (f Event_commandDelete_Future) Struct() (Event_commandDelete, error) {
+	p, err := f.Future.Ptr()
+	return Event_commandDelete(p.Struct()), err
+}
+func (p Event_Future) StationPut() Event_stationPut_Future { return Event_stationPut_Future{p.Future} }
+
+// Event_stationPut_Future is a wrapper for a Event_stationPut promised by a client call.
+type Event_stationPut_Future struct{ *capnp.Future }
+
+func (f Event_stationPut_Future) Struct() (Event_stationPut, error) {
+	p, err := f.Future.Ptr()
+	return Event_stationPut(p.Struct()), err
+}
+func (p Event_Future) StationDelete() Event_stationDelete_Future {
+	return Event_stationDelete_Future{p.Future}
+}
+
+// Event_stationDelete_Future is a wrapper for a Event_stationDelete promised by a client call.
+type Event_stationDelete_Future struct{ *capnp.Future }
+
+func (f Event_stationDelete_Future) Struct() (Event_stationDelete, error) {
+	p, err := f.Future.Ptr()
+	return Event_stationDelete(p.Struct()), err
+}
+func (p Event_Future) GroupCommandPut() Event_groupCommandPut_Future {
+	return Event_groupCommandPut_Future{p.Future}
+}
+
+// Event_groupCommandPut_Future is a wrapper for a Event_groupCommandPut promised by a client call.
+type Event_groupCommandPut_Future struct{ *capnp.Future }
+
+func (f Event_groupCommandPut_Future) Struct() (Event_groupCommandPut, error) {
+	p, err := f.Future.Ptr()
+	return Event_groupCommandPut(p.Struct()), err
+}
+func (p Event_Future) GroupCommandDelete() Event_groupCommandDelete_Future {
+	return Event_groupCommandDelete_Future{p.Future}
+}
+
+// Event_groupCommandDelete_Future is a wrapper for a Event_groupCommandDelete promised by a client call.
+type Event_groupCommandDelete_Future struct{ *capnp.Future }
+
+func (f Event_groupCommandDelete_Future) Struct() (Event_groupCommandDelete, error) {
+	p, err := f.Future.Ptr()
+	return Event_groupCommandDelete(p.Struct()), err
+}
+func (p Event_Future) PeerGroupPut() Event_peerGroupPut_Future {
+	return Event_peerGroupPut_Future{p.Future}
+}
+
+// Event_peerGroupPut_Future is a wrapper for a Event_peerGroupPut promised by a client call.
+type Event_peerGroupPut_Future struct{ *capnp.Future }
+
+func (f Event_peerGroupPut_Future) Struct() (Event_peerGroupPut, error) {
+	p, err := f.Future.Ptr()
+	return Event_peerGroupPut(p.Struct()), err
+}
+func (p Event_Future) PeerGroupDelete() Event_peerGroupDelete_Future {
+	return Event_peerGroupDelete_Future{p.Future}
+}
+
+// Event_peerGroupDelete_Future is a wrapper for a Event_peerGroupDelete promised by a client call.
+type Event_peerGroupDelete_Future struct{ *capnp.Future }
+
+func (f Event_peerGroupDelete_Future) Struct() (Event_peerGroupDelete, error) {
+	p, err := f.Future.Ptr()
+	return Event_peerGroupDelete(p.Struct()), err
+}
+func (p Event_Future) PermitRequest() Event_permitRequest_Future {
+	return Event_permitRequest_Future{p.Future}
+}
+
+// Event_permitRequest_Future is a wrapper for a Event_permitRequest promised by a client call.
+type Event_permitRequest_Future struct{ *capnp.Future }
+
+func (f Event_permitRequest_Future) Struct() (Event_permitRequest, error) {
+	p, err := f.Future.Ptr()
+	return Event_permitRequest(p.Struct()), err
+}
+func (p Event_Future) PermitConfirm() Event_permitConfirm_Future {
+	return Event_permitConfirm_Future{p.Future}
+}
+
+// Event_permitConfirm_Future is a wrapper for a Event_permitConfirm promised by a client call.
+type Event_permitConfirm_Future struct{ *capnp.Future }
+
+func (f Event_permitConfirm_Future) Struct() (Event_permitConfirm, error) {
+	p, err := f.Future.Ptr()
+	return Event_permitConfirm(p.Struct()), err
+}
+func (p Event_Future) PermitRevoke() Event_permitRevoke_Future {
+	return Event_permitRevoke_Future{p.Future}
+}
+
+// Event_permitRevoke_Future is a wrapper for a Event_permitRevoke promised by a client call.
+type Event_permitRevoke_Future struct{ *capnp.Future }
+
+func (f Event_permitRevoke_Future) Struct() (Event_permitRevoke, error) {
+	p, err := f.Future.Ptr()
+	return Event_permitRevoke(p.Struct()), err
+}
+func (p Event_Future) JoinInviteCreate() Event_joinInviteCreate_Future {
+	return Event_joinInviteCreate_Future{p.Future}
+}
+
+// Event_joinInviteCreate_Future is a wrapper for a Event_joinInviteCreate promised by a client call.
+type Event_joinInviteCreate_Future struct{ *capnp.Future }
+
+func (f Event_joinInviteCreate_Future) Struct() (Event_joinInviteCreate, error) {
+	p, err := f.Future.Ptr()
+	return Event_joinInviteCreate(p.Struct()), err
+}
+func (p Event_Future) JoinInviteRevoke() Event_joinInviteRevoke_Future {
+	return Event_joinInviteRevoke_Future{p.Future}
+}
+
+// Event_joinInviteRevoke_Future is a wrapper for a Event_joinInviteRevoke promised by a client call.
+type Event_joinInviteRevoke_Future struct{ *capnp.Future }
+
+func (f Event_joinInviteRevoke_Future) Struct() (Event_joinInviteRevoke, error) {
+	p, err := f.Future.Ptr()
+	return Event_joinInviteRevoke(p.Struct()), err
+}
+func (p Event_Future) ExecInviteCreate() Event_execInviteCreate_Future {
+	return Event_execInviteCreate_Future{p.Future}
+}
+
+// Event_execInviteCreate_Future is a wrapper for a Event_execInviteCreate promised by a client call.
+type Event_execInviteCreate_Future struct{ *capnp.Future }
+
+func (f Event_execInviteCreate_Future) Struct() (Event_execInviteCreate, error) {
+	p, err := f.Future.Ptr()
+	return Event_execInviteCreate(p.Struct()), err
+}
+func (p Event_Future) ExecInviteRevoke() Event_execInviteRevoke_Future {
+	return Event_execInviteRevoke_Future{p.Future}
+}
+
+// Event_execInviteRevoke_Future is a wrapper for a Event_execInviteRevoke promised by a client call.
+type Event_execInviteRevoke_Future struct{ *capnp.Future }
+
+func (f Event_execInviteRevoke_Future) Struct() (Event_execInviteRevoke, error) {
+	p, err := f.Future.Ptr()
+	return Event_execInviteRevoke(p.Struct()), err
+}
+
+const schema_907f33b2bf56870e = "x\xda\xacZ}xT\xe5\x95?\xe7\xde\x99\x0c\xc4L" +
+	"\x86\x9b\xf7\xc6\x12*\x19\x12H \x11\x14\x02(Ri" +
+	"\xc8\x07J )\xb9!\xa2\xc4\x8fu\x98y\x19.\x99" +
+	"\xdc\x19\xee\xbdC\x93.,m\x1f}\xea\x07\xec\xea\xae" +
+	"\xb6\xb2\xad\x15\xb0\xdb.\xae\x9f\xfb\xd4\xd5\xe2\xd2\x16w" +
+	"\xd5\xf5\xbb\x85\xbaU+\xb5\xda\xbaJ\x17\xbf*]\x85" +
+	"\xd6\x9d>\xe7\x9d\xb9w&\x93;\x10\xd4\xff\xb8gN" +
+	"\xce{>\xdfs\xce\xefe\xee\x07\x15K}\xf3\x82\xab" +
+	"T\x90\xb4\xa3\xfe\xb2Ly\xd33\xc7\x97\xefY\xfb\x0d" +
+	"\xd0\xaa\xd1\x97\x99R\xb3\xef\xed7\xe4\xe6G\xa0\xba," +
+	"\x80\x00\xf3\x83\xe5\x8b\x11\x90U\x97\xb7\x02f^]\xfa" +
+	"\xfc\xf6\xcb\x8e^u\x9d7\xeb\x05\xe5\xcd\xc4\xdaV\xfe" +
+	"e\xc0\xccw~s\xbc\xb9\xe6\xe9\xe57x\xb3\xee." +
+	"/'\xd6\xbd\x82\xf5\xefb\xf1\xa7\xdf}p\xf3\x8d\xde" +
+	"\xac\x13\xcfX\x81\x80\xf3\xab\xcf\xb8\x14\x013w>}" +
+	"\xf6\xaf\xce\xbcc\xdb-\x9e\xbcl\xa4\xe2u@\xb6\xb5" +
+	"\x82t\xbd1\xbd\xbf\xfc\xc8\xcb\x0b\xbe\xe9-\xf5\xf6\x0a" +
+	"a\xd6?\x09\xd6\xcb\x0e\xbf\xff\xe8\x1d\xd3\x1f\xf2fe" +
+	"\x8fU\xfc\x1e\x90=Y\xf1&`\xa6\xfd\xa9k\xfb\x1f" +
+	"\xac\xab\xfa\xb67\xe7\xde\xe0\x1f\x00\xd9=\xc1\xfb\x003" +
+	";\x9b\xef8\xf7\xde\xbfY\xe4\xcd9\x7fY\xe5\x14:" +
+	"\xbe\xa7\x92\x8e\xbf\xed\x95\xab\x16m\xd82\xf1vo\xd6" +
+	"\xa1\xca\x16bMW\x92\xd4\xc7.Y\x7f\xcd\xa3\xdfU" +
+	"wy\x9f_\x1dz\x19\x90\xd5\x84Hh\xec\xe1\xd9o" +
+	"<|\xcb\xd2]%B\x15\x92\xc8\xa9KBar\xea" +
+	"\x96\xe7.\xed\xfdm\xcf\xee\xdd\xde\xbck'\x89XE" +
+	"&\x91\x03\xbe\xb2\xf3\xf2\x7f\xbb\xb9\xaf{O\x09\xb1\x0a" +
+	"\x89eK\x14\xd2\xe0\xa1+_<\xd2\xf3\xe6\x9d\xdf\xf7" +
+	"f\xbdR\x11\xc9\xc2\x15\xca\x80\x87\xbb\xde\xdaZ\xbd\xfd" +
+	"\xc0\x0f\xbcY\x0f(U\xc4\xfa\xa4`]\xb0\xe6\xfc\xe3" +
+	"\xf1\xbe\x1b\xf7z\xb36T\x09\xd69U\xa4\xc0\xe6]" +
+	"\xc9\xa9\x81g\xbeU\x82\xb5\xa7J\xe8\xaaU\x91\xd4\x1d" +
+	"\xbbf/\xdd\xf2\xef\xc6\xbfx\xb3>P%B\xf0#" +
+	"!\xf5\x9b\x0f.X~\xe2\xf5\x9e{\xbcY_\xaa\x12" +
+	"\x81}MH\xdd\xf7\xe3C\xdf\xdat\xf9\x9f\xbcY\xd9" +
+	"\x12v\x90\xaa\x85\x91\xd0\x9d{y\xff\x13-\xf1{\xbd" +
+	"\x85F\x98\x10\xaa\x0b\xd6\xf5/\xb3\xbe=k\xe2\xfb\xbc" +
+	"\x85^\xcfN\x00\xb2\x1d\x8cb\xc5\x1a\xde\xeb\xe3\xed\xef" +
+	"\xee+!T]GB\x87T\x12\xea\xfe\xa8\x85\xd0\x97" +
+	"\xa9\xfc\xc6\x9a\x9f\xfc\xeb\xfcm7\xc1\xb2\xb2\xc0y\x88" +
+	"\xecf\xf5.\xb6S\x0d\x00\xcc\xbfU\xddV\x01\x989" +
+	"\xd6y\xf4\xdcI{\xce\xd8\xef\xad\xc3\xc7g=\x05\xc8" +
+	"p*\xb9\xe0\xab\xe1\xe1\xe7k\x8e\xdd\xf9x\x89$\x98" +
+	"*\x0c\xe3SI\x87\xf2\x0f\xae\xae\xbc\xf0\xc4w\xff\xcb" +
+	"\x9b\xf5\xda,\xeb\x0e!\x95=\xd4\xf8\xe3\xff\xcc\xd4>" +
+	"\xe9\xcdzd\xaa\xa8\xed\xf7\x85\xd4_l\xab>\xd0\xf8" +
+	"\xf8QoV\xa6\xd4RmW\xd7\x92\xd0[\x13O\xbc" +
+	"\x10kY\xf4\x947g\xba\x96j{Dp~\xe1\xc4" +
+	"\xfe\x09\xcdV\xff\xcfJ\xa4@\xad\xa8\x97\xd7j\xa9`" +
+	"\x1f9\xb3\xc2wl\xc2.oV\xb65L\x9e\xfaZ" +
+	"\x98\x14=|\xd7\xe5\xf7\xad\xbfb\xee\xcfK\xa4`X" +
+	"\xd8\xf4\xa30\x9d\xff\xact\xf1\x82\x0b\xee\x98y\xd0\x9b" +
+	"\xb5f\x9a\xf0T\xdd4:\xff\xe0\xb3\x97t\xfe\xb5\xb6" +
+	"\xfd\x907\xeb\xfei\xa2\x06\x0eL#\xa9\xeb\xfa\x1f\xaf" +
+	";\xfa\x83\xc3/z\xb3\xd6\xd5\x89\xcaj\xaa#V\xa9" +
+	"\xea\xb6\xee\xc4\x91\x0f_*\x11\xaa,\xeb\x8e:R\xe0" +
+	"\x82\xd5g-\xdbr^\xdb+\xde\xacs\xea\x85\xaf\x16" +
+	"\xd6\x0b\x0f\xdc^a\xc6\x0e\xce<\xec\xcdzI\xbd\xd0" +
+	"um=\xa5v\xdf\xb5\xfb_\xda\xd5\x7f\xd6\xab%\xa4" +
+	"N\x17\x1eX8\x9dt}\xe7\xde\x8dO\x7f\xfd\xba\x8b" +
+	"^\xf3f\xdd9]\x94\xf6\xee\xe9\xa4\xc0?$\x9f\x9b" +
+	"\xb8ae\xdd[%\xfa\xc0t*\xad'\x85\xd0\x8f\x8c" +
+	"+\x96T\xb1\xbb\x8f\x96\xb8\x85fP\xb0\xe6\xcf\x99!" +
+	"n\xd7\xc6\xd0\x9e\xda\xfb\xce\xfcu\x09\xde\x9e\x06\xa1\xc0" +
+	"%\x0d\xa4@\xf0\xe0\xdd5\xd2{\x0b\xdf\xa62\xc4|" +
+	"\x19\xfa\xa5\x00e`\xc3]lk\x03\xfdk\xa4\x81<" +
+	"\xdb\xdc\xf8S\xed\x99\x17g\xbd\xe3-Wi\x14rk" +
+	"\x1aI\xdd\xbd\xcd\xb3\x1f\xbd\x7f\xe2\xe4wKt\xcdF" +
+	"\xd15\x05g\xc5\x13\x0b\xb7\xef:\xf4\xa5\x0f\xbc\x85\x1e" +
+	"n\x141xM\xb0\xaas\x7f\x98\xf4\xed\x1f>\xe6\xcd" +
+	"\xda6\xb3\x9dX\xbbf\x12k\xf4o\xd9]\xad\x1f-" +
+	"\xfa\xa37\xeb\xde,\xeb\x03\x82\xf5\xfbw\x1dz\xea\x97" +
+	"+\x1f\xfa\xb0\x84U\xb3D\xbe\xd4\xcc\"\xd6\xed\x87\xe6" +
+	"^\xfe\xd1\xb7kNx\xb3\x8e\xcc\x12\xban\x9dE\xbe" +
+	"\xfa\xc9\xbe\x1b^\xbfl\xf6\xb4?{\xb3V7\x89\x84" +
+	"\x9d\xdaD1xdy\xdb\x17\xff\xc3\xac\xfd\xb8\x84Y" +
+	"M\xc2\xad]Mo\xc2\x9c\x8c\xb5a\x88o\xe6\x86-" +
+	"\x9f\x13\x8d\xa4\x8c\xd4\xe2e\xf4qNtC\xc40x" +
+	"\xa2#\x91\xb4Z\xf9\xa5\xa6ns\xcd'\xfb&\xa1\x8a" +
+	"\x0b\x01\x94`\x1f\x80V!\xa36Y\xc2L\x8e\xb5\x0b" +
+	"0\x86\x15 !\xdd\xad\xdeB\xe3f2\x9d\xeaH\x0e" +
+	"\x0dE\x8cP\xac7mk\x13\xb2\"\xaf\x06P\x9aH" +
+	"\xe4,\x19\xb5\x05\x12*(\xa9\x18\x01P\xe6\xb5\x03h" +
+	"\xb3e\xd4\x16\xd19\xe2\x0fc\x85\xe7l\x13\x12\xbbN" +
+	"un*\x99H,\x1b\xe6\xd1\xb4\xcd\x01\x9cC?G" +
+	"\x87n,:t2\x1d\xdaRp\xa8\xc5\x8d\x187{" +
+	"9\x84\xb8\x99?'\xbc9\x92Hs\x0c\x82\x84\xc1\x82" +
+	"S}\xa3N\x8d\xe9\x91\x84\x96\xe6\xe6H\xd6\xe2Xw" +
+	"2\x0e\xa0M\xce\x9e\xde\x0d\xa0\xec\x1c\x00\xd0n\x93Q" +
+	"\xfb^\xee\xf4\x1e\x00e7\x11w\xc9\xa8\xdd-\xa1\"" +
+	"\xa1\x8a_\x02P\xf6\x92J\xdf\x93Q\xbb_BE\x96" +
+	"T\\\x05\xa0\xdcC\xc4\x7f\x96Q\xfb\xa1\x84\x8a\xafL" +
+	"\xc5^\x00\xe5\x01\"\xde-\xa3\xf6\xb0\x84\x8a_VQ" +
+	"\x03P\x1e$7\xde/\xa3\xf6\x8c\x84\x19;b\xc6\xb9" +
+	"\xdd\xcbA\xe6\xa6\xeb7\xdd\xb0\xec\x88\x11\xe5 \x17\x18" +
+	"i\xe9F\x94\xa3\x1f$\xf4\x03\x86\xd3\x86\xad'\xdc\xaf" +
+	"\x84>\xa4\xdb\xe8\x03\x09}\x80\xdbL\x1eM\x9a1\x0b" +
+	"+\x01{e\x14~\xa9,\xf0\x8b4\xca/\x16\xb7\x03" +
+	"+\xf9\x88\x93O2\xe5S\x8b\x88\x0bj\xaaT\xca\xb7" +
+	"\xa3#\xba1\xa9\x1b}|S\x9a[vk\x87\xc9#" +
+	"\xf9\xf4\x9cQ,\xceN\x0erc\x8c\xb8\xd1*\xf1a" +
+	"\x1e\xa2\xec\xd0&\xc9\xbeI>\x15\x19\x80\x12Y\x01\xa0" +
+	"]-\xa3\x96\xa0\xe8\xf8UT\x01\x14\xdd\x04\xd06\xc8" +
+	"\xa8\xd9\xb9\xe8T\x03(\x9b(\x8bR2j[r\xd1" +
+	"9\x13@\x19!\x1dl\x19\xb5\xafR\x16%\xd3f\x94" +
+	"w\xc5\x00\x00\x03 a\x80f[n\xd9\xba\x11\xb1!" +
+	"\xac'\x8d\xae\x98K?\xad\x8c\x93\x8a\xeb+\x9cNQ" +
+	"aUd\x9d\xb1\x1a@Y6\x05@[*\xa3\xd6\x9d" +
+	"\xcb\xb2~\x00\xa5\xab\x19@\xeb\x94Q\xeb%;~\xaa" +
+	"\xe2%\x00J\xcfb\x00m\xb9\x8cZ\xbf\x84\xb2\xee\x1e" +
+	"\x1d2\"C\xdc\xf9hM\xa5\xd7%\xf4(\"H\x88" +
+	"\xa5\x0b\x9d\xdb\xbd\xa6\xbe9b\xf3\x95r>\xd2A\x0a" +
+	"M{>4\xdbR\xa6\xbey%\x1f9E\xac\xf90" +
+	"\x8fv\x19\x9bu\x9bw\x84\xb3\xa1\xceYg\x92u-" +
+	"E\xd6Yd]_\xde\x10E\x92U\xb4\x01\x14\x8d\x0a" +
+	"\xabWF\xed\x8a1I\xe1q\xb3dt#\x95\xb6\xad" +
+	"\x15\x16\xc8Ic\xcc\xf5R\x94=\xa6)'M\xc7\xca" +
+	"\xbeb+\x87\xb8eE\xe2\xfcTw#\xb7\xd7p\xd3" +
+	"\xd2\x93\x06hjV\xd2\x05\x00\xcaV\x8a\xc9\xb0\x8c\xda" +
+	"5d\xdfR\x15\x17\x03(_#\xa3\xb7\xc8\xa8]G" +
+	"\xf6I*~\x01@\xb9\x96\x8c\xbeFF\xed&\xcaB" +
+	"Y\xc5\x0b\x01\x94\x1dD\xdc.\xa3v\x1b\xdd\x11>\x15" +
+	"\x97\x00(\xb7R\x12\xdf\"\xa3\xb6K\xc2V\xb2]\xb7" +
+	"\xdd4\x8b\xe9\xa6=\xe2Fw]ZO\xc4\xfa\xf5!" +
+	"\xc0\xbc\xfa\xf1dVO\xc0\xbc_\x12\xfa\xbaTKj" +
+	"\x0d\x87\xb0\xb0\xe0\x14\xa6\xe6\x1aFo2\x91\x00\x10%" +
+	"\x87*\x9eC%\xd7WXr\x13T<\x97J\x8e<" +
+	"\x10\x93QK\x91\xb1\x13U\x9c\x0b\xa0\x0c\xb5\x17\xd4!" +
+	"\x95\xdc<\xaaCrKBFm\xd8\xbb+\xb5Zv" +
+	"\xc4N[X\x06\x12\x96\x01nK\xa5\xcdT\xd2\xe2\xce" +
+	"w8\xba!m\x0c\x9e\"\x19\xe3\xdc^\xf5e\xa3-" +
+	"\x163\xc1\x09\xf8,\x0axs>\xe0\xa1H,f\x9e" +
+	"\xaa#qn^L\xbd\xab\x93\x87\x12\xdc\xe6NSZ" +
+	"OM\x89\x0c\x9e!\xa367\x97\xd2q\x00eN{" +
+	"\xbeS\xb5\xd2_w\x9dv\x13\xe4\xe6\x90n\xf7\xf1\xcd" +
+	"\xc9A\xcc\x9e7Y\xc5!:\xaf\xb9\xf0<T\xd1\xa0" +
+	"\xf3\x16\xe7\xcf\x0b\x0d\xeaF\xcc\xf1R\xd1\xe1'\xb9\x00" +
+	"\xc4E\xb1\x92\xa3[\xff\x15\xe4\xa8\xc5yG\xd1]r" +
+	"\xea\xf2\x8f\xc4b\xdd<b\x1a\xdc\xcc\xb6n\x9f\x8a!" +
+	"\xd2\xda,l\xdd\xa8\xe2$j\xdd\xcd\x85\xf3B\"\xa2" +
+	"\x0f\xf1X/\x84\xb3\x1a\xe7.\xd8\xf1\x84'\x7f\xe5\xf4" +
+	"\x85\xc9anwI\x8f\xaf\xbb\x8cq\xc6E:O\xc4" +
+	"\xdaG\xc4m\x98\x0bu9\x19Q_\x14\xea3\xc8\xf5" +
+	"-y\xcb\x02\x83y\xff\x8c\xab\x05\x0c\xeaQ\x1ct\xb4" +
+	"=\x7f\x8c\xc3\xc7\x13\xbb\xdcm\xd8\xc9\x13\\\xce\xf7\xd5" +
+	"\xcbI\xd6\x94\xbc\xac\x82\x06QB\x95\x84n\xb5\xda}" +
+	"\x11#\xce\x9d\x1a\xaf\xa1\x1a'\xeb\xae\x90Q\xdb\x903" +
+	"y\x0a\x80\xc2\xeb\x0b\x0a\x9f.\xec\xcfS\xe1\xd7\x17\x14" +
+	"\xbe\xecS\xf1,*\xfc\x96|\xe1\x87-;b\xda\x8e" +
+	"C\x02\xdc\x88\xb9\xff>\xb5\xdbF\xcfj\xeb\x92I\xdb" +
+	"\xb2\xcdHj\x95\xb9\"\xa9\x1b\x1d\x89\xb4\x15\xb0\xb9{" +
+	"\xa7W\x92\xf1\x03\x053o\x82Gb\xdcl\x8b\x81\xec" +
+	"\x91K\xe8\x88\x0e\xd1W/\xa2\xf6;\xd9\x07\xe0\xa35" +
+	"eN\xd9\x14\x80\xd5\xb3\xcad\\\xbd\xa0,\x97\xb9D" +
+	"\x9fW\xd6\x02\xb0z6\xd1\x17\x95IH\x8e\x91\x00\xd8" +
+	"\xc2\xb2>\x80\xd5\x0b\x88\xbc\xb4L\xc2\xa0\x9c\xc9`\x01" +
+	"~\xc8\x96\x94-\x06)\xe8\xfb\x7f\xa2\xba\xab?k(" +
+	"[\x01R\xd0\xff1Q\xdd\xad\x89)\x82\xb7\xec\xcfD" +
+	"uw\x19v\xdc\xff\x8f \x05\x03\x7f\"\xaa\x8b\x0a\xb1" +
+	"#~\x13\xa4\xe0\x84\x13Du\xc1*\xf6\x82\x7f#H" +
+	"\xc1\x89\xc7\x89\xeaB\x83\xec\x80\xe0-\xff\x88\xa8.Z" +
+	"\xc3\xee\xf1\xef\x03)x\xc6\x87Du1,v\xbb\x7f" +
+	"\x00\xa4`\xc5\xff\x11\xd5\xc5_\xd8\xf5\xfez\x90\x82\xc1" +
+	"?\x12\xd5\x851\xd9&\x7f;H\xc1\xcacDu\x81" +
+	"X\xb6\xd6\xbf\x0e\xa4`\xe8\x03\xa2\xba(\x12[\xe6\xef" +
+	"\x03)8\xe9\x0fDu\x17`6OP\x95\xf73*" +
+	"\x86\x01\xd8T?\xf9x\xb2_\xc6\xd53\xfc\x12\x06\xab" +
+	"\xde#vwUbu\xfe\x1b@\x0a\xb2w\x89\xea\x02" +
+	"\xafL\xf1\xff=HA\xf5\x1da\x9e\x03\xd90\x14\xd4" +
+	"\xea\xb7\x89\xea\xa23\xec}\x1f\xa9|\xe6Q\xa2\xba " +
+	"#{\xc9GF\x7f\xee\x7f\x89\xean\x86\xec1\x1f\x19" +
+	"2\xf9\xf7Du\xb1\x18\xf6\x80\xa0\xd6\x1c!\xaa\x8bh" +
+	"\xb2\xdb\x05u\xca[DuQ\x03v\xbd\x8f\x1c\xff\xf9" +
+	"7\x89\xea\xee\x86,\xed\xa3 \x9d\xf5?DuQq" +
+	"\x16\xf1\x91\xbeS\xdf \xaa\x0b&0\xcdG\x16\xd7\xfe" +
+	"\x8e\xa8.\xce\xc7\xda|\xcd \x05\xc3\xbf\x15\xdeq\xa0" +
+	"\x1f\xd6\xe4\xa3 M{\x9d\xa8..\xcb\x14a[\xdd" +
+	"kDu\x01\x15\xf6\xb1L:\xd4\xff\x86\xa8\xee2\xce" +
+	"\x8e\xc8\xc4;\xfdU\xa2\xba\x90\x0e{APg\xfc\x9a" +
+	"\xa8.|\xc4\x0e\xc8\xa4o\xc3a\xa2\xba8\x05{@" +
+	"P\x1b_!\xaa\x0b\xb8\xb3\xdd\xf2\x1e\x90\x823\x7fE" +
+	"T\x17[f7\xcb- \x05g\xbdLT\x17\xf1f" +
+	"#2\x95F\xd3KDuQ\x1d\xc6e\xf2o\xf3\x8b" +
+	"B\x07\x07\xc0a\x9a\xd0\xec\xec_\x8atw\xb0M\xb6" +
+	"D&\xaf\xcf\xfeo\xa2\xba\xcb;k\x12\xbcs^ " +
+	"\xaa\x0b\x17\xb2j\xc1{\xce/\x88\xea>;0\x94\xbf" +
+	"\x0eR\xf0\xdcCDu\xf1\x07\xf6\xb6D\x858\xf7 " +
+	"Q]\x14\x8b\x1d\x96\xc8\x93\xf3~NT\x17\x8bfO" +
+	"J$\xa1\xe5gDuq4\xf6\xa0D\xa7\xcd\x7f^" +
+	"D\xde\xc1!\xd9nA]\xf0\x1cQ]\x88\x9a\xed\x10" +
+	"r\x17>KT\x17\x83a#\x12\xe5\xc3y\xcf\x10\xd5" +
+	"E|\x98.\xa8\xe7?MT\x17\xe6gk\x05u\xd1" +
+	"SDu\x91g\xd6ET\xea\x0d\xb9n\x1b\x8e\x9a\xd1" +
+	"\xf9-8\x01$\x9c@W\xa4\x1e7\"v\xda\xa4\x81" +
+	"2w#\xb7Z\xdc^\xc9G2V\xaeK\x02@k" +
+	"<Kr\x1a'\xb6\x8f\xf4\xf1\xb8n\xd9\xb2\x99'B" +
+	"\xb8}$\xc7$F\x0d\x08E\x9dOZ= ls" +
+	"\xfavnvt\xae\xf6\xd6D\xda\xb2\xb9\x99q\xe6\x0a" +
+	"\xda\x83\x03\x16\xb7\xb7\xf1,B\x90q\xd0\x02\x08\xd0W" +
+	"B\xb7D\x13\x03\xe4\x99D2\xde\x96Jq\x030\x16" +
+	"N\xf0\xc8f\x0ee\x19gT@\x9b\xf7\xf1\x18\xe7C" +
+	"\x00\x19g;En\xd9b;E>\x9aF\xab6&" +
+	"hm6\xd3\xba\x9dq\x86J\xea&\xce\xe0\xba\x0a\x02" +
+	")n8_\xab\x81\xda\x9b\xf3\xd5\x0b\x81d\"\xe1|" +
+	"uCX\xb7\xec<o\x07\x84\x12I\x8b\xbb\x9fH_" +
+	"\x97\x9a:i\x91\xa3ub\xc4\x8e\xf4\xf1Hl\x04 " +
+	"4\xa8G\x07\x03\xf6\xb0\x91qV\x10Zy2\xd9=" +
+	"\xaf-\x0a\xa1(\xb7,af\xbf\x1e\x1d\x04\x99\xdb\xc2" +
+	"\x96Q\x1f\x8eaD\xe4hgbz$\xb1:\xbdn" +
+	"\x08u;\x0b~`,\xe3\xc0!\xe8\xe0!\x81\xeed" +
+	"<\xccM3if\xc4\x04\xdb\x9b\xb6\x01 \xfb\xefN" +
+	"\x9e\x80\x00\xb7\xb9\xb3\x9a\xf5\x82\x9c\xb6\x9d\x8fN\x08s" +
+	"\x1a\x9a34\xcf\xebI#\xfbc\xee\xc3\xfd\xd1\x01\x9b" +
+	"d\xf1\xf7i\x1b\x0a\xd0'g\xb8\xc98s8\x84\xe8" +
+	"x\xf7S\"\x05\xb8\xcd\xc1\x19\x9a\xc3\x02j\xc8d?" +
+	";\x92\x106\xd6\xeb\xe6P\xc6\xf9\x19B4$\x0aW" +
+	"\xe4r!\x0bJ\xe4r\xc1\xcd\x0f\xe2\x02(\xcc\x19\x97" +
+	"oT\x1e\xe5\xf8J\xe2'y\x14K\xf1\x9a\"\xabN" +
+	"\x7f\x8a\x1c=\x02:\xbe\x1c=\x02\xfe\xd5'\x1a'\x1d" +
+	"\x9f\x19\xebu\xd9\x1cr\x16\x8fA\xaf\xc5#\xf1\xe9\x17" +
+	"\x8fQ\xc0\x10\x95Y\xc2\xd1\xbe\xe1\x93\x00C&\x8f\x86" +
+	"\xa8D\x1dw7\x8e\xd9\xcf&\xa88\x93\xd4^\x91\xdf" +
+	"<Zm*\x03;\xafiz\xfdz3\x12\xe7\x00\xe0" +
+	"\x18S:\xb4aq\xb99\x9b\x8e\x8f\xce[Q\xb4\xe9" +
+	"\xf8\xc7\x80\x94c\xe1\xa5q\x85\xd9\xb9\\\xb8\x11\x13\xb3" +
+	"\xad0\xf1l\x00eY_\x01<D&\xce\x06Pz" +
+	"\xda\x0bQ\x15I\xc59\x00\x8aFzt\xcb\xa8]\xe6" +
+	"\xbds\x8fs\xc9\x1e\xed\x06{\xd8\x00w\xbd^Dq" +
+	"\xab\xcf\xc5m\x86\x84\x81d\xca\x05\x1a'\xe5\x1f\x1b\x00" +
+	"GA\x8e\xa5\xb3B\xdcQn@\x97\x91\x83\x07\x8aP" +
+	"\xe0\x8b\xbc\x1d<z\xdc\x1f\xd7\xea\xe7\\\x10\x9b\xd2\\" +
+	"\xb6\xb2\xb0\xdcd\x157\x90\x8b\x9b\x0b\x81+TQ\x07" +
+	"P\xba\x16\x17\xc2r\x92\x8a\x1b\xc9\xef+\xf2.>i" +
+	"E\x0cq;\x12\x8b\xd8\x11J\x83SWI\xd6\x0f\xee" +
+	"E\xd2\xe1\xe5\x88\xce\xcf\xd0\x119\xc0\xa37\x8d\xae\xf3" +
+	"c^h\x07\xffl\xd0\x8e\\\xfb\x8ar\x0b-'\xb5" +
+	"\xbfH~\x1f(LmI\xc5Vrqs\x11`\xb8" +
+	"\xb4\x080\xf4D\xcdCF\xd2\xe6'\x85\xd0O\xf6\x0e" +
+	"\x92\xeb0n\x9e\xaf\x19\xc7\x82\xed\xb9\xa8Sos6" +
+	"\xecKi\xc3\x9eR\xb4a_F\x1bvs\xd1\x86\xbd" +
+	"\xb6\x18Z\xa3\x0d{\x806\xec\xe6\xfc\x86]\x1a\x05\x1e" +
+	"\x15\x93\x90\x95\xe2\xd1\xf1\x81~\xdd4\xc5q\xc3\xc9\x80" +
+	"\x16\xaf\x97\x9f\xf9\x94u\x1b\x01\xb4\xb92j\x17\x96x" +
+	"a2\xf9P\xd2\xe6\xc50\xf9\xc9\x0f\xef\x8c\xd8\x91\xb0" +
+	"\x18{\x1c\xa7\x9fw:\x8fYE\xf0F2\xde*\xa6" +
+	"\xc1\x98c\xccT\xaf^\\\xfbi{\xb13K\xe9v" +
+	"Gk6\xe0\x0e>|1\x80\xb2u\xa0\x00\x0a\xa6\xf3" +
+	"\x96\x17C\xc1\x14\xec.\x00e\xc7@\x01\x14L\xc1^" +
+	"\x01\xa0\xdcJ\xc1\xbeIF\xed;\x12*>\xbf\x8a+" +
+	"\x8b\xde\xa5\xbc\x9f\x8b\xc6\x0b\x98\x7f\xe2\x0aq\xa6\xa61" +
+	"\x00\xdc\xa6\xf1uq\x07\x82\xe9\x0f\x0d\x1b\xabR\xbd\x88" +
+	"t\x05d!\x98Q\x0f\"9\xf8E\xe9\xaa/\xbcx" +
+	"Q\x80/JOK\xc1{H2\xe5\\\xbb\xa7\x1d\xc1" +
+	"\xbc1\xce\x03F.a\x92\x940-\x85\x093Y\xc5" +
+	"T\xd14Ql\xe1\xb8\x87\x89x\xee\x9d-7J\x94" +
+	"y\x8d\x12\x01*\xb5\xfa\x93\x8f\x12\x85\xf6\x9e\x04/-" +
+	"\xea'm^\xfd\xa4\xfdS\xf4\x13_\xa9\xa7\xe4X\xee" +
+	"&uN^\xe7u\xa7D?\xcdk\xb2\xaf\x04\x9c\x9b" +
+	"]J\xcd\x11\x17\x98\x9e\xe0\xe5\xe3\x89\x9f\xf1\xb8\xb6\x8a" +
+	"6P\xd7\xda&\xaf\x1e\xdaL9\xb4\xb1`\"-\x9e" +
+	"\x9d=\xdf\x18O\xbe\x0c\x886\x93k\xa4WP\x19-" +
+	".zy\xbbr\xcc\xbb\xa2\xac\xe2UEuT\xdc9" +
+	"\x0a\xbbJ8b\xdb\xa65\xbe\xab\xbc#\x91\xb4\xd0\xbd" +
+	"\x15\x16|\xf2\xff\x930\x0a\xea\xa7\xfd\xddi\xa5\xd3\xa8" +
+	"\x95\x0e\x14>HI*\xd6Q\xd7l)|\x90\x92U" +
+	"\xac\xa7\xae9\x90\x7f{\x12\xb7\xebt\x00%\xfd\x951" +
+	"o\xc0'Mu\xcf\x0b\xd2\x14Zq\x13Z{G\xb9" +
+	"\xee/\x01\x00\x00\xff\xff\x18\xfc>\xaf"
 
 func RegisterSchema(reg *schemas.Registry) {
 	reg.Register(&schemas.Schema{
 		String: schema_907f33b2bf56870e,
 		Nodes: []uint64{
+			0x8759a248f9cc290a,
+			0x885eec588ccf40df,
+			0x8a48cb192af9e09c,
+			0x8b76b5efcb67648f,
+			0x947f9f16db2bcba3,
+			0x9634dae90abd758b,
+			0x96b7239fc2f1dd58,
+			0x9b1221b55485ca42,
+			0x9b387eae2f9f2a99,
+			0x9d097c68385edc98,
+			0xa0149ec2846655c5,
+			0xa04094b8e52cb864,
+			0xa1a14de35057ce7c,
+			0xa24c5291b65b997a,
+			0xa6a3e74de9d85db7,
+			0xa7c18c157de849b8,
+			0xa98b5267f9375634,
+			0xa997cc071d6fa076,
+			0xab6ebc7c402ca08d,
+			0xad4de2fa4834b596,
+			0xadfb5b7197d3beba,
+			0xae6732c75465a999,
+			0xba6756a25213da66,
+			0xbaef426552f02513,
 			0xbb2a03e5edba191a,
+			0xbd0ba2102fec44f4,
+			0xc6a3f419cf781f80,
+			0xc89efa3c0e60f30a,
+			0xc91effc4be26b713,
+			0xc9ecc626c1157fd4,
+			0xca383264d5c76c95,
+			0xd054732a08bdfa3b,
+			0xd0a008f4040c16bb,
+			0xd1305c66af5baadd,
+			0xd2279f39344702cd,
+			0xd38c517b4455cdd2,
+			0xd8dda7ec21c65462,
+			0xd9f7e96c4c981202,
+			0xdc41367c451c5339,
+			0xdd27d264720c9ddd,
+			0xdf1c54a0d9bd8552,
+			0xe1468882cb6aaeee,
+			0xe8214b6809ce6f93,
+			0xecac13123d5c6ef8,
+			0xecde16af1ea20f26,
+			0xed35f00219acd20d,
+			0xee28d8cc51c0262a,
+			0xef1809b0c22c2aa9,
+			0xf34ed3a08c35c70c,
+			0xf478bd046fb43014,
+			0xf538f83faa138e63,
+			0xf7b74bd7cad3aaa6,
+			0xfa199bf85b30d38c,
+			0xfc202c58e28ababf,
+			0xfd1e72c33e4148bb,
 		},
 		Compressed: true,
 	})

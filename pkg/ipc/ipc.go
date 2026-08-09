@@ -61,10 +61,10 @@
 // daemon never reuses within one round trip makes that impossible by
 // construction: a client can never open a segment it didn't itself just
 // ask the daemon to create for this exact round. See pkg/shmevent's doc
-// comment for why Msg.ID -- chosen by the caller, not this package -- is
-// safe to use for this: a caller that wants to cite an id later via
-// SourceID/DestinationID has its own reason to pick a fresh one per
-// logical operation anyway.
+// comment for why a Msg's id -- chosen by the caller, not this package --
+// is safe to use for this: a caller that wants to cite an id later via a
+// variant's own sourceId/destinationId field has its own reason to pick a
+// fresh one per logical operation anyway.
 //
 // # Why the request channel is fixed per node, and how replay is avoided
 // without a wait
@@ -144,16 +144,14 @@ func callerLock(peerID string) *sync.Mutex {
 
 // capacity is the shared-memory data region size for both channels. It must
 // be a power of two and comfortably fit the largest encoded request/
-// response this package ever carries -- today, an EventChannelSend
-// request or EventChannelPoll response near shmevent.ChannelValueSize
-// (16KB), then the plain-KV data events at shmevent.KVValueSize (4KB), not
-// the much smaller shmevent.ValueSize (512 bytes) every remaining
-// event's Value obeys -- see ChannelValueSize's doc comment for why
-// channel data alone gets a bigger ceiling. Each shmring segment this
-// package creates is transient (opened, used for one round trip, then
-// CloseStorage'd -- see Call/Serve), so sizing this for the rare large
-// message costs a bigger but short-lived mmap on every call, never a
-// long-lived allocation, even for a call that only carries a few bytes.
+// response this package ever carries -- today, a channelSend/channelPoll
+// chunk (up to ~16KB in practice) is the largest regular traffic; most
+// other variants carry only a handful of small fields. Each shmring
+// segment this package creates is transient (opened, used for one round
+// trip, then CloseStorage'd -- see Call/Serve), so sizing this for the
+// rare large message costs a bigger but short-lived mmap on every call,
+// never a long-lived allocation, even for a call that only carries a few
+// bytes.
 const capacity = 32 * 1024
 
 const (
@@ -218,7 +216,7 @@ func Call(ctx context.Context, peerID string, m shmevent.Msg, priv shmevent.Priv
 		return shmevent.Msg{}, fmt.Errorf("ipc: close request writer: %w", err)
 	}
 
-	r, err := openRespWithRetry(ctx, peerID, token, m.ID)
+	r, err := openRespWithRetry(ctx, peerID, token, m.Id())
 	if err != nil {
 		w.CloseStorage()
 		return shmevent.Msg{}, err
@@ -282,7 +280,7 @@ func CallRaw(ctx context.Context, peerID string, encoded []byte) (shmevent.Msg, 
 		return shmevent.Msg{}, fmt.Errorf("ipc: close request writer: %w", err)
 	}
 
-	r, err := openRespWithRetry(ctx, peerID, token, m.ID)
+	r, err := openRespWithRetry(ctx, peerID, token, m.Id())
 	if err != nil {
 		w.CloseStorage()
 		return shmevent.Msg{}, err
@@ -390,7 +388,7 @@ func Serve(ctx context.Context, peerID, dataDir string, priv shmevent.PrivateKey
 			continue
 		}
 
-		if haveLastID && m.ID == lastID {
+		if haveLastID && m.Id() == lastID {
 			// The same request segment we already answered, reopened
 			// before the client has torn it down -- see the package doc
 			// comment on why we reread and dedup by ID instead of
@@ -410,13 +408,13 @@ func Serve(ctx context.Context, peerID, dataDir string, priv shmevent.PrivateKey
 		cleanupPending()
 
 		resp := handle(ctx, m, crc, sig)
-		resp.ID = m.ID
+		resp.SetId(m.Id())
 		respWriter, err := sendResponse(ctx, peerID, token, resp, priv)
 		if err != nil {
 			return err
 		}
 		pendingResp = respWriter
-		lastID = m.ID
+		lastID = m.Id()
 		haveLastID = true
 	}
 }
@@ -443,7 +441,7 @@ func openReqWithRetry(ctx context.Context, name string) (*shmring.Reader, error)
 // (Serve does this lazily, once it sees the next round's distinct request
 // ID).
 func sendResponse(ctx context.Context, peerID, token string, resp shmevent.Msg, priv shmevent.PrivateKey) (*shmring.Writer, error) {
-	w, err := shmring.CreateShm(respChannel(peerID, token, resp.ID), capacity, shmring.WithPollInterval(minPoll, maxPoll))
+	w, err := shmring.CreateShm(respChannel(peerID, token, resp.Id()), capacity, shmring.WithPollInterval(minPoll, maxPoll))
 	if err != nil {
 		return nil, fmt.Errorf("ipc: create response channel: %w", err)
 	}

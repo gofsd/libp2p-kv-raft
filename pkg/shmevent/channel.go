@@ -5,75 +5,112 @@ import (
 	"strconv"
 )
 
-// EncodeChannelSendPayload packs channelID, purpose and chunk into
-// EventChannelSend's Value: EncodeSetPayload's usual 2-byte length-prefixed
-// first field (channelID), then a second field that is itself purpose
-// (one byte) followed by chunk verbatim -- purpose has no length prefix of
-// its own since it's always exactly one byte, and chunk needs none since
-// Value's own end already marks its end (see EncodeSetPayload's doc
-// comment). purpose is carried all the way through to the corresponding
-// network frame (see pkg/daemon.ChannelProtocolID's doc comment) and back
-// out through EventChannelPoll's response (EncodeChannelPollResponse) --
-// see ChannelPurpose* below for the byte's meaning.
-func EncodeChannelSendPayload(channelID string, purpose byte, chunk []byte) ([]byte, error) {
-	packed := make([]byte, 1+len(chunk))
-	packed[0] = purpose
-	copy(packed[1:], chunk)
-	return EncodeSetPayload([]byte(channelID), packed)
-}
-
-// DecodeChannelSendPayload is the inverse of EncodeChannelSendPayload.
-func DecodeChannelSendPayload(payload []byte) (channelID []byte, purpose byte, chunk []byte, err error) {
-	channelID, rest, err := DecodeSetPayload(payload)
+// NewChannelOpen builds a channelOpen Msg: opens a new data-plane Channel
+// to peerId. Local-only. Response fills channelId with a freshly minted
+// opaque local handle.
+func NewChannelOpen(peerID string) (Msg, error) {
+	m, err := newMsg()
 	if err != nil {
-		return nil, 0, nil, err
+		return Msg{}, err
 	}
-	if len(rest) < 1 {
-		return nil, 0, nil, fmt.Errorf("shmevent: channel send payload missing purpose byte")
+	m.SetChannelOpen()
+	if err := m.ChannelOpen().SetPeerId(peerID); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_channel_open: %w", err)
 	}
-	return channelID, rest[0], rest[1:], nil
+	return m, nil
 }
 
-// EncodeChannelWireChunk packs purpose and chunk into a Msg.Value shape --
-// historically what a channel's underlying network stream carried once its
-// handshake completed; the real wire frame moved to
-// EncodeChannelFrame/SignChannelChunk's own variable-length scheme instead
-// (see ChannelProtocolID's doc comment in pkg/daemon for why), so this is
-// kept only as EncodeChannelSendPayload's own Value-shape sibling (packing
-// purpose+chunk without a channelID, unlike that function) for anything
-// that still wants it -- e.g. constructing a test frame in the old shape.
-// Unlike EncodeChannelSendPayload, there is no channelID field here: the
-// stream itself already is the channel, so there is nothing to look up.
-func EncodeChannelWireChunk(purpose byte, chunk []byte) []byte {
-	buf := make([]byte, 1+len(chunk))
-	buf[0] = purpose
-	copy(buf[1:], chunk)
-	return buf
-}
-
-// DecodeChannelWireChunk is the inverse of EncodeChannelWireChunk.
-func DecodeChannelWireChunk(payload []byte) (purpose byte, chunk []byte, err error) {
-	if len(payload) < 1 {
-		return 0, nil, fmt.Errorf("shmevent: channel wire chunk missing purpose byte")
+// NewChannelSend builds a channelSend Msg: sends one framed chunk on an
+// already-open channel, tagged with purpose (see ChannelPurpose* below).
+func NewChannelSend(channelID string, purpose byte, chunk []byte) (Msg, error) {
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
 	}
-	return payload[0], payload[1:], nil
+	m.SetChannelSend()
+	grp := m.ChannelSend()
+	if err := grp.SetChannelId(channelID); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_channel_send: %w", err)
+	}
+	grp.SetPurpose(purpose)
+	if err := grp.SetChunk(chunk); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_channel_send: %w", err)
+	}
+	return m, nil
 }
 
-// EncodeChannelAccept packs channelID and remotePeerID into
-// EventChannelListen's response Value -- identical in shape to
-// EncodeExecuteNotification, so it's an alias rather than duplicated
-// logic.
-func EncodeChannelAccept(channelID, remotePeerID string) ([]byte, error) {
-	return EncodeExecuteNotification([]byte(channelID), []byte(remotePeerID))
+// NewChannelPoll builds a channelPoll request Msg: drains one buffered
+// chunk received on channelID since the last poll, oldest first. The
+// response reuses this same variant with status/purpose/chunk filled in.
+func NewChannelPoll(channelID string) (Msg, error) {
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
+	}
+	m.SetChannelPoll()
+	if err := m.ChannelPoll().SetChannelId(channelID); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_channel_poll: %w", err)
+	}
+	return m, nil
 }
 
-// DecodeChannelAccept is the inverse of EncodeChannelAccept.
-func DecodeChannelAccept(payload []byte) (channelID, remotePeerID []byte, err error) {
-	return DecodeExecuteNotification(payload)
+// NewChannelListen builds a channelListen request Msg: drains one pending
+// incoming channel this node has accepted but that no local caller has
+// claimed yet. The response reuses this same variant with
+// channelId/remotePeerId filled in if one was pending.
+func NewChannelListen() (Msg, error) {
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
+	}
+	m.SetChannelListen()
+	return m, nil
 }
 
-// ChannelPoll* are EventChannelPoll's response status byte -- see that
-// event's doc comment.
+// NewChannelClose builds a channelClose Msg: ends channelID outright.
+func NewChannelClose(channelID string) (Msg, error) {
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
+	}
+	m.SetChannelClose()
+	if err := m.ChannelClose().SetChannelId(channelID); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_channel_close: %w", err)
+	}
+	return m, nil
+}
+
+// NewChannelCloseWrite builds a channelCloseWrite Msg: half-closes
+// channelID's outgoing direction only.
+func NewChannelCloseWrite(channelID string) (Msg, error) {
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
+	}
+	m.SetChannelCloseWrite()
+	if err := m.ChannelCloseWrite().SetChannelId(channelID); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_channel_close_write: %w", err)
+	}
+	return m, nil
+}
+
+// NewChannelDataReady builds a channelDataReady Msg: notifies that new
+// data is available to poll on channelID -- the handshake that hands an
+// already-open channel off to pkg/chandata's high-throughput data plane.
+func NewChannelDataReady(channelID string) (Msg, error) {
+	m, err := newMsg()
+	if err != nil {
+		return Msg{}, err
+	}
+	m.SetChannelDataReady()
+	if err := m.ChannelDataReady().SetChannelId(channelID); err != nil {
+		return Msg{}, fmt.Errorf("shmevent: new_channel_data_ready: %w", err)
+	}
+	return m, nil
+}
+
+// ChannelPoll* are channelPoll's response status byte -- see that
+// variant's doc comment in api/shmevent.capnp.
 const (
 	// ChannelPollNoData means nothing new has arrived since the last
 	// poll, and the channel is still open.
@@ -89,8 +126,8 @@ const (
 )
 
 // ChannelPurpose* tag what a channel chunk actually is -- the same
-// EventChannelOpen session is a single raw stream, but a caller may want
-// to interleave more than one kind of traffic over it (e.g. a control
+// channelOpen session is a single raw stream, but a caller may want to
+// interleave more than one kind of traffic over it (e.g. a control
 // message alongside a bulk data transfer, or a video frame). This set is
 // deliberately open-ended: any byte value not named here is carried
 // through untouched by every layer (IPC payload, network frame, IPC
@@ -138,24 +175,4 @@ func ChannelPurposeFromName(name string) (byte, bool) {
 		}
 		return byte(n), true
 	}
-}
-
-// EncodeChannelPollResponse packs status, purpose and chunk into
-// EventChannelPoll's response Value: a status byte, then a purpose byte,
-// then chunk verbatim (purpose/chunk are only meaningful when status is
-// ChannelPollChunk, and are otherwise ChannelPurposeData/empty).
-func EncodeChannelPollResponse(status, purpose byte, chunk []byte) []byte {
-	buf := make([]byte, 2+len(chunk))
-	buf[0] = status
-	buf[1] = purpose
-	copy(buf[2:], chunk)
-	return buf
-}
-
-// DecodeChannelPollResponse is the inverse of EncodeChannelPollResponse.
-func DecodeChannelPollResponse(payload []byte) (status, purpose byte, chunk []byte, err error) {
-	if len(payload) < 2 {
-		return 0, 0, nil, fmt.Errorf("shmevent: channel poll response too short: %d bytes", len(payload))
-	}
-	return payload[0], payload[1], payload[2:], nil
 }

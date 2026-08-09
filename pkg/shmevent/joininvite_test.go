@@ -46,44 +46,49 @@ func TestJoinInviteRecordRoundTrip(t *testing.T) {
 	}
 }
 
+// The old wire format's EncodeJoinInviteCreatePayload/
+// DecodeJoinInviteCreatePayload (a hand-packed token+suffrage blob) is
+// gone -- a joinInviteCreate Msg carries those as separate typed capnp
+// fields (NewJoinInviteCreate, Event_joinInviteCreate's Token/Suffrage
+// accessors) instead, with the same wrong-size-token rejection.
 func TestJoinInviteCreatePayloadRoundTrip(t *testing.T) {
 	token := randomToken(t)
-	payload, err := EncodeJoinInviteCreatePayload(token, SuffrageVoter)
+	m, err := NewJoinInviteCreate(token, SuffrageVoter)
 	if err != nil {
-		t.Fatalf("EncodeJoinInviteCreatePayload: %v", err)
+		t.Fatalf("NewJoinInviteCreate: %v", err)
 	}
-	gotToken, gotSuffrage, err := DecodeJoinInviteCreatePayload(payload)
+	gotToken, err := m.JoinInviteCreate().Token()
 	if err != nil {
-		t.Fatalf("DecodeJoinInviteCreatePayload: %v", err)
+		t.Fatalf("Token: %v", err)
 	}
 	if !bytes.Equal(gotToken, token) {
 		t.Fatalf("got token %x, want %x", gotToken, token)
 	}
-	if gotSuffrage != SuffrageVoter {
+	if gotSuffrage := m.JoinInviteCreate().Suffrage(); gotSuffrage != SuffrageVoter {
 		t.Fatalf("got suffrage %d, want %d", gotSuffrage, SuffrageVoter)
 	}
 
-	if _, err := EncodeJoinInviteCreatePayload([]byte("too-short"), SuffrageVoter); err == nil {
-		t.Fatal("EncodeJoinInviteCreatePayload unexpectedly accepted a wrong-size token")
-	}
-	if _, _, err := DecodeJoinInviteCreatePayload([]byte("wrong size")); err == nil {
-		t.Fatal("DecodeJoinInviteCreatePayload unexpectedly accepted a malformed payload")
+	if _, err := NewJoinInviteCreate([]byte("too-short"), SuffrageVoter); err == nil {
+		t.Fatal("NewJoinInviteCreate unexpectedly accepted a wrong-size token")
 	}
 }
 
+// The old wire format's EncodeJoinInviteRevokePayload/
+// DecodeJoinInviteRevokePayload is gone the same way -- a
+// joinInviteRevoke Msg carries token as its own typed field
+// (NewJoinInviteRevoke, Event_joinInviteRevoke's Token accessor).
 func TestJoinInviteRevokePayloadRoundTrip(t *testing.T) {
 	token := randomToken(t)
-	payload := EncodeJoinInviteRevokePayload(token)
-	got, err := DecodeJoinInviteRevokePayload(payload)
+	m, err := NewJoinInviteRevoke(token)
 	if err != nil {
-		t.Fatalf("DecodeJoinInviteRevokePayload: %v", err)
+		t.Fatalf("NewJoinInviteRevoke: %v", err)
+	}
+	got, err := m.JoinInviteRevoke().Token()
+	if err != nil {
+		t.Fatalf("Token: %v", err)
 	}
 	if !bytes.Equal(got, token) {
 		t.Fatalf("got token %x, want %x", got, token)
-	}
-
-	if _, err := DecodeJoinInviteRevokePayload([]byte("wrong size")); err == nil {
-		t.Fatal("DecodeJoinInviteRevokePayload unexpectedly accepted a malformed payload")
 	}
 }
 
@@ -97,57 +102,61 @@ func TestJoinInviteKindNameRoundTrip(t *testing.T) {
 	}
 }
 
+// The old generic EventLifecycleWrite envelope this test used is gone --
+// every former (kind,action) pair it carried is now its own top-level
+// variant (see this package's migration notes); joinInviteCreate is the
+// natural stand-in here, the create side of this same invite lifecycle.
 func TestJoinInviteEventNameRoundTrip(t *testing.T) {
-	for _, e := range []uint8{EventLifecycleWrite} {
-		name := EventName(e)
+	for _, w := range []Event_Which{Event_Which_joinInviteCreate} {
+		name := EventName(w)
 		got, ok := EventFromName(name)
-		if !ok || got != e {
-			t.Fatalf("event %d: round trip through name %q got %d ok=%v", e, name, got, ok)
+		if !ok || got != w {
+			t.Fatalf("event %v: round trip through name %q got %v ok=%v", w, name, got, ok)
 		}
-		if !RequiresSignature(e) {
-			t.Fatalf("event %d (%s) unexpectedly does not require a signature", e, name)
+		if !RequiresSignature(w) {
+			t.Fatalf("event %v (%s) unexpectedly does not require a signature", w, name)
 		}
 	}
 }
 
 func TestJoinTicketEventNameRoundTrip(t *testing.T) {
-	name := EventName(EventJoinTicket)
+	name := EventName(Event_Which_joinTicket)
 	if name != "join_ticket" {
 		t.Fatalf("got name %q, want %q", name, "join_ticket")
 	}
 	got, ok := EventFromName(name)
-	if !ok || got != EventJoinTicket {
-		t.Fatalf("round trip through name %q got %d ok=%v, want %d", name, got, ok, EventJoinTicket)
+	if !ok || got != Event_Which_joinTicket {
+		t.Fatalf("round trip through name %q got %v ok=%v, want %v", name, got, ok, Event_Which_joinTicket)
 	}
-	if !RequiresSignature(EventJoinTicket) {
-		t.Fatalf("EventJoinTicket unexpectedly does not require a signature")
+	if !RequiresSignature(Event_Which_joinTicket) {
+		t.Fatalf("joinTicket unexpectedly does not require a signature")
 	}
 }
 
+// The old wire format's EncodeJoinTicketPayload/DecodeJoinTicketPayload is
+// gone -- a joinTicket Msg carries sourceAddr/token as separate typed
+// fields (NewJoinTicket, Event_joinTicket's SourceAddr/Token accessors).
 func TestJoinTicketPayloadRoundTrip(t *testing.T) {
 	token := randomToken(t)
 	const addr = "/ip4/127.0.0.1/tcp/4001/p2p/abc"
 
-	payload, err := EncodeJoinTicketPayload(addr, token)
+	m, err := NewJoinTicket(addr, token)
 	if err != nil {
-		t.Fatalf("EncodeJoinTicketPayload: %v", err)
+		t.Fatalf("NewJoinTicket: %v", err)
 	}
-	gotAddr, gotToken, err := DecodeJoinTicketPayload(payload)
+	gotAddr, err := m.JoinTicket().SourceAddr()
 	if err != nil {
-		t.Fatalf("DecodeJoinTicketPayload: %v", err)
+		t.Fatalf("SourceAddr: %v", err)
+	}
+	gotToken, err := m.JoinTicket().Token()
+	if err != nil {
+		t.Fatalf("Token: %v", err)
 	}
 	if gotAddr != addr {
 		t.Fatalf("got addr %q, want %q", gotAddr, addr)
 	}
 	if !bytes.Equal(gotToken, token) {
 		t.Fatalf("got token %x, want %x", gotToken, token)
-	}
-
-	if _, err := EncodeJoinTicketPayload(addr, []byte("too-short")); err == nil {
-		t.Fatal("EncodeJoinTicketPayload unexpectedly accepted a wrong-size token")
-	}
-	if _, _, err := DecodeJoinTicketPayload([]byte("short")); err == nil {
-		t.Fatal("DecodeJoinTicketPayload unexpectedly accepted a malformed payload")
 	}
 }
 
@@ -163,32 +172,36 @@ func TestJoinTicketSignVerifyRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	token := randomToken(t)
-	value, err := EncodeJoinTicketPayload("/ip4/127.0.0.1/tcp/4001/p2p/abc", token)
+	m, err := NewJoinTicket("/ip4/127.0.0.1/tcp/4001/p2p/abc", token)
 	if err != nil {
-		t.Fatalf("EncodeJoinTicketPayload: %v", err)
+		t.Fatalf("NewJoinTicket: %v", err)
 	}
 
-	wire, err := Encode(Msg{EventType: EventJoinTicket, Value: value}, priv)
+	wire, err := Encode(m, priv)
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
 
-	m, crc, sig, err := Decode(wire)
+	decoded, crc, sig, err := Decode(wire)
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
-	if m.EventType != EventJoinTicket {
-		t.Fatalf("got event type %d, want %d", m.EventType, EventJoinTicket)
+	if decoded.Which() != Event_Which_joinTicket {
+		t.Fatalf("got Which %v, want %v", decoded.Which(), Event_Which_joinTicket)
 	}
-	gotAddr, gotToken, err := DecodeJoinTicketPayload(m.Value)
+	gotAddr, err := decoded.JoinTicket().SourceAddr()
 	if err != nil {
-		t.Fatalf("DecodeJoinTicketPayload: %v", err)
+		t.Fatalf("SourceAddr: %v", err)
+	}
+	gotToken, err := decoded.JoinTicket().Token()
+	if err != nil {
+		t.Fatalf("Token: %v", err)
 	}
 	if gotAddr != "/ip4/127.0.0.1/tcp/4001/p2p/abc" || !bytes.Equal(gotToken, token) {
 		t.Fatalf("decoded payload mismatch: addr=%q token=%x", gotAddr, gotToken)
 	}
 
-	if err := Verify(pub, m, crc, sig); err != nil {
+	if err := Verify(pub, decoded, crc, sig); err != nil {
 		t.Fatalf("Verify with correct key: %v", err)
 	}
 
@@ -196,19 +209,19 @@ func TestJoinTicketSignVerifyRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Verify(otherPub, m, crc, sig); err == nil {
+	if err := Verify(otherPub, decoded, crc, sig); err == nil {
 		t.Fatal("Verify unexpectedly succeeded against the wrong public key")
 	}
 
-	tampered := m
+	// decoded is a capnp struct sharing the underlying segment, so mutating
+	// its field in place stands in for the old flat struct's field-copy
+	// tamper (see TestSignVerifyTamperDetection).
 	tamperedToken := append([]byte(nil), token...)
 	tamperedToken[0] ^= 0xFF
-	tamperedValue, err := EncodeJoinTicketPayload("/ip4/127.0.0.1/tcp/4001/p2p/abc", tamperedToken)
-	if err != nil {
-		t.Fatalf("EncodeJoinTicketPayload: %v", err)
+	if err := decoded.JoinTicket().SetToken(tamperedToken); err != nil {
+		t.Fatalf("SetToken: %v", err)
 	}
-	tampered.Value = tamperedValue
-	if err := Verify(pub, tampered, crc, sig); err == nil {
+	if err := Verify(pub, decoded, crc, sig); err == nil {
 		t.Fatal("Verify unexpectedly succeeded after tampering with the ticket's token")
 	}
 }

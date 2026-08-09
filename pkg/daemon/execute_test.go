@@ -106,29 +106,37 @@ func TestExecuteEventDeliversAcrossNodes(t *testing.T) {
 	a.registry.Register(destID, []byte(b.peerID))
 
 	payload := []byte("hello from a")
-	resp := callLocal(t, ctx, a, shmevent.Msg{
-		EventType:     shmevent.EventExecute,
-		SourceID:      sourceID,
-		DestinationID: destID,
-		Value:         payload,
-		ID:            7,
-	}, a.ed25519Priv)
-	if resp.EventType == shmevent.EventError {
-		t.Fatalf("execute rejected: %s", resp.Value)
+	execMsg, err := shmevent.NewExecute(sourceID, destID, payload)
+	if err != nil {
+		t.Fatalf("NewExecute: %v", err)
+	}
+	execMsg.SetId(7)
+	resp := callLocal(t, ctx, a, execMsg, a.ed25519Priv)
+	if resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("execute rejected: %s", mustErrMessage(t, resp))
 	}
 
 	deadline := time.After(10 * time.Second)
 	for {
-		pollResp := callLocal(t, ctx, b, shmevent.Msg{EventType: shmevent.EventPollExecute, ID: 1}, b.ed25519Priv)
-		if pollResp.EventType == shmevent.EventError {
-			t.Fatalf("poll_execute rejected: %s", pollResp.Value)
+		pollMsg, err := shmevent.NewPollExecute()
+		if err != nil {
+			t.Fatalf("NewPollExecute: %v", err)
 		}
-		if len(pollResp.Value) > 0 {
-			sender, gotPayload, err := shmevent.DecodeExecuteNotification(pollResp.Value)
+		pollMsg.SetId(1)
+		pollResp := callLocal(t, ctx, b, pollMsg, b.ed25519Priv)
+		if pollResp.Which() == shmevent.Event_Which_error {
+			t.Fatalf("poll_execute rejected: %s", mustErrMessage(t, pollResp))
+		}
+		gotPayload, err := pollResp.PollExecute().Value()
+		if err != nil {
+			t.Fatalf("PollExecute value: %v", err)
+		}
+		if len(gotPayload) > 0 {
+			sender, err := pollResp.PollExecute().SenderPeerId()
 			if err != nil {
-				t.Fatalf("DecodeExecuteNotification: %v", err)
+				t.Fatalf("PollExecute sender_peer_id: %v", err)
 			}
-			if string(sender) != a.peerID {
+			if sender != a.peerID {
 				t.Fatalf("notification sender = %q, want %q", sender, a.peerID)
 			}
 			if string(gotPayload) != string(payload) {
@@ -145,9 +153,18 @@ func TestExecuteEventDeliversAcrossNodes(t *testing.T) {
 
 	// A second poll must come back empty -- the queue is drained, not
 	// re-readable.
-	again := callLocal(t, ctx, b, shmevent.Msg{EventType: shmevent.EventPollExecute, ID: 2}, b.ed25519Priv)
-	if len(again.Value) != 0 {
-		t.Fatalf("second poll_execute returned a notification, want empty queue: %q", again.Value)
+	pollMsg2, err := shmevent.NewPollExecute()
+	if err != nil {
+		t.Fatalf("NewPollExecute: %v", err)
+	}
+	pollMsg2.SetId(2)
+	again := callLocal(t, ctx, b, pollMsg2, b.ed25519Priv)
+	againValue, err := again.PollExecute().Value()
+	if err != nil {
+		t.Fatalf("PollExecute value: %v", err)
+	}
+	if len(againValue) != 0 {
+		t.Fatalf("second poll_execute returned a notification, want empty queue: %q", againValue)
 	}
 
 	if _, err := b.store.Get(payload); err == nil {
@@ -175,14 +192,13 @@ func TestExecuteEventRejectsSpoofedSource(t *testing.T) {
 	a.registry.Register(sourceID, []byte("not-really-a"))
 	a.registry.Register(destID, []byte(b.peerID))
 
-	resp := callLocal(t, ctx, a, shmevent.Msg{
-		EventType:     shmevent.EventExecute,
-		SourceID:      sourceID,
-		DestinationID: destID,
-		Value:         []byte("payload"),
-		ID:            1,
-	}, a.ed25519Priv)
-	if resp.EventType != shmevent.EventError {
+	execMsg, err := shmevent.NewExecute(sourceID, destID, []byte("payload"))
+	if err != nil {
+		t.Fatalf("NewExecute: %v", err)
+	}
+	execMsg.SetId(1)
+	resp := callLocal(t, ctx, a, execMsg, a.ed25519Priv)
+	if resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("execute with a spoofed source succeeded, want rejection")
 	}
 }
@@ -223,11 +239,11 @@ func TestExecuteStreamRejectsForgedSignature(t *testing.T) {
 		t.Fatalf("connect forger->b: %v", err)
 	}
 
-	value, err := shmevent.EncodeExecuteNotification([]byte(a.peerID), []byte("forged"))
+	notif, err := shmevent.NewExecuteNotification(a.peerID, []byte("forged"))
 	if err != nil {
-		t.Fatalf("EncodeExecuteNotification: %v", err)
+		t.Fatalf("NewExecuteNotification: %v", err)
 	}
-	buf, err := shmevent.Encode(shmevent.Msg{EventType: shmevent.EventExecute, Value: value}, shmevent.PrivateKey(mustRaw(t, forgerPriv)))
+	buf, err := shmevent.Encode(notif, shmevent.PrivateKey(mustRaw(t, forgerPriv)))
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
@@ -248,9 +264,18 @@ func TestExecuteStreamRejectsForgedSignature(t *testing.T) {
 	// b's inbox must never see this: give handleExecuteStream a moment to
 	// run, then poll and confirm it's empty.
 	time.Sleep(200 * time.Millisecond)
-	pollResp := callLocal(t, ctx, b, shmevent.Msg{EventType: shmevent.EventPollExecute, ID: 1}, b.ed25519Priv)
-	if len(pollResp.Value) != 0 {
-		t.Fatalf("forged execute notification was queued: %q", pollResp.Value)
+	pollMsg, err := shmevent.NewPollExecute()
+	if err != nil {
+		t.Fatalf("NewPollExecute: %v", err)
+	}
+	pollMsg.SetId(1)
+	pollResp := callLocal(t, ctx, b, pollMsg, b.ed25519Priv)
+	pollValue, err := pollResp.PollExecute().Value()
+	if err != nil {
+		t.Fatalf("PollExecute value: %v", err)
+	}
+	if len(pollValue) != 0 {
+		t.Fatalf("forged execute notification was queued: %q", pollValue)
 	}
 }
 
@@ -294,18 +319,26 @@ func TestExecuteGateUnconditional(t *testing.T) {
 
 	send := func(id uint16) shmevent.Msg {
 		t.Helper()
-		return callLocal(t, ctx, a, shmevent.Msg{
-			EventType:     shmevent.EventExecute,
-			SourceID:      sourceID,
-			DestinationID: destID,
-			Value:         []byte("payload"),
-			ID:            id,
-		}, a.ed25519Priv)
+		m, err := shmevent.NewExecute(sourceID, destID, []byte("payload"))
+		if err != nil {
+			t.Fatalf("NewExecute: %v", err)
+		}
+		m.SetId(id)
+		return callLocal(t, ctx, a, m, a.ed25519Priv)
 	}
 	pollEmpty := func() bool {
 		t.Helper()
-		resp := callLocal(t, ctx, b, shmevent.Msg{EventType: shmevent.EventPollExecute, ID: 99}, b.ed25519Priv)
-		return len(resp.Value) == 0
+		m, err := shmevent.NewPollExecute()
+		if err != nil {
+			t.Fatalf("NewPollExecute: %v", err)
+		}
+		m.SetId(99)
+		resp := callLocal(t, ctx, b, m, b.ed25519Priv)
+		value, err := resp.PollExecute().Value()
+		if err != nil {
+			t.Fatalf("PollExecute value: %v", err)
+		}
+		return len(value) == 0
 	}
 
 	aPeerID, err := peer.Decode(a.peerID)
@@ -317,7 +350,7 @@ func TestExecuteGateUnconditional(t *testing.T) {
 	// synchronously (see that function's doc comment), so the gate's
 	// rejection on b surfaces straight back as a local dispatchExecute
 	// error on a, not a silent drop.
-	if resp := send(1); resp.EventType != shmevent.EventError {
+	if resp := send(1); resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("execute from an unauthorized, non-member sender unexpectedly succeeded")
 	}
 	if !pollEmpty() {
@@ -334,8 +367,8 @@ func TestExecuteGateUnconditional(t *testing.T) {
 	if err := b.store.Set(executeGroupKey, nil); err != nil {
 		t.Fatalf("grant execute group: %v", err)
 	}
-	if resp := send(2); resp.EventType == shmevent.EventError {
-		t.Fatalf("execute from an execute-group-granted sender rejected: %s", resp.Value)
+	if resp := send(2); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("execute from an execute-group-granted sender rejected: %s", mustErrMessage(t, resp))
 	}
 	if pollEmpty() {
 		t.Fatal("execute-group-granted sender's notification was not queued")
@@ -347,7 +380,7 @@ func TestExecuteGateUnconditional(t *testing.T) {
 	if err := b.store.Delete(executeGroupKey); err != nil {
 		t.Fatalf("revoke execute group: %v", err)
 	}
-	if resp := send(3); resp.EventType != shmevent.EventError {
+	if resp := send(3); resp.Which() != shmevent.Event_Which_error {
 		t.Fatal("execute from a sender with a revoked execute grant and no cluster membership unexpectedly succeeded")
 	}
 	if !pollEmpty() {
@@ -361,8 +394,8 @@ func TestExecuteGateUnconditional(t *testing.T) {
 	if err := b.store.Set(clusterGroupKey, nil); err != nil {
 		t.Fatalf("record cluster group membership: %v", err)
 	}
-	if resp := send(4); resp.EventType == shmevent.EventError {
-		t.Fatalf("execute from a cluster member rejected: %s", resp.Value)
+	if resp := send(4); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("execute from a cluster member rejected: %s", mustErrMessage(t, resp))
 	}
 	if pollEmpty() {
 		t.Fatal("cluster member's notification was not queued despite having no separate execute grant")
@@ -376,4 +409,19 @@ func mustRaw(t *testing.T, priv crypto.PrivKey) []byte {
 		t.Fatalf("raw private key: %v", err)
 	}
 	return raw
+}
+
+// mustErrMessage extracts an error Msg's message text, failing the test if
+// m isn't actually an error variant -- shared by every test file in this
+// package that needs to log/inspect a handleShmEvent rejection's text.
+func mustErrMessage(t *testing.T, m shmevent.Msg) string {
+	t.Helper()
+	if m.Which() != shmevent.Event_Which_error {
+		t.Fatalf("mustErrMessage: message is not an error variant (which=%s)", shmevent.EventName(m.Which()))
+	}
+	msg, err := m.Error().Message_()
+	if err != nil {
+		t.Fatalf("Error message: %v", err)
+	}
+	return msg
 }

@@ -6,7 +6,7 @@ import (
 )
 
 func TestEncodeDecodeTxnPayloadRoundTrip(t *testing.T) {
-	cases := [][]TxnOp{
+	cases := [][]TxnOpSpec{
 		nil,
 		{{Op: TxnOpSet, Key: []byte("k1"), Value: []byte("v1")}},
 		{
@@ -35,21 +35,21 @@ func TestEncodeDecodeTxnPayloadRoundTrip(t *testing.T) {
 }
 
 func TestEncodeTxnPayloadRejectsEmptyKey(t *testing.T) {
-	_, err := EncodeTxnPayload([]TxnOp{{Op: TxnOpSet, Key: nil, Value: []byte("v")}})
+	_, err := EncodeTxnPayload([]TxnOpSpec{{Op: TxnOpSet, Key: nil, Value: []byte("v")}})
 	if err == nil {
 		t.Fatal("EncodeTxnPayload with an empty key unexpectedly succeeded")
 	}
 }
 
 func TestEncodeTxnPayloadRejectsUnknownOp(t *testing.T) {
-	_, err := EncodeTxnPayload([]TxnOp{{Op: 99, Key: []byte("k"), Value: []byte("v")}})
+	_, err := EncodeTxnPayload([]TxnOpSpec{{Op: 99, Key: []byte("k"), Value: []byte("v")}})
 	if err == nil {
 		t.Fatal("EncodeTxnPayload with an unknown op kind unexpectedly succeeded")
 	}
 }
 
 func TestDecodeTxnPayloadRejectsTruncatedPayload(t *testing.T) {
-	payload, err := EncodeTxnPayload([]TxnOp{{Op: TxnOpSet, Key: []byte("k1"), Value: []byte("v1")}})
+	payload, err := EncodeTxnPayload([]TxnOpSpec{{Op: TxnOpSet, Key: []byte("k1"), Value: []byte("v1")}})
 	if err != nil {
 		t.Fatalf("EncodeTxnPayload: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestDecodeTxnPayloadRejectsTruncatedPayload(t *testing.T) {
 }
 
 func TestDecodeTxnPayloadRejectsTrailingBytes(t *testing.T) {
-	payload, err := EncodeTxnPayload([]TxnOp{{Op: TxnOpSet, Key: []byte("k1"), Value: []byte("v1")}})
+	payload, err := EncodeTxnPayload([]TxnOpSpec{{Op: TxnOpSet, Key: []byte("k1"), Value: []byte("v1")}})
 	if err != nil {
 		t.Fatalf("EncodeTxnPayload: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestParseTxnOpsString(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseTxnOpsString: %v", err)
 	}
-	want := []TxnOp{
+	want := []TxnOpSpec{
 		{Op: TxnOpSet, Key: []byte("k1"), Value: []byte("v1")},
 		{Op: TxnOpSet, Key: []byte("k2"), Value: []byte("with=equals")},
 		{Op: TxnOpDelete, Key: []byte("k3")},
@@ -92,7 +92,7 @@ func TestParseTxnOpsStringParsesPreconditions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseTxnOpsString: %v", err)
 	}
-	want := []TxnOp{
+	want := []TxnOpSpec{
 		{Op: TxnOpCompare, Key: []byte("k1"), Value: []byte("v1")},
 		{Op: TxnOpCompareAbsent, Key: []byte("k2")},
 		{Op: TxnOpSet, Key: []byte("k3"), Value: []byte("v3")},
@@ -124,7 +124,7 @@ func TestParseTxnOpsStringParsesPreconditions(t *testing.T) {
 // it travels in the same length-prefixed op list, and a decoder that dropped
 // or reordered it would turn a guarded write into an unguarded one.
 func TestTxnPayloadRoundTripsPreconditions(t *testing.T) {
-	ops := []TxnOp{
+	ops := []TxnOpSpec{
 		{Op: TxnOpCompare, Key: []byte("index"), Value: []byte("a,b")},
 		// Explicitly empty rather than nil: DecodeTxnPayload always yields a
 		// non-nil (possibly zero-length) Value, and an op whose Value is

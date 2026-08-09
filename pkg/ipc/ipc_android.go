@@ -38,19 +38,16 @@ import (
 )
 
 // capacity is the shared-memory data region size for both channels. It must
-// be a power of two and comfortably fit the largest encoded request/response
-// this transport carries -- today an EventSet/EventTxn near
-// shmevent.KVValueSize (4KB), plus capnp framing, CRC32 and the 64-byte
-// signature, not the much smaller shmevent.ValueSize (512 bytes) every event
-// outside the plain-KV data path obeys.
+// be a power of two and comfortably fit the largest encoded request/
+// response this transport carries -- most variants are a handful of small
+// fields, plus capnp framing, CRC32 and the 64-byte signature; channel
+// bulk data never comes through here (see pkg/chandata).
 //
-// 16KB rather than the 8KB that would technically fit: the Android segment
-// is created once per node and lives for the whole process (unlike the
-// desktop transport's transient per-call segments), so the headroom costs
-// one 16KB mapping for the lifetime of the app -- cheaper than the class of
-// bug where a value just under the protocol ceiling is rejected by the
-// transport underneath it. Channel bulk data never comes through here (see
-// pkg/chandata), so ChannelValueSize is not this transport's concern.
+// The Android segment is created once per node and lives for the whole
+// process (unlike the desktop transport's transient per-call segments),
+// so this headroom costs one 16KB mapping for the lifetime of the app --
+// cheaper than the class of bug where a value just under the transport's
+// ceiling is rejected.
 const capacity = 16384
 
 // call is what Call hands to Serve via the per-peer mailbox.
@@ -224,7 +221,7 @@ func Serve(ctx context.Context, peerID, dataDir string, priv shmevent.PrivateKey
 		}
 
 		resp := handle(ctx, m, crc, sig)
-		resp.ID = m.ID
+		resp.SetId(m.Id())
 
 		w, respFD, err := shmring.CreateAndroidSharedMemory("kvipc-resp", capacity)
 		if err != nil {
