@@ -10,21 +10,21 @@
   "nodes": {
     "1": {
       "platform": "desktop",
-      "peer_id": "12D3KooWGo7N1eTjLxJjA9CgSTXsnLLPh7WPms16Gcxf9utwhEuw",
-      "public_key": "67af7c9d9dfc225d90855d889131421081ff595937ccf877150a808762a7c652",
-      "private_key": "85c39d281d72d5cc6a8d4342576e528601a2f28395df6849015265e8f69cc85a67af7c9d9dfc225d90855d889131421081ff595937ccf877150a808762a7c652"
+      "peer_id": "12D3KooWHk9AqB71p5kVCLDA97oba3BMCnna9W8xddsxFxFJRy2p",
+      "public_key": "75c87987701e4918fb99fb96707aed8fda0a28597f2ff04a8656941718a77699",
+      "private_key": "d6ab708d43a78b3cf0e55dc9d54a7facb213c627f0c1426041e3662f295406d275c87987701e4918fb99fb96707aed8fda0a28597f2ff04a8656941718a77699"
     },
     "2": {
       "platform": "android",
-      "peer_id": "12D3KooWSxQ6GkYhuPkoEfUtKsP9ZyrRiXFDNu2T7WjytQPCoDp2",
-      "public_key": "fea57f9a1d23764f23cdddb2f563e2c4a154b49b5d0bc18c812158f0f1f18e37",
-      "private_key": "10a62f06d9bce44adf88c7d41de95fd035ef9a6b7ede19b5461a481e7194380afea57f9a1d23764f23cdddb2f563e2c4a154b49b5d0bc18c812158f0f1f18e37"
+      "peer_id": "12D3KooWQiaSYya53XSDWYCxEYig6gY1FRbYr6ESwGv91LKA2EfT",
+      "public_key": "dd63b2164d4def531abb78b9e7cb711b5185373cc880db8acc7b6906ba522542",
+      "private_key": "a2b3ee21161446201a8eb87d3b909348a6b3f3b5710280eb5711968cbdaae4badd63b2164d4def531abb78b9e7cb711b5185373cc880db8acc7b6906ba522542"
     },
     "3": {
       "platform": "remote",
-      "peer_id": "12D3KooWFJAfkCrgCrKpun4MwuywXkxy3U9RU38zEUeAguTGhzh4",
-      "public_key": "5169b1b85935038264178a72424e566a8e72666f8940722f2cc29edfa57bf007",
-      "private_key": "8c148f91083773a25e33d7811fcc32acfb97208b0d1d9e00b2c5f5ff80a3e7df5169b1b85935038264178a72424e566a8e72666f8940722f2cc29edfa57bf007"
+      "peer_id": "12D3KooWPWMFbR9A1zmDfhBWfvpzWCym3juwSwdUXLMbWs7uHvRH",
+      "public_key": "cb662051be958cf5f8e0c084d8cd5b89a190926c0f31ed55676f5ea505498874",
+      "private_key": "8da8f9bd93239ddb5c9be9f73b8871f6217f0f6d004f98c48bf2834dd632e7cdcb662051be958cf5f8e0c084d8cd5b89a190926c0f31ed55676f5ea505498874"
     }
   },
   "rows": [
@@ -32,8 +32,7 @@
       "version": 1,
       "node": 1,
       "event": {
-        "event": "add",
-        "value": "BOOTSTRAP"
+        "event": "bootstrap_or_join_cluster"
       },
       "status": 0,
       "platform": "desktop"
@@ -52,8 +51,10 @@
       "node": 1,
       "event": {
         "event": "set_key",
-        "value": "hello",
-        "id": 100
+        "id": 100,
+        "fields": {
+          "value": "hello"
+        }
       },
       "status": 0,
       "platform": "desktop"
@@ -63,8 +64,10 @@
       "node": 1,
       "event": {
         "event": "set_field",
-        "source_id": 100,
-        "value": "world"
+        "fields": {
+          "source_id": "100",
+          "value": "world"
+        }
       },
       "status": 0,
       "platform": "desktop"
@@ -73,8 +76,10 @@
       "version": 1,
       "node": 1,
       "event": {
-        "event": "get_field",
-        "value": "hello"
+        "event": "get_field_by_key",
+        "fields": {
+          "key": "hello"
+        }
       },
       "status": 0,
       "platform": "desktop"
@@ -83,10 +88,10 @@
       "version": 2,
       "node": 2,
       "event": {
-        "event": "add",
-        "value": "BOOTSTRAP"
+        "event": "bootstrap_or_join_cluster"
       },
-      "status": 0,
+      "status": 2,
+      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)",
       "platform": "android"
     },
     {
@@ -95,7 +100,8 @@
       "event": {
         "event": "get_public_key"
       },
-      "status": 0,
+      "status": 2,
+      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)",
       "platform": "android"
     },
     {
@@ -103,10 +109,13 @@
       "node": 2,
       "event": {
         "event": "set_key",
-        "value": "hello-android",
-        "id": 200
+        "id": 200,
+        "fields": {
+          "value": "hello-android"
+        }
       },
-      "status": 0,
+      "status": 2,
+      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)",
       "platform": "android"
     },
     {
@@ -114,31 +123,27 @@
       "node": 2,
       "event": {
         "event": "set_field",
-        "source_id": 200,
-        "value": "world-android"
+        "fields": {
+          "source_id": "200",
+          "value": "world-android"
+        }
       },
-      "status": 0,
+      "status": 2,
+      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)",
       "platform": "android"
     },
     {
       "version": 2,
       "node": 2,
       "event": {
-        "event": "get_field",
-        "value": "hello-android"
+        "event": "get_field_by_key",
+        "fields": {
+          "key": "hello-android"
+        }
       },
-      "status": 0,
+      "status": 2,
+      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)",
       "platform": "android"
-    },
-    {
-      "version": 4,
-      "node": 1,
-      "event": {
-        "event": "add",
-        "value": "BOOTSTRAP"
-      },
-      "status": 0,
-      "platform": "desktop"
     },
     {
       "version": 4,
@@ -154,8 +159,10 @@
       "node": 1,
       "event": {
         "event": "set_key",
-        "value": "hello",
-        "id": 100
+        "id": 100,
+        "fields": {
+          "value": "hello"
+        }
       },
       "status": 0,
       "platform": "desktop"
@@ -165,8 +172,10 @@
       "node": 1,
       "event": {
         "event": "set_field",
-        "source_id": 100,
-        "value": "world"
+        "fields": {
+          "source_id": "100",
+          "value": "world"
+        }
       },
       "status": 0,
       "platform": "desktop"
@@ -175,21 +184,13 @@
       "version": 4,
       "node": 1,
       "event": {
-        "event": "get_field",
-        "value": "hello"
+        "event": "get_field_by_key",
+        "fields": {
+          "key": "hello"
+        }
       },
       "status": 0,
       "platform": "desktop"
-    },
-    {
-      "version": 4,
-      "node": 2,
-      "event": {
-        "event": "add",
-        "value": "BOOTSTRAP"
-      },
-      "status": 0,
-      "platform": "android"
     },
     {
       "version": 4,
@@ -197,7 +198,8 @@
       "event": {
         "event": "get_public_key"
       },
-      "status": 0,
+      "status": 2,
+      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)",
       "platform": "android"
     },
     {
@@ -205,10 +207,13 @@
       "node": 2,
       "event": {
         "event": "set_key",
-        "value": "hello-android",
-        "id": 200
+        "id": 200,
+        "fields": {
+          "value": "hello-android"
+        }
       },
-      "status": 0,
+      "status": 2,
+      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)",
       "platform": "android"
     },
     {
@@ -216,20 +221,26 @@
       "node": 2,
       "event": {
         "event": "set_field",
-        "source_id": 200,
-        "value": "world-android"
+        "fields": {
+          "source_id": "200",
+          "value": "world-android"
+        }
       },
-      "status": 0,
+      "status": 2,
+      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)",
       "platform": "android"
     },
     {
       "version": 4,
       "node": 2,
       "event": {
-        "event": "get_field",
-        "value": "hello-android"
+        "event": "get_field_by_key",
+        "fields": {
+          "key": "hello-android"
+        }
       },
-      "status": 0,
+      "status": 2,
+      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)",
       "platform": "android"
     },
     {
@@ -237,8 +248,10 @@
       "node": 1,
       "event": {
         "event": "set_key",
-        "value": "e2e-large-value-key",
-        "id": 400
+        "id": 400,
+        "fields": {
+          "value": "e2e-large-value-key"
+        }
       },
       "status": 0,
       "platform": "desktop"
@@ -248,8 +261,10 @@
       "node": 1,
       "event": {
         "event": "set_field",
-        "source_id": 400,
-        "value": "LARGEVALUE"
+        "fields": {
+          "source_id": "400",
+          "value": "LARGEVALUE"
+        }
       },
       "status": 0,
       "platform": "desktop"
@@ -258,8 +273,10 @@
       "version": 5,
       "node": 1,
       "event": {
-        "event": "get_field",
-        "source_id": 400
+        "event": "get_field_by_registry",
+        "fields": {
+          "source_id": "400"
+        }
       },
       "status": 0,
       "platform": "desktop"
@@ -269,10 +286,13 @@
       "node": 2,
       "event": {
         "event": "set_key",
-        "value": "e2e-large-value-key",
-        "id": 400
+        "id": 400,
+        "fields": {
+          "value": "e2e-large-value-key"
+        }
       },
-      "status": 0,
+      "status": 2,
+      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)",
       "platform": "android"
     },
     {
@@ -280,20 +300,26 @@
       "node": 2,
       "event": {
         "event": "set_field",
-        "source_id": 400,
-        "value": "LARGEVALUE"
+        "fields": {
+          "source_id": "400",
+          "value": "LARGEVALUE"
+        }
       },
-      "status": 0,
+      "status": 2,
+      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)",
       "platform": "android"
     },
     {
       "version": 5,
       "node": 2,
       "event": {
-        "event": "get_field",
-        "source_id": 400
+        "event": "get_field_by_registry",
+        "fields": {
+          "source_id": "400"
+        }
       },
-      "status": 0,
+      "status": 2,
+      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)",
       "platform": "android"
     }
   ],
@@ -756,379 +782,8 @@
     }
   },
   "android_ui_result": {
-    "ran_at": "2026-08-07T14:55:57.602180377+03:00",
-    "status": 0,
-    "cases": [
-      {
-        "command": "Cluster: Start",
-        "pass": true,
-        "output": "12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf"
-      },
-      {
-        "command": "Cluster: StartWithKey",
-        "pass": true,
-        "output": "12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf"
-      },
-      {
-        "command": "Cluster: Join",
-        "pass": true
-      },
-      {
-        "command": "Cluster: JoinWithKey",
-        "pass": true
-      },
-      {
-        "command": "Cluster: StartSolo",
-        "pass": true
-      },
-      {
-        "command": "Cluster: StartSoloWithKey",
-        "pass": true
-      },
-      {
-        "command": "Cluster: StartSoloWithKeyAndPort",
-        "pass": true
-      },
-      {
-        "command": "Cluster: StartPending",
-        "pass": true
-      },
-      {
-        "command": "Cluster: StartPendingWithKey",
-        "pass": true
-      },
-      {
-        "command": "Cluster: StartPendingWithKeyAndPort",
-        "pass": true
-      },
-      {
-        "command": "Cluster: GetOwnAddr",
-        "pass": true,
-        "output": "/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWFJAfkCrgCrKpun4MwuywXkxy3U9RU38zEUeAguTGhzh4/p2p-circuit/p2p/12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf"
-      },
-      {
-        "command": "Cluster: CreateJoinRequest",
-        "pass": true,
-        "output": "c2118dc3c1b0533861c12ab9557eb529"
-      },
-      {
-        "command": "Cluster: CancelJoinRequest",
-        "pass": true
-      },
-      {
-        "command": "Cluster: RecruitPeer",
-        "pass": true
-      },
-      {
-        "command": "Cluster: CreateJoinRequestTicket",
-        "pass": true
-      },
-      {
-        "command": "Cluster: RedeemJoinRequestTicket",
-        "pass": true
-      },
-      {
-        "command": "Cluster: CreateJoinInvite",
-        "pass": true
-      },
-      {
-        "command": "Cluster: RevokeJoinInvite",
-        "pass": true
-      },
-      {
-        "command": "Cluster: CreateJoinInviteTicket",
-        "pass": true
-      },
-      {
-        "command": "Cluster: VerifyJoinInviteTicket",
-        "pass": true
-      },
-      {
-        "command": "Cluster: Stop",
-        "pass": true
-      },
-      {
-        "command": "Cluster: Delete",
-        "pass": true
-      },
-      {
-        "command": "Cluster: Leave",
-        "pass": true
-      },
-      {
-        "command": "Cluster: Rm",
-        "pass": true
-      },
-      {
-        "command": "Cluster: Kick",
-        "pass": true
-      },
-      {
-        "command": "Cluster: ListClusters",
-        "pass": true,
-        "output": "[{\"cluster_id\":\"12D3KooWFJAfkCrgCrKpun4MwuywXkxy3U9RU38zEUeAguTGhzh4\",\"peer_id\":\"12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf\"}]"
-      },
-      {
-        "command": "Cluster: ListClusterMembers",
-        "pass": true,
-        "output": "[{\"peer_id\":\"12D3KooWFJAfkCrgCrKpun4MwuywXkxy3U9RU38zEUeAguTGhzh4\",\"role\":\"leader\"},{\"peer_id\":\"12D3KooWGo7N1eTjLxJjA9CgSTXsnLLPh7WPms16Gcxf9utwhEuw\",\"role\":\"learner\"},{\"peer_id\":\"12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf\",\"role\":\"learner\"}]"
-      },
-      {
-        "command": "Cluster: PeerID",
-        "pass": true,
-        "output": "12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf"
-      },
-      {
-        "command": "Cluster: AccessToken",
-        "pass": true,
-        "output": "dc05b85070de1e52594d3b55435c530b71c5e0d1103a19c001a4b19aae77a717"
-      },
-      {
-        "command": "Cluster: RequestRelayAccess",
-        "pass": true
-      },
-      {
-        "command": "KV: Submit",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "KV: Get",
-        "pass": true,
-        "output": "e2e-ui-test-value-1786103620597"
-      },
-      {
-        "command": "KV: RangeScan",
-        "pass": true,
-        "output": "[{\"key\":\"e2e-ui-test-key\",\"value\":\"e2e-ui-test-value-1786103620597\"}]"
-      },
-      {
-        "command": "Permits: RequestPermit",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Permits: ConfirmPermit",
-        "pass": true
-      },
-      {
-        "command": "Permits: RevokePermit",
-        "pass": true
-      },
-      {
-        "command": "Execute: Execute",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Execute: PollExecute",
-        "pass": true,
-        "output": "{\"pending\":false}"
-      },
-      {
-        "command": "Execute: WatchExecute",
-        "pass": true,
-        "output": "Watching -- notifications appear below as they arrive"
-      },
-      {
-        "command": "Execute: StopWatchExecute",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Channel: OpenChannel",
-        "pass": true,
-        "output": "Opened 4ce82d10d7ea647b -- incoming data appears below as it arrives"
-      },
-      {
-        "command": "Channel: ListenChannel",
-        "pass": true
-      },
-      {
-        "command": "Channel: StopListenChannel",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Channel: SendChannelData",
-        "pass": true
-      },
-      {
-        "command": "Channel: CloseChannelWrite",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Channel: CloseChannel",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Channel: StopChannel",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Log records: LogAppend",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Log records: LogQuery",
-        "pass": true,
-        "output": "[{\"kind\":\"e2e-ui-test\",\"unit_id\":\"ui-test-unit\",\"timestamp\":\"2026-08-07T11:28:32.619541625Z\",\"author_peer_id\":\"12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf\",\"narrative\":\"ui e2e test\"},{\"kind\":\"e2e-ui-test\",\"unit_id\":\"ui-test-unit\",\"timestamp\":\"2026-08-07T11:54:52.589008411Z\",\"author_peer_id\":\"12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf\",\"narrative\":\"ui e2e test\"}]"
-      },
-      {
-        "command": "Group: CreateGroup",
-        "pass": true
-      },
-      {
-        "command": "Group: UpdateGroup",
-        "pass": true
-      },
-      {
-        "command": "Group: DeleteGroup",
-        "pass": true
-      },
-      {
-        "command": "Group: GetGroup",
-        "pass": true
-      },
-      {
-        "command": "Group: ListGroups",
-        "pass": true,
-        "output": "[{\"id\":\"12D3KooWFJAfkCrgCrKpun4MwuywXkxy3U9RU38zEUeAguTGhzh4\",\"name\":\"12D3KooWFJAfkCrgCrKpun4MwuywXkxy3U9RU38zEUeAguTGhzh4\",\"public\":false},{\"id\":\"12D3KooWGo7N1eTjLxJjA9CgSTXsnLLPh7WPms16Gcxf9utwhEuw\",\"name\":\"12D3KooWGo7N1eTjLxJjA9CgSTXsnLLPh7WPms16Gcxf9utwhEuw\",\"public\":false},{\"id\":\"12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf\",\"name\":\"12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf\",\"public\":false},{\"id\":\"channel\",\"name\":\"channel\",\"public\":false},{\"id\":\"cluster\",\"name\":\"cluster\",\"public\":false},{\"id\":\"execute\",\"name\":\"execute\",\"public\":false},{\"id\":\"learner\",\"name\":\"learner\",\"public\":false},{\"id\":\"public\",\"name\":\"public\",\"public\":true},{\"id\":\"relay\",\"name\":\"relay\",\"public\":false},{\"id\":\"remote\",\"name\":\"remote\",\"public\":false},{\"id\":\"voter\",\"name\":\"voter\",\"public\":false}]"
-      },
-      {
-        "command": "Command: CreateCommand",
-        "pass": true
-      },
-      {
-        "command": "Command: UpdateCommand",
-        "pass": true
-      },
-      {
-        "command": "Command: DeleteCommand",
-        "pass": true
-      },
-      {
-        "command": "Command: GetCommand",
-        "pass": true
-      },
-      {
-        "command": "Command: ListCommands",
-        "pass": true,
-        "output": "[{\"id\":\"public-access\",\"name\":\"public-access\",\"target_peer_id\":\"\"}]"
-      },
-      {
-        "command": "Links: AddCommandToGroup",
-        "pass": true
-      },
-      {
-        "command": "Links: RemoveCommandFromGroup",
-        "pass": true
-      },
-      {
-        "command": "Links: ListGroupsForCommand",
-        "pass": true,
-        "output": "[]"
-      },
-      {
-        "command": "Links: AddPeerToGroup",
-        "pass": true
-      },
-      {
-        "command": "Links: RemovePeerFromGroup",
-        "pass": true
-      },
-      {
-        "command": "Links: ListGroupsForPeer",
-        "pass": true,
-        "output": "[\"cluster\",\"learner\"]"
-      },
-      {
-        "command": "Dispatch: SubmitCommand",
-        "pass": true
-      },
-      {
-        "command": "Dispatch: GetCommandRequest",
-        "pass": true
-      },
-      {
-        "command": "Dispatch: ListCommandRequests",
-        "pass": true,
-        "output": "[]"
-      },
-      {
-        "command": "Dispatch: ListExecutionsByPeer",
-        "pass": true,
-        "output": "[]"
-      },
-      {
-        "command": "Dispatch: AppendCommandLog",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Dispatch: QueryCommandLog",
-        "pass": true,
-        "output": "[{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-07T11:29:11.964737242Z\",\"author_peer_id\":\"12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf\",\"narrative\":\"ui e2e test\"},{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-07T11:55:32.367807183Z\",\"author_peer_id\":\"12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf\",\"narrative\":\"ui e2e test\"}]"
-      },
-      {
-        "command": "Dispatch: LatestCommandLog",
-        "pass": true,
-        "output": "{\"kind\":\"cmdlog\",\"unit_id\":\"e2e-ui-test-instance\",\"timestamp\":\"2026-08-07T11:55:32.367807183Z\",\"author_peer_id\":\"12D3KooWPDJe1fNnXJ2iK9Ap1stZKmNhGsRNevTaZrRGv4NWCGvf\",\"narrative\":\"ui e2e test\"}"
-      },
-      {
-        "command": "Dispatch: WatchCommandLog",
-        "pass": true,
-        "output": "Watching -- new records appear below as they arrive"
-      },
-      {
-        "command": "Dispatch: StopWatchCommandLog",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "Dispatch: RunCommandDispatcher",
-        "pass": true,
-        "output": "Dispatching -- requests for no-such-command are handled as they arrive, logged below"
-      },
-      {
-        "command": "Dispatch: StopCommandDispatcher",
-        "pass": true,
-        "output": "OK"
-      },
-      {
-        "command": "ExecInvite: CreateExecInvite",
-        "pass": true
-      },
-      {
-        "command": "ExecInvite: RevokeExecInvite",
-        "pass": true
-      },
-      {
-        "command": "ExecInvite: RedeemExecInvite",
-        "pass": true
-      },
-      {
-        "command": "ExecInvite: CreateExecInviteTicket",
-        "pass": true
-      },
-      {
-        "command": "ExecInvite: RedeemExecInviteTicket",
-        "pass": true
-      },
-      {
-        "command": "Raw: SendEvent",
-        "pass": true,
-        "output": "{\"event\":\"get_public_key\",\"value\":\"0xc7084c23a955b13b874e078a1ab5ddefa2bbe51b397e3f6c73081cc2ea8ca42c\",\"id\":40271}"
-      },
-      {
-        "command": "Test: SleepMillis",
-        "pass": true
-      }
-    ]
+    "ran_at": "2026-08-09T06:49:48.197917666+03:00",
+    "status": 0
   },
   "android_ui_pair_result": {
     "ran_at": "2026-08-07T14:55:57.606378703+03:00",
