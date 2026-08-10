@@ -82,6 +82,9 @@ func NewTxn(ops []TxnOpSpec) (Msg, error) {
 		if !ValidTxnOp(op.Op) {
 			return Msg{}, fmt.Errorf("shmevent: txn op has unknown kind %d", op.Op)
 		}
+		if err := checkValueSize(op.Value); err != nil {
+			return Msg{}, err
+		}
 	}
 
 	m, err := newMsg()
@@ -261,7 +264,15 @@ func ParseTxnOpsString(ops string) ([]TxnOpSpec, error) {
 		}
 		key, value, ok := strings.Cut(field, "=")
 		if !ok || key == "" {
-			return nil, fmt.Errorf("shmevent: txn: %q is neither <key>=<value> nor del:<key>", field)
+			// The most common way a well-formed op ends up here is a value
+			// that itself contained whitespace: ops are space-delimited (see
+			// this function's own doc comment), so "k=hello world" already
+			// split into two fields ("k=hello" and this one, "world") by the
+			// time either reaches here. There's no escaping syntax for a
+			// space inside a value -- name the likely cause rather than
+			// leaving the caller to work out why an apparently-valid op
+			// failed.
+			return nil, fmt.Errorf("shmevent: txn: %q is neither <key>=<value> nor del:<key> (values can't contain spaces; ops are whitespace-separated)", field)
 		}
 		parsed = append(parsed, TxnOpSpec{Op: TxnOpSet, Key: []byte(key), Value: []byte(value)})
 	}

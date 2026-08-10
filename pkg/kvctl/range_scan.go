@@ -47,6 +47,9 @@ func RangeScan(start, end string, limit int) ([]KV, error) {
 // GetFrom, and how ListClusterMembers-style callers that already know
 // which node they want reach this without disturbing "current".
 func RangeScanFrom(peerID, start, end string, limit int) ([]KV, error) {
+	if limit < 0 {
+		return nil, fmt.Errorf("rangescan: invalid limit %d: must be 0 (unlimited) or positive", limit)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), ipcTimeout)
 	defer cancel()
 

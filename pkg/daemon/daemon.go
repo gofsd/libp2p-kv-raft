@@ -498,6 +498,10 @@ type Node struct {
 	logStore  *raftboltdb.BoltStore
 	snapStore raft.SnapshotStore
 
+	// raftLogFile backs raftConf.LogOutput (see initRaft) -- kept here
+	// solely so shutdown can close it; nothing else reads this field.
+	raftLogFile *os.File
+
 	mu              sync.RWMutex
 	raft            *raft.Raft
 	transport       *raft.NetworkTransport
@@ -1353,7 +1357,21 @@ func newHost(priv crypto.PrivKey, cfg Config, st *store.Store, selfPeerID string
 		)
 	}
 
-	if candidates := relayCandidates(cfg, st); len(candidates) > 0 {
+	// !cfg.RelayService guards this whole branch because ForceReachabilityPublic
+	// (just above, when RelayService is on) and ForceReachabilityPrivate (this
+	// branch) both just overwrite the same libp2p.Config.AutoNATConfig.
+	// ForceReachability field with no conflict detection -- go-libp2p silently
+	// keeps whichever was appended last. relayCandidates(cfg, st) merges every
+	// confirmed KindBootstrapNode record in this node's own store unconditionally,
+	// regardless of RelayService, so a relay-service node (by definition one of
+	// the stable, directly-dialable hosts per Config.RelayPeers' doc comment, not
+	// one that needs a relay itself) could still end up with a non-empty
+	// candidate list and have this branch silently override its own forced
+	// Public reachability with Private -- exactly backwards for a node whose
+	// whole job is being reliably dialable. A node can't simultaneously force
+	// both, so RelayService wins: it already stands in for "this node doesn't
+	// need a relay."
+	if candidates := relayCandidates(cfg, st); !cfg.RelayService && len(candidates) > 0 {
 		// AutoRelay only actively reserves a relay slot once it believes
 		// this host is privately reachable, a judgment it otherwise leaves
 		// to AutoNAT -- which can be slow, or simply wrong on a network
@@ -1520,6 +1538,7 @@ func (n *Node) initRaft() (*raft.Raft, error) {
 	}
 	if logFile, err := os.OpenFile(filepath.Join(n.cfg.DataDir, "raft.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
 		raftConf.LogOutput = logFile
+		n.raftLogFile = logFile
 	}
 
 	fsm := kvfsm.New(n.store)
@@ -1687,6 +1706,7 @@ func (n *Node) shutdown() {
 	n.mu.Lock()
 	rf, transport := n.raft, n.transport
 	observer, obsCh := n.leadershipObserver, n.leadershipObsCh
+	logFile := n.raftLogFile
 	n.mu.Unlock()
 
 	if rf != nil {
@@ -1704,6 +1724,9 @@ func (n *Node) shutdown() {
 	}
 	if transport != nil {
 		transport.Close()
+	}
+	if logFile != nil {
+		logFile.Close()
 	}
 	if n.store != nil {
 		n.store.Close()

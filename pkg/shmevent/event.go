@@ -279,6 +279,42 @@ const PublicKeySize = 32
 // crypto/ed25519's format (32-byte seed + 32-byte public key).
 const PrivateKeySize = 64
 
+// MaxValueSize bounds every raw payload a caller can put into a single
+// replicated write or peer-to-peer notification (SetKey/SetField/Set/
+// Txn's per-op values/LogAppend/Execute/ExecuteNotification/ChannelSend,
+// plus CommandPutWithSpec's spec and StationPut's attrs). A raft-replicated
+// write with no size limit at all is held in every cluster member's memory
+// and SQLite file, including from callers who aren't cluster members (see
+// the Group/Command public-command carve-out) -- this is a single,
+// deliberately generous DoS backstop, not a return to the older
+// three-tier ValueSize/KVValueSize/ChannelValueSize scheme (see README's
+// "Value size ceilings" section on why that scheme was retired rather
+// than kept): there is no per-event-type tuning here, just one ceiling
+// large enough that no legitimate caller should ever hit it.
+const MaxValueSize = 8 << 20 // 8MB
+
+// checkValueSize rejects a value over MaxValueSize before it's ever
+// written into a capnp message, so the constructor fails with a clear
+// error instead of the value silently being accepted and only becoming a
+// problem once replicated.
+func checkValueSize(value []byte) error {
+	return checkValueLen(len(value))
+}
+
+// checkValueSizeStr is checkValueSize for the catalog constructors (spec/
+// attrs) that take their opaque JSON payload as a string rather than
+// []byte -- same bound, just avoiding a needless []byte(s) conversion.
+func checkValueSizeStr(value string) error {
+	return checkValueLen(len(value))
+}
+
+func checkValueLen(n int) error {
+	if n > MaxValueSize {
+		return fmt.Errorf("shmevent: value %d bytes exceeds MaxValueSize %d", n, MaxValueSize)
+	}
+	return nil
+}
+
 // NewMsg allocates a fresh single-segment capnp message and returns its
 // root Event, id/crc32/signature all zero-valued and no union variant
 // selected yet. Exported for generic tooling (pkg/e2edata's Event, behind
@@ -310,6 +346,9 @@ func newMsg() (Msg, error) {
 // KV-specific: used both for an actual KV key (ahead of NewSetField) and a
 // peer id (ahead of NewAddLearner/NewBootstrapOrJoinCluster).
 func NewSetKey(value []byte) (Msg, error) {
+	if err := checkValueSize(value); err != nil {
+		return Msg{}, err
+	}
 	m, err := newMsg()
 	if err != nil {
 		return Msg{}, err
@@ -323,6 +362,9 @@ func NewSetKey(value []byte) (Msg, error) {
 
 // NewSetField builds a setField Msg: store.Set(registry[sourceId], value).
 func NewSetField(sourceID uint16, value []byte) (Msg, error) {
+	if err := checkValueSize(value); err != nil {
+		return Msg{}, err
+	}
 	m, err := newMsg()
 	if err != nil {
 		return Msg{}, err
@@ -435,6 +477,9 @@ func NewAddLearner(claimedPeerID uint16, addr string) (Msg, error) {
 // NewSet builds a set Msg: an ordinary replicated store write, rejected
 // by the daemon if key starts with the reserved SystemKeyPrefix.
 func NewSet(key, value []byte) (Msg, error) {
+	if err := checkValueSize(value); err != nil {
+		return Msg{}, err
+	}
 	m, err := newMsg()
 	if err != nil {
 		return Msg{}, err
@@ -455,6 +500,9 @@ func NewSet(key, value []byte) (Msg, error) {
 // sourceId/destinationId are prior setKey registrations: the sender's own
 // peer id and the receiver's.
 func NewExecute(sourceID, destinationID uint16, value []byte) (Msg, error) {
+	if err := checkValueSize(value); err != nil {
+		return Msg{}, err
+	}
 	m, err := newMsg()
 	if err != nil {
 		return Msg{}, err
@@ -475,6 +523,9 @@ func NewExecute(sourceID, destinationID uint16, value []byte) (Msg, error) {
 // processes, which share no registry to resolve sourceId/destinationId
 // against (see that variant's own doc comment in api/shmevent.capnp).
 func NewExecuteNotification(senderPeerID string, value []byte) (Msg, error) {
+	if err := checkValueSize(value); err != nil {
+		return Msg{}, err
+	}
 	m, err := newMsg()
 	if err != nil {
 		return Msg{}, err
@@ -542,6 +593,9 @@ func NewListRange(start, end []byte) (Msg, error) {
 // NewLogAppend builds a logAppend Msg: a pkg/logrecord append -- key must
 // start with the reserved log-key prefix.
 func NewLogAppend(key, value []byte) (Msg, error) {
+	if err := checkValueSize(value); err != nil {
+		return Msg{}, err
+	}
 	m, err := newMsg()
 	if err != nil {
 		return Msg{}, err

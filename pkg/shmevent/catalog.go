@@ -585,6 +585,9 @@ func NewCommandPut(id, name, peerID string) (Msg, error) {
 // clear an existing spec, since NewCommandPut leaves it untouched. spec is
 // caller-defined opaque JSON (the command's form definition).
 func NewCommandPutWithSpec(id, name, peerID, spec string) (Msg, error) {
+	if err := checkValueSizeStr(spec); err != nil {
+		return Msg{}, err
+	}
 	m, err := NewCommandPut(id, name, peerID)
 	if err != nil {
 		return Msg{}, err
@@ -611,6 +614,9 @@ func NewCommandDelete(id string) (Msg, error) {
 // NewStationPut builds a stationPut Msg: Station catalog upsert. attrs is
 // caller-defined opaque JSON.
 func NewStationPut(peerID, name, attrs string) (Msg, error) {
+	if err := checkValueSizeStr(attrs); err != nil {
+		return Msg{}, err
+	}
 	m, err := newMsg()
 	if err != nil {
 		return Msg{}, err

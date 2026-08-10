@@ -216,7 +216,9 @@ func pumpChannelRecv(sess *shmclient.Session, channelID string) error {
 		}
 		switch status {
 		case shmclient.ChannelChunk:
-			os.Stdout.Write(chunk)
+			if _, err := os.Stdout.Write(chunk); err != nil {
+				return err
+			}
 		case shmclient.ChannelClosed:
 			return nil
 		default:

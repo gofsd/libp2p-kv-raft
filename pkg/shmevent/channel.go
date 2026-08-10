@@ -23,6 +23,9 @@ func NewChannelOpen(peerID string) (Msg, error) {
 // NewChannelSend builds a channelSend Msg: sends one framed chunk on an
 // already-open channel, tagged with purpose (see ChannelPurpose* below).
 func NewChannelSend(channelID string, purpose byte, chunk []byte) (Msg, error) {
+	if err := checkValueSize(chunk); err != nil {
+		return Msg{}, err
+	}
 	m, err := newMsg()
 	if err != nil {
 		return Msg{}, err

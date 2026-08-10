@@ -205,41 +205,28 @@ this just exposes it conveniently instead of requiring a raw `sendevent` call. A
 
 ### Value size ceilings
 
-`Msg.Value` has three ceilings, picked by event type (`shmevent.valueSizeFor`), not one:
+Earlier revisions of this section documented three per-event-type value ceilings
+(`shmevent.ValueSize` 512B, `KVValueSize` 4KB, `ChannelValueSize` 16KB, picked by
+`shmevent.valueSizeFor`) plus a fixed-width zero-padding scheme (`shmevent.canonicalWidth`) that
+kept CRC32/signature computation compatible across peers running different builds. None of that
+survived `api/shmevent.capnp`'s union rewrite: every variant now has its own self-describing,
+variable-length fields, replacing the old hand-packed flat `value :Data` design the padding trick
+existed to patch around (see that schema's own doc comment on "Design: a real union"); the only
+remaining traces of the old scheme are stale comments in `catalog.go`/`channelframe.go` and the
+already-unported `web-app/src/shmevent/mod.rs` (see that crate's own "KNOWN BROKEN" doc comment).
 
-| Ceiling | Events | Why |
-| --- | --- | --- |
-| `ValueSize`, 512B | everything else — permits, cluster membership, most catalog records | These carry fields this project defines (a peer id, a permit record, a narration). Their size is known and small. |
-| `KVValueSize`, 4KB | `EventSetKey`/`EventSetField`/`EventSet`/`EventGetField`/`EventTxn`/`EventLogAppend`/`EventCommandPut`/`EventStationPut` | These carry whatever a *caller* chose to store. Their size is the caller's decision, not this project's. |
-| `ChannelValueSize`, 16KB | `EventChannelSend`/`EventChannelPoll` | Bulk data (a file, a video frame). Superseded in practice by `pkg/chandata`'s rings for real throughput. |
-
-Kept as three constants rather than one large one because the padding width used for signing is
-derived from them: a single 16KB ceiling would make every permit record and heartbeat pay CRC32 and
-Ed25519 cost over 16KB of mostly zeroes.
-
-That padding width is a **wire contract**, not an implementation detail, and it is deliberately
-*not* the ceiling itself — see `shmevent.canonicalWidth`. Peers don't upgrade together: a deployed
-relay, an installed Android build, an open browser tab and a dev laptop can all be running
-different builds of this repo at once. So a value that fits `ValueSize` is always padded to
-`ValueSize`, the width every build has ever used for it, and only a value that genuinely needs a
-larger ceiling uses one (no older peer can ever have seen such a message). Getting this wrong is
-invisible in the worst way: when the KV events were first raised to `KVValueSize` keyed straight
-off the new ceiling, every peer on an older build started computing a different CRC over identical
-messages and rejecting them — and since a message that fails to decode gets *no response at all*
-(`handleClientStream` returns silently), it presented as the deployed relay ignoring requests
-rather than as any kind of version mismatch. `web-app/src/shmevent/mod.rs`'s `canonical_width` has
-to implement the identical rule; both sides have tests pinning it.
-
-Within one width, the padding is safe because the event type sits at byte 0 of `canonicalPayload`,
-ahead of `Value`, and `Value`'s own length is known from the decoded message — so a verifier always
-knows which width the signer used.
-
-`KVValueSize` exists because 512 bytes turned out to bound things built *on top* of the KV store
-rather than the store itself: a `Set` replaces a value outright, so anything layering structure over
-raw keys (a JSON document store, say) round-trips its whole unit on every write, and one small
-object with nested fields already exceeded it. Anyone raising these further should note
-`pkg/ipc`'s shared-memory `capacity` has to fit the largest encoded message — the Android
-transport's (`ipc_android.go`) is the tighter of the two and had to grow alongside `KVValueSize`.
+For a while that left every raw payload a caller can write or send — `SetKey`/`SetField`/`Set`,
+each `Txn` op's value, `LogAppend`, `Execute`/`ExecuteNotification`, `ChannelSend`,
+`CommandPut`'s spec, `StationPut`'s attrs — with no size bound at all, which matters because a
+raft-replicated write is held in every cluster member's memory and SQLite file, including from
+some non-cluster-member callers via the public-command carve-out described elsewhere in this doc.
+`shmevent.MaxValueSize` (8MB) now bounds all of them: one flat, deliberately generous ceiling
+enforced directly in each `NewXxx` constructor, not a return to the old per-event-type tuning —
+just a backstop large enough that no legitimate caller should ever hit it. `pkg/chandata`'s own
+`MaxChunkSize` (256KB, the real bulk-transfer path in practice) is unrelated and unaffected. A
+`Txn`'s total payload (up to 65535 ops, each up to `MaxValueSize`) is still only bounded
+per-op, not as a whole — deliberately not tightened further here, since no legitimate caller
+approaches even one op anywhere near the ceiling.
 
 ### Conditional writes (compare-and-swap)
 

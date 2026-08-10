@@ -19,8 +19,16 @@ func detach(cmd *exec.Cmd) {}
 // signal-0-style probe wouldn't work here anyway -- os.Process.Signal only
 // supports os.Kill on Windows).
 func isAlive(pid int) bool {
-	_, err := os.FindProcess(pid)
-	return err == nil
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	// FindProcess opened a real handle on Windows (see doc comment above);
+	// this call only needs the existence check, not the handle itself, so
+	// release it immediately rather than leaking one per pid per call --
+	// relevant since ListClusters calls this once per registered node.
+	proc.Release()
+	return true
 }
 
 // terminate asks pid to shut down -- a hard kill on Windows (see
