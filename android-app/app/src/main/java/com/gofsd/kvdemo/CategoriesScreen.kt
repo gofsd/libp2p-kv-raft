@@ -1,5 +1,6 @@
 package com.gofsd.kvdemo
 
+import android.util.Log
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -52,7 +53,10 @@ fun CategoriesScreen(
                     category,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { onCategoryClick(category) }
+                        .clickable {
+                            Log.i("KVDemo", "USER_TAP: category $category opened")
+                            onCategoryClick(category)
+                        }
                         .padding(vertical = 12.dp)
                         .testTag("listItem_$category"),
                 )

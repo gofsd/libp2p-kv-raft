@@ -2,6 +2,7 @@ package com.gofsd.kvdemo
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -65,6 +66,7 @@ fun ScannerHost(modifier: Modifier = Modifier) {
     if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
         != PackageManager.PERMISSION_GRANTED
     ) {
+        Log.w("KVDemo", "ACTION_REQUIRED: camera permission not granted -- scanner disabled until it is")
         Card(
             modifier = modifier
                 .padding(16.dp)
@@ -121,14 +123,20 @@ fun ScannerHost(modifier: Modifier = Modifier) {
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
-                ) { ScannerCoordinator.expanded = false }
+                ) {
+                    Log.i("KVDemo", "USER_TAP: scanner collapsed")
+                    ScannerCoordinator.expanded = false
+                }
         } else {
             Modifier
                 .fillMaxSize()
                 .shadow(10.dp, CircleShape)
                 .clip(CircleShape)
                 .border(2.5.dp, accentColor, CircleShape)
-                .clickable { ScannerCoordinator.expanded = true }
+                .clickable {
+                    Log.i("KVDemo", "USER_TAP: scanner expanded to fullscreen")
+                    ScannerCoordinator.expanded = true
+                }
         }
 
         MainScannerWidget(

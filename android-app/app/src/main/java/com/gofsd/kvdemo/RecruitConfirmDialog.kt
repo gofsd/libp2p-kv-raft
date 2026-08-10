@@ -1,5 +1,6 @@
 package com.gofsd.kvdemo
 
+import android.util.Log
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.AlertDialog
@@ -7,6 +8,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -36,6 +38,10 @@ fun RecruitConfirmDialog(
     onDismiss: () -> Unit,
 ) {
     var stationName by remember { mutableStateOf("") }
+
+    LaunchedEffect(sourceAddr) {
+        Log.w("KVDemo", "ACTION_REQUIRED: waiting for human to tap Approve/Cancel on RecruitConfirmDialog (source=$sourceAddr)")
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,

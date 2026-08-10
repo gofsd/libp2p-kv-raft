@@ -1,5 +1,6 @@
 package com.gofsd.kvdemo
 
+import android.util.Log
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -7,6 +8,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
@@ -36,6 +38,10 @@ fun ScanConfirmationDialog(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    LaunchedEffect(decodedJson, rawText) {
+        Log.w("KVDemo", "ACTION_REQUIRED: waiting for human to tap Trigger/Cancel on ScanConfirmationDialog (decoded=${decodedJson != null})")
+    }
+
     if (decodedJson != null) {
         val pretty = runCatching { JSONObject(decodedJson).toString(2) }.getOrDefault(decodedJson)
         AlertDialog(

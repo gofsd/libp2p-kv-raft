@@ -1,6 +1,7 @@
 package com.gofsd.kvdemo
 
 import android.util.Base64
+import android.util.Log
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
@@ -66,6 +67,7 @@ import org.json.JSONObject
  * `triggerEvent` alias) to actually submit the decoded event against the
  * current cluster.
  */
+private const val TAG = "KVDemo"
 private class PendingScan(val decodedJson: String?, val rawText: String)
 private class PendingRecruitTicket(val ticketB64: String, val sourceAddr: String)
 private fun encodeSegment(s: String) = URLEncoder.encode(s, "UTF-8")
@@ -85,17 +87,21 @@ fun AppRoot() {
 
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
+            Log.i(TAG, "AUTO: Kvmobile.start() beginning")
             try {
                 val peerID = Kvmobile.start(context.filesDir.absolutePath)
                 statusText = "Connected as $peerID"
+                Log.i(TAG, "RESULT: Kvmobile.start() connected as $peerID")
             } catch (e: Exception) {
                 statusText = "Failed to start: ${e.message}"
+                Log.w(TAG, "RESULT: Kvmobile.start() failed: ${e.message}")
             }
         }
     }
 
     LaunchedEffect(Unit) {
         ScannerCoordinator.scans.collect { bytes ->
+            Log.i(TAG, "AUTO: scan received (${bytes.size} bytes), decoding")
             val decodedJson = withContext(Dispatchers.IO) {
                 runCatching { Kvmobile.decodeEvent(bytes) }.getOrNull()
             }
@@ -108,8 +114,10 @@ fun AppRoot() {
                     ticketB64 = Base64.encodeToString(bytes, Base64.NO_WRAP),
                     sourceAddr = sourceAddr,
                 )
+                Log.w(TAG, "ACTION_REQUIRED: RecruitConfirmDialog shown for source=$sourceAddr -- tap Approve or Cancel on this device")
             } else {
                 pendingScan = PendingScan(decodedJson, DataMatrixCodec.bytesToText(bytes))
+                Log.w(TAG, "ACTION_REQUIRED: ScanConfirmationDialog shown (event=$eventName, decoded=${decodedJson != null}) -- tap Trigger or Cancel on this device")
             }
             // Collapse the fullscreen scanner so the confirmation dialog
             // (drawn above it either way, but this avoids leaving the
@@ -173,19 +181,25 @@ fun AppRoot() {
                         decodedJson = scan.decodedJson,
                         rawText = scan.rawText,
                         onConfirm = {
+                            Log.i(TAG, "USER_TAP: ScanConfirmationDialog Trigger pressed")
                             val json = scan.decodedJson ?: return@ScanConfirmationDialog
                             pendingScan = null
                             scope.launch {
                                 val line = try {
                                     val result = withContext(Dispatchers.IO) { Kvmobile.sendEvent(json) }
+                                    Log.i(TAG, "RESULT: scanned event sent: $result")
                                     "Scanned event ->\n$result"
                                 } catch (e: Exception) {
+                                    Log.w(TAG, "RESULT: scanned event FAILED: ${e.message}")
                                     "Scanned event FAILED: ${e.message}"
                                 }
                                 OutputLog.append(line)
                             }
                         },
-                        onDismiss = { pendingScan = null },
+                        onDismiss = {
+                            Log.i(TAG, "USER_TAP: ScanConfirmationDialog Cancel pressed")
+                            pendingScan = null
+                        },
                     )
                 }
 
@@ -194,9 +208,11 @@ fun AppRoot() {
                     RecruitConfirmDialog(
                         sourceAddr = recruit.sourceAddr,
                         onApprove = { stationName ->
+                            Log.i(TAG, "USER_TAP: RecruitConfirmDialog Approve pressed (stationName=\"$stationName\")")
                             pendingRecruitTicket = null
                             scope.launch {
                                 val line = try {
+                                    Log.i(TAG, "AUTO: redeemJoinRequestTicket(voter) starting")
                                     val result = withContext(Dispatchers.IO) {
                                         Kvmobile.redeemJoinRequestTicket(recruit.ticketB64, "voter")
                                     }
@@ -206,15 +222,20 @@ fun AppRoot() {
                                             Kvmobile.putStation(admittedPeerID, stationName, "")
                                         }
                                     }
+                                    Log.i(TAG, "RESULT: recruit admitted $admittedPeerID: $result")
                                     "Recruited ->\n$result" +
                                         if (stationName.isNotBlank()) " (named \"$stationName\")" else ""
                                 } catch (e: Exception) {
+                                    Log.w(TAG, "RESULT: recruit FAILED: ${e.message}")
                                     "Recruit FAILED: ${e.message}"
                                 }
                                 OutputLog.append(line)
                             }
                         },
-                        onDismiss = { pendingRecruitTicket = null },
+                        onDismiss = {
+                            Log.i(TAG, "USER_TAP: RecruitConfirmDialog Cancel pressed")
+                            pendingRecruitTicket = null
+                        },
                     )
                 }
             }

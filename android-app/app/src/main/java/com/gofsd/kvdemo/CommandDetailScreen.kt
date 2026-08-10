@@ -1,6 +1,7 @@
 package com.gofsd.kvdemo
 
 import android.util.Base64
+import android.util.Log
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -56,6 +57,8 @@ import org.json.JSONObject
  * comment on CommandSpec) -- every other spec's Generate flow never calls
  * it.
  */
+private const val TAG = "KVDemo"
+
 @Composable
 fun CommandDetailScreen(category: String, name: String, onNavigateToLog: () -> Unit = {}) {
     val context = LocalContext.current
@@ -92,6 +95,7 @@ fun CommandDetailScreen(category: String, name: String, onNavigateToLog: () -> U
         if (matrix == null || !spec.awaitAdmissionAfterGenerate) return@LaunchedEffect
         val ownPeerID = runCatching { withContext(Dispatchers.IO) { Kvmobile.peerID() } }.getOrNull()
         if (ownPeerID.isNullOrEmpty()) return@LaunchedEffect
+        Log.i(TAG, "AUTO: polling listClusterMembers for own peer id $ownPeerID to appear (admission)")
         while (true) {
             delay(2000)
             val membersJson = runCatching {
@@ -99,9 +103,10 @@ fun CommandDetailScreen(category: String, name: String, onNavigateToLog: () -> U
             }.getOrNull() ?: continue
             val admitted = runCatching {
                 val members = JSONArray(membersJson)
-                (0 until members.length()).any { members.getJSONObject(it).optString("PeerID") == ownPeerID }
+                (0 until members.length()).any { members.getJSONObject(it).optString("peer_id") == ownPeerID }
             }.getOrDefault(false)
             if (admitted) {
+                Log.i(TAG, "RESULT: ${spec.label} admitted to cluster as $ownPeerID")
                 val line = "${spec.label}: admitted to cluster as $ownPeerID"
                 output = if (output.isEmpty()) line else "$output\n\n$line"
                 generatedMatrix = null
@@ -143,12 +148,15 @@ fun CommandDetailScreen(category: String, name: String, onNavigateToLog: () -> U
             enabled = !running,
             onClick = {
                 val args = paramValues.toList()
+                Log.i(TAG, "USER_TAP: Run pressed for ${spec.label}(${args.joinToString(", ")})")
                 running = true
                 scope.launch {
                     val line = try {
                         val result = withContext(Dispatchers.IO) { spec.run(args) }
+                        Log.i(TAG, "RESULT: ${spec.label} -> $result")
                         "${spec.label}(${args.joinToString(", ")}) ->\n$result"
                     } catch (e: Exception) {
+                        Log.w(TAG, "RESULT: ${spec.label} FAILED: ${e.message}")
                         "${spec.label}(${args.joinToString(", ")}) FAILED: ${e.message}"
                     }
                     output = if (output.isEmpty()) line else "$output\n\n$line"
@@ -164,6 +172,7 @@ fun CommandDetailScreen(category: String, name: String, onNavigateToLog: () -> U
             enabled = canGenerate && !generating,
             onClick = {
                 val args = paramValues.toList()
+                Log.i(TAG, "USER_TAP: Generate DataMatrix pressed for ${spec.label}(${args.joinToString(", ")})")
                 generating = true
                 scope.launch {
                     try {
@@ -182,7 +191,9 @@ fun CommandDetailScreen(category: String, name: String, onNavigateToLog: () -> U
                             withContext(Dispatchers.IO) { Kvmobile.encodeEvent(eventJson) }
                         }
                         generatedMatrix = withContext(Dispatchers.Default) { DataMatrixCodec.encode(raw) }
+                        Log.w(TAG, "ACTION_REQUIRED: DataMatrix for ${spec.label} is on screen -- scan it with the other device's camera now")
                     } catch (e: Exception) {
+                        Log.w(TAG, "RESULT: Generate DataMatrix FAILED for ${spec.label}: ${e.message}")
                         val line = "Generate DataMatrix FAILED: ${e.message}"
                         output = if (output.isEmpty()) line else "$output\n\n$line"
                     }

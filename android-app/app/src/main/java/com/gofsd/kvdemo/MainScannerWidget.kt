@@ -162,6 +162,7 @@ fun MainScannerWidget(
             preview,
             imageAnalyzer,
         )
+        Log.i("KVDemo", "AUTO: camera bound, scanner live")
 
         MainScannerManager.setup(context.applicationContext, camera.cameraControl)
 
@@ -347,12 +348,14 @@ private fun processImageProxySafe(imageProxy: ImageProxy, onResult: (ByteArray) 
 
         try {
             val result = reader.decode(bitmap)
-            onResult(DataMatrixCodec.resultToBytes(result))
+            val decoded = DataMatrixCodec.resultToBytes(result)
+            Log.i("KVDemo", "AUTO: DataMatrix decoded from camera frame (${decoded.size} bytes)")
+            onResult(decoded)
         } catch (_: NotFoundException) {
             // No code found in this frame, ignore.
         }
     } catch (e: Exception) {
-        Log.e("Scanner", "Decode failed", e)
+        Log.e("KVDemo", "Decode failed", e)
     } finally {
         imageProxy.close()
     }

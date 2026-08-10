@@ -2,6 +2,7 @@ package com.gofsd.kvdemo
 
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.util.Log
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.size
@@ -9,6 +10,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
@@ -46,6 +48,9 @@ fun GeneratedDataMatrixDialog(
     title: String = "Scan this to trigger the event",
 ) {
     val bitmap = remember(matrix) { matrix.toBitmap() }
+    LaunchedEffect(matrix) {
+        Log.w("KVDemo", "ACTION_REQUIRED: DataMatrix code rendered on screen ($title)")
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
@@ -59,7 +64,13 @@ fun GeneratedDataMatrixDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss, modifier = Modifier.testTag("generatedDataMatrixClose")) { Text("Close") }
+            TextButton(
+                onClick = {
+                    Log.i("KVDemo", "USER_TAP: GeneratedDataMatrixDialog Close pressed")
+                    onDismiss()
+                },
+                modifier = Modifier.testTag("generatedDataMatrixClose"),
+            ) { Text("Close") }
         },
     )
 }
