@@ -189,13 +189,13 @@ func usage() {
   kvctl-cli printjoinrequestticketdatamatrix <ticketB64> <outFile.png>
   kvctl-cli getownaddr
   kvctl-cli version
-  kvctl-cli createexecinvite <commandID> <inputsJSON>
+  kvctl-cli createexecinvite <commandID> <inputsJSON> [-ttl seconds]
   kvctl-cli revokeexecinvite <tokenHex>
   kvctl-cli redeemexecinvite <sourceAddr#tokenHex>
   kvctl-cli requestpublicaccess <targetAddr> [note]
   kvctl-cli enablepublicaccess
   kvctl-cli printexecinvitedatamatrix <sourceMultiaddr> <tokenHex> <outFile.png>
-  kvctl-cli createexecinviteticket <commandID> <inputsJSON>
+  kvctl-cli createexecinviteticket <commandID> <inputsJSON> [-ttl seconds]
   kvctl-cli redeemexecinviteticket <ticketB64>
   kvctl-cli printexecinviteticketdatamatrix <ticketB64> <outFile.png>
   kvctl-cli execute <destPeerID> <value>
@@ -330,7 +330,9 @@ createexecinvite/revokeexecinvite/redeemexecinvite/printexecinvitedatamatrix
 are join-invite's counterpart for triggering a specific command execution
 instead of admitting a device: createexecinvite generates a fresh random
 token and lodges it as a shmevent.KindExecInvite record binding
-commandID+inputsJSON (only a current raft voter may do this).
+commandID+inputsJSON (only a current raft voter may do this). -ttl seconds
+(default 0) bounds how long the invite stays redeemable from the moment
+it's created; 0 means it never expires.
 printexecinvitedatamatrix barcodes the plain string
 "<sourceMultiaddr>#<tokenHex>" (not a signed event, same reasoning as
 printjoininvitedatamatrix -- the token itself is the credential).
@@ -348,7 +350,8 @@ outright before it's ever redeemed.
 createexecinviteticket/redeemexecinviteticket/printexecinviteticketdatamatrix
 are createexecinvite's signed counterpart, the same relationship
 createjoininviteticket has to createjoininvite: createexecinviteticket
-mints the same token and KindExecInvite record but wraps this node's own
+takes the identical -ttl flag and mints the same token and KindExecInvite
+record but wraps this node's own
 address and the token into a ticket signed with this node's own key (see
 pkg/shmevent.EventExecTicket's doc comment). redeemexecinviteticket
 verifies that signature against the peer id embedded in the ticket's own
@@ -1133,11 +1136,15 @@ func cmdVersion(args []string) {
 }
 
 func cmdCreateExecInvite(args []string) {
-	if len(args) != 2 {
-		fmt.Fprintln(os.Stderr, "usage: kvctl-cli createexecinvite <commandID> <inputsJSON>")
+	fs := flag.NewFlagSet("createexecinvite", flag.ExitOnError)
+	ttl := fs.Uint64("ttl", 0, "seconds the invite stays redeemable (0 = no expiry)")
+	fs.Parse(args)
+
+	if fs.NArg() != 2 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli createexecinvite <commandID> <inputsJSON> [-ttl seconds]")
 		os.Exit(2)
 	}
-	tokenHex, err := kvctl.CreateExecInvite(args[0], args[1])
+	tokenHex, err := kvctl.CreateExecInvite(fs.Arg(0), fs.Arg(1), *ttl)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "createexecinvite: %v\n", err)
 		os.Exit(1)
@@ -1240,11 +1247,15 @@ func cmdPrintExecInviteDataMatrix(args []string) {
 }
 
 func cmdCreateExecInviteTicket(args []string) {
-	if len(args) != 2 {
-		fmt.Fprintln(os.Stderr, "usage: kvctl-cli createexecinviteticket <commandID> <inputsJSON>")
+	fs := flag.NewFlagSet("createexecinviteticket", flag.ExitOnError)
+	ttl := fs.Uint64("ttl", 0, "seconds the invite stays redeemable (0 = no expiry)")
+	fs.Parse(args)
+
+	if fs.NArg() != 2 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli createexecinviteticket <commandID> <inputsJSON> [-ttl seconds]")
 		os.Exit(2)
 	}
-	ticket, err := kvctl.CreateExecInviteTicket(args[0], args[1])
+	ticket, err := kvctl.CreateExecInviteTicket(fs.Arg(0), fs.Arg(1), *ttl)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "createexecinviteticket: %v\n", err)
 		os.Exit(1)

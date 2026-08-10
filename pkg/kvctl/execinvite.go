@@ -13,15 +13,17 @@ import (
 )
 
 // CreateExecInvite implements `mage createexecinvite <commandID>
-// <inputsJSON>`: generates a fresh, cryptographically random one-time
-// execution-invite token and lodges it as a shmevent.KindExecInvite record
-// on the current node, binding commandID+inputsJSON (inputsJSON may be "").
-// Returns the token hex-encoded -- append it to this node's own advertised
-// multiaddr as "<multiaddr>#<tokenHex>" (see mage printexecinvitedatamatrix)
-// for a redeeming peer to scan and pass to `mage redeemexecinvite`. Only
-// takes effect if the current node is itself a raft voter -- see
+// <inputsJSON> [ttlSeconds|""]`: generates a fresh, cryptographically
+// random one-time execution-invite token and lodges it as a
+// shmevent.KindExecInvite record on the current node, binding
+// commandID+inputsJSON (inputsJSON may be ""). ttlSeconds is how long the
+// invite stays redeemable, 0 meaning no expiry (the default). Returns the
+// token hex-encoded -- append it to this node's own advertised multiaddr
+// as "<multiaddr>#<tokenHex>" (see mage printexecinvitedatamatrix) for a
+// redeeming peer to scan and pass to `mage redeemexecinvite`. Only takes
+// effect if the current node is itself a raft voter -- see
 // shmevent.EventExecInviteCreate's doc comment.
-func CreateExecInvite(commandID, inputsJSON string) (string, error) {
+func CreateExecInvite(commandID, inputsJSON string, ttlSeconds uint64) (string, error) {
 	token := make([]byte, shmevent.ExecInviteTokenSize)
 	if _, err := rand.Read(token); err != nil {
 		return "", fmt.Errorf("generate exec invite token: %w", err)
@@ -33,7 +35,7 @@ func CreateExecInvite(commandID, inputsJSON string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := sess.CreateExecInvite(ctx, token, commandID, inputsJSON); err != nil {
+	if err := sess.CreateExecInvite(ctx, token, commandID, inputsJSON, ttlSeconds); err != nil {
 		return "", fmt.Errorf("create exec invite: %w", err)
 	}
 	return hex.EncodeToString(token), nil
@@ -93,8 +95,9 @@ func RedeemExecInvite(sourceAddrAndToken string) (string, error) {
 }
 
 // CreateExecInviteTicket implements `mage createexecinviteticket
-// <commandID> <inputsJSON>`: does everything CreateExecInvite does (mints
-// a token, lodges the KindExecInvite record), then wraps this node's own
+// <commandID> <inputsJSON> [ttlSeconds|""]`: does everything CreateExecInvite
+// does (mints a token, lodges the KindExecInvite record, honoring the same
+// ttlSeconds meaning -- 0/"" is no expiry), then wraps this node's own
 // current address and that token into a signed, self-contained ticket --
 // an EventExecTicket Msg built and signed with shmevent.Encode entirely
 // client-side (no daemon changes needed: a local caller already holds the
@@ -110,7 +113,7 @@ func RedeemExecInvite(sourceAddrAndToken string) (string, error) {
 // meaningfully different property than token possession alone, and why
 // it doesn't change how redemption itself is authorized (kvfsm's
 // existing ACL re-check on consume is unaffected either way).
-func CreateExecInviteTicket(commandID, inputsJSON string) (string, error) {
+func CreateExecInviteTicket(commandID, inputsJSON string, ttlSeconds uint64) (string, error) {
 	token := make([]byte, shmevent.ExecInviteTokenSize)
 	if _, err := rand.Read(token); err != nil {
 		return "", fmt.Errorf("generate exec invite token: %w", err)
@@ -122,7 +125,7 @@ func CreateExecInviteTicket(commandID, inputsJSON string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := sess.CreateExecInvite(ctx, token, commandID, inputsJSON); err != nil {
+	if err := sess.CreateExecInvite(ctx, token, commandID, inputsJSON, ttlSeconds); err != nil {
 		return "", fmt.Errorf("create exec invite ticket: %w", err)
 	}
 

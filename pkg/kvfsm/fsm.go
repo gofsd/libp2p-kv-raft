@@ -436,9 +436,23 @@ func (f *FSM) Apply(l *raft.Log) any {
 		if err != nil {
 			return ApplyResult{Err: fmt.Errorf("kvfsm: consume exec invite: no such invite: %w", err)}
 		}
-		commandID, _, err := shmevent.DecodeExecInviteRecord(v)
+		commandID, _, expiresAtUnix, err := shmevent.DecodeExecInviteRecord(v)
 		if err != nil {
 			return ApplyResult{Err: fmt.Errorf("kvfsm: consume exec invite: decode record: %w", err)}
+		}
+		// l.AppendedAt is the leader's clock at the moment this very Apply
+		// call's entry was appended -- replicated as part of the log entry
+		// itself, so every replica compares against the identical value
+		// (see raft.Log.AppendedAt's own doc comment: "Followers will
+		// observe the leader's time"), keeping this deterministic the same
+		// way every other Apply case here already is. An expired invite is
+		// deleted here too, same as a successful redemption -- time only
+		// moves forward, so it can never become redeemable again.
+		if expiresAtUnix != 0 && uint64(l.AppendedAt.Unix()) >= expiresAtUnix {
+			if err := f.Store.Delete(key); err != nil {
+				return ApplyResult{Err: err}
+			}
+			return ApplyResult{Err: fmt.Errorf("kvfsm: consume exec invite: token expired")}
 		}
 		permitted, err := IsPermittedForCommand(f.Store, []byte(commandID), value)
 		if err != nil {

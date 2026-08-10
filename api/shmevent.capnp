@@ -413,10 +413,14 @@ struct Event {
     }
 
     # Mints a one-time execution-invite token bound to commandId/inputsJson.
+    # ttlSeconds is how long the invite stays redeemable from the moment
+    # this create is applied, 0 meaning no expiry (the default) -- see
+    # shmevent.KindExecInvite's doc comment on how it's stored/checked.
     execInviteCreate :group {
       token @114 :Data;
       commandId @115 :Text;
       inputsJson @116 :Text;
+      ttlSeconds @118 :UInt64;
     }
 
     # Invalidates a still-unredeemed execution-invite token.

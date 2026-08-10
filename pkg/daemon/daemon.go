@@ -2690,7 +2690,16 @@ func (n *Node) handleShmEvent(ctx context.Context, m shmevent.Msg, crc uint32, s
 		if err != nil {
 			return errorMsg(m.Id(), err)
 		}
-		value := shmevent.EncodeExecInviteRecord(commandID, inputsJSON)
+		// ttlSeconds is a relative duration on the wire; what actually gets
+		// committed to the raft log (and so applied identically by every
+		// replica -- see kvfsm.OpConsumeExecInvite) is the absolute
+		// expiresAtUnix computed here, once, from this node's own clock at
+		// the moment it received the request. 0 stays 0 (no expiry).
+		var expiresAtUnix uint64
+		if ttl := grp.TtlSeconds(); ttl != 0 {
+			expiresAtUnix = uint64(time.Now().Unix()) + ttl
+		}
+		value := shmevent.EncodeExecInviteRecord(commandID, inputsJSON, expiresAtUnix)
 		if err := n.handleConfirmForward(ctx, kvfsm.OpSet, shmevent.ExecInviteKey(token), value, true); err != nil {
 			return errorMsg(m.Id(), err)
 		}
@@ -4571,7 +4580,7 @@ func (n *Node) applyConsumeExecInvite(ctx context.Context, rf *raft.Raft, token 
 	if res.Err != nil {
 		return "", fmt.Errorf("invalid, already-used, or unauthorized invite: %w", res.Err)
 	}
-	commandID, inputsJSON, err := shmevent.DecodeExecInviteRecord(res.Value)
+	commandID, inputsJSON, _, err := shmevent.DecodeExecInviteRecord(res.Value)
 	if err != nil {
 		return "", fmt.Errorf("exec invite: %w", err)
 	}

@@ -448,7 +448,7 @@ func TestExecInviteRedeemOverRelay(t *testing.T) {
 	setUpExecInviteACL(t, ctx, leader, "cmd-relay", "grp-relay", redeemer.peerID)
 
 	token := newExecInviteToken(t)
-	createMsg, err := shmevent.NewExecInviteCreate(token, "cmd-relay", "")
+	createMsg, err := shmevent.NewExecInviteCreate(token, "cmd-relay", "", 0)
 	if err != nil {
 		t.Fatalf("NewExecInviteCreate: %v", err)
 	}

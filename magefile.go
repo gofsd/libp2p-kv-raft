@@ -1960,15 +1960,33 @@ func VerifyJoinInviteTicket(ticketB64 string) error {
 // own advertised multiaddr as "<multiaddr>#<tokenHex>" (see
 // printexecinvitedatamatrix) for a redeeming peer to scan and pass to
 // `mage redeemexecinvite`. Only takes effect if the current node is itself
-// a raft voter.
-// Usage: mage createexecinvite <commandID> <inputsJSON>
-func CreateExecInvite(commandID, inputsJSON string) error {
-	tokenHex, err := kvctl.CreateExecInvite(commandID, inputsJSON)
+// a raft voter. ttlSeconds is a count or "" (no expiry -- the default),
+// same convention as rangescan's limit.
+// Usage: mage createexecinvite <commandID> <inputsJSON> [ttlSeconds|""]
+func CreateExecInvite(commandID, inputsJSON, ttlSeconds string) error {
+	ttl, err := parseExecInviteTTL(ttlSeconds)
+	if err != nil {
+		return err
+	}
+	tokenHex, err := kvctl.CreateExecInvite(commandID, inputsJSON, ttl)
 	if err != nil {
 		return err
 	}
 	fmt.Println(tokenHex)
 	return nil
+}
+
+// parseExecInviteTTL parses CreateExecInvite/CreateExecInviteTicket's
+// ttlSeconds arg -- "" means 0 (no expiry).
+func parseExecInviteTTL(ttlSeconds string) (uint64, error) {
+	if ttlSeconds == "" {
+		return 0, nil
+	}
+	v, err := strconv.ParseUint(ttlSeconds, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid ttlSeconds %q: %w", ttlSeconds, err)
+	}
+	return v, nil
 }
 
 // RevokeExecInvite deletes an execution-invite token outright before it's
@@ -2010,10 +2028,15 @@ func RedeemExecInvite(sourceAddrAndToken string) error {
 // yourself. That ticket is what a DataMatrix code encodes; a redeeming
 // peer verifies it really came from the peer id embedded in its own
 // address before ever dialing anything -- see redeemexecinviteticket.
-// Only takes effect if the current node is itself a raft voter.
-// Usage: mage createexecinviteticket <commandID> <inputsJSON>
-func CreateExecInviteTicket(commandID, inputsJSON string) error {
-	ticket, err := kvctl.CreateExecInviteTicket(commandID, inputsJSON)
+// Only takes effect if the current node is itself a raft voter. ttlSeconds
+// is a count or "" (no expiry -- the default), same as createexecinvite's.
+// Usage: mage createexecinviteticket <commandID> <inputsJSON> [ttlSeconds|""]
+func CreateExecInviteTicket(commandID, inputsJSON, ttlSeconds string) error {
+	ttl, err := parseExecInviteTTL(ttlSeconds)
+	if err != nil {
+		return err
+	}
+	ticket, err := kvctl.CreateExecInviteTicket(commandID, inputsJSON, ttl)
 	if err != nil {
 		return err
 	}

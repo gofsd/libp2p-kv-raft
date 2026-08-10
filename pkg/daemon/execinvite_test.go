@@ -124,7 +124,7 @@ func TestExecInviteRedeemByPermittedPeerSucceedsAndIsOneTime(t *testing.T) {
 	setUpExecInviteACL(t, ctx, leader, "cmd-1", "grp-1", redeemer.peerID)
 
 	token := newExecInviteToken(t)
-	createMsg, err := shmevent.NewExecInviteCreate(token, "cmd-1", `{"x":1}`)
+	createMsg, err := shmevent.NewExecInviteCreate(token, "cmd-1", `{"x":1}`, 0)
 	if err != nil {
 		t.Fatalf("NewExecInviteCreate: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestExecInviteRedeemByUnpermittedPeerFailsAndKeepsInvite(t *testing.T) {
 	setUpExecInviteACL(t, ctx, leader, "cmd-2", "grp-2", permitted.peerID)
 
 	token := newExecInviteToken(t)
-	createMsg, err := shmevent.NewExecInviteCreate(token, "cmd-2", "")
+	createMsg, err := shmevent.NewExecInviteCreate(token, "cmd-2", "", 0)
 	if err != nil {
 		t.Fatalf("NewExecInviteCreate: %v", err)
 	}
@@ -257,5 +257,60 @@ func TestExecInviteRedeemByUnpermittedPeerFailsAndKeepsInvite(t *testing.T) {
 	}
 	if instanceID == "" {
 		t.Fatal("exec_invite_redeem by a permitted peer succeeded but returned an empty instance id")
+	}
+}
+
+// TestExecInviteRedeemAfterTTLExpiryFails exercises a real ttlSeconds end to
+// end, through the actual daemon/raft path (not just kvfsm's own unit
+// tests): a permitted peer redeeming a token after its TTL has elapsed must
+// be rejected, exactly like an unpermitted redemption -- proving
+// createMsg's wire-level ttlSeconds actually reaches
+// kvfsm.OpConsumeExecInvite's enforcement.
+func TestExecInviteRedeemAfterTTLExpiryFails(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	tmpDir := t.TempDir()
+	fastRaft := Config{
+		HeartbeatTimeout:   200 * time.Millisecond,
+		ElectionTimeout:    200 * time.Millisecond,
+		CommitTimeout:      20 * time.Millisecond,
+		LeaderLeaseTimeout: 100 * time.Millisecond,
+	}
+
+	leader := startExecInviteNode(t, tmpDir, "leader3", fastRaft)
+	defer leader.shutdown()
+	if _, err := leader.handleAdd(ctx, ""); err != nil {
+		t.Fatalf("bootstrap leader: %v", err)
+	}
+	leaderAddr := leader.advertisedAddrs()[0]
+
+	redeemer := startExecInviteNode(t, tmpDir, "redeemer3", fastRaft)
+	defer redeemer.shutdown()
+
+	setUpExecInviteACL(t, ctx, leader, "cmd-3", "grp-3", redeemer.peerID)
+
+	token := newExecInviteToken(t)
+	createMsg, err := shmevent.NewExecInviteCreate(token, "cmd-3", "", 1)
+	if err != nil {
+		t.Fatalf("NewExecInviteCreate: %v", err)
+	}
+	createMsg.SetId(1)
+	if resp := execInviteCall(t, ctx, leader, createMsg); resp.Which() == shmevent.Event_Which_error {
+		t.Fatalf("exec_invite_create rejected: %s", mustErrMessage(t, resp))
+	}
+
+	time.Sleep(1500 * time.Millisecond)
+
+	redeemMsg, err := shmevent.NewExecInviteRedeem(leaderAddr, token)
+	if err != nil {
+		t.Fatalf("NewExecInviteRedeem: %v", err)
+	}
+	redeemMsg.SetId(2)
+	resp := execInviteCall(t, ctx, redeemer, redeemMsg)
+	if resp.Which() != shmevent.Event_Which_error {
+		t.Fatal("exec_invite_redeem after TTL expiry unexpectedly succeeded")
 	}
 }

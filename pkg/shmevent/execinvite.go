@@ -1,6 +1,9 @@
 package shmevent
 
-import "fmt"
+import (
+	"encoding/binary"
+	"fmt"
+)
 
 // execInviteStatusPlaceholder mirrors joinInviteStatusPlaceholder:
 // KindExecInvite has no pending/confirmed lifecycle either -- a record
@@ -21,39 +24,83 @@ func ExecInviteKey(token []byte) []byte {
 	return SystemKey(KindExecInvite, execInviteStatusPlaceholder, token)
 }
 
-// EncodeExecInviteRecord packs the commandID and inputsJSON a KindExecInvite
-// record grants into its stored value -- a 2-byte big-endian length prefix
-// for commandID, then commandID, then inputsJSON verbatim (trailing field,
-// no prefix needed), the same shape EncodeCommandPayload uses for its own
-// name+peerID pair.
-func EncodeExecInviteRecord(commandID, inputsJSON string) []byte {
-	buf := make([]byte, 2+len(commandID)+len(inputsJSON))
-	buf[0] = byte(len(commandID) >> 8)
-	buf[1] = byte(len(commandID))
-	off := 2
+// execInviteRecordV2Marker flags the versioned (TTL-carrying) payload shape
+// below -- the same "impossible v1 length" trick CreateCommandWithSpec's own
+// v2 payload uses (see that function's doc comment): a real commandID never
+// approaches 0xFFFF bytes, so a v1 reader would only ever see this value if
+// the payload actually is v2.
+const execInviteRecordV2Marker = 0xFFFF
+
+// EncodeExecInviteRecord packs the commandID, inputsJSON, and expiresAtUnix
+// (0 meaning no expiry) a KindExecInvite record grants into its stored
+// value. expiresAtUnix==0 is written in the original v1 shape, byte for
+// byte -- a 2-byte big-endian length prefix for commandID, then commandID,
+// then inputsJSON verbatim (trailing field, no prefix needed), the same
+// shape EncodeCommandPayload uses for its own name+peerID pair -- so an
+// invite with no TTL (the default) costs nothing extra on the wire or in
+// the store, and every already-replicated pre-TTL record still decodes
+// unchanged. A nonzero expiresAtUnix instead writes execInviteRecordV2Marker,
+// followed by an 8-byte big-endian expiresAtUnix, then the real 2-byte
+// commandID length, then commandID, then inputsJSON.
+func EncodeExecInviteRecord(commandID, inputsJSON string, expiresAtUnix uint64) []byte {
+	if expiresAtUnix == 0 {
+		buf := make([]byte, 2+len(commandID)+len(inputsJSON))
+		buf[0] = byte(len(commandID) >> 8)
+		buf[1] = byte(len(commandID))
+		off := 2
+		off += copy(buf[off:], commandID)
+		copy(buf[off:], inputsJSON)
+		return buf
+	}
+	buf := make([]byte, 2+8+2+len(commandID)+len(inputsJSON))
+	buf[0], buf[1] = 0xFF, 0xFF // execInviteRecordV2Marker
+	binary.BigEndian.PutUint64(buf[2:10], expiresAtUnix)
+	buf[10] = byte(len(commandID) >> 8)
+	buf[11] = byte(len(commandID))
+	off := 12
 	off += copy(buf[off:], commandID)
 	copy(buf[off:], inputsJSON)
 	return buf
 }
 
 // DecodeExecInviteRecord is the inverse of EncodeExecInviteRecord.
-func DecodeExecInviteRecord(payload []byte) (commandID, inputsJSON string, err error) {
+// expiresAtUnix is 0 for a v1 (no-TTL) record.
+func DecodeExecInviteRecord(payload []byte) (commandID, inputsJSON string, expiresAtUnix uint64, err error) {
 	if len(payload) < 2 {
-		return "", "", fmt.Errorf("shmevent: exec invite record too short: %d bytes", len(payload))
+		return "", "", 0, fmt.Errorf("shmevent: exec invite record too short: %d bytes", len(payload))
 	}
 	cmdLen := int(payload[0])<<8 | int(payload[1])
+	if cmdLen == execInviteRecordV2Marker {
+		if len(payload) < 12 {
+			return "", "", 0, fmt.Errorf("shmevent: exec invite record too short for v2 header: %d bytes", len(payload))
+		}
+		expiresAtUnix = binary.BigEndian.Uint64(payload[2:10])
+		realCmdLen := int(payload[10])<<8 | int(payload[11])
+		off := 12
+		if off+realCmdLen > len(payload) {
+			return "", "", 0, fmt.Errorf("shmevent: exec invite record commandID length %d exceeds payload size %d", realCmdLen, len(payload))
+		}
+		commandID = string(payload[off : off+realCmdLen])
+		off += realCmdLen
+		return commandID, string(payload[off:]), expiresAtUnix, nil
+	}
 	off := 2
 	if off+cmdLen > len(payload) {
-		return "", "", fmt.Errorf("shmevent: exec invite record commandID length %d exceeds payload size %d", cmdLen, len(payload))
+		return "", "", 0, fmt.Errorf("shmevent: exec invite record commandID length %d exceeds payload size %d", cmdLen, len(payload))
 	}
 	commandID = string(payload[off : off+cmdLen])
 	off += cmdLen
-	return commandID, string(payload[off:]), nil
+	return commandID, string(payload[off:]), 0, nil
 }
 
 // NewExecInviteCreate builds an execInviteCreate Msg: mints a one-time
-// execution-invite token bound to commandID/inputsJSON.
-func NewExecInviteCreate(token []byte, commandID, inputsJSON string) (Msg, error) {
+// execution-invite token bound to commandID/inputsJSON. ttlSeconds is how
+// long the invite stays redeemable from the moment this create is applied,
+// 0 meaning no expiry (the default) -- see pkg/daemon's
+// Event_Which_execInviteCreate handler for where that gets turned into the
+// absolute expiresAtUnix actually persisted (shmevent.EncodeExecInviteRecord),
+// and kvfsm.OpConsumeExecInvite for where it's enforced.
+func NewExecInviteCreate(token []byte, commandID, inputsJSON string, ttlSeconds uint64) (Msg, error) {
 	if len(token) != ExecInviteTokenSize {
 		return Msg{}, fmt.Errorf("shmevent: exec invite token must be %d bytes, got %d", ExecInviteTokenSize, len(token))
 	}
@@ -72,6 +119,7 @@ func NewExecInviteCreate(token []byte, commandID, inputsJSON string) (Msg, error
 	if err := grp.SetInputsJson(inputsJSON); err != nil {
 		return Msg{}, fmt.Errorf("shmevent: new_exec_invite_create: %w", err)
 	}
+	grp.SetTtlSeconds(ttlSeconds)
 	return m, nil
 }
 

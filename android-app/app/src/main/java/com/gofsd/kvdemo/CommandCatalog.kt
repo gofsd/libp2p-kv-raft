@@ -548,8 +548,10 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     // printexecinvitedatamatrix equivalent here: CreateExecInvite returns
     // the raw tokenHex, and a real app combines it with its own
     // advertised multiaddr and renders/scans the barcode itself.
-    add("ExecInvite", "CreateExecInvite", listOf("commandID", "inputsJSON")) { a ->
-        Kvmobile.createExecInvite(a[0], a[1])
+    // ttlSeconds is how long the invite stays redeemable, 0 meaning no
+    // expiry (the default).
+    add("ExecInvite", "CreateExecInvite", listOf("commandID", "inputsJSON", "ttlSeconds (0=never)")) { a ->
+        Kvmobile.createExecInvite(a[0], a[1], a[2].toLongOrThrow("ttlSeconds"))
     }
     add("ExecInvite", "RevokeExecInvite", listOf("tokenHex")) { a -> Kvmobile.revokeExecInvite(a[0]); ok() }
     add("ExecInvite", "RedeemExecInvite", listOf("sourceAddr#tokenHex")) { a -> Kvmobile.redeemExecInvite(a[0]) }
@@ -560,8 +562,8 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     // verify it really came from this device before ever dialing it.
     // RedeemExecInviteTicket verifies then redeems in one call, exactly
     // like RedeemExecInvite does for a plain ticket.
-    add("ExecInvite", "CreateExecInviteTicket", listOf("commandID", "inputsJSON")) { a ->
-        Kvmobile.createExecInviteTicket(a[0], a[1])
+    add("ExecInvite", "CreateExecInviteTicket", listOf("commandID", "inputsJSON", "ttlSeconds (0=never)")) { a ->
+        Kvmobile.createExecInviteTicket(a[0], a[1], a[2].toLongOrThrow("ttlSeconds"))
     }
     add("ExecInvite", "RedeemExecInviteTicket", listOf("ticketB64")) { a -> Kvmobile.redeemExecInviteTicket(a[0]) }
 

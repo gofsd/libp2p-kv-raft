@@ -29,31 +29,61 @@ func TestExecInviteKeyLayout(t *testing.T) {
 }
 
 func TestExecInviteRecordRoundTrip(t *testing.T) {
-	payload := EncodeExecInviteRecord("cmd-1", `{"a":1}`)
-	gotCommandID, gotInputs, err := DecodeExecInviteRecord(payload)
+	payload := EncodeExecInviteRecord("cmd-1", `{"a":1}`, 0)
+	gotCommandID, gotInputs, gotExpiresAt, err := DecodeExecInviteRecord(payload)
 	if err != nil {
 		t.Fatalf("DecodeExecInviteRecord: %v", err)
 	}
-	if gotCommandID != "cmd-1" || gotInputs != `{"a":1}` {
-		t.Fatalf("got commandID=%q inputs=%q, want commandID=%q inputs=%q", gotCommandID, gotInputs, "cmd-1", `{"a":1}`)
+	if gotCommandID != "cmd-1" || gotInputs != `{"a":1}` || gotExpiresAt != 0 {
+		t.Fatalf("got commandID=%q inputs=%q expiresAt=%d, want commandID=%q inputs=%q expiresAt=0", gotCommandID, gotInputs, gotExpiresAt, "cmd-1", `{"a":1}`)
 	}
 
 	// Empty inputsJSON must round-trip too, since SubmitCommand-style
 	// callers may omit inputs entirely.
-	payload = EncodeExecInviteRecord("cmd-2", "")
-	gotCommandID, gotInputs, err = DecodeExecInviteRecord(payload)
+	payload = EncodeExecInviteRecord("cmd-2", "", 0)
+	gotCommandID, gotInputs, gotExpiresAt, err = DecodeExecInviteRecord(payload)
 	if err != nil {
 		t.Fatalf("DecodeExecInviteRecord (empty inputs): %v", err)
 	}
-	if gotCommandID != "cmd-2" || gotInputs != "" {
-		t.Fatalf("got commandID=%q inputs=%q, want commandID=%q inputs=%q", gotCommandID, gotInputs, "cmd-2", "")
+	if gotCommandID != "cmd-2" || gotInputs != "" || gotExpiresAt != 0 {
+		t.Fatalf("got commandID=%q inputs=%q expiresAt=%d, want commandID=%q inputs=%q expiresAt=0", gotCommandID, gotInputs, gotExpiresAt, "cmd-2", "")
 	}
 
-	if _, _, err := DecodeExecInviteRecord(nil); err == nil {
+	if _, _, _, err := DecodeExecInviteRecord(nil); err == nil {
 		t.Fatal("DecodeExecInviteRecord unexpectedly accepted an empty payload")
 	}
-	if _, _, err := DecodeExecInviteRecord([]byte{0, 5}); err == nil {
+	if _, _, _, err := DecodeExecInviteRecord([]byte{0, 5}); err == nil {
 		t.Fatal("DecodeExecInviteRecord unexpectedly accepted a truncated payload")
+	}
+}
+
+// TestExecInviteRecordTTLRoundTrip exercises the versioned (nonzero
+// expiresAtUnix) payload shape: EncodeExecInviteRecord's v1/v2 split must be
+// transparent to the caller, and a v1 (no-TTL) record must stay byte-for-byte
+// identical to what it was before TTLs existed -- an already-replicated
+// pre-TTL record must still decode as expiresAtUnix==0.
+func TestExecInviteRecordTTLRoundTrip(t *testing.T) {
+	const wantExpiresAt = uint64(1234567890)
+	payload := EncodeExecInviteRecord("cmd-1", `{"a":1}`, wantExpiresAt)
+	gotCommandID, gotInputs, gotExpiresAt, err := DecodeExecInviteRecord(payload)
+	if err != nil {
+		t.Fatalf("DecodeExecInviteRecord: %v", err)
+	}
+	if gotCommandID != "cmd-1" || gotInputs != `{"a":1}` || gotExpiresAt != wantExpiresAt {
+		t.Fatalf("got commandID=%q inputs=%q expiresAt=%d, want commandID=%q inputs=%q expiresAt=%d", gotCommandID, gotInputs, gotExpiresAt, "cmd-1", `{"a":1}`, wantExpiresAt)
+	}
+
+	noTTL := EncodeExecInviteRecord("cmd-1", `{"a":1}`, 0)
+	if len(noTTL) >= len(payload) {
+		t.Fatalf("expiresAtUnix=0 payload (%d bytes) should be shorter than a TTL-carrying one (%d bytes)", len(noTTL), len(payload))
+	}
+	// The exact pre-TTL v1 shape: 2-byte commandID length, commandID,
+	// inputsJSON -- see EncodeExecInviteRecord's own doc comment.
+	wantV1 := []byte{0, byte(len("cmd-1"))}
+	wantV1 = append(wantV1, "cmd-1"...)
+	wantV1 = append(wantV1, `{"a":1}`...)
+	if !bytes.Equal(noTTL, wantV1) {
+		t.Fatalf("expiresAtUnix=0 payload %x diverged from the original v1 encoding %x", noTTL, wantV1)
 	}
 }
 
@@ -65,7 +95,7 @@ func TestExecInviteRecordRoundTrip(t *testing.T) {
 // same wrong-size-token rejection the old encoder had.
 func TestExecInviteCreatePayloadRoundTrip(t *testing.T) {
 	token := randomExecInviteToken(t)
-	m, err := NewExecInviteCreate(token, "cmd-1", `{"a":1}`)
+	m, err := NewExecInviteCreate(token, "cmd-1", `{"a":1}`, 3600)
 	if err != nil {
 		t.Fatalf("NewExecInviteCreate: %v", err)
 	}
@@ -87,8 +117,20 @@ func TestExecInviteCreatePayloadRoundTrip(t *testing.T) {
 	if gotCommandID != "cmd-1" || gotInputs != `{"a":1}` {
 		t.Fatalf("got commandID=%q inputs=%q, want commandID=%q inputs=%q", gotCommandID, gotInputs, "cmd-1", `{"a":1}`)
 	}
+	if got := m.ExecInviteCreate().TtlSeconds(); got != 3600 {
+		t.Fatalf("got ttlSeconds=%d, want 3600", got)
+	}
 
-	if _, err := NewExecInviteCreate([]byte("too-short"), "cmd-1", ""); err == nil {
+	// ttlSeconds==0 (the default, no expiry) must round-trip too.
+	mNoTTL, err := NewExecInviteCreate(token, "cmd-1", `{"a":1}`, 0)
+	if err != nil {
+		t.Fatalf("NewExecInviteCreate (no TTL): %v", err)
+	}
+	if got := mNoTTL.ExecInviteCreate().TtlSeconds(); got != 0 {
+		t.Fatalf("got ttlSeconds=%d, want 0", got)
+	}
+
+	if _, err := NewExecInviteCreate([]byte("too-short"), "cmd-1", "", 0); err == nil {
 		t.Fatal("NewExecInviteCreate unexpectedly accepted a wrong-size token")
 	}
 }

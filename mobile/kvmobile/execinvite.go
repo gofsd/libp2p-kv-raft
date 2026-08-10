@@ -31,12 +31,13 @@ import (
 // CreateExecInvite generates a fresh, cryptographically random one-time
 // execution-invite token and lodges it as a shmevent.KindExecInvite
 // record on this device's own daemon, binding commandID+inputsJSON
-// (inputsJSON may be ""). Returns the token hex-encoded -- append it to
-// this device's own advertised multiaddr as "<multiaddr>#<tokenHex>" for
-// a redeeming peer to scan and pass to RedeemExecInvite. Only takes
-// effect if this device is itself a raft voter -- see
-// shmevent.EventExecInviteCreate's doc comment.
-func CreateExecInvite(commandID, inputsJSON string) (string, error) {
+// (inputsJSON may be ""). ttlSeconds is how long the invite stays
+// redeemable, 0 meaning no expiry (the default). Returns the token
+// hex-encoded -- append it to this device's own advertised multiaddr as
+// "<multiaddr>#<tokenHex>" for a redeeming peer to scan and pass to
+// RedeemExecInvite. Only takes effect if this device is itself a raft
+// voter -- see shmevent.EventExecInviteCreate's doc comment.
+func CreateExecInvite(commandID, inputsJSON string, ttlSeconds int) (string, error) {
 	token := make([]byte, shmevent.ExecInviteTokenSize)
 	if _, err := rand.Read(token); err != nil {
 		return "", fmt.Errorf("kvmobile: generate exec invite token: %w", err)
@@ -49,7 +50,7 @@ func CreateExecInvite(commandID, inputsJSON string) (string, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
-	if err := sess.CreateExecInvite(ctx, token, commandID, inputsJSON); err != nil {
+	if err := sess.CreateExecInvite(ctx, token, commandID, inputsJSON, uint64(ttlSeconds)); err != nil {
 		return "", fmt.Errorf("kvmobile: create exec invite: %w", err)
 	}
 	return hex.EncodeToString(token), nil
@@ -123,8 +124,9 @@ func RedeemExecInvite(sourceAddrAndToken string) (string, error) {
 // rendered barcode itself). Unlike the bare tokenHex CreateExecInvite
 // returns, a redeeming peer can verify this ticket really came from this
 // device before ever dialing it -- see shmevent.EventExecTicket's doc
-// comment.
-func CreateExecInviteTicket(commandID, inputsJSON string) (string, error) {
+// comment. ttlSeconds is how long the invite stays redeemable, 0 meaning
+// no expiry (the default), same as CreateExecInvite.
+func CreateExecInviteTicket(commandID, inputsJSON string, ttlSeconds int) (string, error) {
 	token := make([]byte, shmevent.ExecInviteTokenSize)
 	if _, err := rand.Read(token); err != nil {
 		return "", fmt.Errorf("kvmobile: generate exec invite token: %w", err)
@@ -137,7 +139,7 @@ func CreateExecInviteTicket(commandID, inputsJSON string) (string, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
-	if err := sess.CreateExecInvite(ctx, token, commandID, inputsJSON); err != nil {
+	if err := sess.CreateExecInvite(ctx, token, commandID, inputsJSON, uint64(ttlSeconds)); err != nil {
 		return "", fmt.Errorf("kvmobile: create exec invite ticket: %w", err)
 	}
 

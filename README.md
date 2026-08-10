@@ -1333,14 +1333,15 @@ Data Matrix barcode) — modeled closely on `KindJoinInvite` above, but for trig
 instead of admitting a device:
 
 ```bash
-mage createexecinvite c1 '{"qty":"20"}'                      # (on a current voter) prints a fresh tokenHex
+mage createexecinvite c1 '{"qty":"20"}' ""                   # (on a current voter) prints a fresh tokenHex, no expiry
 kvctl-cli printexecinvitedatamatrix <sourceMultiaddr> <tokenHex> <outFile.png>   # barcode it
 mage redeemexecinvite "<sourceMultiaddr>#<tokenHex>"          # the redeeming peer, elsewhere, scans & runs this
 mage revokeexecinvite <tokenHex>                              # invalidate one before it's ever redeemed
 ```
 
 `createexecinvite` binds `commandID`+`inputsJSON` to a random 16-byte token (only a current raft
-voter may do this); `printexecinvitedatamatrix` barcodes the plain string
+voter may do this); the trailing `ttlSeconds` arg (`""`/`0` = never expires, see below) is required
+positionally the same way `rangescan`'s `limit` is. `printexecinvitedatamatrix` barcodes the plain string
 `"<sourceMultiaddr>#<tokenHex>"` (not a signed event — the token itself is the credential, same
 reasoning as `printjoininvitedatamatrix`). `redeemexecinvite`, run on the *redeeming* peer's own
 node, splits that string, then has its own daemon sign a small self-contained message with its own
@@ -1362,6 +1363,27 @@ invite, so a legitimate peer can still redeem it afterward; only a successful, p
 burns the ticket. On success, `redeemexecinvite` prints a new instance id — track it with
 `getcommandrequest`/`querycommandlog`/`latestcommandlog` against the target's own node, same as any
 other `submitcommand` dispatch.
+
+**TTL.** `createexecinvite`/`createexecinviteticket` (and their `kvctl-cli`/`kvmobile` equivalents)
+take an optional `ttlSeconds`, defaulting to `0` — no expiry, the same unbounded lifetime this
+feature always had. A nonzero value is a relative duration measured from creation; what's actually
+committed to the raft log is an *absolute* `expiresAtUnix` (`shmevent.EncodeExecInviteRecord`),
+computed once, from the receiving voter's own clock, at the moment it accepts the create request —
+never a relative countdown replayed independently by each replica, which would drift with clock
+skew. `kvfsm.OpConsumeExecInvite` enforces it by comparing that stored value against
+`raft.Log.AppendedAt`, the leader's own append-time clock reading, replicated as part of the log
+entry itself — so every replica's Apply sees the identical timestamp and reaches the identical
+expired/not-expired verdict, the same determinism guarantee every other `Apply` case here already
+relies on. An expired invite is deleted the moment a redemption attempt hits it (same as a
+successful one) rather than left to accumulate, since time only moves forward and it can never
+become redeemable again; an *unexpired* invite that fails its ACL check is, as above, left in
+place. A record with no TTL is written and replicated byte-for-byte identically to how it always
+was — an existing deployment upgrading to this feature pays nothing for invites that never opt in.
+
+```bash
+mage createexecinvite c1 '{"qty":"20"}' 300     # redeemable for 5 minutes, then gone
+kvctl-cli createexecinvite c1 '{"qty":"20"}' -ttl 300
+```
 
 ### Signed tickets: proving a barcode really came from who it claims
 

@@ -50,7 +50,7 @@ func setUpExecInviteOnLeader(t *testing.T, leaderPeerID, commandID, groupID, red
 			t.Fatalf("PutPeerGroup: %v", err)
 		}
 	}
-	if err := sess.CreateExecInvite(ctx, token, commandID, inputsJSON); err != nil {
+	if err := sess.CreateExecInvite(ctx, token, commandID, inputsJSON, 0); err != nil {
 		t.Fatalf("CreateExecInvite: %v", err)
 	}
 }
@@ -175,7 +175,7 @@ func TestCreateExecInviteRevokeExecInvite(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	tokenHex, err := CreateExecInvite("cmd-self", `{"a":1}`)
+	tokenHex, err := CreateExecInvite("cmd-self", `{"a":1}`, 0)
 	if err != nil {
 		t.Fatalf("CreateExecInvite: %v", err)
 	}

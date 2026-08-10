@@ -643,11 +643,12 @@ func (s *Session) Recruit(ctx context.Context, ticket string, suffrage byte) (st
 }
 
 // CreateExecInvite lodges a one-time shmevent.KindExecInvite record for
-// token, binding commandID+inputsJSON, on the session's node. Only a
-// current raft voter may do this -- see execInviteCreate's doc comment in
-// api/shmevent.capnp.
-func (s *Session) CreateExecInvite(ctx context.Context, token []byte, commandID, inputsJSON string) error {
-	m, err := shmevent.NewExecInviteCreate(token, commandID, inputsJSON)
+// token, binding commandID+inputsJSON, on the session's node. ttlSeconds is
+// how long the invite stays redeemable, 0 meaning no expiry (the default).
+// Only a current raft voter may do this -- see execInviteCreate's doc
+// comment in api/shmevent.capnp.
+func (s *Session) CreateExecInvite(ctx context.Context, token []byte, commandID, inputsJSON string, ttlSeconds uint64) error {
+	m, err := shmevent.NewExecInviteCreate(token, commandID, inputsJSON, ttlSeconds)
 	if err != nil {
 		return fmt.Errorf("shmclient: exec_invite_create: %w", err)
 	}

@@ -55,7 +55,7 @@ func TestCreateExecInviteTicketIsVerifiable(t *testing.T) {
 	}
 	selfPeerID := PeerID()
 
-	ticketB64, err := CreateExecInviteTicket("cmd-self-ticket", `{"a":1}`)
+	ticketB64, err := CreateExecInviteTicket("cmd-self-ticket", `{"a":1}`, 0)
 	if err != nil {
 		t.Fatalf("CreateExecInviteTicket: %v", err)
 	}

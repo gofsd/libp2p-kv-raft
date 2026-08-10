@@ -4,6 +4,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/raft"
 
@@ -25,7 +26,15 @@ func newExecInviteTestFSM(t *testing.T) (*kvfsm.FSM, *store.Store) {
 
 func applyExecInvite(t *testing.T, f *kvfsm.FSM, op kvfsm.OpType, key, value []byte) kvfsm.ApplyResult {
 	t.Helper()
-	res, ok := f.Apply(&raft.Log{Data: kvfsm.EncodeCommand(op, key, value)}).(kvfsm.ApplyResult)
+	return applyExecInviteAt(t, f, op, key, value, time.Time{})
+}
+
+// applyExecInviteAt is applyExecInvite with an explicit raft.Log.AppendedAt
+// -- the "deterministic now" OpConsumeExecInvite's TTL check compares a
+// stored expiresAtUnix against (see that case's own doc comment in fsm.go).
+func applyExecInviteAt(t *testing.T, f *kvfsm.FSM, op kvfsm.OpType, key, value []byte, appendedAt time.Time) kvfsm.ApplyResult {
+	t.Helper()
+	res, ok := f.Apply(&raft.Log{Data: kvfsm.EncodeCommand(op, key, value), AppendedAt: appendedAt}).(kvfsm.ApplyResult)
 	if !ok {
 		t.Fatalf("Apply did not return kvfsm.ApplyResult")
 	}
@@ -75,8 +84,15 @@ func grantPublicCommandAccess(t *testing.T, f *kvfsm.FSM, commandID, groupID str
 
 func setExecInvite(t *testing.T, f *kvfsm.FSM, token []byte, commandID, inputsJSON string) []byte {
 	t.Helper()
+	return setExecInviteWithTTL(t, f, token, commandID, inputsJSON, 0)
+}
+
+// setExecInviteWithTTL is setExecInvite with an explicit expiresAtUnix (0
+// meaning no expiry, same as setExecInvite).
+func setExecInviteWithTTL(t *testing.T, f *kvfsm.FSM, token []byte, commandID, inputsJSON string, expiresAtUnix uint64) []byte {
+	t.Helper()
 	key := shmevent.ExecInviteKey(token)
-	if res := applyExecInvite(t, f, kvfsm.OpSet, key, shmevent.EncodeExecInviteRecord(commandID, inputsJSON)); res.Err != nil {
+	if res := applyExecInvite(t, f, kvfsm.OpSet, key, shmevent.EncodeExecInviteRecord(commandID, inputsJSON, expiresAtUnix)); res.Err != nil {
 		t.Fatalf("Apply OpSet ExecInvite: %v", res.Err)
 	}
 	return key
@@ -97,7 +113,7 @@ func TestApplyOpConsumeExecInvitePermittedRedeemDeletesAndReturnsRecord(t *testi
 	if res.Err != nil {
 		t.Fatalf("Apply OpConsumeExecInvite: %v", res.Err)
 	}
-	gotCommandID, gotInputs, err := shmevent.DecodeExecInviteRecord(res.Value)
+	gotCommandID, gotInputs, _, err := shmevent.DecodeExecInviteRecord(res.Value)
 	if err != nil {
 		t.Fatalf("DecodeExecInviteRecord: %v", err)
 	}
@@ -126,7 +142,7 @@ func TestApplyOpConsumeExecInvitePublicGroupPermitsWithNoPeerGroupRecord(t *test
 	if res.Err != nil {
 		t.Fatalf("Apply OpConsumeExecInvite: %v", res.Err)
 	}
-	gotCommandID, gotInputs, err := shmevent.DecodeExecInviteRecord(res.Value)
+	gotCommandID, gotInputs, _, err := shmevent.DecodeExecInviteRecord(res.Value)
 	if err != nil {
 		t.Fatalf("DecodeExecInviteRecord: %v", err)
 	}
@@ -208,5 +224,61 @@ func TestApplyOpConsumeExecInviteNoSuchInviteFails(t *testing.T) {
 	res := applyExecInvite(t, f, kvfsm.OpConsumeExecInvite, key, []byte("peerA"))
 	if res.Err == nil {
 		t.Fatal("Apply OpConsumeExecInvite on a never-created invite unexpectedly succeeded")
+	}
+}
+
+// TestApplyOpConsumeExecInviteExpiredFailsAndDeletesInvite checks the TTL
+// half of OpConsumeExecInvite's contract: even an otherwise-permitted
+// redemption is rejected once the raft log entry consuming it is applied at
+// or after the invite's own stored expiresAtUnix -- and, unlike an
+// ACL-denied attempt (which leaves the invite in place for a legitimate
+// peer to retry), an expired invite is deleted immediately, since time only
+// moves forward and it can never become redeemable again.
+func TestApplyOpConsumeExecInviteExpiredFailsAndDeletesInvite(t *testing.T) {
+	f, s := newExecInviteTestFSM(t)
+
+	grantCommandAccess(t, f, "cmd-1", "group-1", "peerA")
+	token := []byte("0123456789abcdef")
+	expiresAt := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	key := setExecInviteWithTTL(t, f, token, "cmd-1", `{"x":1}`, uint64(expiresAt.Unix()))
+
+	// Applied exactly at the expiry instant: OpConsumeExecInvite's
+	// >= comparison must already treat this as expired.
+	res := applyExecInviteAt(t, f, kvfsm.OpConsumeExecInvite, key, []byte("peerA"), expiresAt)
+	if res.Err == nil {
+		t.Fatal("Apply OpConsumeExecInvite on an expired invite unexpectedly succeeded")
+	}
+
+	if _, err := s.Get(key); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("invite key: got %v, want ErrNotFound (an expired invite must be deleted, same as a consumed one)", err)
+	}
+}
+
+// TestApplyOpConsumeExecInviteNotYetExpiredSucceeds is the TTL check's
+// complement: a redemption applied strictly before the stored expiresAtUnix
+// must still succeed normally, confirming the check doesn't reject a
+// still-valid, TTL-bearing invite.
+func TestApplyOpConsumeExecInviteNotYetExpiredSucceeds(t *testing.T) {
+	f, s := newExecInviteTestFSM(t)
+
+	grantCommandAccess(t, f, "cmd-1", "group-1", "peerA")
+	token := []byte("0123456789abcdef")
+	expiresAt := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	key := setExecInviteWithTTL(t, f, token, "cmd-1", `{"x":1}`, uint64(expiresAt.Unix()))
+
+	res := applyExecInviteAt(t, f, kvfsm.OpConsumeExecInvite, key, []byte("peerA"), expiresAt.Add(-time.Second))
+	if res.Err != nil {
+		t.Fatalf("Apply OpConsumeExecInvite before expiry: %v", res.Err)
+	}
+	gotCommandID, gotInputs, _, err := shmevent.DecodeExecInviteRecord(res.Value)
+	if err != nil {
+		t.Fatalf("DecodeExecInviteRecord: %v", err)
+	}
+	if gotCommandID != "cmd-1" || gotInputs != `{"x":1}` {
+		t.Fatalf("got commandID=%q inputs=%q, want commandID=%q inputs=%q", gotCommandID, gotInputs, "cmd-1", `{"x":1}`)
+	}
+
+	if _, err := s.Get(key); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("invite key: got %v, want ErrNotFound (should be deleted after a permitted consume)", err)
 	}
 }
