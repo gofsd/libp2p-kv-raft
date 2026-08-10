@@ -10,7 +10,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-capnp = "0.26.2"
+capnp = "0.27.0"
 console_error_panic_hook = "0.1.7"
 crc32fast = "1.5.0"
 ed25519-dalek = { version = "3.0.0", features = ["rand_core"] }
