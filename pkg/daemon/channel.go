@@ -531,7 +531,7 @@ func (n *Node) dispatchChannelOpen(ctx context.Context, destPeerIDStr string) (s
 	// entire IPC Serve loop indefinitely, not just this one call. Bound it
 	// to streamRequestTimeout, the same budget the handshake right below
 	// already gets.
-	dialCtx, dialCancel := context.WithTimeout(ctx, streamRequestTimeout)
+	dialCtx, dialCancel := context.WithTimeout(ctx, n.streamRequestTimeout())
 	// dest is caller-supplied and not necessarily a raft member -- same
 	// reasoning as sendExecute's own relayCtx: without this, a dest
 	// reachable only through a /p2p-circuit address hangs until dialCtx's
@@ -548,7 +548,7 @@ func (n *Node) dispatchChannelOpen(ctx context.Context, destPeerIDStr string) (s
 	// handshake succeeds, before handing the stream to pumpChannelReads'
 	// intentionally long-lived read loop -- see streamRequestTimeout's
 	// doc comment.
-	_ = s.SetDeadline(time.Now().Add(streamRequestTimeout))
+	_ = s.SetDeadline(time.Now().Add(n.streamRequestTimeout()))
 
 	notif, err := shmevent.NewChannelOpenHandshake(n.peerID)
 	if err != nil {
@@ -927,7 +927,7 @@ func (n *Node) dispatchChannelDataReady(ctx context.Context, channelID string) e
 	if !ok {
 		return fmt.Errorf("channel: no such channel %q", channelID)
 	}
-	openCtx, cancel := context.WithTimeout(context.Background(), streamRequestTimeout)
+	openCtx, cancel := context.WithTimeout(context.Background(), n.streamRequestTimeout())
 	defer cancel()
 	r, err := chandata.Open(openCtx, n.peerID, channelID, chandata.DirUp)
 	if err != nil {
@@ -961,7 +961,7 @@ func (n *Node) dispatchChannelCloseWrite(ctx context.Context, channelID string) 
 		return nil
 	}
 	if sess.hasUploadRing() {
-		drainCtx, cancel := context.WithTimeout(context.Background(), streamRequestTimeout)
+		drainCtx, cancel := context.WithTimeout(context.Background(), n.streamRequestTimeout())
 		defer cancel()
 		select {
 		case <-sess.uploadDrained:

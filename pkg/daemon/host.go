@@ -19,6 +19,15 @@ import (
 	"github.com/gofsd/libp2p-kv-raft/pkg/store"
 )
 
+// streamRequestTimeoutMultiplier scales streamRequestTimeout off the same
+// n.electionTimeout every raft-facing wait in this package already scales
+// off (5x/10x in forward.go/daemon.go) -- hashicorp/raft's default
+// ElectionTimeout is 1s, so 30x preserves today's fixed 30s default exactly
+// while still giving a WAN deployment with a longer configured election
+// timeout proportionally more slack for its forward/join/recruit/
+// exec-invite streams too.
+const streamRequestTimeoutMultiplier = 30
+
 // streamRequestTimeout bounds how long any stream protocol handler
 // registered below waits for its peer to finish sending its request
 // before giving up. Every handler reads its request via some blocking
@@ -36,6 +45,11 @@ import (
 // short enough that a truly abandoned stream's goroutine exits within
 // seconds, not indefinitely.
 //
+// n.electionTimeout is only set once initRaft runs, so a stream handled
+// before that (a narrow window right after newHost registers these
+// handlers, before start finishes bootstrapping raft) falls back to the
+// same fixed 30s instead of a degenerate zero-timeout close.
+//
 // handleChannelStream/dispatchChannelOpen are the one exception: each
 // clears this deadline itself (SetDeadline(time.Time{})) right after its
 // initial handshake succeeds, before handing the stream off to
@@ -43,15 +57,20 @@ import (
 // meant to sit idle between chunks for arbitrary periods (bounded instead
 // by channelIdleTimeout via channelTable.reap), not by this one-shot
 // per-request budget.
-const streamRequestTimeout = 30 * time.Second
+func (n *Node) streamRequestTimeout() time.Duration {
+	if n.electionTimeout <= 0 {
+		return 30 * time.Second
+	}
+	return streamRequestTimeoutMultiplier * n.electionTimeout
+}
 
 // withStreamRequestDeadline wraps handler so its stream has
-// streamRequestTimeout to complete before whatever blocking read it does
-// can hang forever on a peer that opened the stream and never finished
-// sending anything -- see streamRequestTimeout's doc comment.
-func withStreamRequestDeadline(handler network.StreamHandler) network.StreamHandler {
+// n.streamRequestTimeout() to complete before whatever blocking read it
+// does can hang forever on a peer that opened the stream and never
+// finished sending anything -- see streamRequestTimeout's doc comment.
+func (n *Node) withStreamRequestDeadline(handler network.StreamHandler) network.StreamHandler {
 	return func(s network.Stream) {
-		_ = s.SetDeadline(time.Now().Add(streamRequestTimeout))
+		_ = s.SetDeadline(time.Now().Add(n.streamRequestTimeout()))
 		handler(s)
 	}
 }

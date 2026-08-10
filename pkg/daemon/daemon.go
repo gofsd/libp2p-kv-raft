@@ -665,18 +665,18 @@ func start(cfg Config) (*Node, error) {
 		logStore:     logStore,
 		snapStore:    snapStore,
 	}
-	h.SetStreamHandler(JoinProtocolID, withStreamRequestDeadline(n.handleJoinStream))
-	h.SetStreamHandler(ForwardProtocolID, withStreamRequestDeadline(n.handleForwardSetStream))
-	h.SetStreamHandler(ForwardConfirmProtocolID, withStreamRequestDeadline(n.handleForwardConfirmStream))
-	h.SetStreamHandler(ExecuteProtocolID, withStreamRequestDeadline(n.handleExecuteStream))
-	h.SetStreamHandler(ChannelProtocolID, withStreamRequestDeadline(n.handleChannelStream))
-	h.SetStreamHandler(ForwardJoinProtocolID, withStreamRequestDeadline(n.handleForwardJoinStream))
-	h.SetStreamHandler(ForwardLeaveProtocolID, withStreamRequestDeadline(n.handleForwardLeaveStream))
-	h.SetStreamHandler(ForwardKickProtocolID, withStreamRequestDeadline(n.handleForwardKickStream))
-	h.SetStreamHandler(ClientProtocolID, withStreamRequestDeadline(n.handleClientStream))
-	h.SetStreamHandler(ExecInviteRedeemProtocolID, withStreamRequestDeadline(n.handleExecInviteRedeemStream))
-	h.SetStreamHandler(ForwardExecInviteRedeemProtocolID, withStreamRequestDeadline(n.handleForwardExecInviteRedeemStream))
-	h.SetStreamHandler(RecruitProtocolID, withStreamRequestDeadline(n.handleRecruitStream))
+	h.SetStreamHandler(JoinProtocolID, n.withStreamRequestDeadline(n.handleJoinStream))
+	h.SetStreamHandler(ForwardProtocolID, n.withStreamRequestDeadline(n.handleForwardSetStream))
+	h.SetStreamHandler(ForwardConfirmProtocolID, n.withStreamRequestDeadline(n.handleForwardConfirmStream))
+	h.SetStreamHandler(ExecuteProtocolID, n.withStreamRequestDeadline(n.handleExecuteStream))
+	h.SetStreamHandler(ChannelProtocolID, n.withStreamRequestDeadline(n.handleChannelStream))
+	h.SetStreamHandler(ForwardJoinProtocolID, n.withStreamRequestDeadline(n.handleForwardJoinStream))
+	h.SetStreamHandler(ForwardLeaveProtocolID, n.withStreamRequestDeadline(n.handleForwardLeaveStream))
+	h.SetStreamHandler(ForwardKickProtocolID, n.withStreamRequestDeadline(n.handleForwardKickStream))
+	h.SetStreamHandler(ClientProtocolID, n.withStreamRequestDeadline(n.handleClientStream))
+	h.SetStreamHandler(ExecInviteRedeemProtocolID, n.withStreamRequestDeadline(n.handleExecInviteRedeemStream))
+	h.SetStreamHandler(ForwardExecInviteRedeemProtocolID, n.withStreamRequestDeadline(n.handleForwardExecInviteRedeemStream))
+	h.SetStreamHandler(RecruitProtocolID, n.withStreamRequestDeadline(n.handleRecruitStream))
 
 	// forgetTransientPeer's disconnect hook -- see that method's doc
 	// comment for why this (plus newHost's ConnectionManager) exists.
@@ -3021,7 +3021,7 @@ func (n *Node) dialAndPushRecruit(ctx context.Context, ticket string, suffrage b
 	// doesn't observe ctx, so without a deadline of its own a device that
 	// dies mid-join leaves this waiting forever. Matches the budget the
 	// responder gives itself (handleRecruitStream), plus the same margin.
-	_ = s.SetDeadline(time.Now().Add(recruitJoinTimeout + streamRequestTimeout))
+	_ = s.SetDeadline(time.Now().Add(recruitJoinTimeout + n.streamRequestTimeout()))
 
 	reqLine := fmt.Sprintf("%s %s %s", n.advertisedAddrs()[0], hex.EncodeToString(inviteToken), hex.EncodeToString(correlationToken))
 	if _, err := fmt.Fprintf(s, "%s\n", reqLine); err != nil {
@@ -3093,7 +3093,7 @@ func (n *Node) handleRecruitStream(s network.Stream) {
 	// "no response" with nothing to explain it. Extending it here to match
 	// recruitJoinTimeout, which was already chosen for exactly this wait,
 	// is what makes that timeout mean what its doc comment says.
-	_ = s.SetDeadline(time.Now().Add(recruitJoinTimeout + streamRequestTimeout))
+	_ = s.SetDeadline(time.Now().Add(recruitJoinTimeout + n.streamRequestTimeout()))
 
 	ctx, cancel := context.WithTimeout(context.Background(), recruitJoinTimeout)
 	defer cancel()

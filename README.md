@@ -929,22 +929,35 @@ just appending to it.
 
 ### Client in a browser
 
+**KNOWN BROKEN as of the `api/shmevent.capnp` union rewrite:** `web-app/src/shmevent.rs` — the
+crate's own hand-ported mirror of `pkg/shmevent`, described below — still assumes the old flat
+`Event{event, sourceId, destinationId, value, crc32, signature, id}` struct and was never updated
+to the real per-variant union every other client (desktop, Android) was migrated to in the same
+change (see that schema's own doc comment on "Design: a real union"). A browser client built from
+this crate as it stands **cannot talk to the rest of the mesh** — every message it sends or expects
+to receive uses a wire shape the daemon side no longer speaks. Porting `web-app/src/shmevent.rs`
+(and its `catalog_keys.rs`/`logpermit.rs`/`system.rs` siblings, which hand-pack the same flat shape)
+to the new union is its own follow-up, deliberately out of scope for the Go-side rewrite that left
+it in this state, and everything below describes the *intended* design this client is built toward,
+not its current working state.
+
 Unlike the desktop CLI and the Android app, a browser tab can never be a raft *voter*: a voter's
 transport must be independently dialable by any other voter at any time, and a browser sandbox has
 no way to accept a raw inbound connection. But it turns out a tab *can* be a raft **non-voter
 (learner)** once it holds a circuit-relay v2 reservation — the same mechanism a phone behind
 carrier-grade NAT already relies on (see [Relay reservations for NAT'd
-followers](#follower-on-android) above) — so `web-app/` is a real (if non-voting) member of the
-cluster, in Rust compiled to `wasm32-unknown-unknown` over `rust-libp2p`: it reimplements
-`hashicorp/raft`'s `NetworkTransport` msgpack wire protocol to receive genuine `AppendEntries`
-replication, backed by real SQLite (`sqlite-wasm-rs`) for the replicated log and kv table. Joining
-happens over `pkg/daemon.ClientProtocolID`, speaking `pkg/shmevent`'s capnp struct: the browser
-first fetches the target's Ed25519 key (`EventGetPrivateKey`, unsigned — the one bootstrap
-exception), then sends a signed `EventSetKey`+`EventAdd` pair (own peer id, then own reserved
-address) to `handleAddLearner`, which calls `raft.AddNonvoter` — forwarding to the real leader
-server-side if the dialed node isn't it, one hop, mirroring how a voter's own join request forwards
-(`pkg/daemon.ForwardJoinProtocolID`). A Set still forwards to the leader the same way (as a signed
-`EventSetKey`+`EventSetField` pair); a Get reads this tab's own locally-replicated state.
+followers](#follower-on-android) above) — so `web-app/` is designed to be a real (if non-voting)
+member of the cluster, in Rust compiled to `wasm32-unknown-unknown` over `rust-libp2p`: it
+reimplements `hashicorp/raft`'s `NetworkTransport` msgpack wire protocol to receive genuine
+`AppendEntries` replication, backed by real SQLite (`sqlite-wasm-rs`) for the replicated log and kv
+table. Joining is meant to happen over `pkg/daemon.ClientProtocolID`, speaking `pkg/shmevent`'s
+capnp struct: the browser first fetches the target's Ed25519 key (`EventGetPrivateKey`, unsigned —
+the one bootstrap exception), then sends a signed `EventSetKey`+`EventAdd` pair (own peer id, then
+own reserved address) to `handleAddLearner`, which calls `raft.AddNonvoter` — forwarding to the
+real leader server-side if the dialed node isn't it, one hop, mirroring how a voter's own join
+request forwards (`pkg/daemon.ForwardJoinProtocolID`). A Set still forwards to the leader the same
+way (as a signed `EventSetKey`+`EventSetField` pair); a Get reads this tab's own
+locally-replicated state.
 
 Every node already listens on a browser-reachable WebTransport address (`newHost` adds it
 alongside the existing TCP/QUIC listeners); `advertisedAddrs()`/`ready.json` include it
@@ -960,11 +973,14 @@ npm install
 npm run dev   # builds the wasm bundle, then serves on a cross-origin-isolated origin
 ```
 
-Paste that WebTransport multiaddr into the running page's "Node multiaddr" field and Connect —
-unlike Android's build-time-baked leader address (a phone has no operator to type one in), the web
-UI takes it at runtime, closer to desktop's `mage addfollower <addr>`. See `web-app/README.md` for
-the full architecture and its currently-unverified-in-CI gaps (needs a wasm32 C toolchain for
-SQLite, and a real browser + live cluster to exercise end to end).
+The page takes that WebTransport multiaddr at runtime via its "Node multiaddr" field and Connect
+button — unlike Android's build-time-baked leader address (a phone has no operator to type one in),
+closer to desktop's `mage addfollower <addr>` — but see this section's opening note: pasting a
+real address in today gets a connection that cannot actually speak this project's current wire
+protocol, not a working learner. See `web-app/README.md` for the full intended architecture, the
+same known-broken wire-format gap repeated at its own top, and its separate currently-unverified-
+in-CI build gaps (needs a wasm32 C toolchain for SQLite, and a real browser + live cluster to
+exercise end to end).
 
 ### HTTP command bridge (`kvhttp`)
 

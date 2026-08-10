@@ -56,6 +56,20 @@ func main() {
 		cmdListNodes(os.Args[2:])
 	case "accesstoken":
 		cmdAccessToken(os.Args[2:])
+	case "join":
+		cmdJoin(os.Args[2:])
+	case "leave":
+		cmdLeave(os.Args[2:])
+	case "rm":
+		cmdRm(os.Args[2:])
+	case "kick":
+		cmdKick(os.Args[2:])
+	case "deletenode":
+		cmdDeleteNode(os.Args[2:])
+	case "backup":
+		cmdBackup(os.Args[2:])
+	case "restore":
+		cmdRestore(os.Args[2:])
 	case "rangescan":
 		cmdRangeScan(os.Args[2:])
 	case "txn":
@@ -64,10 +78,38 @@ func main() {
 		cmdCas(os.Args[2:])
 	case "casabsent":
 		cmdCasAbsent(os.Args[2:])
+	case "creategroup", "updategroup":
+		cmdCreateGroup(os.Args[2:])
+	case "deletegroup":
+		cmdDeleteGroup(os.Args[2:])
+	case "getgroup":
+		cmdGetGroup(os.Args[2:])
+	case "listgroups":
+		cmdListGroups(os.Args[2:])
+	case "addpeertogroup":
+		cmdAddPeerToGroup(os.Args[2:])
+	case "removepeerfromgroup":
+		cmdRemovePeerFromGroup(os.Args[2:])
+	case "listgroupsforpeer":
+		cmdListGroupsForPeer(os.Args[2:])
+	case "createcommand", "updatecommand":
+		cmdCreateCommand(os.Args[2:])
+	case "deletecommand":
+		cmdDeleteCommand(os.Args[2:])
+	case "getcommand":
+		cmdGetCommand(os.Args[2:])
+	case "listcommands":
+		cmdListCommands(os.Args[2:])
 	case "createcommandspec", "updatecommandspec":
 		cmdCreateCommandSpec(os.Args[2:])
 	case "clearcommandspec":
 		cmdClearCommandSpec(os.Args[2:])
+	case "addcommandtogroup":
+		cmdAddCommandToGroup(os.Args[2:])
+	case "removecommandfromgroup":
+		cmdRemoveCommandFromGroup(os.Args[2:])
+	case "listgroupsforcommand":
+		cmdListGroupsForCommand(os.Args[2:])
 	case "createstation", "updatestation":
 		cmdCreateStation(os.Args[2:])
 	case "deletestation":
@@ -122,6 +164,10 @@ func main() {
 		cmdRequestPublicAccess(os.Args[2:])
 	case "enablepublicaccess":
 		cmdEnablePublicAccess(os.Args[2:])
+	case "dialsubmitcommand":
+		cmdDialSubmitCommand(os.Args[2:])
+	case "dialquerycommandlog":
+		cmdDialQueryCommandLog(os.Args[2:])
 	case "printexecinvitedatamatrix":
 		cmdPrintExecInviteDataMatrix(os.Args[2:])
 	case "createexecinviteticket":
@@ -134,6 +180,32 @@ func main() {
 		cmdExecute(os.Args[2:])
 	case "pollexecute":
 		cmdPollExecute(os.Args[2:])
+	case "submitcommand":
+		cmdSubmitCommand(os.Args[2:])
+	case "getcommandrequest":
+		cmdGetCommandRequest(os.Args[2:])
+	case "listcommandrequests":
+		cmdListCommandRequests(os.Args[2:])
+	case "listexecutions":
+		cmdListExecutions(os.Args[2:])
+	case "appendcommandlog":
+		cmdAppendCommandLog(os.Args[2:])
+	case "reportprogress":
+		cmdReportProgress(os.Args[2:])
+	case "querycommandlog":
+		cmdQueryCommandLog(os.Args[2:])
+	case "latestcommandlog":
+		cmdLatestCommandLog(os.Args[2:])
+	case "addrelaynode":
+		cmdAddRelayNode(os.Args[2:])
+	case "confirmrelaynode":
+		cmdConfirmRelayNode(os.Args[2:])
+	case "removerelaynode":
+		cmdRemoveRelayNode(os.Args[2:])
+	case "getrelaynode":
+		cmdGetRelayNode(os.Args[2:])
+	case "listrelaynodes":
+		cmdListRelayNodes(os.Args[2:])
 	case "logappend":
 		cmdLogAppend(os.Args[2:])
 	case "logquery":
@@ -161,12 +233,35 @@ func usage() {
   kvctl-cli listclusters
   kvctl-cli listnodes <peerID>
   kvctl-cli accesstoken <peerID>
+  kvctl-cli join -bin <kvnode-binary-path> [raft flags] <targetPeerID>
+  kvctl-cli leave -bin <kvnode-binary-path> [raft flags] <ownPeerID>
+  kvctl-cli rm -bin <kvnode-binary-path> [raft flags] <ownPeerID>
+  kvctl-cli kick <peerID> <targetPeerID>
+  kvctl-cli deletenode <peerID>
+  kvctl-cli backup <peerID> <destArchive>
+  kvctl-cli restore <archive> <destDir>
   kvctl-cli rangescan <start> <end> [-limit N]
   kvctl-cli txn "<op> [op...]"                 (ops: k=v, del:k, if:k=v, ifabsent:k)
   kvctl-cli cas <key> <expected> <value>
   kvctl-cli casabsent <key> <value>
+  kvctl-cli creategroup <id> <name> <public: true|false>
+  kvctl-cli updategroup <id> <name> <public: true|false>
+  kvctl-cli deletegroup <id>
+  kvctl-cli getgroup <id>
+  kvctl-cli listgroups
+  kvctl-cli addpeertogroup <peerID> <groupID>
+  kvctl-cli removepeerfromgroup <peerID> <groupID>
+  kvctl-cli listgroupsforpeer <peerID>
+  kvctl-cli createcommand <id> <name> <peerID>
+  kvctl-cli updatecommand <id> <name> <peerID>
+  kvctl-cli deletecommand <id>
+  kvctl-cli getcommand <id>
+  kvctl-cli listcommands
   kvctl-cli createcommandspec <id> <name> <peerID|""> <specJSON>
   kvctl-cli clearcommandspec <id> <name> <peerID|"">
+  kvctl-cli addcommandtogroup <commandID> <groupID>
+  kvctl-cli removecommandfromgroup <commandID> <groupID>
+  kvctl-cli listgroupsforcommand <commandID>
   kvctl-cli createstation <peerID> <name> [attrsJSON]
   kvctl-cli deletestation <peerID>
   kvctl-cli getstation <peerID>
@@ -194,12 +289,27 @@ func usage() {
   kvctl-cli redeemexecinvite <sourceAddr#tokenHex>
   kvctl-cli requestpublicaccess <targetAddr> [note]
   kvctl-cli enablepublicaccess
+  kvctl-cli dialsubmitcommand <targetAddr> <commandID> [inputsJSON]
+  kvctl-cli dialquerycommandlog <targetAddr> <instanceID>
   kvctl-cli printexecinvitedatamatrix <sourceMultiaddr> <tokenHex> <outFile.png>
   kvctl-cli createexecinviteticket <commandID> <inputsJSON> [-ttl seconds]
   kvctl-cli redeemexecinviteticket <ticketB64>
   kvctl-cli printexecinviteticketdatamatrix <ticketB64> <outFile.png>
   kvctl-cli execute <destPeerID> <value>
   kvctl-cli pollexecute
+  kvctl-cli submitcommand <commandID> <inputsJSON>
+  kvctl-cli getcommandrequest <commandID> <instanceID>
+  kvctl-cli listcommandrequests <commandID>
+  kvctl-cli listexecutions <peerID>
+  kvctl-cli appendcommandlog <requesterPeerID> <instanceID> <fieldsJSON> <narrative>
+  kvctl-cli reportprogress <requesterPeerID> <instanceID> <fieldsJSON> <narrative>
+  kvctl-cli querycommandlog <instanceID> [-since RFC3339] [-until RFC3339] [-limit N]
+  kvctl-cli latestcommandlog <instanceID>
+  kvctl-cli addrelaynode <multiaddr> <priority>
+  kvctl-cli confirmrelaynode <multiaddr>
+  kvctl-cli removerelaynode <multiaddr>
+  kvctl-cli getrelaynode <multiaddr>
+  kvctl-cli listrelaynodes
   kvctl-cli logappend <kind> <unitID> <fieldsJSON> <narrative>
   kvctl-cli logquery <kind> <unitID> [-since RFC3339] [-until RFC3339] [-limit N]
   kvctl-cli sendevent <peerID> <eventJSON>
@@ -604,6 +714,146 @@ func cmdAccessToken(args []string) {
 	fmt.Println(token)
 }
 
+// cmdJoin implements `kvctl-cli join -bin <path> [raft flags] <targetPeerID>`
+// -- asks the cluster reachable through targetPeerID to admit the current
+// node's own identity (see kvctl.JoinWithBinary's doc comment), switching
+// it onto a composite cluster data dir. Whether it's admitted immediately
+// or only lodges a pending request depends on the target's own
+// -require-confirm-for-join setting.
+func cmdJoin(args []string) {
+	fs := flag.NewFlagSet("join", flag.ExitOnError)
+	binPath := fs.String("bin", "", "path to a pre-built kvnode binary (required)")
+	raftArgs := raftTimeoutFlags(fs)
+	fs.Parse(args)
+
+	if *binPath == "" {
+		fmt.Fprintln(os.Stderr, "join: -bin is required")
+		os.Exit(2)
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli join -bin <path> [raft flags] <targetPeerID>")
+		os.Exit(2)
+	}
+
+	peerID, err := kvctl.JoinWithBinary(*binPath, raftArgs(), fs.Arg(0))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "join: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(peerID)
+}
+
+// cmdLeave implements `kvctl-cli leave -bin <path> [raft flags] <ownPeerID>`
+// -- see kvctl.LeaveWithBinary's doc comment: a graceful raft.RemoveServer
+// shrink of the remote cluster, then ownPeerID resumes its own solo db.
+func cmdLeave(args []string) {
+	fs := flag.NewFlagSet("leave", flag.ExitOnError)
+	binPath := fs.String("bin", "", "path to a pre-built kvnode binary (required)")
+	raftArgs := raftTimeoutFlags(fs)
+	fs.Parse(args)
+
+	if *binPath == "" {
+		fmt.Fprintln(os.Stderr, "leave: -bin is required")
+		os.Exit(2)
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli leave -bin <path> [raft flags] <ownPeerID>")
+		os.Exit(2)
+	}
+
+	if err := kvctl.LeaveWithBinary(*binPath, raftArgs(), fs.Arg(0)); err != nil {
+		fmt.Fprintf(os.Stderr, "leave: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("%s left its cluster and resumed its solo db\n", fs.Arg(0))
+}
+
+// cmdRm implements `kvctl-cli rm -bin <path> [raft flags] <ownPeerID>` --
+// see kvctl.RmWithBinary's doc comment: everything leave does, plus
+// revokes cluster-join standing and deletes the composite cluster data
+// dir outright.
+func cmdRm(args []string) {
+	fs := flag.NewFlagSet("rm", flag.ExitOnError)
+	binPath := fs.String("bin", "", "path to a pre-built kvnode binary (required)")
+	raftArgs := raftTimeoutFlags(fs)
+	fs.Parse(args)
+
+	if *binPath == "" {
+		fmt.Fprintln(os.Stderr, "rm: -bin is required")
+		os.Exit(2)
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli rm -bin <path> [raft flags] <ownPeerID>")
+		os.Exit(2)
+	}
+
+	if err := kvctl.RmWithBinary(*binPath, raftArgs(), fs.Arg(0)); err != nil {
+		fmt.Fprintf(os.Stderr, "rm: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("%s removed from its cluster and resumed its solo db\n", fs.Arg(0))
+}
+
+// cmdKick implements `kvctl-cli kick <peerID> <targetPeerID>` -- asks the
+// raft cluster peerID belongs to (over its already-running daemon's local
+// IPC) to force-remove targetPeerID, no cooperation from targetPeerID
+// needed. See kvctl.Kick's doc comment.
+func cmdKick(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli kick <peerID> <targetPeerID>")
+		os.Exit(2)
+	}
+	if err := kvctl.Kick(args[0], args[1]); err != nil {
+		fmt.Fprintf(os.Stderr, "kick: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("%s removed from %s's cluster\n", args[1], args[0])
+}
+
+// cmdDeleteNode implements `kvctl-cli deletenode <peerID>` -- permanently
+// deletes a stopped node's on-disk data and registry entry.
+func cmdDeleteNode(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli deletenode <peerID>")
+		os.Exit(2)
+	}
+	if err := kvctl.DeleteNode(args[0]); err != nil {
+		fmt.Fprintf(os.Stderr, "deletenode: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("%s deleted\n", args[0])
+}
+
+// cmdBackup implements `kvctl-cli backup <peerID> <destArchive>` -- see
+// kvctl.BackupNode's doc comment. Refuses while peerID's daemon still
+// appears to be running.
+func cmdBackup(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli backup <peerID> <destArchive>")
+		os.Exit(2)
+	}
+	if err := kvctl.BackupNode(args[0], args[1]); err != nil {
+		fmt.Fprintf(os.Stderr, "backup: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("%s backed up to %s\n", args[0], args[1])
+}
+
+// cmdRestore implements `kvctl-cli restore <archive> <destDir>` -- see
+// kvctl.RestoreNode's doc comment. A pure extraction; does not touch the
+// registry or start anything.
+func cmdRestore(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli restore <archive> <destDir>")
+		os.Exit(2)
+	}
+	if err := kvctl.RestoreNode(args[0], args[1]); err != nil {
+		fmt.Fprintf(os.Stderr, "restore: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("%s extracted to %s\n", args[0], args[1])
+}
+
 // cmdTxn/cmdCas/cmdCasAbsent are the conditional-write family (see README's
 // "Conditional writes"). A refused swap prints to stdout and exits 0: losing
 // a race is these commands' ordinary second outcome, and a script looping on
@@ -638,6 +888,212 @@ func cmdCasAbsent(args []string) {
 	if err := kvctl.CompareAndSwap(args[0], "", args[1], true); err != nil {
 		fmt.Fprintf(os.Stderr, "casabsent: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+// cmdCreateGroup implements `kvctl-cli creategroup/updategroup <id> <name>
+// <public>` -- creates or updates the Group record id=name. public
+// ("true"/"false") grants unconditional access to this group's linked
+// commands to any peer if true. Only a current raft voter may do this.
+func cmdCreateGroup(args []string) {
+	if len(args) != 3 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli creategroup <id> <name> <public: true|false>")
+		os.Exit(2)
+	}
+	pub, err := strconv.ParseBool(args[2])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "creategroup: public: %v\n", err)
+		os.Exit(2)
+	}
+	if err := kvctl.PutGroup(args[0], args[1], pub); err != nil {
+		fmt.Fprintf(os.Stderr, "creategroup: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdDeleteGroup(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli deletegroup <id>")
+		os.Exit(2)
+	}
+	if err := kvctl.DeleteGroup(args[0]); err != nil {
+		fmt.Fprintf(os.Stderr, "deletegroup: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdGetGroup(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli getgroup <id>")
+		os.Exit(2)
+	}
+	group, err := kvctl.GetGroup(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "getgroup: %v\n", err)
+		os.Exit(1)
+	}
+	out, err := json.Marshal(group)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "getgroup: encode: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(out))
+}
+
+func cmdListGroups(args []string) {
+	if len(args) != 0 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli listgroups")
+		os.Exit(2)
+	}
+	groups, err := kvctl.ListGroups()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "listgroups: %v\n", err)
+		os.Exit(1)
+	}
+	for _, g := range groups {
+		out, err := json.Marshal(g)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "listgroups: encode: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(out))
+	}
+}
+
+func cmdAddPeerToGroup(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli addpeertogroup <peerID> <groupID>")
+		os.Exit(2)
+	}
+	if err := kvctl.AddPeerToGroup(args[0], args[1]); err != nil {
+		fmt.Fprintf(os.Stderr, "addpeertogroup: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdRemovePeerFromGroup(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli removepeerfromgroup <peerID> <groupID>")
+		os.Exit(2)
+	}
+	if err := kvctl.RemovePeerFromGroup(args[0], args[1]); err != nil {
+		fmt.Fprintf(os.Stderr, "removepeerfromgroup: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdListGroupsForPeer(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli listgroupsforpeer <peerID>")
+		os.Exit(2)
+	}
+	groupIDs, err := kvctl.ListGroupsForPeer(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "listgroupsforpeer: %v\n", err)
+		os.Exit(1)
+	}
+	for _, id := range groupIDs {
+		fmt.Println(id)
+	}
+}
+
+// cmdCreateCommand implements `kvctl-cli createcommand/updatecommand <id>
+// <name> <peerID>` -- creates or updates the Command record
+// id={name, peerID}. Only a current raft voter may do this.
+func cmdCreateCommand(args []string) {
+	if len(args) != 3 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli createcommand <id> <name> <peerID>")
+		os.Exit(2)
+	}
+	if err := kvctl.PutCommand(args[0], args[1], args[2]); err != nil {
+		fmt.Fprintf(os.Stderr, "createcommand: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdDeleteCommand(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli deletecommand <id>")
+		os.Exit(2)
+	}
+	if err := kvctl.DeleteCommand(args[0]); err != nil {
+		fmt.Fprintf(os.Stderr, "deletecommand: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdGetCommand(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli getcommand <id>")
+		os.Exit(2)
+	}
+	cmd, err := kvctl.GetCommand(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "getcommand: %v\n", err)
+		os.Exit(1)
+	}
+	out, err := json.Marshal(cmd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "getcommand: encode: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(out))
+}
+
+func cmdListCommands(args []string) {
+	if len(args) != 0 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli listcommands")
+		os.Exit(2)
+	}
+	commands, err := kvctl.ListCommands()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "listcommands: %v\n", err)
+		os.Exit(1)
+	}
+	for _, c := range commands {
+		out, err := json.Marshal(c)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "listcommands: encode: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(out))
+	}
+}
+
+func cmdAddCommandToGroup(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli addcommandtogroup <commandID> <groupID>")
+		os.Exit(2)
+	}
+	if err := kvctl.CreateGroupCommand(args[0], args[1]); err != nil {
+		fmt.Fprintf(os.Stderr, "addcommandtogroup: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdRemoveCommandFromGroup(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli removecommandfromgroup <commandID> <groupID>")
+		os.Exit(2)
+	}
+	if err := kvctl.DeleteGroupCommand(args[0], args[1]); err != nil {
+		fmt.Fprintf(os.Stderr, "removecommandfromgroup: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdListGroupsForCommand(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli listgroupsforcommand <commandID>")
+		os.Exit(2)
+	}
+	groupIDs, err := kvctl.ListGroupsForCommand(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "listgroupsforcommand: %v\n", err)
+		os.Exit(1)
+	}
+	for _, id := range groupIDs {
+		fmt.Println(id)
 	}
 }
 
@@ -1205,6 +1661,54 @@ func cmdEnablePublicAccess(args []string) {
 	fmt.Println("ok")
 }
 
+// cmdDialSubmitCommand implements `kvctl-cli dialsubmitcommand <targetAddr>
+// <commandID> [inputsJSON]` -- asks the current node to dial targetAddr
+// directly and submit commandID there as a write into *that* cluster's
+// own log, no raft membership in targetAddr's cluster required, provided
+// commandID is linked to a public group there. See
+// shmevent.EventDialSubmitCommand's doc comment.
+func cmdDialSubmitCommand(args []string) {
+	if len(args) < 2 || len(args) > 3 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli dialsubmitcommand <targetAddr> <commandID> [inputsJSON]")
+		os.Exit(2)
+	}
+	var inputsJSON string
+	if len(args) == 3 {
+		inputsJSON = args[2]
+	}
+	instanceID, err := kvctl.DialSubmitCommand(args[0], args[1], inputsJSON, "")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dialsubmitcommand: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(instanceID)
+}
+
+// cmdDialQueryCommandLog implements `kvctl-cli dialquerycommandlog
+// <targetAddr> <instanceID>` -- dialsubmitcommand's read-back
+// counterpart: dials targetAddr directly and prints back instanceID's own
+// command-log entries. Needs no standing in targetAddr's cluster at all --
+// possessing instanceID is the credential.
+func cmdDialQueryCommandLog(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli dialquerycommandlog <targetAddr> <instanceID>")
+		os.Exit(2)
+	}
+	records, err := kvctl.DialQueryCommandLog(args[0], args[1], time.Time{}, time.Now(), 0)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dialquerycommandlog: %v\n", err)
+		os.Exit(1)
+	}
+	for _, rec := range records {
+		out, err := json.Marshal(rec)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "dialquerycommandlog: encode result: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(out))
+	}
+}
+
 // cmdPrintExecInviteDataMatrix implements `kvctl-cli
 // printexecinvitedatamatrix <sourceMultiaddr> <tokenHex> <outFile.png>` --
 // mirrors cmdPrintJoinInviteDataMatrix exactly: barcodes a plain string,
@@ -1341,6 +1845,264 @@ func cmdPollExecute(args []string) {
 		return
 	}
 	fmt.Printf("%s: %s\n", senderPeerID, value)
+}
+
+// cmdSubmitCommand implements `kvctl-cli submitcommand <commandID>
+// <inputsJSON>` -- see kvctl.SubmitCommand's doc comment. Requires the
+// current node's own peer id to be permitted for commandID.
+func cmdSubmitCommand(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli submitcommand <commandID> <inputsJSON>")
+		os.Exit(2)
+	}
+	instanceID, err := kvctl.SubmitCommand(args[0], args[1])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "submitcommand: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(instanceID)
+}
+
+func cmdGetCommandRequest(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli getcommandrequest <commandID> <instanceID>")
+		os.Exit(2)
+	}
+	req, err := kvctl.GetCommandRequest(args[0], args[1])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "getcommandrequest: %v\n", err)
+		os.Exit(1)
+	}
+	out, err := json.Marshal(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "getcommandrequest: encode: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(out))
+}
+
+func cmdListCommandRequests(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli listcommandrequests <commandID>")
+		os.Exit(2)
+	}
+	requests, err := kvctl.ListCommandRequests(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "listcommandrequests: %v\n", err)
+		os.Exit(1)
+	}
+	for _, r := range requests {
+		out, err := json.Marshal(r)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "listcommandrequests: encode: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(out))
+	}
+}
+
+// cmdListExecutions implements `kvctl-cli listexecutions <peerID>` -- see
+// kvctl.ListExecutionsByPeer's doc comment.
+func cmdListExecutions(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli listexecutions <peerID>")
+		os.Exit(2)
+	}
+	executions, err := kvctl.ListExecutionsByPeer(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "listexecutions: %v\n", err)
+		os.Exit(1)
+	}
+	for _, e := range executions {
+		out, err := json.Marshal(e)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "listexecutions: encode: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(out))
+	}
+}
+
+func cmdAppendCommandLog(args []string) {
+	if len(args) != 4 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli appendcommandlog <requesterPeerID> <instanceID> <fieldsJSON> <narrative>")
+		os.Exit(2)
+	}
+	var fields map[string]string
+	if args[2] != "" {
+		if err := json.Unmarshal([]byte(args[2]), &fields); err != nil {
+			fmt.Fprintf(os.Stderr, "appendcommandlog: decode fieldsJSON: %v\n", err)
+			os.Exit(2)
+		}
+	}
+	if err := kvctl.AppendCommandLog(args[0], args[1], fields, args[3]); err != nil {
+		fmt.Fprintf(os.Stderr, "appendcommandlog: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// cmdReportProgress implements `kvctl-cli reportprogress <requesterPeerID>
+// <instanceID> <fieldsJSON> <narrative>` -- like appendcommandlog, but
+// stamps fields["status"] = "running" first (see kvctl.ReportProgress's
+// doc comment).
+func cmdReportProgress(args []string) {
+	if len(args) != 4 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli reportprogress <requesterPeerID> <instanceID> <fieldsJSON> <narrative>")
+		os.Exit(2)
+	}
+	var fields map[string]string
+	if args[2] != "" {
+		if err := json.Unmarshal([]byte(args[2]), &fields); err != nil {
+			fmt.Fprintf(os.Stderr, "reportprogress: decode fieldsJSON: %v\n", err)
+			os.Exit(2)
+		}
+	}
+	if err := kvctl.ReportProgress(args[0], args[1], fields, args[3]); err != nil {
+		fmt.Fprintf(os.Stderr, "reportprogress: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdQueryCommandLog(args []string) {
+	fs := flag.NewFlagSet("querycommandlog", flag.ExitOnError)
+	since := fs.String("since", "", "RFC3339 lower time bound, inclusive (default: unbounded)")
+	until := fs.String("until", "", "RFC3339 upper time bound, inclusive (default: now)")
+	limit := fs.Int("limit", 0, "maximum records to return (0 = unlimited)")
+	fs.Parse(args)
+
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli querycommandlog <instanceID> [-since RFC3339] [-until RFC3339] [-limit N]")
+		os.Exit(2)
+	}
+	start := time.Unix(0, 0)
+	if *since != "" {
+		t, err := time.Parse(time.RFC3339, *since)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "querycommandlog: -since: %v\n", err)
+			os.Exit(2)
+		}
+		start = t
+	}
+	end := time.Now()
+	if *until != "" {
+		t, err := time.Parse(time.RFC3339, *until)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "querycommandlog: -until: %v\n", err)
+			os.Exit(2)
+		}
+		end = t
+	}
+
+	records, err := kvctl.QueryCommandLog(fs.Arg(0), start, end, *limit)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "querycommandlog: %v\n", err)
+		os.Exit(1)
+	}
+	for _, rec := range records {
+		out, err := json.Marshal(rec)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "querycommandlog: encode result: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(out))
+	}
+}
+
+func cmdLatestCommandLog(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli latestcommandlog <instanceID>")
+		os.Exit(2)
+	}
+	rec, err := kvctl.LatestCommandLog(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "latestcommandlog: %v\n", err)
+		os.Exit(1)
+	}
+	out, err := json.Marshal(rec)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "latestcommandlog: encode: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(out))
+}
+
+// cmdAddRelayNode implements `kvctl-cli addrelaynode <multiaddr>
+// <priority>` -- see kvctl.AddRelayNode's doc comment. Needs
+// confirmrelaynode from a current voter before it's actually picked up.
+func cmdAddRelayNode(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli addrelaynode <multiaddr> <priority>")
+		os.Exit(2)
+	}
+	p, err := strconv.ParseUint(args[1], 10, 8)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "addrelaynode: priority: %v\n", err)
+		os.Exit(2)
+	}
+	if err := kvctl.AddRelayNode(args[0], uint8(p)); err != nil {
+		fmt.Fprintf(os.Stderr, "addrelaynode: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdConfirmRelayNode(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli confirmrelaynode <multiaddr>")
+		os.Exit(2)
+	}
+	if err := kvctl.ConfirmRelayNode(args[0]); err != nil {
+		fmt.Fprintf(os.Stderr, "confirmrelaynode: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdRemoveRelayNode(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli removerelaynode <multiaddr>")
+		os.Exit(2)
+	}
+	if err := kvctl.RemoveRelayNode(args[0]); err != nil {
+		fmt.Fprintf(os.Stderr, "removerelaynode: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdGetRelayNode(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli getrelaynode <multiaddr>")
+		os.Exit(2)
+	}
+	node, err := kvctl.GetRelayNode(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "getrelaynode: %v\n", err)
+		os.Exit(1)
+	}
+	out, err := json.Marshal(node)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "getrelaynode: encode: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(out))
+}
+
+func cmdListRelayNodes(args []string) {
+	if len(args) != 0 {
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli listrelaynodes")
+		os.Exit(2)
+	}
+	nodes, err := kvctl.ListRelayNodes()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "listrelaynodes: %v\n", err)
+		os.Exit(1)
+	}
+	for _, n := range nodes {
+		out, err := json.Marshal(n)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "listrelaynodes: encode: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(out))
+	}
 }
 
 func cmdLogAppend(args []string) {

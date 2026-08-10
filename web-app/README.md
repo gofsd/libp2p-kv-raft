@@ -1,13 +1,24 @@
 # libp2p-kv-raft web client
 
+**KNOWN BROKEN as of the `api/shmevent.capnp` union rewrite:** `src/shmevent.rs` (and its
+`catalog_keys.rs`/`logpermit.rs`/`system.rs` siblings) still hand-pack the old flat
+`Event{event, sourceId, destinationId, value, crc32, signature, id}` struct and were never updated
+to the real per-variant union the Go daemon, `pkg/kvctl`, and Android's `mobile/kvmobile` were all
+migrated to in the same change -- see `src/shmevent.rs`'s own doc comment for the full detail. A
+client built from this crate as it stands cannot talk to the rest of the mesh: every message it
+sends or expects to receive uses a wire shape the daemon side no longer speaks. Porting this crate
+to the new union is its own follow-up, deliberately out of scope for the Go-side rewrite that left
+it in this state. Everything below describes this client's *intended* design, not its current
+working state.
+
 A browser client for [libp2p-kv-raft](..), in Rust compiled to `wasm32-unknown-unknown`. Unlike
-the earlier TypeScript/js-libp2p version of this client, a browser tab here is a **real
-hashicorp/raft non-voter (learner)**: it joins the cluster's actual raft configuration, receives
-genuine `AppendEntries` replication over the wire-compatible protocol `pkg/rafttransport` speaks,
-and answers `Get` from its own locally-applied state -- not a request forwarded to a voter on
-every read. It still never votes in an election (a browser tab can't accept a raw inbound
-connection the way a real voter's transport requires -- see [Architecture](#architecture)), which
-is what "learner" means here and in the Raft paper itself.
+the earlier TypeScript/js-libp2p version of this client, a browser tab here is meant to be a
+**real hashicorp/raft non-voter (learner)**: it joins the cluster's actual raft configuration,
+receives genuine `AppendEntries` replication over the wire-compatible protocol
+`pkg/rafttransport` speaks, and answers `Get` from its own locally-applied state -- not a request
+forwarded to a voter on every read. It still never votes in an election (a browser tab can't
+accept a raw inbound connection the way a real voter's transport requires -- see
+[Architecture](#architecture)), which is what "learner" means here and in the Raft paper itself.
 
 ## Architecture
 

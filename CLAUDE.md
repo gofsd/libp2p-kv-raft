@@ -53,6 +53,7 @@ mage casabsent <key> <value>                      # write only if key doesn't ex
 mage version                                      # current node's own build/version info (git commit, dirty, go-libp2p version, ...)
 mage requestpublicaccess <targetAddr> [note]      # ask another cluster for channel+relay standing in it
 mage enablepublicaccess                           # (on a voter) seed the public group/command on this cluster
+mage kvhttp [addr]                                # run cmd/kvhttp in the foreground -- an HTTP front door onto kvctl-cli sendevent
 ```
 
 `requestpublicaccess` is the client side of `shmevent.DefaultPublicCommandID`'s self-service
@@ -68,6 +69,11 @@ seeds those records only at first cluster bootstrap (`ensureDefaultPublicCommand
 deliberately never re-seeds them afterwards, so a cluster bootstrapped by an older build needs
 this run once or every request is refused. Both have `kvctl-cli` and `mobile/kvmobile`
 (`RequestPublicAccess`/`RequestRelayAccess`) equivalents.
+
+`kvhttp` runs `cmd/kvhttp` in the foreground: a local, multi-tenant HTTPS front door around
+`kvctl-cli sendevent` for a caller that can only do a plain `fetch()` (no SharedArrayBuffer/
+WebTransport) -- see README's "HTTP command bridge" section for the full design, including its
+per-node bearer token (`mage accesstoken <peerID>`) and TLS requirement (`mage tls:genselfsigned`).
 
 `listclusters` is a pure local registry read (grouped by whichever peer id originally bootstrapped each
 cluster) -- no daemon needs to be running, but for the same reason it only ever shows clusters this
@@ -131,13 +137,19 @@ gomobile-bound equivalents (`CreateGroup`/`AddPeerToGroup`/`SubmitCommand`/etc.)
 these `mage` targets one-for-one:
 
 ```bash
-mage creategroup/updategroup/deletegroup/getgroup/listgroups <id> [name]
+mage creategroup/updategroup <id> <name> <public: true|false>
+mage deletegroup/getgroup <id>
+mage listgroups
 mage addpeertogroup/removepeerfromgroup <peerID> <groupID>
 mage listgroupsforpeer <peerID>
-mage createcommand/updatecommand/deletecommand/getcommand/listcommands <id> [name peerID]
+mage createcommand/updatecommand <id> <name> <peerID>
+mage deletecommand/getcommand <id>
+mage listcommands
 mage createcommandspec <id> <name> <peerID|""> '<specJSON>'   # a command carrying its own form definition
 mage clearcommandspec <id> <name> <peerID|"">                  # remove a spec (a plain update preserves it)
-mage createstation/updatestation/deletestation/getstation/liststations <peerID> [name attrsJSON]
+mage createstation/updatestation <peerID> <name> <attrsJSON|"">
+mage deletestation/getstation <peerID>
+mage liststations
 mage addcommandtogroup/removecommandfromgroup <commandID> <groupID>
 mage listgroupsforcommand <commandID>
 mage submitcommand/getcommandrequest/listcommandrequests <args>
@@ -203,6 +215,12 @@ protocol — not new task types.
   `ipc_android.go` is the Android transport (`ASharedMemory`, no named rendezvous — client and
   daemon must share a process). `pkg/shmclient` implements the caller-side SetKey+SetField/GetField
   orchestration and the `GetPrivateKey` bootstrap on top of it.
+- `pkg/chandata` — `pkg/daemon.ChannelProtocolID`'s high-throughput data plane: once a channel's
+  control-plane handshake completes, chunk traffic moves off `pkg/ipc`'s per-chunk request/response
+  protocol and onto a pair of long-lived shmring rings instead (one per direction), the same
+  desktop/Android platform split as `pkg/ipc`. See README's "Data plane: pkg/chandata" section for
+  why request/response IPC doesn't scale for bulk data and the chunk-framing format this replaces
+  it with.
 - `pkg/kvctl` / `cmd/kvctl-cli` — client logic for spawning/bootstrapping nodes and issuing
   set/get. `kvctl-cli` needs no Go toolchain, meant to run next to an already-built `kvnode` on a
   remote deployment target reached over SSH.
