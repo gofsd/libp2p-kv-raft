@@ -74,16 +74,19 @@ relayed circuit through it by default, with `-require-permit-for-relay` as an op
 the generic remote (`ClientProtocolID`) `Set`/`Get`/etc. surface and `EventExecute` delivery had
 their own similar opt-in flags (`-require-permit-for-remote`/`-require-permit-for-execute`), each
 gated on a confirmed `KindPermitPeer` record. None of that exists anymore. There is no longer an
-opt-out for any of the four: relay admission, Channel admission, the generic remote RPC surface,
-and Execute delivery are now all unconditionally gated by the same group-ACL mechanism —
-`pkg/daemon.relayACL`'s `AllowReserve`/`AllowConnect`, `handleChannelStream`,
-`handleShmEvent`'s top-of-function gate, and `handleExecuteStream` each admit a peer only if it's a
+opt-out for any of relay admission, Channel admission, and the generic remote RPC surface: they're
+now unconditionally gated by the same group-ACL mechanism —
+`pkg/daemon.relayACL`'s `AllowReserve`/`AllowConnect`, `handleChannelStream`, and
+`handleShmEvent`'s top-of-function gate each admit a peer only if it's a
 current raft cluster member, in the resource's own reserved group (`shmevent.ReservedGroupRelay`/
-`ReservedGroupChannel`/`ReservedGroupRemote`/`ReservedGroupExecute` respectively — see
+`ReservedGroupChannel`/`ReservedGroupRemote` respectively — see
 [Reserved cluster/voter/learner/channel/relay/remote/execute groups](#reserved-clustervoterlearnerchannelrelayremoteexecute-groups)
 below), or individually granted access via this node's own personal group (`isAuthorizedForGatedAccess`).
+`EventExecute` delivery (`handleExecuteStream`) is gated more narrowly still: only a *current* raft
+cluster member may send one — there is no group grant or personal grant that widens it, see below.
 `KindPermitPeer` itself is gone — it served exactly those three purposes (relay/remote/execute),
-all replaced by groups — along with `mage requestpermit peer`/`confirmpermit peer`/`revokepermit peer`.
+all replaced by groups (execute now by plain cluster membership) — along with `mage requestpermit
+peer`/`confirmpermit peer`/`revokepermit peer`.
 `KindBootstrapNode` (below, relay/bootstrap-node registration) still uses the same underlying
 `EventPermitRequest`/`EventPermitConfirm`/`EventPermitRevoke` machinery under kind `"bootstrap"` — that
 part is unaffected.
@@ -101,13 +104,13 @@ execution logic can widen that peer's access further from there (e.g.
 
 Upgrading a node that relied on the old open-by-default relay, or that never set any of the
 `-require-permit-for-*` flags (today's actual default in every existing deployment), means every
-peer that needs generic remote/execute/relay/channel access must now be explicitly admitted:
+peer that needs generic remote/relay/channel access must now be explicitly admitted (`execute` has
+no such grant — see below):
 
 ```bash
 mage addpeertogroup <peerID> relay          # (on a current raft voter of this cluster) grant it
 mage addpeertogroup <peerID> remote         # generic Set/Get/etc. over ClientProtocolID
-mage addpeertogroup <peerID> execute        # EventExecute delivery
-mage removepeerfromgroup <peerID> <group>   # revoke any of the above again
+mage removepeerfromgroup <peerID> <group>   # revoke either of the above again
 ```
 
 A `-relay-service` node's resource limits (per-peer circuit/reservation caps) are still
@@ -136,11 +139,13 @@ relay reservation/connect simply denied, same as failing the group-ACL check.
 
 `EventExecute` (`mage execute <destPeerID> <value>` / `mage pollexecute`, a direct unreplicated
 peer-to-peer notification between two node processes — see `pkg/shmevent`'s `EventExecute` doc
-comment) is now gated by `shmevent.ReservedGroupExecute` exactly the way relay/Channel are: a raft
-cluster member (voter or learner) can always send one, any other peer needs
-`mage addpeertogroup <peerID> execute` (or a pairwise personal-group grant) first, and
-`mage removepeerfromgroup <peerID> execute` revokes it again, immediately, on whichever node's
-store the removal replicates to.
+comment) is restricted to current raft cluster members only: `handleExecuteStream` checks the
+verified sender against `shmevent.ReservedGroupCluster` alone, not through
+`isAuthorizedForGatedAccess` the way relay/Channel/remote are — a voter or learner can always send
+one, and there is deliberately no `addpeertogroup`/personal-group grant that admits a non-member
+sender. `shmevent.ReservedGroupExecute` stays a reserved, protected group name (still
+auto-created, still rejected by `EventGroupPut`/`EventGroupDelete`) for backward compatibility with
+already-replicated grants, but membership in it is no longer consulted for authorization.
 
 Print the leader's multiaddr for followers to join against:
 
@@ -1296,21 +1301,28 @@ add or remove a peer from these three; only actual raft membership changes them,
 the set of peers *currently* in the cluster (unlike `KindClusterMember` itself, whose own doc comment
 notes nothing used to delete it — `removeServerLine` deletes both records together now).
 
-`channel`, `relay`, `remote`, and `execute` are the deliberate exception: their `Group` records are
+`channel`, `relay`, and `remote` are the deliberate exception: their `Group` records are
 equally protected, but their *membership* remains an ordinary, operator-editable grant via the same
 `addpeertogroup`/`removepeerfromgroup` already used for every non-reserved group — the mechanism
 for letting a peer that isn't a cluster member (e.g. a short-lived tool on someone's laptop) open a
-[Raw Channel](#raw-channel) to this cluster's peers, reserve/use this node's relay service, issue
-generic `Set`/`Get`/etc. requests over `ClientProtocolID`, or send `EventExecute` notifications,
-anyway. `handleChannelStream`'s incoming-channel gate, `relayACL`'s `AllowReserve`/`AllowConnect`,
-`handleShmEvent`'s top-of-function gate, and `handleExecuteStream` (see
-[Leader on a remote machine](#leader-on-a-remote-machine-over-ssh) above) all call the identical
-`pkg/daemon.isAuthorizedForGatedAccess` check, just against their own respective group — `cluster`
-plus `channel`/`relay`/`remote`/`execute` respectively — or a pairwise personal grant into the
-gating node's own peer-id group either way. None of the four has a separate `Config` opt-out flag;
-all four are always gated, unconditionally, on the sender belonging to one of those (`remote` also
-has the narrow command-log carve-out described above and under
+[Raw Channel](#raw-channel) to this cluster's peers, reserve/use this node's relay service, or issue
+generic `Set`/`Get`/etc. requests over `ClientProtocolID`, anyway. `handleChannelStream`'s
+incoming-channel gate, `relayACL`'s `AllowReserve`/`AllowConnect`, and `handleShmEvent`'s
+top-of-function gate (see [Leader on a remote machine](#leader-on-a-remote-machine-over-ssh) above)
+all call the identical `pkg/daemon.isAuthorizedForGatedAccess` check, just against their own
+respective group — `cluster` plus `channel`/`relay`/`remote` respectively — or a pairwise personal
+grant into the gating node's own peer-id group either way. None of the three has a separate
+`Config` opt-out flag; all three are always gated, unconditionally, on the sender belonging to one
+of those (`remote` also has the narrow command-log carve-out described above and under
 [Leader on a remote machine](#leader-on-a-remote-machine-over-ssh)).
+
+`execute` is narrower still, and not part of that same-mechanism trio: `handleExecuteStream` gates
+`EventExecute` delivery on current `cluster` membership alone, never through
+`isAuthorizedForGatedAccess` — a `PeerGroup` grant into `execute` (or a personal grant) does not
+admit a non-member sender. Its `Group` record stays reserved and protected the same as the other
+six, purely so old replicated `PeerGroup` grants into it and `EventGroupPut`/`EventGroupDelete`
+rejection keep behaving the same; it just has no live effect on `EventExecute` authorization
+anymore.
 
 ### One-time execution invites
 

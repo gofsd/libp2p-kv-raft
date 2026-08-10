@@ -17,13 +17,16 @@ const SystemKeyPrefix = 0x00
 // Kind bytes -- what a system record (see SystemKey) is about. 0x01 and
 // 0x04 were formerly KindPermitPeer/KindLogPermit -- permission records
 // for a peer to use the generic remote RPC surface, Execute, relay, or a
-// specific pkg/logrecord kind -- now unassigned again: that whole family
-// of gates was folded into the unconditional group-ACL mechanism
+// specific pkg/logrecord kind -- now unassigned again: remote/relay/channel
+// gating was folded into the unconditional group-ACL mechanism
 // pkg/daemon's Channel/relay gates already used (see
-// shmevent.ReservedGroupRemote/ReservedGroupExecute/ReservedGroupRelay/
-// ReservedGroupChannel and pkg/daemon's isAuthorizedForGatedAccess/
-// isCommandLogCarveOut), which needs no permit record at all. Values 0x0D
-// and above are still unassigned, reserved for future system operations.
+// shmevent.ReservedGroupRemote/ReservedGroupRelay/ReservedGroupChannel and
+// pkg/daemon's isAuthorizedForGatedAccess/isCommandLogCarveOut), which
+// needs no permit record at all; Execute gating is narrower still --
+// current raft cluster (ReservedGroupCluster) membership only, never
+// isAuthorizedForGatedAccess -- see pkg/daemon's handleExecuteStream.
+// Values 0x0D and above are still unassigned, reserved for future system
+// operations.
 const (
 	// KindBootstrapNode registers a stable relay/bootstrap point: a known
 	// circuit-relay v2 server's multiaddr, plus a failover priority (see

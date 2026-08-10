@@ -376,11 +376,10 @@ type Config struct {
 	// shrink what a new join has to replay.
 	TrailingLogs uint64
 
-	// The generic remote (ClientProtocolID) RPC surface, EventExecute
-	// delivery (handleExecuteStream), and EventLogAppend/EventListRange are
-	// all, like relay/Channel admission below, always gated -- there is no
-	// opt-out flag for any of them. A current cluster member (voter or
-	// learner -- see isClusterMember) is trusted implicitly for all three,
+	// The generic remote (ClientProtocolID) RPC surface and
+	// EventLogAppend/EventListRange are, like relay/Channel admission below,
+	// always gated -- there is no opt-out flag for either. A current cluster
+	// member (voter or learner -- see isClusterMember) is trusted implicitly,
 	// the same way it already is for every raft-replicated write; a
 	// non-member remote caller is rejected for everything except the one
 	// deliberate carve-out described on isCommandLogCarveOut: submitting a
@@ -393,16 +392,23 @@ type Config struct {
 	// surface -- is deliberately the *only* door a peer with no other
 	// standing has into an otherwise closed cluster; a public command's own
 	// execution logic can widen that peer's access further from there (e.g.
-	// mage addpeertogroup <peerID> remote/execute/channel/relay), but
-	// nothing does so automatically. See handleShmEvent's top-of-function
-	// gate, handleExecuteStream, and isAuthorizedForGatedAccess/
-	// shmevent.ReservedGroupRemote/ReservedGroupExecute.
+	// mage addpeertogroup <peerID> remote/channel/relay), but nothing does
+	// so automatically. See handleShmEvent's top-of-function gate and
+	// isAuthorizedForGatedAccess/shmevent.ReservedGroupRemote.
 	//
 	// Relay/Channel admission (reserving a relay slot or opening a relayed
 	// circuit, only meaningful alongside RelayService; opening an inbound
 	// Channel) are gated the identical unconditional way, against
 	// shmevent.ReservedGroupRelay/ReservedGroupChannel respectively -- see
 	// relayACL.allow/handleChannelStream/isAuthorizedForGatedAccessSt.
+	//
+	// EventExecute delivery (handleExecuteStream) is gated more narrowly
+	// than any of the above: only a *current* raft cluster member
+	// (shmevent.ReservedGroupCluster, not routed through
+	// isAuthorizedForGatedAccess at all) may push one. Unlike
+	// remote/channel/relay, there is no operator-grantable execute group or
+	// personal-grant carve-out that widens this -- see handleExecuteStream's
+	// own doc comment.
 
 	// RequireConfirmForJoin gates JoinProtocolID/ForwardJoinProtocolID
 	// (handleJoinStream/handleForwardJoinStream) on a two-stage
@@ -5865,11 +5871,15 @@ func (n *Node) sendExecute(ctx context.Context, dest peer.ID, payload []byte) er
 // (matches EventExecute's doc comment: authenticity doesn't depend on the
 // stream's own connection identity), unlike handleForwardConfirmStream's
 // check, which deliberately does the opposite for a different reason (see
-// its own doc comment). Once the signature checks out, applies the
-// unconditional isAuthorizedForGatedAccess gate (shmevent.ReservedGroupExecute
-// -- same mechanism as Channel/relay, no opt-out) against that same
-// verified sender peer id, then queues the notification for
-// EventPollExecute. Never writes to n.store or raft either way.
+// its own doc comment). Once the signature checks out, applies an
+// unconditional current-raft-membership gate (shmevent.ReservedGroupCluster,
+// kept in lockstep with actual raft membership by syncMemberGroups) against
+// that same verified sender peer id -- unlike Channel/relay/remote, this is
+// deliberately NOT routed through isAuthorizedForGatedAccess: there is no
+// operator-granted execute-group or personal-grant carve-out here, only a
+// current voter/learner may push an execute notification -- then queues the
+// notification for EventPollExecute. Never writes to n.store or raft either
+// way.
 func (n *Node) handleExecuteStream(s network.Stream) {
 	defer s.Close()
 
@@ -5919,9 +5929,11 @@ func (n *Node) handleExecuteStream(s network.Stream) {
 	}
 	// Authorization, checked only now that senderPeer is proven authentic
 	// (see this function's doc comment on why that's the peer id this
-	// gate must check, never s.Conn().RemotePeer()).
-	if !n.isAuthorizedForGatedAccess(senderPeer, shmevent.ReservedGroupExecute) {
-		fmt.Fprintf(s, "execute: %s is not a cluster member, in the execute group, or granted access to %s", senderPeer, n.peerID)
+	// gate must check, never s.Conn().RemotePeer()). Deliberately just
+	// current raft cluster membership -- not isAuthorizedForGatedAccess --
+	// so an execute-group grant or personal grant can no longer substitute.
+	if !isInGroupSt(n.store, senderPeer, shmevent.ReservedGroupCluster) {
+		fmt.Fprintf(s, "execute: %s is not a current cluster member", senderPeer)
 		return
 	}
 	n.executeInbox.push([]byte(senderPeerID), payload)
@@ -6174,12 +6186,14 @@ func (n *Node) handleChannelStream(s network.Stream) {
 	// individually granted access to via its own personal group (mage
 	// addpeertogroup <peerID> <n.peerID> -- see isPeerIdentityGroupID's doc
 	// comment for the pairwise-grant mechanism this enables between any two
-	// peers, cluster members or not). relayACL's AllowReserve/AllowConnect,
-	// handleShmEvent's top-of-function gate, and handleExecuteStream gate
-	// the relay service, the generic remote RPC surface, and Execute the
-	// identical way, via isAuthorizedForGatedAccess(St) against
-	// shmevent.ReservedGroupRelay/ReservedGroupRemote/ReservedGroupExecute
-	// respectively.
+	// peers, cluster members or not). relayACL's AllowReserve/AllowConnect
+	// and handleShmEvent's top-of-function gate gate the relay service and
+	// the generic remote RPC surface the identical way, via
+	// isAuthorizedForGatedAccess(St) against
+	// shmevent.ReservedGroupRelay/ReservedGroupRemote respectively.
+	// handleExecuteStream is the one exception: it gates EventExecute on
+	// current ReservedGroupCluster membership alone, not through
+	// isAuthorizedForGatedAccess -- see its own doc comment.
 	if !n.isAuthorizedForGatedAccess(senderPeer, shmevent.ReservedGroupChannel) {
 		writeChannelAccept(s, false, fmt.Sprintf("%s is not a cluster member, in the channel group, or granted access to %s", senderPeer, n.peerID))
 		s.Close()

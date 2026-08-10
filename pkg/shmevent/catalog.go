@@ -433,25 +433,32 @@ func DecodeCommandPayloadFull(payload []byte) (name string, peerID, spec []byte,
 // reject a manual edit against ReservedGroupCluster/Voter/Learner (see
 // IsAutoManagedGroupID).
 //
-// ReservedGroupChannel, ReservedGroupRelay, ReservedGroupRemote, and
-// ReservedGroupExecute are the deliberate exception to that last rule:
-// their Group records are equally protected, but their PeerGroup
-// membership remains an ordinary, operator-editable grant (mage
-// addpeertogroup/removepeerfromgroup) -- the mechanism for letting a peer
-// that isn't a cluster member use a raw Channel, this cluster's relay
-// service, the generic remote Set/Get/etc. RPC surface, or Execute
-// delivery, anyway. pkg/daemon's handleChannelStream/relayACL/
-// handleShmEvent/handleExecuteStream each accept access from any peer in
-// ReservedGroupCluster or their own respective group (or a pairwise
-// personal grant -- see isPeerIdentityGroupID in pkg/daemon) and reject
-// everyone else, identically -- see pkg/daemon's isAuthorizedForGatedAccess.
-// ReservedGroupRemote/ReservedGroupExecute have no opt-out Config flag,
-// same as Channel/Relay: a non-member remote caller's only other door
-// into a cluster it doesn't belong to is the narrow, always-on
-// SubmitCommand-plus-its-own-log-readback carve-out (see pkg/daemon's
-// isCommandLogCarveOut) -- a public command's own execution logic can use
-// addpeertogroup to grant a stranger into remote/execute/channel/relay
+// ReservedGroupChannel, ReservedGroupRelay, and ReservedGroupRemote are the
+// deliberate exception to that last rule: their Group records are equally
+// protected, but their PeerGroup membership remains an ordinary,
+// operator-editable grant (mage addpeertogroup/removepeerfromgroup) -- the
+// mechanism for letting a peer that isn't a cluster member use a raw
+// Channel, this cluster's relay service, or the generic remote Set/Get/etc.
+// RPC surface, anyway. pkg/daemon's handleChannelStream/relayACL/
+// handleShmEvent each accept access from any peer in ReservedGroupCluster or
+// their own respective group (or a pairwise personal grant -- see
+// isPeerIdentityGroupID in pkg/daemon) and reject everyone else, identically
+// -- see pkg/daemon's isAuthorizedForGatedAccess. ReservedGroupRemote has no
+// opt-out Config flag, same as Channel/Relay: a non-member remote caller's
+// only other door into a cluster it doesn't belong to is the narrow,
+// always-on SubmitCommand-plus-its-own-log-readback carve-out (see
+// pkg/daemon's isCommandLogCarveOut) -- a public command's own execution
+// logic can use addpeertogroup to grant a stranger into remote/channel/relay
 // from there, but nothing does so automatically.
+//
+// ReservedGroupExecute is kept reserved (its Group record still protected,
+// still auto-created by ensureReservedGroups, and old PeerGroup grants into
+// it from before this changed still replicate harmlessly) but is no longer
+// consulted for authorization: pkg/daemon's handleExecuteStream gates
+// EventExecute delivery on current ReservedGroupCluster membership alone,
+// not on isAuthorizedForGatedAccess, so a PeerGroup grant into
+// ReservedGroupExecute (or a personal grant) no longer admits a non-member
+// sender the way it once did.
 const (
 	ReservedGroupCluster = "cluster"
 	ReservedGroupVoter   = "voter"
