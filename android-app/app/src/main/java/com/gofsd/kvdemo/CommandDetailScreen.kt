@@ -1,5 +1,6 @@
 package com.gofsd.kvdemo
 
+import android.util.Base64
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -28,9 +29,11 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import com.google.zxing.common.BitMatrix
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kvmobile.Kvmobile
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -44,11 +47,17 @@ import org.json.JSONObject
  * and back starts with an empty output log again, the same as the old
  * CommandDetailActivity did every time you switched commands. Replaces
  * that Activity 1:1; the "Generate DataMatrix" button (see
- * CommandCatalog.kt's eventOp/toEventFields) is added alongside Run for
- * specs with a single capnp-event equivalent.
+ * CommandCatalog.kt's eventOp/toEventFields, or generateFromResultBase64
+ * for a spec like CreateJoinRequestTicket whose run() result IS the
+ * payload) is added alongside Run for specs with a single capnp-event or
+ * ticket equivalent. [onNavigateToLog] is only ever invoked for a spec
+ * with awaitAdmissionAfterGenerate set, once this device is observed to
+ * have actually been admitted to a cluster (see that field's own doc
+ * comment on CommandSpec) -- every other spec's Generate flow never calls
+ * it.
  */
 @Composable
-fun CommandDetailScreen(category: String, name: String) {
+fun CommandDetailScreen(category: String, name: String, onNavigateToLog: () -> Unit = {}) {
     val context = LocalContext.current
     val spec = remember(category, name) {
         buildCommands(context.filesDir.absolutePath, OutputLog::append)
@@ -62,10 +71,44 @@ fun CommandDetailScreen(category: String, name: String) {
     var generatedMatrix by remember(spec) { mutableStateOf<BitMatrix?>(null) }
     val scope = rememberCoroutineScope()
     val scrollState = rememberScrollState()
-    val canGenerate = spec.eventOp != null || spec.rawEventJsonParamIndex != null
+    val canGenerate = spec.eventOp != null || spec.rawEventJsonParamIndex != null || spec.generateFromResultBase64
 
     LaunchedEffect(output) {
         scrollState.animateScrollTo(scrollState.maxValue)
+    }
+
+    // Once a ticket this device generated has been scanned and redeemed
+    // elsewhere, this device's own n.raft goes from pending to admitted --
+    // there's no push/watch callback for that transition (see
+    // CommandSpec.awaitAdmissionAfterGenerate's doc comment), so this
+    // polls Kvmobile.listClusterMembers() for this device's own peer id
+    // appearing while the popup is up. Keyed on the matrix's own identity:
+    // a fresh popup gets a fresh poll loop, and setting generatedMatrix
+    // back to null (here, or via the dialog's own Close button) cancels
+    // whichever loop was running, since Compose cancels/relaunches
+    // LaunchedEffect whenever its key changes.
+    LaunchedEffect(generatedMatrix) {
+        val matrix = generatedMatrix
+        if (matrix == null || !spec.awaitAdmissionAfterGenerate) return@LaunchedEffect
+        val ownPeerID = runCatching { withContext(Dispatchers.IO) { Kvmobile.peerID() } }.getOrNull()
+        if (ownPeerID.isNullOrEmpty()) return@LaunchedEffect
+        while (true) {
+            delay(2000)
+            val membersJson = runCatching {
+                withContext(Dispatchers.IO) { Kvmobile.listClusterMembers() }
+            }.getOrNull() ?: continue
+            val admitted = runCatching {
+                val members = JSONArray(membersJson)
+                (0 until members.length()).any { members.getJSONObject(it).optString("PeerID") == ownPeerID }
+            }.getOrDefault(false)
+            if (admitted) {
+                val line = "${spec.label}: admitted to cluster as $ownPeerID"
+                output = if (output.isEmpty()) line else "$output\n\n$line"
+                generatedMatrix = null
+                onNavigateToLog()
+                return@LaunchedEffect
+            }
+        }
     }
 
     Column(
@@ -121,18 +164,23 @@ fun CommandDetailScreen(category: String, name: String) {
             enabled = canGenerate && !generating,
             onClick = {
                 val args = paramValues.toList()
-                val eventJson = if (spec.rawEventJsonParamIndex != null) {
-                    args[spec.rawEventJsonParamIndex]
-                } else {
-                    JSONObject().apply {
-                        put("event", spec.eventOp)
-                        put("fields", JSONObject(spec.toEventFields!!(args)))
-                    }.toString()
-                }
                 generating = true
                 scope.launch {
                     try {
-                        val raw = withContext(Dispatchers.IO) { Kvmobile.encodeEvent(eventJson) }
+                        val raw = if (spec.generateFromResultBase64) {
+                            val resultB64 = withContext(Dispatchers.IO) { spec.run(args) }
+                            Base64.decode(resultB64, Base64.DEFAULT)
+                        } else {
+                            val eventJson = if (spec.rawEventJsonParamIndex != null) {
+                                args[spec.rawEventJsonParamIndex]
+                            } else {
+                                JSONObject().apply {
+                                    put("event", spec.eventOp)
+                                    put("fields", JSONObject(spec.toEventFields!!(args)))
+                                }.toString()
+                            }
+                            withContext(Dispatchers.IO) { Kvmobile.encodeEvent(eventJson) }
+                        }
                         generatedMatrix = withContext(Dispatchers.Default) { DataMatrixCodec.encode(raw) }
                     } catch (e: Exception) {
                         val line = "Generate DataMatrix FAILED: ${e.message}"
@@ -154,7 +202,15 @@ fun CommandDetailScreen(category: String, name: String) {
         }
 
         generatedMatrix?.let { matrix ->
-            GeneratedDataMatrixDialog(matrix = matrix, onDismiss = { generatedMatrix = null })
+            GeneratedDataMatrixDialog(
+                matrix = matrix,
+                onDismiss = { generatedMatrix = null },
+                title = if (spec.awaitAdmissionAfterGenerate) {
+                    "Scan this on the recruiting device -- closes automatically once admitted"
+                } else {
+                    "Scan this to trigger the event"
+                },
+            )
         }
 
         Column(

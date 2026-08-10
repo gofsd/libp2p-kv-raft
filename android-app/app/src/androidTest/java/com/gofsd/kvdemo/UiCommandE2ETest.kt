@@ -8,8 +8,8 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTextInput
-import androidx.test.espresso.Espresso.pressBack
 import androidx.test.platform.app.InstrumentationRegistry
 import kvmobile.Kvmobile
 import org.json.JSONArray
@@ -36,10 +36,19 @@ import java.io.File
  * this app moved from four Activities to one Activity + a NavHost of
  * Composable routes (see AppRoot.kt), which eliminated any distinct
  * Activity subclass to check "am I on the detail screen" against, and any
- * `R.id.*`-addressable View to findViewById. [pressBack] (Espresso, not a
- * Compose API) still works unchanged -- it drives the real system back
- * dispatcher, which Compose Navigation's NavHost wires up the same way
- * any Activity's own back stack would be.
+ * `R.id.*`-addressable View to findViewById. Back navigation is driven
+ * directly through the current Activity's own `OnBackPressedDispatcher`
+ * (see this class's own [pressBack]), not `Espresso.pressBack()` --
+ * confirmed live against a real emulator that the two are *not*
+ * interchangeable here: `Espresso.pressBack()` reliably finished the
+ * Activity outright ("Pressed back and killed the app") on the very
+ * first pop, even though the identical back press worked correctly when
+ * sent manually (`adb shell input keyevent 4`) and Compose Navigation's
+ * own back handling is otherwise unremarkable -- Espresso's pressBack
+ * implementation predates `OnBackPressedDispatcher`/predictive back and
+ * does not reliably route through the callback chain NavHost registers
+ * with it, at least at the AndroidX versions this project currently
+ * pins. Driving the dispatcher directly sidesteps that gap entirely.
  *
  * Called via `adb shell am instrument -e class
  * com.gofsd.kvdemo.UiCommandE2ETest -e cases <base64>` by
@@ -272,12 +281,19 @@ class UiCommandE2ETest {
         val results = JSONArray()
 
         waitForScreen("screen_categories")
+        // Real on-screen order/content, from the full unfiltered catalog
+        // -- not commandsToWalk, which onlyListedCases may have filtered
+        // down to a subset that no longer matches actual row positions.
+        // See clickListItem's doc comment for why the index must come
+        // from here.
+        val allCategories = allCommands.map { it.category }.distinct()
         val categories = commandsToWalk.map { it.category }.distinct()
         for (category in categories) {
-            clickListItem(category)
+            clickListItem(category, allCategories.indexOf(category))
+            val allNamesInCategory = allCommands.filter { it.category == category }.map { it.name }
             val commandsInCategory = commandsToWalk.filter { it.category == category }
             for (spec in commandsInCategory) {
-                val entry = runOneCase(spec, cases[spec.label] ?: Case(), failures)
+                val entry = runOneCase(spec, cases[spec.label] ?: Case(), allNamesInCategory.indexOf(spec.name), failures)
                 results.put(entry)
                 writeResults(context, results)
             }
@@ -302,10 +318,18 @@ class UiCommandE2ETest {
         val failures = mutableListOf<String>()
         val results = JSONArray()
 
+        // Real on-screen order/content -- see clickListItem's doc
+        // comment for why this must come from the full, unfiltered
+        // catalog rather than `ordered` (which is itself already a
+        // caller-selected subset in this walk).
+        val allCommands = buildCommands(InstrumentationRegistry.getInstrumentation().targetContext.filesDir.absolutePath) { }
+        val allCategories = allCommands.map { it.category }.distinct()
+
         waitForScreen("screen_categories")
         for (spec in ordered) {
-            clickListItem(spec.category)
-            val entry = runOneCase(spec, cases[spec.label] ?: Case(), failures)
+            clickListItem(spec.category, allCategories.indexOf(spec.category))
+            val allNamesInCategory = allCommands.filter { it.category == spec.category }.map { it.name }
+            val entry = runOneCase(spec, cases[spec.label] ?: Case(), allNamesInCategory.indexOf(spec.name), failures)
             results.put(entry)
             writeResults(context, results)
             // Back out of the category list too, so the next step starts
@@ -323,12 +347,14 @@ class UiCommandE2ETest {
      * returns the result entry -- shared by the ordered walk and the flat
      * per-category sweep so both report identically. Leaves the UI back on
      * the category list (the `finally` press-back), whichever way it went.
+     * [nameIndex] is spec.name's position in its category's real on-screen
+     * command list -- see clickListItem's doc comment.
      */
-    private fun runOneCase(spec: CommandSpec, case: Case, failures: MutableList<String>): JSONObject {
+    private fun runOneCase(spec: CommandSpec, case: Case, nameIndex: Int, failures: MutableList<String>): JSONObject {
         val label = spec.label
         val entry = JSONObject().put("command", label)
         try {
-            clickListItem(spec.name)
+            clickListItem(spec.name, nameIndex)
             verifyDetailScreen(spec)
             if (case.execute) {
                 Assert.assertEquals(
@@ -378,8 +404,46 @@ class UiCommandE2ETest {
         File(context.getExternalFilesDir(null), "ui_e2e_results.json").writeText(results.toString())
     }
 
-    private fun clickListItem(text: String) {
+    /**
+     * Category/command lists are LazyColumns -- only the currently
+     * visible (plus a small prefetch buffer) rows actually exist in the
+     * semantics tree at any moment, so a target further down (e.g.
+     * "Cluster"'s ~30 commands, most below the fold on a phone-sized
+     * viewport) isn't clickable, or even findable, until scrolled into
+     * view. [index] is that row's position in the *real* on-screen list
+     * (CategoriesScreen's `categories`/CommandListScreen's `names`,
+     * exactly as rendered -- see call sites for why this must come from
+     * the full, unfiltered catalog, not `commandsToWalk`), passed to
+     * `performScrollToIndex` on the enclosing LazyColumn (tagged
+     * "itemList") to jump straight to it via `LazyListState`, the only
+     * approach confirmed live to reliably reach far-down rows:
+     * `performScrollTo()` alone (tried first) only walks forward from
+     * whatever's already composed and silently stops working once a
+     * target is far enough past the initial viewport that it was never
+     * composed at all -- it threw "could not find any node" for the
+     * 19th "Cluster" command ("CreateJoinInviteTicket") on a run where
+     * the first 18 had scrolled/clicked fine.
+     */
+    private fun clickListItem(text: String, index: Int) {
+        composeTestRule.onNodeWithTag("itemList").performScrollToIndex(index)
         composeTestRule.onNodeWithTag("listItem_$text").performClick()
+    }
+
+    /**
+     * Pops one entry off the current back stack via the Activity's own
+     * `OnBackPressedDispatcher` -- see class doc comment for why this,
+     * not `Espresso.pressBack()`, is what actually works here. Runs on
+     * the main thread (the dispatcher isn't thread-safe to call from a
+     * test's own background thread) and waits for the resulting
+     * recomposition to settle before returning, the same guarantee
+     * `performClick`/`performTextInput` already give every other
+     * navigation action in this file.
+     */
+    private fun pressBack() {
+        composeTestRule.activity.onBackPressedDispatcher.let { dispatcher ->
+            composeTestRule.runOnUiThread { dispatcher.onBackPressed() }
+        }
+        composeTestRule.waitForIdle()
     }
 
     /**

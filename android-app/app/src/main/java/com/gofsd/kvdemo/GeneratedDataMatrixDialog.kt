@@ -28,18 +28,27 @@ private fun BitMatrix.toBitmap(): Bitmap {
 }
 
 /**
- * Shown by CommandDetailScreen's "Generate DataMatrix" button: the
+ * Shown by CommandDetailScreen's "Generate DataMatrix" button: either the
  * capnp-encoded bytes [kvmobile.Kvmobile.encodeEvent] returned for the
- * form's current inputs, rendered as a scannable code -- another device
- * running this app can scan it and get [ScanConfirmationDialog]'s
- * trigger-or-cancel prompt for the exact same event.
+ * form's current inputs (another device scanning it gets
+ * [ScanConfirmationDialog]'s trigger-or-cancel prompt for that same
+ * event), or -- for a spec with `generateFromResultBase64` set, e.g.
+ * CreateJoinRequestTicket -- a self-contained signed ticket (another
+ * device scanning it gets routed to [RecruitConfirmDialog] instead, see
+ * AppRoot.kt's scan dispatch). [title] distinguishes the two so this
+ * dialog never claims to be "triggering an event" for a ticket that
+ * isn't one.
  */
 @Composable
-fun GeneratedDataMatrixDialog(matrix: BitMatrix, onDismiss: () -> Unit) {
+fun GeneratedDataMatrixDialog(
+    matrix: BitMatrix,
+    onDismiss: () -> Unit,
+    title: String = "Scan this to trigger the event",
+) {
     val bitmap = remember(matrix) { matrix.toBitmap() }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Scan this to trigger the event") },
+        title = { Text(title) },
         text = {
             Column {
                 Image(

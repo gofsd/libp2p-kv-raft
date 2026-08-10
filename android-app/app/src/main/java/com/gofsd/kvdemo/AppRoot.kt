@@ -1,5 +1,6 @@
 package com.gofsd.kvdemo
 
+import android.util.Base64
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
@@ -26,6 +27,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kvmobile.Kvmobile
+import org.json.JSONObject
 
 /**
  * Single-Activity Compose root, replacing the old MainActivity ->
@@ -51,14 +53,21 @@ import kvmobile.Kvmobile
  * gets acted on, regardless of which screen was showing when it happened
  * -- a second LaunchedEffect(Unit) here (same "lives for the whole
  * NavHost's lifetime" reasoning as the Start() one) collects
- * [ScannerCoordinator.scans], decodes each one via
- * [kvmobile.Kvmobile.decodeEvent], and shows [ScanConfirmationDialog]
- * -- scanning alone never submits anything; only a subsequent tap on
+ * [ScannerCoordinator.scans] and decodes each one via
+ * [kvmobile.Kvmobile.decodeEvent], then forks on what it decoded to:
+ * a `join_request_ticket` event (some other device's CreateJoinRequestTicket
+ * code, see CommandDetailScreen's awaitAdmissionAfterGenerate handling)
+ * routes to [RecruitConfirmDialog] -- admitting a device into this
+ * cluster needs its own confirm-then-redeem flow, not a blind "Trigger"
+ * -- while every other decodable event, or nothing decodable at all,
+ * keeps going through [ScanConfirmationDialog] exactly as before:
+ * scanning alone never submits anything; only a subsequent tap on
  * "Trigger" calls [kvmobile.Kvmobile.sendEvent] (this class's own
  * `triggerEvent` alias) to actually submit the decoded event against the
  * current cluster.
  */
 private class PendingScan(val decodedJson: String?, val rawText: String)
+private class PendingRecruitTicket(val ticketB64: String, val sourceAddr: String)
 private fun encodeSegment(s: String) = URLEncoder.encode(s, "UTF-8")
 private fun decodeSegment(s: String) = URLDecoder.decode(s, "UTF-8")
 
@@ -71,6 +80,7 @@ fun AppRoot() {
     val context = LocalContext.current
     var statusText by remember { mutableStateOf("Connecting to cluster...") }
     var pendingScan by remember { mutableStateOf<PendingScan?>(null) }
+    var pendingRecruitTicket by remember { mutableStateOf<PendingRecruitTicket?>(null) }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
@@ -89,7 +99,18 @@ fun AppRoot() {
             val decodedJson = withContext(Dispatchers.IO) {
                 runCatching { Kvmobile.decodeEvent(bytes) }.getOrNull()
             }
-            pendingScan = PendingScan(decodedJson, DataMatrixCodec.bytesToText(bytes))
+            val eventName = decodedJson?.let { runCatching { JSONObject(it).optString("event") }.getOrNull() }
+            if (eventName == "join_request_ticket") {
+                val sourceAddr = runCatching {
+                    JSONObject(decodedJson!!).getJSONObject("fields").optString("source_addr")
+                }.getOrDefault("")
+                pendingRecruitTicket = PendingRecruitTicket(
+                    ticketB64 = Base64.encodeToString(bytes, Base64.NO_WRAP),
+                    sourceAddr = sourceAddr,
+                )
+            } else {
+                pendingScan = PendingScan(decodedJson, DataMatrixCodec.bytesToText(bytes))
+            }
             // Collapse the fullscreen scanner so the confirmation dialog
             // (drawn above it either way, but this avoids leaving the
             // camera view expanded and pointless behind the dialog) reads
@@ -133,7 +154,11 @@ fun AppRoot() {
                     ) { backStackEntry ->
                         val category = decodeSegment(backStackEntry.arguments?.getString("category") ?: "")
                         val name = decodeSegment(backStackEntry.arguments?.getString("name") ?: "")
-                        CommandDetailScreen(category = category, name = name)
+                        CommandDetailScreen(
+                            category = category,
+                            name = name,
+                            onNavigateToLog = { navController.navigate("log") },
+                        )
                     }
                     composable("log") {
                         LogScreen()
@@ -161,6 +186,35 @@ fun AppRoot() {
                             }
                         },
                         onDismiss = { pendingScan = null },
+                    )
+                }
+
+                val recruit = pendingRecruitTicket
+                if (recruit != null) {
+                    RecruitConfirmDialog(
+                        sourceAddr = recruit.sourceAddr,
+                        onApprove = { stationName ->
+                            pendingRecruitTicket = null
+                            scope.launch {
+                                val line = try {
+                                    val result = withContext(Dispatchers.IO) {
+                                        Kvmobile.redeemJoinRequestTicket(recruit.ticketB64, "voter")
+                                    }
+                                    val admittedPeerID = result.substringBefore(' ')
+                                    if (stationName.isNotBlank()) {
+                                        withContext(Dispatchers.IO) {
+                                            Kvmobile.putStation(admittedPeerID, stationName, "")
+                                        }
+                                    }
+                                    "Recruited ->\n$result" +
+                                        if (stationName.isNotBlank()) " (named \"$stationName\")" else ""
+                                } catch (e: Exception) {
+                                    "Recruit FAILED: ${e.message}"
+                                }
+                                OutputLog.append(line)
+                            }
+                        },
+                        onDismiss = { pendingRecruitTicket = null },
                     )
                 }
             }

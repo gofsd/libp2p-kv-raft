@@ -33,10 +33,26 @@ import kvmobile.LogCallback
  * genuinely no wire event at all -- Start/Join/StartSolo's daemon
  * lifecycle, SubmitCommand's 4-primitive dispatch, WatchExecute/
  * WatchCommandLog's standing subscriptions, List*'s paginated
- * ListRange loops, GetGroup/GetCommand's Go-side key derivation, ticket
- * creation's local sign step, ...) leaves both null: CommandDetailScreen
- * shows the button disabled with an explanatory tooltip rather than
- * omitting it, closer to "every command form" than silent omission.
+ * ListRange loops, GetGroup/GetCommand's Go-side key derivation, ...)
+ * leaves everything below null/false: CommandDetailScreen shows the
+ * button disabled with an explanatory tooltip rather than omitting it,
+ * closer to "every command form" than silent omission.
+ *
+ * [generateFromResultBase64] is the other way a spec can be generatable:
+ * for a command whose [run] already returns one self-contained, signed,
+ * base64-encoded ticket (CreateJoinRequestTicket, and structurally
+ * CreateExecInviteTicket/CreateJoinInviteTicket too, though only the
+ * first is wired to it today) there's no separate capnp event to build --
+ * base64-decoding [run]'s own result IS the payload to render, instead of
+ * [eventOp]/[toEventFields]. [awaitAdmissionAfterGenerate], set only for
+ * CreateJoinRequestTicket, additionally has CommandDetailScreen poll
+ * Kvmobile.listClusterMembers() for this device's own peer id appearing
+ * while the generated code's popup is showing -- the only externally
+ * observable sign this device's `n.raft` went from pending to admitted
+ * (see mobile/kvmobile's own doc comments -- there is no push/watch
+ * callback for this transition) -- and, once it does, auto-closes the
+ * popup and navigates to the activity log, since a recruited device has
+ * nothing further to do with the code once someone else has scanned it.
  */
 class CommandSpec(
     val category: String,
@@ -46,6 +62,8 @@ class CommandSpec(
     val eventOp: String? = null,
     val toEventFields: ((List<String>) -> Map<String, String>)? = null,
     val rawEventJsonParamIndex: Int? = null,
+    val generateFromResultBase64: Boolean = false,
+    val awaitAdmissionAfterGenerate: Boolean = false,
 ) {
     val label: String get() = "$category: $name"
 }
@@ -79,9 +97,14 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
         eventOp: String? = null,
         toEventFields: ((List<String>) -> Map<String, String>)? = null,
         rawEventJsonParamIndex: Int? = null,
+        generateFromResultBase64: Boolean = false,
+        awaitAdmissionAfterGenerate: Boolean = false,
         run: (List<String>) -> String,
     ) {
-        commands += CommandSpec(category, name, params, run, eventOp, toEventFields, rawEventJsonParamIndex)
+        commands += CommandSpec(
+            category, name, params, run, eventOp, toEventFields, rawEventJsonParamIndex,
+            generateFromResultBase64, awaitAdmissionAfterGenerate,
+        )
     }
     // Permit "kind" is a numeric byte on the wire (shmevent.KindBootstrapNode
     // = 2, shmevent.KindClusterJoin = 5) but a string in this UI's params --
@@ -152,8 +175,19 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     // with this device's own key, so a recruiting peer can verify it
     // really came from this device before ever dialing it.
     // RedeemJoinRequestTicket verifies then recruits in one call, exactly
-    // like RecruitPeer does for a plain ticket.
-    add("Cluster", "CreateJoinRequestTicket", emptyList()) { Kvmobile.createJoinRequestTicket() }
+    // like RecruitPeer does for a plain ticket. This is the "recruit me"
+    // entry point end to end: generateFromResultBase64 lets
+    // CommandDetailScreen's "Generate DataMatrix" button render the
+    // signed ticket itself (no capnp eventOp exists for a compound call
+    // like this), and awaitAdmissionAfterGenerate has it watch for this
+    // device actually being admitted -- the persistent scanner's own
+    // AppRoot dispatch recognizes a scanned join_request_ticket code and
+    // routes the *other* device straight to RecruitConfirmDialog instead
+    // of the generic scan-confirmation flow (see AppRoot.kt).
+    add(
+        "Cluster", "CreateJoinRequestTicket", emptyList(),
+        generateFromResultBase64 = true, awaitAdmissionAfterGenerate = true,
+    ) { Kvmobile.createJoinRequestTicket() }
     add("Cluster", "RedeemJoinRequestTicket", listOf("ticketB64", "voter|learner")) { a ->
         Kvmobile.redeemJoinRequestTicket(a[0], a[1])
     }
@@ -205,6 +239,37 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     // it). Safe to call more than once; each call just re-asserts the
     // grant.
     add("Cluster", "RequestRelayAccess", listOf("note")) { a -> Kvmobile.requestRelayAccess(a[0]) }
+    // RequestPublicAccess is RequestRelayAccess's general form: the same
+    // self-service escalation, but against any cluster address, not just
+    // the relay baked in at build time.
+    add("Cluster", "RequestPublicAccess", listOf("targetAddr", "note")) { a ->
+        Kvmobile.requestPublicAccess(a[0], a[1])
+    }
+    // This device's own build/version info -- desktop's `mage version`.
+    add("Cluster", "Version", emptyList()) { Kvmobile.version() }
+
+    // RelayNode -- shmevent.KindBootstrapNode's request/confirm/revoke
+    // lifecycle exposed as CRUD (desktop's mage addrelaynode/
+    // confirmrelaynode/removerelaynode/listrelaynodes/getrelaynode), the
+    // pool pkg/daemon's relayCandidates draws its failover list from.
+    add("RelayNode", "AddRelayNode", listOf("multiaddr", "priority (0-255)")) { a ->
+        Kvmobile.addRelayNode(a[0], a[1].toLongOrThrow("priority")); ok()
+    }
+    add("RelayNode", "ConfirmRelayNode", listOf("multiaddr")) { a -> Kvmobile.confirmRelayNode(a[0]); ok() }
+    add("RelayNode", "RemoveRelayNode", listOf("multiaddr")) { a -> Kvmobile.removeRelayNode(a[0]); ok() }
+    add("RelayNode", "GetRelayNode", listOf("multiaddr")) { a -> Kvmobile.getRelayNode(a[0]) }
+    add("RelayNode", "ListRelayNodes", emptyList()) { Kvmobile.listRelayNodes() }
+
+    // Station -- a human-readable name/attrs for a peer id (desktop's mage
+    // createstation/updatestation/deletestation/getstation/liststations;
+    // PutStation covers both create and update on the Go side). Only a
+    // current raft voter may Put/Delete one.
+    add("Station", "PutStation", listOf("peerID", "name", "attrsJSON")) { a ->
+        Kvmobile.putStation(a[0], a[1], a[2]); ok()
+    }
+    add("Station", "DeleteStation", listOf("peerID")) { a -> Kvmobile.deleteStation(a[0]); ok() }
+    add("Station", "GetStation", listOf("peerID")) { a -> Kvmobile.getStation(a[0]) }
+    add("Station", "ListStations", emptyList()) { Kvmobile.listStations() }
 
     // KV
     add(
@@ -215,6 +280,19 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     add("KV", "RangeScan", listOf("start", "end", "limit (0=unlimited)")) { a ->
         Kvmobile.rangeScan(a[0], a[1], a[2].toLongOrThrow("limit"))
     }
+    // CompareAndSwap/CompareAndSwapAbsent are the safe read-modify-write
+    // primitive Get+Submit alone can't express -- a false result means
+    // another writer got there first, not an error; desktop's `mage cas`/
+    // `mage casabsent`.
+    add("KV", "CompareAndSwap", listOf("key", "expected", "value")) { a ->
+        "swapped=${Kvmobile.compareAndSwap(a[0], a[1], a[2])}"
+    }
+    add("KV", "CompareAndSwapAbsent", listOf("key", "value")) { a ->
+        "swapped=${Kvmobile.compareAndSwapAbsent(a[0], a[1])}"
+    }
+    // Atomic multi-key write -- desktop's `mage txn "<op> [op...]"`; see
+    // shmevent.ParseTxnOpsString's grammar (k=v, del:k, if:k=v, ifabsent:k).
+    add("KV", "Txn", listOf("ops (\"k=v del:k if:k=v ifabsent:k\")")) { a -> Kvmobile.txn(a[0]); ok() }
 
     // Permits -- shmevent.KindBootstrapNode's request/confirm/revoke
     // lifecycle; ConfirmPermit alone also accepts "cluster-join" (see
@@ -345,6 +423,16 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     ) { a -> Kvmobile.deleteCommand(a[0]); ok() }
     add("Command", "GetCommand", listOf("id")) { a -> Kvmobile.getCommand(a[0]) }
     add("Command", "ListCommands", emptyList()) { Kvmobile.listCommands() }
+    // *WithSpec carry the command's own form definition (opaque JSON,
+    // replicated verbatim) alongside it -- desktop's `mage
+    // createcommandspec`; targetPeerID may be "" here, unlike plain
+    // CreateCommand/UpdateCommand above.
+    add("Command", "CreateCommandWithSpec", listOf("id", "name", "targetPeerID (may be blank)", "specJSON")) { a ->
+        Kvmobile.createCommandWithSpec(a[0], a[1], a[2], a[3]); ok()
+    }
+    add("Command", "UpdateCommandWithSpec", listOf("id", "name", "targetPeerID (may be blank)", "specJSON")) { a ->
+        Kvmobile.updateCommandWithSpec(a[0], a[1], a[2], a[3]); ok()
+    }
 
     add(
         "Links", "AddCommandToGroup", listOf("commandID", "groupID"),
@@ -387,6 +475,13 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
         "Dispatch", "AppendCommandLog",
         listOf("requesterPeerID (blank=no poke)", "instanceID", "fieldsJSON", "narrative"),
     ) { a -> Kvmobile.appendCommandLog(a[0], a[1], a[2], a[3]); ok() }
+    // Non-final progress update from inside a RunCommandDispatcher handler
+    // -- stamps status "running" so a dead process's instance still looks
+    // retryable; desktop's pkg/kvctl.ReportProgress / `mage reportprogress`.
+    add(
+        "Dispatch", "ReportProgress",
+        listOf("requesterPeerID", "instanceID", "fieldsJSON (blank ok)", "narrative"),
+    ) { a -> Kvmobile.reportProgress(a[0], a[1], a[2], a[3]); ok() }
     add(
         "Dispatch", "QueryCommandLog",
         listOf("instanceID", "since (RFC3339 or blank)", "until (RFC3339 or blank)", "limit (blank=unlimited)"),
@@ -402,6 +497,30 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
         "Watching -- new records appear below as they arrive"
     }
     add("Dispatch", "StopWatchCommandLog", listOf("instanceID")) { a -> Kvmobile.stopWatchCommandLog(a[0]); ok() }
+
+    // Dial* generalize public-access (RequestPublicAccess above) from one
+    // hardcoded command to any commandID: this device dials targetAddr
+    // directly and submits/reads back a dispatch on a cluster it has no
+    // local replica of at all -- only that commandID is linked to a public
+    // group there. No local exec-index/Execute-poke bookkeeping, since
+    // there's no local replica to index against.
+    add("Dispatch", "DialSubmitCommand", listOf("targetAddr", "commandID", "inputsJSON", "note")) { a ->
+        Kvmobile.dialSubmitCommand(a[0], a[1], a[2], a[3])
+    }
+    add(
+        "Dispatch", "DialQueryCommandLog",
+        listOf("targetAddr", "instanceID", "since (RFC3339 or blank)", "until (RFC3339 or blank)", "limit (blank=unlimited)"),
+    ) { a -> Kvmobile.dialQueryCommandLog(a[0], a[1], a[2], a[3], a[4]) }
+    add("Dispatch", "DialWatchCommandLog", listOf("targetAddr", "instanceID")) { a ->
+        val instanceID = a[1]
+        Kvmobile.dialWatchCommandLog(a[0], instanceID, object : LogCallback {
+            override fun onRecords(recordsJSON: String) {
+                appendLog("DialCommandLog[$instanceID]: $recordsJSON")
+            }
+        })
+        "Watching -- new records appear below as they arrive"
+    }
+    add("Dispatch", "StopDialWatchCommandLog", listOf("instanceID")) { a -> Kvmobile.stopDialWatchCommandLog(a[0]); ok() }
 
     // RunCommandDispatcher is the "target device's own application logic"
     // SubmitCommand/dispatch.go's doc comments describe: a standing
