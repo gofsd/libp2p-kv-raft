@@ -233,6 +233,18 @@ func Call(ctx context.Context, peerID string, m shmevent.Msg, priv shmevent.Priv
 	// to remove the request segment now.
 	w.CloseStorage()
 
+	// Decode checks respBuf's CRC32 (corruption) but, per its own doc
+	// comment, never the signature (authenticity) -- and this response leg
+	// doesn't call shmevent.Verify either, unlike every other Decode call
+	// site that goes on to check a signature against a known key. This is
+	// deliberate, not an oversight: shmring is same-machine-only (see
+	// pkg/shmevent's own doc comment on that trust boundary), so only a
+	// co-resident process holding the daemon's own key could forge a
+	// response in the first place -- a threat Verify wouldn't add any
+	// defense against here. A caller relying on Call still gets the
+	// request leg's Verify (inside the daemon's own Serve loop) checking
+	// *it*, since that's the leg crossing a real trust boundary (an
+	// arbitrary local caller, not necessarily the daemon's own key holder).
 	resp, _, _, err := shmevent.Decode(respBuf)
 	if err != nil {
 		return shmevent.Msg{}, err
@@ -295,6 +307,8 @@ func CallRaw(ctx context.Context, peerID string, encoded []byte) (shmevent.Msg, 
 
 	w.CloseStorage()
 
+	// No shmevent.Verify on this leg either -- see Call's identical
+	// response decode above for why.
 	resp, _, _, err := shmevent.Decode(respBuf)
 	if err != nil {
 		return shmevent.Msg{}, err

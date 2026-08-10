@@ -46,10 +46,23 @@ func Open(dir string) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
+// dbExecer is the subset of *sql.DB and *sql.Tx that get/set/del/
+// countPrefix/scanRange/scanPrefix below need -- both satisfy it, so the
+// same query logic backs Store's own (one autocommitted write per call)
+// methods and Tx's (every call scoped to one shared transaction, see
+// WithTx) without duplicating a single query.
+type dbExecer interface {
+	QueryRow(query string, args ...any) *sql.Row
+	Exec(query string, args ...any) (sql.Result, error)
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
 // Get returns the value for key, or ErrNotFound if it does not exist.
-func (s *Store) Get(key []byte) ([]byte, error) {
+func (s *Store) Get(key []byte) ([]byte, error) { return get(s.db, key) }
+
+func get(db dbExecer, key []byte) ([]byte, error) {
 	var v []byte
-	err := s.db.QueryRow(`SELECT value FROM kv WHERE key = ?`, key).Scan(&v)
+	err := db.QueryRow(`SELECT value FROM kv WHERE key = ?`, key).Scan(&v)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -66,17 +79,21 @@ func (s *Store) Get(key []byte) ([]byte, error) {
 // via Get, which can itself return nil for a previously-stored empty
 // value) could never be Set again elsewhere, silently breaking any
 // read-then-write caller (see kvfsm's OpConfirm, the first such caller).
-func (s *Store) Set(key, value []byte) error {
+func (s *Store) Set(key, value []byte) error { return set(s.db, key, value) }
+
+func set(db dbExecer, key, value []byte) error {
 	if value == nil {
 		value = []byte{}
 	}
-	_, err := s.db.Exec(`INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
+	_, err := db.Exec(`INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
 	return err
 }
 
 // Delete removes key.
-func (s *Store) Delete(key []byte) error {
-	_, err := s.db.Exec(`DELETE FROM kv WHERE key = ?`, key)
+func (s *Store) Delete(key []byte) error { return del(s.db, key) }
+
+func del(db dbExecer, key []byte) error {
+	_, err := db.Exec(`DELETE FROM kv WHERE key = ?`, key)
 	return err
 }
 
@@ -84,13 +101,15 @@ func (s *Store) Delete(key []byte) error {
 // scan over the BLOB-keyed kv table (SQLite compares BLOBs byte-wise, so
 // key >= prefix AND key < prefixUpperBound(prefix) selects exactly that
 // range). Used by pkg/kvfsm to enforce a per-SystemKey-list entry cap.
-func (s *Store) CountPrefix(prefix []byte) (int, error) {
+func (s *Store) CountPrefix(prefix []byte) (int, error) { return countPrefix(s.db, prefix) }
+
+func countPrefix(db dbExecer, prefix []byte) (int, error) {
 	upper := prefixUpperBound(prefix)
 	var row *sql.Row
 	if upper == nil {
-		row = s.db.QueryRow(`SELECT COUNT(*) FROM kv WHERE key >= ?`, prefix)
+		row = db.QueryRow(`SELECT COUNT(*) FROM kv WHERE key >= ?`, prefix)
 	} else {
-		row = s.db.QueryRow(`SELECT COUNT(*) FROM kv WHERE key >= ? AND key < ?`, prefix, upper)
+		row = db.QueryRow(`SELECT COUNT(*) FROM kv WHERE key >= ? AND key < ?`, prefix, upper)
 	}
 	var count int
 	if err := row.Scan(&count); err != nil {
@@ -111,13 +130,17 @@ type KV struct {
 // built around that property). limit caps how many pairs are returned;
 // limit <= 0 means unlimited.
 func (s *Store) ScanRange(start, end []byte, limit int) ([]KV, error) {
+	return scanRange(s.db, start, end, limit)
+}
+
+func scanRange(db dbExecer, start, end []byte, limit int) ([]KV, error) {
 	query := `SELECT key, value FROM kv WHERE key >= ? AND key <= ? ORDER BY key`
 	args := []any{start, end}
 	if limit > 0 {
 		query += ` LIMIT ?`
 		args = append(args, limit)
 	}
-	rows, err := s.db.Query(query, args...)
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -143,6 +166,10 @@ func (s *Store) ScanRange(start, end []byte, limit int) ([]KV, error) {
 // member of that set itself. limit caps how many pairs are returned;
 // limit <= 0 means unlimited.
 func (s *Store) ScanPrefix(prefix []byte, limit int) ([]KV, error) {
+	return scanPrefix(s.db, prefix, limit)
+}
+
+func scanPrefix(db dbExecer, prefix []byte, limit int) ([]KV, error) {
 	upper := prefixUpperBound(prefix)
 	query := `SELECT key, value FROM kv WHERE key >= ?`
 	args := []any{prefix}
@@ -155,7 +182,7 @@ func (s *Store) ScanPrefix(prefix []byte, limit int) ([]KV, error) {
 		query += ` LIMIT ?`
 		args = append(args, limit)
 	}
-	rows, err := s.db.Query(query, args...)
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -170,6 +197,69 @@ func (s *Store) ScanPrefix(prefix []byte, limit int) ([]KV, error) {
 		out = append(out, kv)
 	}
 	return out, rows.Err()
+}
+
+// Tx is a Store operation scoped to a single SQLite transaction -- see
+// WithTx. Its method set mirrors Store's read/write surface exactly (both
+// satisfy Accessor below), so code written against Accessor runs
+// identically whether or not it's inside one.
+type Tx struct {
+	tx *sql.Tx
+}
+
+func (t *Tx) Get(key []byte) ([]byte, error)         { return get(t.tx, key) }
+func (t *Tx) Set(key, value []byte) error            { return set(t.tx, key, value) }
+func (t *Tx) Delete(key []byte) error                { return del(t.tx, key) }
+func (t *Tx) CountPrefix(prefix []byte) (int, error) { return countPrefix(t.tx, prefix) }
+func (t *Tx) ScanRange(start, end []byte, limit int) ([]KV, error) {
+	return scanRange(t.tx, start, end, limit)
+}
+func (t *Tx) ScanPrefix(prefix []byte, limit int) ([]KV, error) {
+	return scanPrefix(t.tx, prefix, limit)
+}
+
+// Accessor is Store's read/write surface, satisfied by both *Store (one
+// autocommitted write per call) and *Tx (every call scoped to the same
+// underlying transaction, all committed or none via WithTx). pkg/kvfsm's
+// helpers take this instead of *Store directly so the identical logic
+// works whether Apply calls them directly or from inside a WithTx
+// closure -- see WithTx's own doc comment on why that distinction matters.
+type Accessor interface {
+	Get(key []byte) ([]byte, error)
+	Set(key, value []byte) error
+	Delete(key []byte) error
+	CountPrefix(prefix []byte) (int, error)
+	ScanRange(start, end []byte, limit int) ([]KV, error)
+	ScanPrefix(prefix []byte, limit int) ([]KV, error)
+}
+
+var (
+	_ Accessor = (*Store)(nil)
+	_ Accessor = (*Tx)(nil)
+)
+
+// WithTx runs fn against a single SQLite transaction, committing every
+// write fn made only if fn returns nil -- any error, fn's own or a
+// failure partway through, rolls back everything fn did, leaving the
+// store exactly as it was before WithTx was called. Needed wherever one
+// raft log entry's Apply has to make more than one write land as a single
+// all-or-nothing unit (pkg/kvfsm's OpTxn and cascade-delete are the two
+// current cases): the plain Store methods above each autocommit
+// independently, so a caller looping Set/Delete calls across several of
+// them has no protection against a mid-loop failure (a real I/O error, not
+// just a crash -- SQLite is a real embedded database, not a slow syscall)
+// leaving a genuine partial-apply state on disk while raft's own log
+// still marks the whole entry as cleanly applied.
+func (s *Store) WithTx(fn func(*Tx) error) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := fn(&Tx{tx: tx}); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // prefixUpperBound returns the smallest byte sequence greater than every

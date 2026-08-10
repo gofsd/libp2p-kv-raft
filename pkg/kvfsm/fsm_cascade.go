@@ -22,38 +22,46 @@ import (
 // systemListLimits' own caps, not something that needs to be as cheap as
 // the command-execute-time join (pkg/kvctl.isPermittedForCommand), which
 // is what actually needed the commandID-first key layout to be fast.
-func applyCascadeDelete(s *store.Store, key []byte) ApplyResult {
+//
+// s is always a *store.Tx here, never a bare *store.Store directly --
+// Apply's OpCascadeDelete case wraps this call in Store.WithTx, so the
+// record's own delete and every relation delete alongside it land as one
+// SQLite transaction: a mid-cascade failure (a real I/O error, not just a
+// crash) rolls every delete already made in this call back, instead of
+// leaving some relations gone and others still dangling while raft's log
+// marks the whole entry applied.
+func applyCascadeDelete(s store.Accessor, key []byte) error {
 	if len(key) < systemKeyPrefixLen || key[0] != shmevent.SystemKeyPrefix {
-		return ApplyResult{Err: fmt.Errorf("kvfsm: cascade delete: not a system key")}
+		return fmt.Errorf("kvfsm: cascade delete: not a system key")
 	}
 	switch key[1] {
 	case shmevent.KindCommand:
 		commandID := key[systemKeyPrefixLen:]
 		prefix, err := shmevent.GroupCommandKey(commandID, nil)
 		if err != nil {
-			return ApplyResult{Err: err}
+			return err
 		}
 		matches, err := s.ScanPrefix(prefix, 0)
 		if err != nil {
-			return ApplyResult{Err: err}
+			return err
 		}
 		for _, m := range matches {
 			if err := s.Delete(m.Key); err != nil {
-				return ApplyResult{Err: err}
+				return err
 			}
 		}
-		return ApplyResult{Err: s.Delete(key)}
+		return s.Delete(key)
 	case shmevent.KindGroup:
 		groupID := key[systemKeyPrefixLen:]
 		if err := deleteRelationsByGroupID(s, shmevent.AllGroupCommandsPrefix(), groupID, shmevent.ParseGroupCommandKey); err != nil {
-			return ApplyResult{Err: err}
+			return err
 		}
 		if err := deleteRelationsByGroupID(s, shmevent.AllPeerGroupsPrefix(), groupID, shmevent.ParsePeerGroupKey); err != nil {
-			return ApplyResult{Err: err}
+			return err
 		}
-		return ApplyResult{Err: s.Delete(key)}
+		return s.Delete(key)
 	default:
-		return ApplyResult{Err: fmt.Errorf("kvfsm: cascade delete: unsupported kind %d", key[1])}
+		return fmt.Errorf("kvfsm: cascade delete: unsupported kind %d", key[1])
 	}
 }
 
@@ -64,7 +72,7 @@ func applyCascadeDelete(s *store.Store, key []byte) ApplyResult {
 // shape) to the given groupID -- the shared scan-and-filter loop behind
 // applyCascadeDelete's KindGroup case, since GroupCommand and PeerGroup
 // need the identical treatment, just parsed differently.
-func deleteRelationsByGroupID(s *store.Store, prefix, groupID []byte, parse func(key []byte) ([]byte, []byte, error)) error {
+func deleteRelationsByGroupID(s store.Accessor, prefix, groupID []byte, parse func(key []byte) ([]byte, []byte, error)) error {
 	matches, err := s.ScanPrefix(prefix, 0)
 	if err != nil {
 		return err

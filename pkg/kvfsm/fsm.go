@@ -85,7 +85,13 @@ func (f *FSM) Apply(l *raft.Log) any {
 		}
 		return ApplyResult{Err: f.Store.Delete(key)}
 	case OpCascadeDelete:
-		return applyCascadeDelete(f.Store, key)
+		// See applyCascadeDelete's own doc comment on why this needs
+		// WithTx: a Group/Command delete plus every relation record
+		// alongside it must land as one all-or-nothing SQLite transaction,
+		// not one autocommit per delete.
+		return ApplyResult{Err: f.Store.WithTx(func(tx *store.Tx) error {
+			return applyCascadeDelete(tx, key)
+		})}
 	case OpConsumeInvite:
 		// Read-then-delete, atomic within this single Apply call for the
 		// identical reason OpConfirm's read-modify-write is (see that
@@ -216,24 +222,32 @@ func (f *FSM) Apply(l *raft.Log) any {
 				}
 			}
 		}
-		// See OpTxn's own doc comment for why this loop -- not any single
-		// Store call -- is where future rollback support would wrap a
-		// real Store-level transaction.
-		for _, op := range ops {
-			if op.IsCompare() {
-				continue
+		// Every write lands as one SQLite transaction (Store.WithTx),
+		// committed only once the whole loop finishes cleanly -- a mid-loop
+		// failure (a real I/O error, not just a crash) rolls back every op
+		// already applied in this call instead of leaving the store
+		// half-written while raft's log still marks the whole entry
+		// applied. This is what makes the wire-level "every op lands or
+		// none do" promise actually hold at the storage layer, not just at
+		// the precondition-check loop above.
+		err = f.Store.WithTx(func(tx *store.Tx) error {
+			for _, op := range ops {
+				if op.IsCompare() {
+					continue
+				}
+				var err error
+				if op.Op == shmevent.TxnOpSet {
+					err = tx.Set(op.Key, op.Value)
+				} else {
+					err = tx.Delete(op.Key)
+				}
+				if err != nil {
+					return fmt.Errorf("kvfsm: txn: op on key %x: %w", op.Key, err)
+				}
 			}
-			var err error
-			if op.Op == shmevent.TxnOpSet {
-				err = f.Store.Set(op.Key, op.Value)
-			} else {
-				err = f.Store.Delete(op.Key)
-			}
-			if err != nil {
-				return ApplyResult{Err: fmt.Errorf("kvfsm: txn: op on key %x: %w", op.Key, err)}
-			}
-		}
-		return ApplyResult{}
+			return nil
+		})
+		return ApplyResult{Err: err}
 	default:
 		return ApplyResult{Err: fmt.Errorf("kvfsm: unknown op %d", op)}
 	}

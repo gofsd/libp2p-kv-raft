@@ -379,41 +379,49 @@ func (s *Session) channelPipe(channelID string) (*channelPipe, bool) {
 }
 
 // OpenChannel is the one-shot convenience wrapper around
-// Open+Session.OpenChannel.
-func OpenChannel(ctx context.Context, peerID, destPeerID string) (channelID string, err error) {
-	s, err := Open(ctx, peerID)
+// Open+Session.OpenChannel -- unlike shmclient's other one-shot wrappers
+// (PutGroup, DeleteCommand, ...), it also returns the *Session it opened,
+// and the caller must keep it: channelID's pkg/chandata ring pair (see
+// setupChannelData) is tracked only inside that Session's own s.channels
+// map, with no way for any other Session to rediscover or release it (see
+// SendChannel/PollChannel's own doc comments). Pass the same s to
+// SendChannel/PollChannel/CloseChannel/CloseChannelWrite for the rest of
+// this channel's lifetime; discarding s instead of eventually calling
+// CloseChannel on it leaks channelID's ring storage for good, the same as
+// leaking any other unclosed handle.
+func OpenChannel(ctx context.Context, peerID, destPeerID string) (s *Session, channelID string, err error) {
+	s, err = Open(ctx, peerID)
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
-	return s.OpenChannel(ctx, destPeerID)
+	channelID, err = s.OpenChannel(ctx, destPeerID)
+	if err != nil {
+		return nil, "", err
+	}
+	return s, channelID, nil
 }
-
-// Unlike OpenChannel/ListenChannel/CloseChannel above, SendChannel and
-// PollChannel have no one-shot convenience wrapper here: both now read
-// from/write to a pkg/chandata ring pair that only the Session which
-// itself called OpenChannel/ListenChannel for that channelID ever set up
-// (see setupChannelData) -- a fresh Open()'d Session has no way to
-// rediscover it, so a one-shot wrapper could never do anything but fail.
-// A caller needs the same *Session across a channel's Open/Listen,
-// Send/Poll, and Close calls regardless, which pkg/kvctl and
-// mobile/kvmobile both already do.
 
 // ListenChannel is the one-shot convenience wrapper around
-// Open+Session.ListenChannel.
-func ListenChannel(ctx context.Context, peerID string) (channelID, remotePeerID string, ok bool, err error) {
-	s, err := Open(ctx, peerID)
+// Open+Session.ListenChannel -- see OpenChannel's doc comment above on why
+// it likewise returns the *Session it opened, and why the caller must
+// keep it rather than discard it.
+func ListenChannel(ctx context.Context, peerID string) (s *Session, channelID, remotePeerID string, ok bool, err error) {
+	s, err = Open(ctx, peerID)
 	if err != nil {
-		return "", "", false, err
+		return nil, "", "", false, err
 	}
-	return s.ListenChannel(ctx)
+	channelID, remotePeerID, ok, err = s.ListenChannel(ctx)
+	if err != nil {
+		return nil, "", "", false, err
+	}
+	return s, channelID, remotePeerID, ok, nil
 }
 
-// CloseChannel is the one-shot convenience wrapper around
-// Open+Session.CloseChannel.
-func CloseChannel(ctx context.Context, peerID, channelID string) error {
-	s, err := Open(ctx, peerID)
-	if err != nil {
-		return err
-	}
+// CloseChannel is the one-shot pass-through to s.CloseChannel, for
+// symmetry with OpenChannel/ListenChannel above -- s must be the same
+// *Session either of them returned for channelID (or any other Session
+// that itself opened channelID), not a freshly Open()'d one, which
+// wouldn't know channelID's ring pair even exists.
+func CloseChannel(ctx context.Context, s *Session, channelID string) error {
 	return s.CloseChannel(ctx, channelID)
 }

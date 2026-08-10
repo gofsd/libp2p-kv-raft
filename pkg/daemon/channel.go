@@ -679,7 +679,7 @@ func (n *Node) handleChannelStream(s network.Stream) {
 	// current ReservedGroupCluster membership alone, not through
 	// isAuthorizedForGatedAccess -- see its own doc comment.
 	if !n.isAuthorizedForGatedAccess(senderPeer, shmevent.ReservedGroupChannel) {
-		writeChannelAccept(s, false, fmt.Sprintf("%s is not a cluster member, in the channel group, or granted access to %s", senderPeer, n.peerID))
+		_ = writeChannelAccept(s, false, fmt.Sprintf("%s is not a cluster member, in the channel group, or granted access to %s", senderPeer, n.peerID))
 		s.Close()
 		return
 	}
@@ -688,7 +688,7 @@ func (n *Node) handleChannelStream(s network.Stream) {
 	n.channels.reap()
 	channelID, err := newChannelID()
 	if err != nil {
-		writeChannelAccept(s, false, "internal error minting channel id")
+		_ = writeChannelAccept(s, false, "internal error minting channel id")
 		s.Close()
 		return
 	}
@@ -697,7 +697,7 @@ func (n *Node) handleChannelStream(s network.Stream) {
 	// reasoning in dispatchChannelOpen just above.
 	down, err := chandata.Create(n.peerID, channelID, chandata.DirDown)
 	if err != nil {
-		writeChannelAccept(s, false, "internal error preparing data plane")
+		_ = writeChannelAccept(s, false, "internal error preparing data plane")
 		s.Close()
 		return
 	}

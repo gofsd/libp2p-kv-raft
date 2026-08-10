@@ -148,6 +148,11 @@ func Call(ctx context.Context, peerID string, m shmevent.Msg, priv shmevent.Priv
 	// safe to release the request segment now.
 	w.CloseStorage()
 
+	// No shmevent.Verify on this leg -- same accepted asymmetry as desktop
+	// Call's identical response decode (pkg/ipc/ipc.go), for the same
+	// reason: this transport is same-process-only (see package doc
+	// comment), an even narrower trust boundary than desktop's
+	// same-machine one.
 	resp, _, _, err := shmevent.Decode(respBuf)
 	if err != nil {
 		return shmevent.Msg{}, err

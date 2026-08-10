@@ -325,3 +325,114 @@ func TestReopenPersists(t *testing.T) {
 		t.Fatalf("Get after reopen: got %q, want %q", v, "v")
 	}
 }
+
+func TestWithTxCommitsOnSuccess(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "sqlite"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	if err := s.WithTx(func(tx *store.Tx) error {
+		if err := tx.Set([]byte("a"), []byte("1")); err != nil {
+			return err
+		}
+		return tx.Set([]byte("b"), []byte("2"))
+	}); err != nil {
+		t.Fatalf("WithTx: %v", err)
+	}
+
+	for k, want := range map[string]string{"a": "1", "b": "2"} {
+		v, err := s.Get([]byte(k))
+		if err != nil {
+			t.Fatalf("Get(%q): %v", k, err)
+		}
+		if string(v) != want {
+			t.Fatalf("Get(%q) = %q, want %q", k, v, want)
+		}
+	}
+}
+
+// TestWithTxRollsBackOnError is the regression test for the bug WithTx
+// exists to close: pkg/kvfsm's OpTxn and cascade-delete each make more
+// than one write per raft log entry, and before WithTx existed those
+// writes autocommitted independently -- a failure partway through left a
+// genuine partial-apply state on disk. This proves the fix: an error
+// returned partway through fn rolls back every write fn already made in
+// the same call, not just the one that failed.
+func TestWithTxRollsBackOnError(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "sqlite"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	// Pre-existing state that must survive the failed transaction
+	// untouched.
+	if err := s.Set([]byte("untouched"), []byte("orig")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	wantErr := errors.New("deliberate failure partway through")
+	err = s.WithTx(func(tx *store.Tx) error {
+		if err := tx.Set([]byte("a"), []byte("1")); err != nil {
+			return err
+		}
+		if err := tx.Delete([]byte("untouched")); err != nil {
+			return err
+		}
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("WithTx error = %v, want %v", err, wantErr)
+	}
+
+	if _, err := s.Get([]byte("a")); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Get(a) after rollback: got %v, want ErrNotFound (the Set inside the failed tx must not have landed)", err)
+	}
+	v, err := s.Get([]byte("untouched"))
+	if err != nil {
+		t.Fatalf("Get(untouched) after rollback: %v", err)
+	}
+	if string(v) != "orig" {
+		t.Fatalf("Get(untouched) after rollback: got %q, want %q (the Delete inside the failed tx must not have landed)", v, "orig")
+	}
+}
+
+// TestWithTxReadsOwnWrites confirms Tx's Get/CountPrefix/ScanPrefix see
+// writes made earlier in the same transaction, before it commits -- the
+// property pkg/kvfsm's OpTxn precondition-then-write split and
+// applyCascadeDelete's scan-then-delete-each loop both rely on implicitly.
+func TestWithTxReadsOwnWrites(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "sqlite"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	if err := s.WithTx(func(tx *store.Tx) error {
+		if err := tx.Set([]byte("prefix:1"), []byte("v1")); err != nil {
+			return err
+		}
+		if err := tx.Set([]byte("prefix:2"), []byte("v2")); err != nil {
+			return err
+		}
+		count, err := tx.CountPrefix([]byte("prefix:"))
+		if err != nil {
+			return err
+		}
+		if count != 2 {
+			t.Fatalf("CountPrefix inside tx = %d, want 2", count)
+		}
+		v, err := tx.Get([]byte("prefix:1"))
+		if err != nil {
+			return err
+		}
+		if string(v) != "v1" {
+			t.Fatalf("Get inside tx = %q, want %q", v, "v1")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("WithTx: %v", err)
+	}
+}

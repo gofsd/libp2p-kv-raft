@@ -30,7 +30,15 @@ func (s *Session) Execute(ctx context.Context, destPeerID string, payload []byte
 		return err
 	}
 
+	// Must differ from sourceID: both land in the same daemon-side registry
+	// (see pkg/shmevent's doc comment on SetKey/SetField's relational id
+	// scheme), and a collision would let this SetKey silently overwrite the
+	// entry sourceID's SetKey above just wrote, misattributing the
+	// resulting execute notification's sender.
 	destID := newID()
+	for destID == sourceID {
+		destID = newID()
+	}
 	destMsg, err := shmevent.NewSetKey([]byte(destPeerID))
 	if err != nil {
 		return fmt.Errorf("shmclient: execute: register destination: %w", err)

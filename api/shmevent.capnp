@@ -69,7 +69,7 @@ $Go.package("shmevent");
 $Go.import("github.com/gofsd/libp2p-kv-raft/pkg/shmevent");
 
 # One op of an atomic multi-key write (txn's ops list) -- op is
-# TxnOpSet/TxnOpDelete/TxnOpCompareEqual/TxnOpCompareAbsent (see
+# TxnOpSet/TxnOpDelete/TxnOpCompare/TxnOpCompareAbsent (see
 # pkg/shmevent's TxnOp* constants); value is unused for Delete/
 # CompareAbsent.
 struct TxnOp {

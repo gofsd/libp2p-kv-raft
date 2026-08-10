@@ -51,7 +51,7 @@ const systemKeyPrefixLen = 3
 // genuinely new key is checked against its kind+status prefix's current
 // count. Ordinary user keys (anything not starting with SystemKeyPrefix)
 // are never counted or capped.
-func checkSystemListCap(s *store.Store, key []byte) error {
+func checkSystemListCap(s store.Accessor, key []byte) error {
 	if len(key) < systemKeyPrefixLen || key[0] != shmevent.SystemKeyPrefix {
 		return nil
 	}
@@ -88,7 +88,7 @@ func checkSystemListCap(s *store.Store, key []byte) error {
 // collision with itself -- only a genuinely different id already holding
 // that name is rejected. At most systemListLimits' own KindGroup cap (200)
 // records exist at once, so a full scan here is cheap and bounded.
-func checkGroupNameUnique(s *store.Store, key, value []byte) error {
+func checkGroupNameUnique(s store.Accessor, key, value []byte) error {
 	if len(key) < systemKeyPrefixLen || key[0] != shmevent.SystemKeyPrefix || key[1] != shmevent.KindGroup {
 		return nil
 	}
@@ -135,7 +135,7 @@ func checkGroupNameUnique(s *store.Store, key, value []byte) error {
 // the group-name check is: Apply runs exactly once, in raft log order,
 // against state every replica already agrees on, so reading the previous
 // record here has nothing to race against. A pre-check would.
-func preserveCommandSpec(s *store.Store, key, value []byte) ([]byte, error) {
+func preserveCommandSpec(s store.Accessor, key, value []byte) ([]byte, error) {
 	if len(key) < systemKeyPrefixLen || key[0] != shmevent.SystemKeyPrefix || key[1] != shmevent.KindCommand {
 		return value, nil
 	}
@@ -204,7 +204,7 @@ func preserveCommandSpec(s *store.Store, key, value []byte) ([]byte, error) {
 // let such a caller read back a CommandRequestLogKind command's own
 // request queue, the same authoritative standing that already lets it
 // submit one -- see that function's doc comment.
-func IsPermittedForCommand(s *store.Store, commandID, peerID []byte) (bool, error) {
+func IsPermittedForCommand(s store.Accessor, commandID, peerID []byte) (bool, error) {
 	prefix, err := shmevent.GroupCommandKey(commandID, nil)
 	if err != nil {
 		return false, err
@@ -241,7 +241,7 @@ func IsPermittedForCommand(s *store.Store, commandID, peerID []byte) (bool, erro
 // the identical raft log entry as the CommandRequest write it's a side
 // effect of -- every replica applies both writes together or neither, the
 // same all-or-nothing guarantee any other Apply case gets.
-func grantChannelRelayAccess(s *store.Store, peerID []byte) error {
+func grantChannelRelayAccess(s store.Accessor, peerID []byte) error {
 	for _, groupID := range [][]byte{[]byte(shmevent.ReservedGroupChannel), []byte(shmevent.ReservedGroupRelay)} {
 		key, err := shmevent.PeerGroupKey(peerID, groupID)
 		if err != nil {
