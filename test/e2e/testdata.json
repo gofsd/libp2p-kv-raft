@@ -10,21 +10,21 @@
   "nodes": {
     "1": {
       "platform": "desktop",
-      "peer_id": "12D3KooWHk9AqB71p5kVCLDA97oba3BMCnna9W8xddsxFxFJRy2p",
-      "public_key": "75c87987701e4918fb99fb96707aed8fda0a28597f2ff04a8656941718a77699",
-      "private_key": "d6ab708d43a78b3cf0e55dc9d54a7facb213c627f0c1426041e3662f295406d275c87987701e4918fb99fb96707aed8fda0a28597f2ff04a8656941718a77699"
+      "peer_id": "12D3KooWFdxgAa8WfiSoADNkwt7SEAFSciMVk4te2yuNZfw9UfwF",
+      "public_key": "567bc009aba3a76e049355d9569ea6f3700d3a05a57c86516bba07f62efd8c9a",
+      "private_key": "0dc93d164f73eb23b9bb1777d1d02f20fc66cad40ac3bb09efe627ff92b3b0c9567bc009aba3a76e049355d9569ea6f3700d3a05a57c86516bba07f62efd8c9a"
     },
     "2": {
       "platform": "android",
-      "peer_id": "12D3KooWQiaSYya53XSDWYCxEYig6gY1FRbYr6ESwGv91LKA2EfT",
-      "public_key": "dd63b2164d4def531abb78b9e7cb711b5185373cc880db8acc7b6906ba522542",
-      "private_key": "a2b3ee21161446201a8eb87d3b909348a6b3f3b5710280eb5711968cbdaae4badd63b2164d4def531abb78b9e7cb711b5185373cc880db8acc7b6906ba522542"
+      "peer_id": "12D3KooWKsCQyhoer3wGzHuAZ5APEdkCwTggV1VXymKKxPk3BFBg",
+      "public_key": "954e9507785aa5339134615c0bef51112af33454a6ea90f9028387cc623afcf3",
+      "private_key": "4b15996f8b945bd16e4fd3af1fe05a020d2231a3700df7156805ba652500c6a8954e9507785aa5339134615c0bef51112af33454a6ea90f9028387cc623afcf3"
     },
     "3": {
       "platform": "remote",
-      "peer_id": "12D3KooWPWMFbR9A1zmDfhBWfvpzWCym3juwSwdUXLMbWs7uHvRH",
-      "public_key": "cb662051be958cf5f8e0c084d8cd5b89a190926c0f31ed55676f5ea505498874",
-      "private_key": "8da8f9bd93239ddb5c9be9f73b8871f6217f0f6d004f98c48bf2834dd632e7cdcb662051be958cf5f8e0c084d8cd5b89a190926c0f31ed55676f5ea505498874"
+      "peer_id": "12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi",
+      "public_key": "ea0e786e1f067b7406720fbecdb75cff5f33216c69aa6ab63e6ab019dface1b1",
+      "private_key": "ff00ad162aba11c3b056612fa0ca2fb18237e33631182e0fa062b2190f4b9f85ea0e786e1f067b7406720fbecdb75cff5f33216c69aa6ab63e6ab019dface1b1"
     }
   },
   "rows": [
@@ -34,7 +34,8 @@
       "event": {
         "event": "bootstrap_or_join_cluster"
       },
-      "status": 0,
+      "status": 1,
+      "error": "request public access: connect to 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi: failed to dial: failed to dial 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] failed to negotiate security protocol: peer id mismatch: expected 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi, but remote key matches 12D3KooWCvQsDkfNtc7DBRGekmw2q1VyZDchpUhK5i2cR3tGWKn6",
       "platform": "desktop"
     },
     {
@@ -43,7 +44,8 @@
       "event": {
         "event": "get_public_key"
       },
-      "status": 0,
+      "status": 1,
+      "error": "request public access: connect to 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi: failed to dial: failed to dial 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] failed to negotiate security protocol: peer id mismatch: expected 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi, but remote key matches 12D3KooWCvQsDkfNtc7DBRGekmw2q1VyZDchpUhK5i2cR3tGWKn6",
       "platform": "desktop"
     },
     {
@@ -56,7 +58,8 @@
           "value": "hello"
         }
       },
-      "status": 0,
+      "status": 1,
+      "error": "request public access: connect to 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi: failed to dial: failed to dial 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] dial tcp4 0.0.0.0:15601-\u003e63.250.47.155:4101: i/o timeout",
       "platform": "desktop"
     },
     {
@@ -69,7 +72,8 @@
           "value": "world"
         }
       },
-      "status": 0,
+      "status": 1,
+      "error": "request public access: connect to 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi: failed to dial: failed to dial 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] failed to negotiate security protocol: peer id mismatch: expected 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi, but remote key matches 12D3KooWCvQsDkfNtc7DBRGekmw2q1VyZDchpUhK5i2cR3tGWKn6",
       "platform": "desktop"
     },
     {
@@ -81,7 +85,8 @@
           "key": "hello"
         }
       },
-      "status": 0,
+      "status": 1,
+      "error": "request public access: connect to 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi: failed to dial: failed to dial 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] failed to negotiate security protocol: context deadline exceeded",
       "platform": "desktop"
     },
     {
@@ -90,8 +95,7 @@
       "event": {
         "event": "bootstrap_or_join_cluster"
       },
-      "status": 2,
-      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)",
+      "status": 1,
       "platform": "android"
     },
     {
@@ -100,8 +104,7 @@
       "event": {
         "event": "get_public_key"
       },
-      "status": 2,
-      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)",
+      "status": 0,
       "platform": "android"
     },
     {
@@ -114,8 +117,7 @@
           "value": "hello-android"
         }
       },
-      "status": 2,
-      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)",
+      "status": 0,
       "platform": "android"
     },
     {
@@ -128,8 +130,7 @@
           "value": "world-android"
         }
       },
-      "status": 2,
-      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)",
+      "status": 0,
       "platform": "android"
     },
     {
@@ -141,8 +142,7 @@
           "key": "hello-android"
         }
       },
-      "status": 2,
-      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)",
+      "status": 1,
       "platform": "android"
     },
     {
@@ -151,7 +151,8 @@
       "event": {
         "event": "get_public_key"
       },
-      "status": 0,
+      "status": 1,
+      "error": "request public access: connect to 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi: failed to dial: failed to dial 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] failed to negotiate security protocol: peer id mismatch: expected 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi, but remote key matches 12D3KooWCvQsDkfNtc7DBRGekmw2q1VyZDchpUhK5i2cR3tGWKn6",
       "platform": "desktop"
     },
     {
@@ -164,7 +165,8 @@
           "value": "hello"
         }
       },
-      "status": 0,
+      "status": 1,
+      "error": "request public access: connect to 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi: failed to dial: failed to dial 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] failed to negotiate security protocol: peer id mismatch: expected 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi, but remote key matches 12D3KooWCvQsDkfNtc7DBRGekmw2q1VyZDchpUhK5i2cR3tGWKn6",
       "platform": "desktop"
     },
     {
@@ -177,7 +179,8 @@
           "value": "world"
         }
       },
-      "status": 0,
+      "status": 1,
+      "error": "request public access: connect to 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi: failed to dial: failed to dial 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] failed to negotiate security protocol: peer id mismatch: expected 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi, but remote key matches 12D3KooWCvQsDkfNtc7DBRGekmw2q1VyZDchpUhK5i2cR3tGWKn6",
       "platform": "desktop"
     },
     {
@@ -189,7 +192,8 @@
           "key": "hello"
         }
       },
-      "status": 0,
+      "status": 1,
+      "error": "request public access: connect to 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi: failed to dial: failed to dial 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] failed to negotiate security protocol: peer id mismatch: expected 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi, but remote key matches 12D3KooWCvQsDkfNtc7DBRGekmw2q1VyZDchpUhK5i2cR3tGWKn6",
       "platform": "desktop"
     },
     {
@@ -198,8 +202,7 @@
       "event": {
         "event": "get_public_key"
       },
-      "status": 2,
-      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)",
+      "status": 0,
       "platform": "android"
     },
     {
@@ -212,8 +215,7 @@
           "value": "hello-android"
         }
       },
-      "status": 2,
-      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)",
+      "status": 0,
       "platform": "android"
     },
     {
@@ -226,8 +228,7 @@
           "value": "world-android"
         }
       },
-      "status": 2,
-      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)",
+      "status": 0,
       "platform": "android"
     },
     {
@@ -239,8 +240,7 @@
           "key": "hello-android"
         }
       },
-      "status": 2,
-      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)",
+      "status": 0,
       "platform": "android"
     },
     {
@@ -253,7 +253,8 @@
           "value": "e2e-large-value-key"
         }
       },
-      "status": 0,
+      "status": 1,
+      "error": "request public access: connect to 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi: failed to dial: failed to dial 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] failed to negotiate security protocol: peer id mismatch: expected 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi, but remote key matches 12D3KooWCvQsDkfNtc7DBRGekmw2q1VyZDchpUhK5i2cR3tGWKn6",
       "platform": "desktop"
     },
     {
@@ -266,7 +267,8 @@
           "value": "LARGEVALUE"
         }
       },
-      "status": 0,
+      "status": 1,
+      "error": "request public access: connect to 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi: failed to dial: failed to dial 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] failed to negotiate security protocol: peer id mismatch: expected 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi, but remote key matches 12D3KooWCvQsDkfNtc7DBRGekmw2q1VyZDchpUhK5i2cR3tGWKn6",
       "platform": "desktop"
     },
     {
@@ -278,7 +280,8 @@
           "source_id": "400"
         }
       },
-      "status": 0,
+      "status": 1,
+      "error": "request public access: connect to 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi: failed to dial: failed to dial 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101] failed to negotiate security protocol: peer id mismatch: expected 12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi, but remote key matches 12D3KooWCvQsDkfNtc7DBRGekmw2q1VyZDchpUhK5i2cR3tGWKn6",
       "platform": "desktop"
     },
     {
@@ -291,8 +294,7 @@
           "value": "e2e-large-value-key"
         }
       },
-      "status": 2,
-      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)",
+      "status": 0,
       "platform": "android"
     },
     {
@@ -305,8 +307,7 @@
           "value": "LARGEVALUE"
         }
       },
-      "status": 2,
-      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)",
+      "status": 0,
       "platform": "android"
     },
     {
@@ -318,8 +319,7 @@
           "source_id": "400"
         }
       },
-      "status": 2,
-      "error": "android e2e skipped: no adb device/emulator connected (see `adb devices` / start an AVD)",
+      "status": 0,
       "platform": "android"
     }
   ],
@@ -782,8 +782,373 @@
     }
   },
   "android_ui_result": {
-    "ran_at": "2026-08-09T06:49:48.197917666+03:00",
-    "status": 0
+    "ran_at": "2026-08-09T22:29:11.994765683+03:00",
+    "status": 1,
+    "error": "node 12D3KooWKsCQyhoer3wGzHuAZ5APEdkCwTggV1VXymKKxPk3BFBg: e2erun: 21 of 83 android UI command(s) failed:\nCluster: Start: expected success, got: Cluster: Start() FAILED: kvmobile: start follower: open /data/user/0/com.gofsd.kvdemo/files/12D3KooWKsCQyhoer3wGzHuAZ5APEdkCwTggV1VXymKKxPk3BFBg-12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi/ready.json: no such file or directory\nCluster: StartWithKey: expected success, got: Cluster: StartWithKey(not-a-real-key-hex) FAILED: kvmobile: decode key: encoding/hex: invalid byte: U+006E 'n'\nCluster: GetOwnAddr: expected success, got: Cluster: GetOwnAddr() FAILED: kvmobile: Start has not completed successfully yet\nCluster: CreateJoinRequest: expected success, got: Cluster: CreateJoinRequest() FAILED: kvmobile: Start has not completed successfully yet\nCluster: Delete: expected a rejection (this device is a learner, not a voter), got: Cluster: Delete() -\u003e\nOK\nCluster: ListClusterMembers: expected success, got: Cluster: ListClusterMembers() FAILED: kvmobile: Start has not completed successfully yet\nCluster: AccessToken: expected success, got: Cluster: AccessToken() FAILED: kvmobile: Start has not completed successfully yet\nKV: Submit: expected success, got: KV: Submit(e2e-ui-test-key, e2e-ui-test-value-1786303494158) FAILED: kvmobile: Start has not completed successfully yet\nKV: Get: expected success, got: KV: Get(e2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-key) FAILED: kvmobile: Start has not completed successfully yet\nKV: RangeScan: expected success, got: KV: RangeScan(e2e-ui-test-key, e2e-ui-test-key￿, 10) FAILED: kvmobile: Start has not completed successfully yet\nPermits: RequestPermit: expected success, got: Permits: RequestPermit(bootstrap, , ) FAILED: kvmobile: Start has not completed successfully yet\nExecute: PollExecute: expected success, got: Execute: PollExecute() FAILED: kvmobile: Start has not completed successfully yet\nChannel: CloseChannelWrite: expected success, got: Channel: CloseChannelWrite(no-such-channel) FAILED: kvmobile: Start has not completed successfully yet\nChannel: CloseChannel: expected success, got: Channel: CloseChannel(no-such-channel) FAILED: kvmobile: Start has not completed successfully yet\nGroup: ListGroups: expected success, got: Group: ListGroups() FAILED: kvmobile: Start has not completed successfully yet\nCommand: ListCommands: expected success, got: Command: ListCommands() FAILED: kvmobile: Start has not completed successfully yet\nLinks: ListGroupsForCommand: expected success, got: Links: ListGroupsForCommand(no-such-command) FAILED: kvmobile: Start has not completed successfully yet\nLinks: ListGroupsForPeer: expected success, got: Links: ListGroupsForPeer() FAILED: kvmobile: Start has not completed successfully yet\nDispatch: ListCommandRequests: expected success, got: Dispatch: ListCommandRequests(no-such-command) FAILED: kvmobile: Start has not completed successfully yet\nDispatch: ListExecutionsByPeer: expected success, got: Dispatch: ListExecutionsByPeer() FAILED: kvmobile: ListExecutionsByPeer: peerID must not be empty\nRaw: SendEvent: expected success, got: Raw: SendEvent({\"event\":\"get_public_key\"}) FAILED: kvmobile: Start has not completed successfully yet",
+    "cases": [
+      {
+        "command": "Cluster: Start",
+        "pass": false,
+        "error": "expected success, got: Cluster: Start() FAILED: kvmobile: start follower: open /data/user/0/com.gofsd.kvdemo/files/12D3KooWKsCQyhoer3wGzHuAZ5APEdkCwTggV1VXymKKxPk3BFBg-12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi/ready.json: no such file or directory"
+      },
+      {
+        "command": "Cluster: StartWithKey",
+        "pass": false,
+        "error": "expected success, got: Cluster: StartWithKey(not-a-real-key-hex) FAILED: kvmobile: decode key: encoding/hex: invalid byte: U+006E 'n'"
+      },
+      {
+        "command": "Cluster: Join",
+        "pass": true
+      },
+      {
+        "command": "Cluster: JoinWithKey",
+        "pass": true
+      },
+      {
+        "command": "Cluster: StartSolo",
+        "pass": true
+      },
+      {
+        "command": "Cluster: StartSoloWithKey",
+        "pass": true
+      },
+      {
+        "command": "Cluster: StartSoloWithKeyAndPort",
+        "pass": true
+      },
+      {
+        "command": "Cluster: StartPending",
+        "pass": true
+      },
+      {
+        "command": "Cluster: StartPendingWithKey",
+        "pass": true
+      },
+      {
+        "command": "Cluster: StartPendingWithKeyAndPort",
+        "pass": true
+      },
+      {
+        "command": "Cluster: GetOwnAddr",
+        "pass": false,
+        "error": "expected success, got: Cluster: GetOwnAddr() FAILED: kvmobile: Start has not completed successfully yet"
+      },
+      {
+        "command": "Cluster: CreateJoinRequest",
+        "pass": false,
+        "error": "expected success, got: Cluster: CreateJoinRequest() FAILED: kvmobile: Start has not completed successfully yet"
+      },
+      {
+        "command": "Cluster: CancelJoinRequest",
+        "pass": true
+      },
+      {
+        "command": "Cluster: RecruitPeer",
+        "pass": true
+      },
+      {
+        "command": "Cluster: CreateJoinRequestTicket",
+        "pass": true
+      },
+      {
+        "command": "Cluster: RedeemJoinRequestTicket",
+        "pass": true
+      },
+      {
+        "command": "Cluster: CreateJoinInvite",
+        "pass": true
+      },
+      {
+        "command": "Cluster: RevokeJoinInvite",
+        "pass": true
+      },
+      {
+        "command": "Cluster: CreateJoinInviteTicket",
+        "pass": true
+      },
+      {
+        "command": "Cluster: VerifyJoinInviteTicket",
+        "pass": true
+      },
+      {
+        "command": "Cluster: Stop",
+        "pass": true
+      },
+      {
+        "command": "Cluster: Delete",
+        "pass": false,
+        "error": "expected a rejection (this device is a learner, not a voter), got: Cluster: Delete() -\u003e\nOK"
+      },
+      {
+        "command": "Cluster: Leave",
+        "pass": true
+      },
+      {
+        "command": "Cluster: Rm",
+        "pass": true
+      },
+      {
+        "command": "Cluster: Kick",
+        "pass": true
+      },
+      {
+        "command": "Cluster: ListClusters",
+        "pass": true,
+        "output": "[]"
+      },
+      {
+        "command": "Cluster: ListClusterMembers",
+        "pass": false,
+        "error": "expected success, got: Cluster: ListClusterMembers() FAILED: kvmobile: Start has not completed successfully yet"
+      },
+      {
+        "command": "Cluster: PeerID",
+        "pass": true
+      },
+      {
+        "command": "Cluster: AccessToken",
+        "pass": false,
+        "error": "expected success, got: Cluster: AccessToken() FAILED: kvmobile: Start has not completed successfully yet"
+      },
+      {
+        "command": "Cluster: RequestRelayAccess",
+        "pass": true
+      },
+      {
+        "command": "KV: Submit",
+        "pass": false,
+        "error": "expected success, got: KV: Submit(e2e-ui-test-key, e2e-ui-test-value-1786303494158) FAILED: kvmobile: Start has not completed successfully yet"
+      },
+      {
+        "command": "KV: Get",
+        "pass": false,
+        "error": "expected success, got: KV: Get(e2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-key) FAILED: kvmobile: Start has not completed successfully yet"
+      },
+      {
+        "command": "KV: RangeScan",
+        "pass": false,
+        "error": "expected success, got: KV: RangeScan(e2e-ui-test-key, e2e-ui-test-key￿, 10) FAILED: kvmobile: Start has not completed successfully yet"
+      },
+      {
+        "command": "Permits: RequestPermit",
+        "pass": false,
+        "error": "expected success, got: Permits: RequestPermit(bootstrap, , ) FAILED: kvmobile: Start has not completed successfully yet"
+      },
+      {
+        "command": "Permits: ConfirmPermit",
+        "pass": true
+      },
+      {
+        "command": "Permits: RevokePermit",
+        "pass": true
+      },
+      {
+        "command": "Execute: Execute",
+        "pass": true
+      },
+      {
+        "command": "Execute: PollExecute",
+        "pass": false,
+        "error": "expected success, got: Execute: PollExecute() FAILED: kvmobile: Start has not completed successfully yet"
+      },
+      {
+        "command": "Execute: WatchExecute",
+        "pass": true,
+        "output": "Watching -- notifications appear below as they arrive"
+      },
+      {
+        "command": "Execute: StopWatchExecute",
+        "pass": true,
+        "output": "OK"
+      },
+      {
+        "command": "Channel: OpenChannel",
+        "pass": true
+      },
+      {
+        "command": "Channel: ListenChannel",
+        "pass": true
+      },
+      {
+        "command": "Channel: StopListenChannel",
+        "pass": true,
+        "output": "OK"
+      },
+      {
+        "command": "Channel: SendChannelData",
+        "pass": true
+      },
+      {
+        "command": "Channel: CloseChannelWrite",
+        "pass": false,
+        "error": "expected success, got: Channel: CloseChannelWrite(no-such-channel) FAILED: kvmobile: Start has not completed successfully yet"
+      },
+      {
+        "command": "Channel: CloseChannel",
+        "pass": false,
+        "error": "expected success, got: Channel: CloseChannel(no-such-channel) FAILED: kvmobile: Start has not completed successfully yet"
+      },
+      {
+        "command": "Channel: StopChannel",
+        "pass": true,
+        "output": "OK"
+      },
+      {
+        "command": "Log records: LogAppend",
+        "pass": true
+      },
+      {
+        "command": "Log records: LogQuery",
+        "pass": true
+      },
+      {
+        "command": "Group: CreateGroup",
+        "pass": true
+      },
+      {
+        "command": "Group: UpdateGroup",
+        "pass": true
+      },
+      {
+        "command": "Group: DeleteGroup",
+        "pass": true
+      },
+      {
+        "command": "Group: GetGroup",
+        "pass": true
+      },
+      {
+        "command": "Group: ListGroups",
+        "pass": false,
+        "error": "expected success, got: Group: ListGroups() FAILED: kvmobile: Start has not completed successfully yet"
+      },
+      {
+        "command": "Command: CreateCommand",
+        "pass": true
+      },
+      {
+        "command": "Command: UpdateCommand",
+        "pass": true
+      },
+      {
+        "command": "Command: DeleteCommand",
+        "pass": true
+      },
+      {
+        "command": "Command: GetCommand",
+        "pass": true
+      },
+      {
+        "command": "Command: ListCommands",
+        "pass": false,
+        "error": "expected success, got: Command: ListCommands() FAILED: kvmobile: Start has not completed successfully yet"
+      },
+      {
+        "command": "Links: AddCommandToGroup",
+        "pass": true
+      },
+      {
+        "command": "Links: RemoveCommandFromGroup",
+        "pass": true
+      },
+      {
+        "command": "Links: ListGroupsForCommand",
+        "pass": false,
+        "error": "expected success, got: Links: ListGroupsForCommand(no-such-command) FAILED: kvmobile: Start has not completed successfully yet"
+      },
+      {
+        "command": "Links: AddPeerToGroup",
+        "pass": true
+      },
+      {
+        "command": "Links: RemovePeerFromGroup",
+        "pass": true
+      },
+      {
+        "command": "Links: ListGroupsForPeer",
+        "pass": false,
+        "error": "expected success, got: Links: ListGroupsForPeer() FAILED: kvmobile: Start has not completed successfully yet"
+      },
+      {
+        "command": "Dispatch: SubmitCommand",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: GetCommandRequest",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: ListCommandRequests",
+        "pass": false,
+        "error": "expected success, got: Dispatch: ListCommandRequests(no-such-command) FAILED: kvmobile: Start has not completed successfully yet"
+      },
+      {
+        "command": "Dispatch: ListExecutionsByPeer",
+        "pass": false,
+        "error": "expected success, got: Dispatch: ListExecutionsByPeer() FAILED: kvmobile: ListExecutionsByPeer: peerID must not be empty"
+      },
+      {
+        "command": "Dispatch: AppendCommandLog",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: QueryCommandLog",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: LatestCommandLog",
+        "pass": true
+      },
+      {
+        "command": "Dispatch: WatchCommandLog",
+        "pass": true,
+        "output": "Watching -- new records appear below as they arrive"
+      },
+      {
+        "command": "Dispatch: StopWatchCommandLog",
+        "pass": true,
+        "output": "OK"
+      },
+      {
+        "command": "Dispatch: RunCommandDispatcher",
+        "pass": true,
+        "output": "Dispatching -- requests for no-such-command are handled as they arrive, logged below"
+      },
+      {
+        "command": "Dispatch: StopCommandDispatcher",
+        "pass": true,
+        "output": "OK"
+      },
+      {
+        "command": "ExecInvite: CreateExecInvite",
+        "pass": true
+      },
+      {
+        "command": "ExecInvite: RevokeExecInvite",
+        "pass": true
+      },
+      {
+        "command": "ExecInvite: RedeemExecInvite",
+        "pass": true
+      },
+      {
+        "command": "ExecInvite: CreateExecInviteTicket",
+        "pass": true
+      },
+      {
+        "command": "ExecInvite: RedeemExecInviteTicket",
+        "pass": true
+      },
+      {
+        "command": "Raw: SendEvent",
+        "pass": false,
+        "error": "expected success, got: Raw: SendEvent({\"event\":\"get_public_key\"}) FAILED: kvmobile: Start has not completed successfully yet"
+      },
+      {
+        "command": "Test: SleepMillis",
+        "pass": true
+      }
+    ]
   },
   "android_ui_pair_result": {
     "ran_at": "2026-08-07T14:55:57.606378703+03:00",
