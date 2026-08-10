@@ -33,15 +33,23 @@ import org.json.JSONObject
 /**
  * Single-Activity Compose root, replacing the old MainActivity ->
  * CommandListActivity -> CommandDetailActivity/ActivityLogActivity
- * Activity-per-screen structure with one NavHost of four routes -- the
- * screens' own logic (CommandCatalog.kt's data-driven CommandSpec list,
- * OutputLog) is otherwise unchanged, only how they're hosted. Brings up
- * the kvmobile daemon exactly once for this process's whole lifetime here
- * (every screen assumes it's either already up or on its way up, same
- * assumption the old MainActivity's onCreate documented) -- this
- * LaunchedEffect(Unit) lives at the NavHost's root, so it survives
- * navigating between routes, unlike one scoped to CategoriesScreen alone
- * (which NavHost disposes/recomposes on every visit).
+ * Activity-per-screen structure with one NavHost -- the screens' own logic
+ * (CommandCatalog.kt's data-driven CommandSpec list, OutputLog) is
+ * otherwise unchanged, only how they're hosted. Brings up the kvmobile
+ * daemon exactly once for this process's whole lifetime here (every screen
+ * assumes it's either already up or on its way up, same assumption the old
+ * MainActivity's onCreate documented) -- this LaunchedEffect(Unit) lives at
+ * the NavHost's root, so it survives navigating between routes, unlike one
+ * scoped to a single screen alone (which NavHost disposes/recomposes on
+ * every visit).
+ *
+ * [MainListScreen] ("main") is the start destination: a pull-to-refresh
+ * list of "Commands" (-> [CommandPickerScreen]) and "Groups" (->
+ * [GroupPickerScreen]), the app's two navigation-shortcut generators (see
+ * [NavCode]'s doc comment). The full category browser ([CategoriesScreen],
+ * "categories" -> "commands/{category}" -> "commandDetail/{category}/{name}")
+ * is unchanged and still reachable from there, just no longer the first
+ * screen shown.
  *
  * [ScannerHost] is mounted exactly once here, as a Box sibling of the
  * NavHost, so its camera binds once and stays alive across every screen
@@ -54,18 +62,20 @@ import org.json.JSONObject
  * gets acted on, regardless of which screen was showing when it happened
  * -- a second LaunchedEffect(Unit) here (same "lives for the whole
  * NavHost's lifetime" reasoning as the Start() one) collects
- * [ScannerCoordinator.scans] and decodes each one via
- * [kvmobile.Kvmobile.decodeEvent], then forks on what it decoded to:
- * a `join_request_ticket` event (some other device's CreateJoinRequestTicket
- * code, see CommandDetailScreen's awaitAdmissionAfterGenerate handling)
- * routes to [RecruitConfirmDialog] -- admitting a device into this
- * cluster needs its own confirm-then-redeem flow, not a blind "Trigger"
- * -- while every other decodable event, or nothing decodable at all,
- * keeps going through [ScanConfirmationDialog] exactly as before:
- * scanning alone never submits anything; only a subsequent tap on
- * "Trigger" calls [kvmobile.Kvmobile.sendEvent] (this class's own
- * `triggerEvent` alias) to actually submit the decoded event against the
- * current cluster.
+ * [ScannerCoordinator.scans] and forks on what it decoded to, in order:
+ * a [NavCode] (a "Commands"/"Groups" shortcut code some device's Generate
+ * button minted) navigates [navController] straight to that command's
+ * detail screen or that category's command list -- no dialog, since it's
+ * pure navigation and grants/submits nothing; a `join_request_ticket`
+ * event (decoded via [kvmobile.Kvmobile.decodeEvent] -- some other
+ * device's CreateJoinRequestTicket code, see CommandDetailScreen's
+ * awaitAdmissionAfterGenerate handling) routes to [RecruitConfirmDialog]
+ * -- admitting a device into this cluster needs its own confirm-then-redeem
+ * step, not a blind "Trigger"; every other decodable event, or nothing
+ * decodable at all, keeps going through [ScanConfirmationDialog]: scanning
+ * alone never submits anything, only a subsequent tap on "Trigger" calls
+ * [kvmobile.Kvmobile.sendEvent] (this class's own `triggerEvent` alias) to
+ * actually submit the decoded event against the current cluster.
  */
 private const val TAG = "KVDemo"
 private class PendingScan(val decodedJson: String?, val rawText: String)
@@ -84,6 +94,10 @@ fun AppRoot() {
     var pendingScan by remember { mutableStateOf<PendingScan?>(null) }
     var pendingRecruitTicket by remember { mutableStateOf<PendingRecruitTicket?>(null) }
     val scope = rememberCoroutineScope()
+    // Hoisted above both LaunchedEffects (not created down in the Box below) so the scan
+    // collector's own NavCode branch can navigate directly -- a nav-shortcut scan (see NavCode's
+    // doc comment) is handled entirely here, with no confirmation dialog of its own.
+    val navController = rememberNavController()
 
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
@@ -102,6 +116,16 @@ fun AppRoot() {
     LaunchedEffect(Unit) {
         ScannerCoordinator.scans.collect { bytes ->
             Log.i(TAG, "AUTO: scan received (${bytes.size} bytes), decoding")
+            val navCode = NavCode.decode(DataMatrixCodec.bytesToText(bytes))
+            if (navCode != null) {
+                Log.i(TAG, "RESULT: nav-shortcut scan decoded: $navCode")
+                when (navCode) {
+                    is NavCode.Command -> navController.navigate(commandDetailRoute(navCode.category, navCode.name))
+                    is NavCode.Group -> navController.navigate(commandListRoute(navCode.category))
+                }
+                ScannerCoordinator.expanded = false
+                return@collect
+            }
             val decodedJson = withContext(Dispatchers.IO) {
                 runCatching { Kvmobile.decodeEvent(bytes) }.getOrNull()
             }
@@ -130,8 +154,21 @@ fun AppRoot() {
     MaterialTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
             Box(modifier = Modifier.fillMaxSize()) {
-                val navController = rememberNavController()
-                NavHost(navController = navController, startDestination = "categories") {
+                NavHost(navController = navController, startDestination = "main") {
+                    composable("main") {
+                        MainListScreen(
+                            onCommandsClick = { navController.navigate("commandPicker") },
+                            onGroupsClick = { navController.navigate("groupPicker") },
+                            onBrowseCategories = { navController.navigate("categories") },
+                            onLogClick = { navController.navigate("log") },
+                        )
+                    }
+                    composable("commandPicker") {
+                        CommandPickerScreen()
+                    }
+                    composable("groupPicker") {
+                        GroupPickerScreen()
+                    }
                     composable("categories") {
                         CategoriesScreen(
                             statusText = statusText,
@@ -185,15 +222,14 @@ fun AppRoot() {
                             val json = scan.decodedJson ?: return@ScanConfirmationDialog
                             pendingScan = null
                             scope.launch {
-                                val line = try {
+                                try {
                                     val result = withContext(Dispatchers.IO) { Kvmobile.sendEvent(json) }
                                     Log.i(TAG, "RESULT: scanned event sent: $result")
-                                    "Scanned event ->\n$result"
+                                    OutputLog.record("Scanned event", result, LogStatus.SUCCESS)
                                 } catch (e: Exception) {
                                     Log.w(TAG, "RESULT: scanned event FAILED: ${e.message}")
-                                    "Scanned event FAILED: ${e.message}"
+                                    OutputLog.record("Scanned event", "FAILED: ${e.message}", LogStatus.FAILED)
                                 }
-                                OutputLog.append(line)
                             }
                         },
                         onDismiss = {
@@ -211,7 +247,7 @@ fun AppRoot() {
                             Log.i(TAG, "USER_TAP: RecruitConfirmDialog Approve pressed (stationName=\"$stationName\")")
                             pendingRecruitTicket = null
                             scope.launch {
-                                val line = try {
+                                try {
                                     Log.i(TAG, "AUTO: redeemJoinRequestTicket(voter) starting")
                                     val result = withContext(Dispatchers.IO) {
                                         Kvmobile.redeemJoinRequestTicket(recruit.ticketB64, "voter")
@@ -223,13 +259,12 @@ fun AppRoot() {
                                         }
                                     }
                                     Log.i(TAG, "RESULT: recruit admitted $admittedPeerID: $result")
-                                    "Recruited ->\n$result" +
-                                        if (stationName.isNotBlank()) " (named \"$stationName\")" else ""
+                                    val named = if (stationName.isNotBlank()) " (named \"$stationName\")" else ""
+                                    OutputLog.record("Recruited", "$result$named", LogStatus.SUCCESS)
                                 } catch (e: Exception) {
                                     Log.w(TAG, "RESULT: recruit FAILED: ${e.message}")
-                                    "Recruit FAILED: ${e.message}"
+                                    OutputLog.record("Recruit", "FAILED: ${e.message}", LogStatus.FAILED)
                                 }
-                                OutputLog.append(line)
                             }
                         },
                         onDismiss = {

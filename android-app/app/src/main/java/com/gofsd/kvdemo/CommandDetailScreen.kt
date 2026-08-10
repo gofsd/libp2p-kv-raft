@@ -154,9 +154,11 @@ fun CommandDetailScreen(category: String, name: String, onNavigateToLog: () -> U
                     val line = try {
                         val result = withContext(Dispatchers.IO) { spec.run(args) }
                         Log.i(TAG, "RESULT: ${spec.label} -> $result")
+                        OutputLog.record(spec.label, "(${args.joinToString(", ")}) ->\n$result", LogStatus.SUCCESS)
                         "${spec.label}(${args.joinToString(", ")}) ->\n$result"
                     } catch (e: Exception) {
                         Log.w(TAG, "RESULT: ${spec.label} FAILED: ${e.message}")
+                        OutputLog.record(spec.label, "(${args.joinToString(", ")}) FAILED: ${e.message}", LogStatus.FAILED)
                         "${spec.label}(${args.joinToString(", ")}) FAILED: ${e.message}"
                     }
                     output = if (output.isEmpty()) line else "$output\n\n$line"

@@ -280,7 +280,7 @@ class UiCommandE2ETest {
         val failures = mutableListOf<String>()
         val results = JSONArray()
 
-        waitForScreen("screen_categories")
+        navigateToCategories()
         // Real on-screen order/content, from the full unfiltered catalog
         // -- not commandsToWalk, which onlyListedCases may have filtered
         // down to a subset that no longer matches actual row positions.
@@ -325,7 +325,7 @@ class UiCommandE2ETest {
         val allCommands = buildCommands(InstrumentationRegistry.getInstrumentation().targetContext.filesDir.absolutePath) { }
         val allCategories = allCommands.map { it.category }.distinct()
 
-        waitForScreen("screen_categories")
+        navigateToCategories()
         for (spec in ordered) {
             clickListItem(spec.category, allCategories.indexOf(spec.category))
             val allNamesInCategory = allCommands.filter { it.category == spec.category }.map { it.name }
@@ -464,6 +464,20 @@ class UiCommandE2ETest {
         } catch (e: ComposeTimeoutException) {
             throw IllegalStateException("screen '$tag' not shown after ${NAV_TIMEOUT_MS}ms", e)
         }
+    }
+
+    /**
+     * Gets from a fresh launch (MainListScreen, "screen_main" -- see AppRoot's NavHost) to the
+     * full category browser every other walk method here assumes it's already on: taps the
+     * "Browse all categories" link and waits for CategoriesScreen to appear. A one-time prefix for
+     * both [runOneCase]-driving walks below, added when MainListScreen became the app's start
+     * destination -- the walk logic past this point (category-by-category or ordered) is otherwise
+     * unchanged.
+     */
+    private fun navigateToCategories() {
+        waitForScreen("screen_main")
+        composeTestRule.onNodeWithTag("browseCategories").performClick()
+        waitForScreen("screen_categories")
     }
 
     private fun verifyDetailScreen(spec: CommandSpec) {
