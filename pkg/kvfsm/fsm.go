@@ -80,10 +80,17 @@ func (f *FSM) Apply(l *raft.Log) any {
 		if err := checkSystemListCap(f.Store, value); err != nil {
 			return ApplyResult{Err: err}
 		}
-		if err := f.Store.Set(value, v); err != nil {
-			return ApplyResult{Err: err}
-		}
-		return ApplyResult{Err: f.Store.Delete(key)}
+		// Both writes land as one SQLite transaction (Store.WithTx) so a
+		// failure between them (a real I/O error, not just a crash) can't
+		// leave the record duplicated at both the pending and confirmed
+		// keys -- see OpTxn/OpCascadeDelete's identical reasoning above.
+		err = f.Store.WithTx(func(tx *store.Tx) error {
+			if err := tx.Set(value, v); err != nil {
+				return err
+			}
+			return tx.Delete(key)
+		})
+		return ApplyResult{Err: err}
 	case OpCascadeDelete:
 		// See applyCascadeDelete's own doc comment on why this needs
 		// WithTx: a Group/Command delete plus every relation record
@@ -164,20 +171,29 @@ func (f *FSM) Apply(l *raft.Log) any {
 		if err := checkSystemListCap(f.Store, key); err != nil {
 			return ApplyResult{Err: err}
 		}
-		if err := f.Store.Set(key, recordValue); err != nil {
-			return ApplyResult{Err: err}
-		}
-		// shmevent.DefaultPublicCommandID's own special case -- see that
-		// constant's doc comment: submitting it, already gated by the
-		// IsPermittedForCommand check just above like any other command,
-		// also grants the submitting peer real Channel/relay access,
-		// atomically in this same Apply call.
-		if commandID == shmevent.DefaultPublicCommandID {
-			if err := grantChannelRelayAccess(f.Store, []byte(authorPeerID)); err != nil {
-				return ApplyResult{Err: fmt.Errorf("kvfsm: grant channel/relay access to %s: %w", authorPeerID, err)}
+		// The CommandRequest write and (for DefaultPublicCommandID) the
+		// Channel/relay grant that follows it -- up to 3 writes total, see
+		// grantChannelRelayAccess -- land as one SQLite transaction
+		// (Store.WithTx): a failure partway through must not leave the
+		// request recorded without the access grant it's supposed to come
+		// with, or vice versa.
+		err = f.Store.WithTx(func(tx *store.Tx) error {
+			if err := tx.Set(key, recordValue); err != nil {
+				return err
 			}
-		}
-		return ApplyResult{}
+			// shmevent.DefaultPublicCommandID's own special case -- see that
+			// constant's doc comment: submitting it, already gated by the
+			// IsPermittedForCommand check above like any other command,
+			// also grants the submitting peer real Channel/relay access,
+			// atomically in this same Apply call.
+			if commandID == shmevent.DefaultPublicCommandID {
+				if err := grantChannelRelayAccess(tx, []byte(authorPeerID)); err != nil {
+					return fmt.Errorf("kvfsm: grant channel/relay access to %s: %w", authorPeerID, err)
+				}
+			}
+			return nil
+		})
+		return ApplyResult{Err: err}
 	case OpTxn:
 		ops, err := shmevent.DecodeTxnPayload(value)
 		if err != nil {

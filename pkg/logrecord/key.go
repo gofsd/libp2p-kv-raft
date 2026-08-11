@@ -155,15 +155,35 @@ func ScanBounds(kind, unitID string, start, end time.Time) (lo, hi []byte) {
 
 	lo = make([]byte, len(prefix)+8)
 	copy(lo, prefix)
-	binary.BigEndian.PutUint64(lo[len(prefix):], uint64(start.UnixNano()))
+	binary.BigEndian.PutUint64(lo[len(prefix):], uint64(nonNegativeUnixNano(start)))
 
 	hi = make([]byte, len(prefix)+8+RandSize)
 	copy(hi, prefix)
-	binary.BigEndian.PutUint64(hi[len(prefix):], uint64(end.UnixNano()))
+	binary.BigEndian.PutUint64(hi[len(prefix):], uint64(nonNegativeUnixNano(end)))
 	for i := len(prefix) + 8; i < len(hi); i++ {
 		hi[i] = 0xFF
 	}
 	return lo, hi
+}
+
+// nonNegativeUnixNano returns ts.UnixNano(), floored at 0. Every real
+// record's tsNano (BuildKey) is time.Now() at write time and so always
+// positive in practice, but a ScanBounds caller reaching for time.Time{}
+// (the zero value -- year 1, long before the Unix epoch) as a natural
+// "no lower/upper bound" would otherwise get a large *negative* int64
+// out of UnixNano(), which the very next uint64(...) conversion wraps
+// into a huge positive value instead -- silently producing an inverted,
+// permanently-empty range rather than the unbounded one intended. Every
+// call site in this codebase already avoids the trap by using
+// time.Unix(0, 0) instead (see pkg/kvctl's LogQuery/QueryCommandLog and
+// cmd/kvctl-cli's cmdLogQuery), so this clamp changes no existing
+// caller's behavior; it just makes the zero value behave the same way
+// instead of being a silent footgun for the next one.
+func nonNegativeUnixNano(ts time.Time) int64 {
+	if ns := ts.UnixNano(); ns > 0 {
+		return ns
+	}
+	return 0
 }
 
 // KindPrefix returns the key prefix shared by every record of the given

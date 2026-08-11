@@ -134,3 +134,42 @@ func TestScanBoundsTimeWindow(t *testing.T) {
 		t.Fatalf("ScanRange(hour1, hour2) = %+v, want indices {1, 2}", got)
 	}
 }
+
+// TestScanBoundsZeroTimeIsUnboundedNotInverted is the regression test for
+// the bug nonNegativeUnixNano exists to close: time.Time{} (the zero
+// value, long before the Unix epoch) is a natural reach for "no lower
+// bound," but its UnixNano() is a large negative int64 that used to wrap
+// to a huge uint64 on encoding, producing an inverted lo > hi range that
+// silently matched nothing -- a genuine bug found live while writing a
+// pkg/kvctl test that passed time.Time{} instead of this package's own
+// documented time.Unix(0, 0) idiom. ScanBounds must treat it exactly like
+// time.Unix(0, 0): unbounded, not inverted.
+func TestScanBoundsZeroTimeIsUnboundedNotInverted(t *testing.T) {
+	s, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer s.Close()
+
+	ts := time.Date(2026, 7, 19, 0, 0, 0, 0, time.UTC)
+	rnd, err := logrecord.NewRand()
+	if err != nil {
+		t.Fatalf("NewRand: %v", err)
+	}
+	key, err := logrecord.BuildKey("sitrep", "1BCT", ts, rnd)
+	if err != nil {
+		t.Fatalf("BuildKey: %v", err)
+	}
+	if err := s.Set(key, []byte{7}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	lo, hi := logrecord.ScanBounds("sitrep", "1BCT", time.Time{}, time.Now())
+	got, err := s.ScanRange(lo, hi, 0)
+	if err != nil {
+		t.Fatalf("ScanRange: %v", err)
+	}
+	if len(got) != 1 || got[0].Value[0] != 7 {
+		t.Fatalf("ScanRange with a time.Time{} lower bound = %+v, want the one seeded record", got)
+	}
+}
