@@ -76,6 +76,18 @@ private fun String.toLongOrThrow(field: String): Long =
 private fun String.toBooleanOrThrow(field: String): Boolean =
     toBooleanStrictOrNull() ?: throw IllegalArgumentException("$field must be \"true\" or \"false\"")
 
+// Permit "kind" is a numeric byte on the wire (shmevent.KindBootstrapNode = 2,
+// shmevent.KindClusterJoin = 5) but a string in this UI's params -- see
+// permitKindFromName's Go-side counterpart. Also used by EventBuilderScreen's
+// generic permit_request/confirm/revoke field mapping.
+fun permitKindNumber(kind: String) = if (kind == "cluster-join") "5" else "2"
+
+// "recruit"'s suffrage field is a numeric byte (shmevent.SuffrageVoter = 1,
+// shmevent.SuffrageLearner = 2), a string ("voter"/"learner") in this UI's
+// params -- see RecruitPeer's Go-side suffrage switch. Also used by
+// EventBuilderScreen's generic recruit field mapping.
+fun suffrageNumber(suffrage: String) = if (suffrage == "learner") "2" else "1"
+
 /**
  * The full kvmobile API surface, one CommandSpec per exported function --
  * mirrors README.md's "Follower on Android" section (and, through it,
@@ -106,14 +118,6 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
             generateFromResultBase64, awaitAdmissionAfterGenerate,
         )
     }
-    // Permit "kind" is a numeric byte on the wire (shmevent.KindBootstrapNode
-    // = 2, shmevent.KindClusterJoin = 5) but a string in this UI's params --
-    // see permitKindFromName's Go-side counterpart.
-    fun permitKindNumber(kind: String) = if (kind == "cluster-join") "5" else "2"
-    // "recruit"'s suffrage field is a numeric byte (shmevent.SuffrageVoter =
-    // 1, shmevent.SuffrageLearner = 2), a string ("voter"/"learner") in
-    // this UI's params -- see RecruitPeer's Go-side suffrage switch.
-    fun suffrageNumber(suffrage: String) = if (suffrage == "learner") "2" else "1"
 
     // Cluster lifecycle -- see README's "Follower on Android" section for
     // why Start/StartWithKey/Join/JoinWithKey/Stop/Delete/Leave/Rm map

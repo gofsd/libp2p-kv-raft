@@ -159,6 +159,8 @@ fun AppRoot() {
                         MainListScreen(
                             onCommandsClick = { navController.navigate("commandPicker") },
                             onGroupsClick = { navController.navigate("groupPicker") },
+                            onBuildEventClick = { navController.navigate("eventBuilder") },
+                            onConnectDeviceClick = { navController.navigate("connectDevice") },
                             onBrowseCategories = { navController.navigate("categories") },
                             onLogClick = { navController.navigate("log") },
                         )
@@ -168,6 +170,12 @@ fun AppRoot() {
                     }
                     composable("groupPicker") {
                         GroupPickerScreen()
+                    }
+                    composable("eventBuilder") {
+                        EventBuilderScreen()
+                    }
+                    composable("connectDevice") {
+                        ConnectDeviceScreen()
                     }
                     composable("categories") {
                         CategoriesScreen(
