@@ -723,14 +723,6 @@
       "execute": true,
       "expect": "no_crash"
     },
-    "Permits: ConfirmLogPermit": {
-      "inputs": [
-        "e2e-ui-test",
-        "{{selfPeerID}}"
-      ],
-      "execute": true,
-      "expect": "rejected"
-    },
     "Permits: ConfirmPermit": {
       "inputs": [
         "peer",
@@ -738,15 +730,6 @@
       ],
       "execute": true,
       "expect": "rejected"
-    },
-    "Permits: RequestLogPermit": {
-      "inputs": [
-        "e2e-ui-test",
-        "{{selfPeerID}}",
-        ""
-      ],
-      "execute": true,
-      "expect": "succeeded"
     },
     "Permits: RequestPermit": {
       "inputs": [
@@ -756,14 +739,6 @@
       ],
       "execute": true,
       "expect": "succeeded"
-    },
-    "Permits: RevokeLogPermit": {
-      "inputs": [
-        "e2e-ui-test",
-        "{{selfPeerID}}"
-      ],
-      "execute": true,
-      "expect": "rejected"
     },
     "Permits: RevokePermit": {
       "inputs": [

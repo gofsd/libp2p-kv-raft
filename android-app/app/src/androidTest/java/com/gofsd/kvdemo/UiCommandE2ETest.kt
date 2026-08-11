@@ -127,6 +127,25 @@ import java.io.File
  * `onlyListedCases` instrumentation arg (see below) rather than a whole
  * new test class. This class's own flat, single-device `cases` sweep
  * still deliberately excludes them, for the reasons above.
+ *
+ * [buildEventScreenGeneratesDataMatrix]/[connectDeviceScreenGeneratesDataMatrix]
+ * cover EventBuilderScreen/ConnectDeviceScreen -- MainListScreen's "Build
+ * Event"/"Connect to Device" entries, added alongside "Commands"/"Groups"
+ * for hand-constructing any event or a dial_submit_command specifically.
+ * Neither is a CommandSpec (they call Kvmobile.encodeEvent/getOwnAddr
+ * directly, not through buildCommands()), so runAllCommandsThroughUi's
+ * catalog walk structurally cannot reach them -- these two @Test methods
+ * are this class's only coverage of that surface, run automatically
+ * alongside runAllCommandsThroughUi by the same `-e class
+ * com.gofsd.kvdemo.UiCommandE2ETest` instrumentation call (no method
+ * filter, so `am instrument` runs every @Test in the class -- see
+ * pkg/e2erun/android.go's runUICommandTest). Both only verify Generate
+ * reachability (the DataMatrix dialog actually appears), the same
+ * "browsable and operable, not necessarily scanned by a second device"
+ * scope runAllCommandsThroughUi itself uses for every unpaired command --
+ * proving the *scan* side works end-to-end needs a real second device
+ * and camera, exactly like Join/RecruitPeer above, and isn't attempted
+ * here.
  */
 class UiCommandE2ETest {
 
@@ -303,6 +322,56 @@ class UiCommandE2ETest {
         if (failures.isNotEmpty()) {
             Assert.fail("${failures.size} of ${results.length()} command(s) failed:\n" + failures.joinToString("\n"))
         }
+    }
+
+    /**
+     * EventBuilderScreen: pick the "set" op (the simplest two-field case --
+     * key/value, no numeric/kind encoding to get right), fill both fields,
+     * tap Generate, and confirm the DataMatrix dialog actually renders.
+     * See class doc comment for why this exists as its own @Test rather
+     * than a CommandCatalog.kt entry.
+     */
+    @Test
+    fun buildEventScreenGeneratesDataMatrix() {
+        waitForScreen("screen_main")
+        composeTestRule.onNodeWithTag("mainListItem_buildEvent").performClick()
+        waitForScreen("screen_event_builder")
+
+        composeTestRule.onNodeWithTag("eventOpDropdown").performClick()
+        composeTestRule.onNodeWithTag("eventOpDropdown_option_set").performClick()
+        composeTestRule.onNodeWithTag("eventField_0").performTextInput("e2e-ui-test-key")
+        composeTestRule.onNodeWithTag("eventField_1").performTextInput("e2e-ui-test-value")
+        composeTestRule.onNodeWithTag("generateButton").performClick()
+
+        waitForScreen("generatedDataMatrixImage")
+        composeTestRule.onNodeWithTag("generatedDataMatrixClose").performClick()
+    }
+
+    /**
+     * ConnectDeviceScreen: confirm targetPeer auto-fills from GetOwnAddr
+     * (not left blank), fill commandID/inputsJSON, tap Generate, and
+     * confirm the DataMatrix dialog actually renders. See class doc
+     * comment for why this exists as its own @Test rather than a
+     * CommandCatalog.kt entry.
+     */
+    @Test
+    fun connectDeviceScreenGeneratesDataMatrix() {
+        waitForScreen("screen_main")
+        composeTestRule.onNodeWithTag("mainListItem_connectDevice").performClick()
+        waitForScreen("screen_connect_device")
+
+        try {
+            composeTestRule.waitUntil(RUN_TIMEOUT_MS) { readFieldText("targetPeerField").isNotBlank() }
+        } catch (e: ComposeTimeoutException) {
+            throw AssertionError("targetPeer never auto-filled after ${RUN_TIMEOUT_MS}ms", e)
+        }
+
+        composeTestRule.onNodeWithTag("commandIDField").performTextInput("e2e-ui-test-command")
+        composeTestRule.onNodeWithTag("inputsJSONField").performTextInput("e2e-ui-test-inputs")
+        composeTestRule.onNodeWithTag("generateButton").performClick()
+
+        waitForScreen("generatedDataMatrixImage")
+        composeTestRule.onNodeWithTag("generatedDataMatrixClose").performClick()
     }
 
     /**
@@ -492,6 +561,12 @@ class UiCommandE2ETest {
     private fun readOutputText(): String {
         val node = composeTestRule.onNodeWithTag("outputText").fetchSemanticsNode()
         return node.config.getOrNull(SemanticsProperties.Text)?.joinToString("") { it.text } ?: ""
+    }
+
+    /** Reads an OutlinedTextField's current value (its EditableText, not its label) by [tag]. */
+    private fun readFieldText(tag: String): String {
+        val node = composeTestRule.onNodeWithTag(tag).fetchSemanticsNode()
+        return node.config.getOrNull(SemanticsProperties.EditableText)?.text ?: ""
     }
 
     /**
