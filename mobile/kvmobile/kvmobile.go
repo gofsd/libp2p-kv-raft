@@ -490,8 +490,19 @@ func Rm() error {
 	if err := sess.RevokePermit(ctx, shmevent.KindClusterJoin, []byte(ownPeerID)); err != nil {
 		return fmt.Errorf("kvmobile: rm: revoke cluster-join standing: %w", err)
 	}
+	// The revoke above must run first, while this device is still a
+	// confirmed raft voter (see this function's own doc comment on why the
+	// order can't be reversed). If Leave itself now fails -- a transient
+	// IPC/network error, not the revoke's own doing -- this device is left
+	// in a real but narrow partial state: standing already revoked,
+	// membership in the cluster still intact, local data untouched. Not
+	// rolled back (there is no cheap way to "un-revoke," and the device is
+	// still a working cluster member either way, so nothing is actually
+	// broken by leaving it revoked) -- but the error says so explicitly,
+	// since a caller seeing a bare Leave error here would otherwise have no
+	// way to tell this apart from Rm never having started at all.
 	if err := sess.Leave(ctx); err != nil {
-		return fmt.Errorf("kvmobile: rm: %w", err)
+		return fmt.Errorf("kvmobile: rm: cluster-join standing was already revoked, but leaving its cluster failed (this device is still a member there): %w", err)
 	}
 	if err := Stop(); err != nil {
 		return err
