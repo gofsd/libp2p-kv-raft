@@ -556,7 +556,8 @@
     "ExecInvite: CreateExecInvite": {
       "inputs": [
         "no-such-command",
-        "{}"
+        "{}",
+        "0"
       ],
       "execute": true,
       "expect": "rejected"
