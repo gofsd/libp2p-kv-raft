@@ -9,13 +9,21 @@ import org.json.JSONObject
  *  with no pass/fail of its own (a WatchExecute/WatchCommandLog/RunCommandDispatcher callback). */
 enum class LogStatus { INFO, SUCCESS, FAILED }
 
-/** One row in [OutputLog] -- [title] is always shown, [body] only once the row is expanded. */
+/**
+ * One row in [OutputLog] -- [title] is always shown, [body] only once the row is expanded.
+ * [category]/[name]/[args] identify the [CommandSpec] this entry came from (blank/empty for
+ * watch-callback notifications and other non-command entries, e.g. "Recruited") -- LogScreen's
+ * row action buttons (Repeat, Group QR, Group) only render once these are populated.
+ */
 data class LogEntry(
     val id: Long,
     val title: String,
     val body: String,
     val status: LogStatus,
     val timestamp: Long,
+    val category: String = "",
+    val name: String = "",
+    val args: List<String> = emptyList(),
 )
 
 /**
@@ -81,6 +89,9 @@ object OutputLog {
                     body = o.optString("body"),
                     status = LogStatus.valueOf(o.getString("status")),
                     timestamp = o.getLong("timestamp"),
+                    category = o.optString("category"),
+                    name = o.optString("name"),
+                    args = o.optJSONArray("args")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList(),
                 )
             }
             nextId = (entries.maxOfOrNull { it.id } ?: -1L) + 1
@@ -95,8 +106,24 @@ object OutputLog {
     }
 
     @Synchronized
-    fun record(title: String, body: String, status: LogStatus): LogEntry {
-        val entry = LogEntry(id = nextId++, title = title, body = body, status = status, timestamp = System.currentTimeMillis())
+    fun record(
+        title: String,
+        body: String,
+        status: LogStatus,
+        category: String = "",
+        name: String = "",
+        args: List<String> = emptyList(),
+    ): LogEntry {
+        val entry = LogEntry(
+            id = nextId++,
+            title = title,
+            body = body,
+            status = status,
+            timestamp = System.currentTimeMillis(),
+            category = category,
+            name = name,
+            args = args,
+        )
         entries += entry
         persist()
         listener?.invoke(entry)
@@ -117,13 +144,18 @@ object OutputLog {
         runCatching {
             val arr = JSONArray()
             for (e in entries) {
+                val argsArr = JSONArray()
+                for (a in e.args) argsArr.put(a)
                 arr.put(
                     JSONObject()
                         .put("id", e.id)
                         .put("title", e.title)
                         .put("body", e.body)
                         .put("status", e.status.name)
-                        .put("timestamp", e.timestamp),
+                        .put("timestamp", e.timestamp)
+                        .put("category", e.category)
+                        .put("name", e.name)
+                        .put("args", argsArr),
                 )
             }
             file.writeText(arr.toString())

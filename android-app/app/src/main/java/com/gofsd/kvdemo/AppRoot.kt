@@ -29,6 +29,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kvmobile.Kvmobile
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -44,13 +45,16 @@ import org.json.JSONObject
  * scoped to a single screen alone (which NavHost disposes/recomposes on
  * every visit).
  *
- * [MainListScreen] ("main") is the start destination: a pull-to-refresh
- * list of "Commands" (-> [CommandPickerScreen], a same-device navigation
- * shortcut only -- it no longer generates a code of its own) and "Groups"
- * (-> [GroupPickerScreen], still generates a [NavCode.Group] shortcut). The
- * full category browser ([CategoriesScreen], "categories" ->
- * "commands/{category}" -> "commandDetail/{category}/{name}") is unchanged
- * and still reachable from there, just no longer the first screen shown.
+ * The start (and effectively only real-content) destination is `"pager"`
+ * ([CommandsPagerScreen]): a 2-page swipeable pager over the current group
+ * (hoisted here as [currentGroup], see that file's own doc comment for why
+ * it's plain state and not a nav-route argument) and the Activity Log.
+ * [DEFAULT_GROUP]'s page 0 shows two pseudo-items, "Commands" ->
+ * [CommandPickerScreen] and "Groups" -> [GroupPickerScreen] -- both a
+ * generic select-a-thing-then-Submit form, reusing the same mechanic a real
+ * command's own params use, just for navigation instead of execution. Every
+ * other group's page 0 is that category's own real commands -> ["commandDetail/{category}/{name}"]
+ * ([CommandDetailScreen]).
  *
  * [ScannerHost] is mounted exactly once here, as a Box sibling of the
  * NavHost, so its camera binds once and stays alive across every screen
@@ -67,8 +71,10 @@ import org.json.JSONObject
  * a [RunCode] (any device's CommandDetailScreen "Generate DataMatrix"
  * button minted this, for any of CommandCatalog.kt's specs) routes to
  * [RunConfirmDialog] -- this is now the *only* way any command executes,
- * see that dialog's own doc comment; a [NavCode.Group] shortcut navigates
- * [navController] straight to that category's command list -- no dialog,
+ * see that dialog's own doc comment, and its Execute button lands back on
+ * the pager's log page focused on the new entry once it finishes; a
+ * [NavCode.Group] shortcut sets [currentGroup] and collapses the back
+ * stack to a single `"pager"` instance showing that group -- no dialog,
  * since it's pure navigation and grants/executes nothing; a
  * `join_request_ticket` event (decoded via [kvmobile.Kvmobile.decodeEvent]
  * -- some other device's CreateJoinRequestTicket code, see
@@ -79,19 +85,34 @@ import org.json.JSONObject
  * [UnrecognizedScanDialog] instead of silently doing nothing.
  */
 private const val TAG = "KVDemo"
+
+/** The app's starting group -- not a real CommandCatalog.kt category, see [GroupPageScreen]. */
+const val DEFAULT_GROUP = "Default"
+
 private class PendingRun(val category: String, val name: String, val params: List<String>)
 private class PendingRecruitTicket(val ticketB64: String, val sourceAddr: String)
 private fun encodeSegment(s: String) = URLEncoder.encode(s, "UTF-8")
 private fun decodeSegment(s: String) = URLDecoder.decode(s, "UTF-8")
 
-fun commandListRoute(category: String) = "commands/${encodeSegment(category)}"
-fun commandDetailRoute(category: String, name: String) =
-    "commandDetail/${encodeSegment(category)}/${encodeSegment(name)}"
+/**
+ * [initialParams], when non-empty, appends a URL-encoded `?args=<JSON array>` query param --
+ * mirroring object-history-app's `Routes.form(id, values)` -- so [CommandDetailScreen] can seed
+ * its param fields instead of leaving them blank. Used by a log row's Repeat button.
+ */
+fun commandDetailRoute(category: String, name: String, initialParams: List<String> = emptyList()): String {
+    val base = "commandDetail/${encodeSegment(category)}/${encodeSegment(name)}"
+    if (initialParams.isEmpty()) return base
+    val arr = JSONArray()
+    for (p in initialParams) arr.put(p)
+    return "$base?args=${encodeSegment(arr.toString())}"
+}
 
 @Composable
 fun AppRoot() {
     val context = LocalContext.current
     var statusText by remember { mutableStateOf("Connecting to cluster...") }
+    var currentGroup by remember { mutableStateOf(DEFAULT_GROUP) }
+    var focusedLogId by remember { mutableStateOf<Long?>(null) }
     var pendingRun by remember { mutableStateOf<PendingRun?>(null) }
     var pendingRecruitTicket by remember { mutableStateOf<PendingRecruitTicket?>(null) }
     var pendingUnrecognized by remember { mutableStateOf<String?>(null) }
@@ -164,7 +185,24 @@ fun AppRoot() {
                     delay(16)
                 }
                 when (navCode) {
-                    is NavCode.Group -> navController.navigate(commandListRoute(navCode.category))
+                    is NavCode.Group -> {
+                        // Entering a group is a plain state change (see PagerScreen.kt's
+                        // currentGroup), not a nav-route push -- so the same "collapse back to
+                        // the single existing pager instance" popUpTo("pager")/launchSingleTop
+                        // pattern used below for post-execution nav and CreateJoinRequestTicket's
+                        // admission nav applies here too, and *not* inclusive=true: that would
+                        // destroy and recreate the pager route's own composition (losing e.g. its
+                        // HorizontalPager scroll state) even when nothing was pushed on top of it
+                        // to begin with, which is the common case since a scan can only ever land
+                        // while already on the pager route or on a route pushed on top of it.
+                        currentGroup = navCode.category
+                        if (navController.currentDestination?.route != "pager") {
+                            navController.navigate("pager") {
+                                popUpTo("pager")
+                                launchSingleTop = true
+                            }
+                        }
+                    }
                 }
                 ScannerCoordinator.expanded = false
                 return@collect
@@ -198,13 +236,22 @@ fun AppRoot() {
     MaterialTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
             Box(modifier = Modifier.fillMaxSize()) {
-                NavHost(navController = navController, startDestination = "main") {
-                    composable("main") {
-                        MainListScreen(
-                            onCommandsClick = { navController.navigate("commandPicker") },
-                            onGroupsClick = { navController.navigate("groupPicker") },
-                            onBrowseCategories = { navController.navigate("categories") },
-                            onLogClick = { navController.navigate("log") },
+                NavHost(navController = navController, startDestination = "pager") {
+                    composable("pager") {
+                        CommandsPagerScreen(
+                            statusText = statusText,
+                            currentGroup = currentGroup,
+                            onGroupChange = { currentGroup = it },
+                            focusedLogId = focusedLogId,
+                            onFocusedLogConsumed = { focusedLogId = null },
+                            onCommandClick = { name ->
+                                navController.navigate(commandDetailRoute(currentGroup, name))
+                            },
+                            onOpenCommandsPicker = { navController.navigate("commandPicker") },
+                            onOpenGroupsPicker = { navController.navigate("groupPicker") },
+                            onRepeat = { entry ->
+                                navController.navigate(commandDetailRoute(entry.category, entry.name, entry.args))
+                            },
                         )
                     }
                     composable("commandPicker") {
@@ -215,46 +262,47 @@ fun AppRoot() {
                         )
                     }
                     composable("groupPicker") {
-                        GroupPickerScreen()
-                    }
-                    composable("categories") {
-                        CategoriesScreen(
-                            statusText = statusText,
-                            onCategoryClick = { category ->
-                                navController.navigate(commandListRoute(category))
-                            },
-                            onLogClick = { navController.navigate("log") },
-                        )
-                    }
-                    composable(
-                        "commands/{category}",
-                        arguments = listOf(navArgument("category") { type = NavType.StringType }),
-                    ) { backStackEntry ->
-                        val category = decodeSegment(backStackEntry.arguments?.getString("category") ?: "")
-                        CommandListScreen(
-                            category = category,
-                            onCommandClick = { name ->
-                                navController.navigate(commandDetailRoute(category, name))
+                        GroupPickerScreen(
+                            onSubmit = { category ->
+                                currentGroup = category
+                                navController.popBackStack()
                             },
                         )
                     }
                     composable(
-                        "commandDetail/{category}/{name}",
+                        "commandDetail/{category}/{name}?args={args}",
                         arguments = listOf(
                             navArgument("category") { type = NavType.StringType },
                             navArgument("name") { type = NavType.StringType },
+                            navArgument("args") {
+                                type = NavType.StringType
+                                nullable = true
+                                defaultValue = null
+                            },
                         ),
                     ) { backStackEntry ->
                         val category = decodeSegment(backStackEntry.arguments?.getString("category") ?: "")
                         val name = decodeSegment(backStackEntry.arguments?.getString("name") ?: "")
+                        val initialParams = backStackEntry.arguments?.getString("args")?.let { encoded ->
+                            runCatching {
+                                val arr = JSONArray(decodeSegment(encoded))
+                                (0 until arr.length()).map { arr.getString(it) }
+                            }.getOrNull()
+                        } ?: emptyList()
                         CommandDetailScreen(
                             category = category,
                             name = name,
-                            onNavigateToLog = { navController.navigate("log") },
+                            initialParams = initialParams,
+                            onNavigateToLog = {
+                                focusedLogId = OutputLog.snapshot().lastOrNull()?.id
+                                if (navController.currentDestination?.route != "pager") {
+                                    navController.navigate("pager") {
+                                        popUpTo("pager")
+                                        launchSingleTop = true
+                                    }
+                                }
+                            },
                         )
-                    }
-                    composable("log") {
-                        LogScreen()
                     }
                 }
 
@@ -279,6 +327,13 @@ fun AppRoot() {
                                     OutputLog.record("${run.category}: ${run.name}", "FAILED: unknown command", LogStatus.FAILED)
                                 } else {
                                     CommandExecutor.execute(spec, run.params)
+                                }
+                                focusedLogId = OutputLog.snapshot().lastOrNull()?.id
+                                if (navController.currentDestination?.route != "pager") {
+                                    navController.navigate("pager") {
+                                        popUpTo("pager")
+                                        launchSingleTop = true
+                                    }
                                 }
                             }
                         },

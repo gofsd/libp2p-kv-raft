@@ -11,6 +11,9 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeLeft
+import androidx.compose.ui.test.swipeRight
 import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -35,9 +38,10 @@ import java.util.concurrent.atomic.AtomicReference
  * device, a real camera scanning it on another, and a confirm tap executing it there). Unlike
  * E2ETest (a separate class that calls Kvmobile.sendEvent directly, never touching a single
  * screen -- still the cross-platform wire-protocol row-replay check, unaffected by any of this),
- * this drives the actual app: MainListScreen's Commands/Groups shortcuts, CommandDetailScreen's
- * dynamically-rendered param fields and "Generate DataMatrix" button, the persistent camera
- * scanner, and RunConfirmDialog/RecruitConfirmDialog's confirm taps.
+ * this drives the actual app: the swipeable pager's Default group ("Commands"/"Groups" pseudo-
+ * items, see GroupPageScreen/PagerScreen), CommandDetailScreen's dynamically-rendered param fields
+ * and "Generate DataMatrix" button, the persistent camera scanner, and RunConfirmDialog/
+ * RecruitConfirmDialog's confirm taps.
  *
  * Drives the app via Jetpack Compose's test APIs (onNodeWithTag/performClick/performTextInput)
  * against the [Modifier.testTag]s each screen sets, not Espresso View matchers or Activity-class
@@ -416,14 +420,16 @@ class UiCommandE2ETest {
     /**
      * Generates one [spec]-described case -- shared by [generateAndHold] (one case, fresh
      * process) and [generateAndHoldAll] (many cases, one session) -- and returns its
-     * "OpticalGenerate: <case_id>" result entry. Assumes the caller is already on screen_main
-     * (both callers arrange this: a fresh process starts there; a later batch iteration is put
-     * back there by [resetToMainAfterGenerate]) and has already done the StartSolo/
-     * RequestRelayAccess preamble ([startSoloAndRequestRelay]). Navigates to whichever of the
-     * app's two DataMatrix-generating screens `target` names, fills in `params`, taps Generate,
-     * and confirms the code actually rendered -- leaves it on screen (generatedDataMatrixImage)
-     * for the caller to hold/dismiss, since how long to hold and what happens next differs
-     * between the two callers.
+     * "OpticalGenerate: <case_id>" result entry. Assumes the caller is already on the pager's
+     * Default group (both callers arrange this: a fresh process starts there; a later batch
+     * iteration is put back there by [resetToMainAfterGenerate]) and has already done the
+     * StartSolo/RequestRelayAccess preamble ([startSoloAndRequestRelay]). `target == "run"` opens
+     * the Default group's "Commands" picker, selects `name`, fills in `params` on the resulting
+     * CommandDetailScreen, and taps Generate; `target == "nav_group"` has no bare-QR generation
+     * path left at all (see that branch's own inline comment) so it seeds a log entry and drives
+     * that entry's own Group QR button instead. Either way leaves the result on screen
+     * (generatedDataMatrixImage) for the caller to hold/dismiss, since how long to hold and what
+     * happens next differs between the two callers.
      */
     private fun generateOneCase(context: android.content.Context, spec: JSONObject, opticalTag: String): JSONObject {
         val caseID = spec.getString("case_id")
@@ -471,11 +477,7 @@ class UiCommandE2ETest {
                 }
 
                 Log.i(TAG, "$opticalTag navigating to command_detail for ${commandSpec.label}, params=${(0 until fieldCount).map { resolveField(it) }}")
-                navigateToCategories()
-                val allCategories = allCommandsForLookup.map { it.category }.distinct()
-                clickListItem(commandSpec.category, allCategories.indexOf(commandSpec.category))
-                val namesInCategory = allCommandsForLookup.filter { it.category == commandSpec.category }.map { it.name }
-                clickListItem(commandSpec.name, namesInCategory.indexOf(commandSpec.name))
+                navigateToCommandDetailViaPicker(commandSpec.label)
                 waitForScreen("screen_command_detail")
                 for (i in 0 until fieldCount) {
                     composeTestRule.onNodeWithTag("param_$i").performTextInput(resolveField(i))
@@ -484,13 +486,29 @@ class UiCommandE2ETest {
                 Log.i(TAG, "$opticalTag tapped generateDataMatrixButton")
             }
             "nav_group" -> {
-                composeTestRule.onNodeWithTag("mainListItem_groups").performClick()
-                waitForScreen("screen_group_picker")
-                Log.i(TAG, "$opticalTag on screen_group_picker, selecting category=\"$category\"")
-                composeTestRule.onNodeWithTag("groupPickerSelect").performClick()
-                composeTestRule.onNodeWithTag("groupPickerSelect_option_$category").performClick()
-                composeTestRule.onNodeWithTag("groupPickerGenerate").performClick()
-                Log.i(TAG, "$opticalTag tapped groupPickerGenerate")
+                // GroupPickerScreen's own Submit now *enters* a group (a plain state change,
+                // see PagerScreen.kt's currentGroup) instead of generating a bare NavCode.Group
+                // QR the way it used to -- the only place left to mint one is a log row's own
+                // Group QR button (see LogScreen.kt), which needs a log entry in that category to
+                // hang the button off of. Runs the category's own cheapest command (0-param if
+                // one exists, else just the first) purely to seed that entry -- its outcome
+                // (pass/fail) is irrelevant, CommandExecutor.execute records either way, exactly
+                // like the DialSubmitCommand dispatcher pre-registration above this uses the same
+                // "call CommandExecutor directly, this is harness setup not a production UI path"
+                // reasoning for.
+                val allCommandsForLookup = buildCommands(context.filesDir.absolutePath, OutputLog::append)
+                val inCategory = allCommandsForLookup.filter { it.category == category }
+                val probeSpec = inCategory.firstOrNull { it.params.isEmpty() } ?: inCategory.first()
+                Log.i(TAG, "$opticalTag seeding a log entry in group=\"$category\" via probe ${probeSpec.label}")
+                runBlocking { CommandExecutor.execute(probeSpec, probeSpec.params.map { "" }) }
+                val entryID = OutputLog.snapshot().last().id
+
+                waitForScreen("screen_main")
+                composeTestRule.onNodeWithTag("screen_main").performTouchInput { swipeLeft() }
+                waitForScreen("screen_log")
+                composeTestRule.onNodeWithTag("logList").performScrollToIndex(OutputLog.snapshot().size - 1)
+                composeTestRule.onNodeWithTag("log_groupqr_$entryID").performClick()
+                Log.i(TAG, "$opticalTag tapped log_groupqr_$entryID")
             }
             else -> throw IllegalArgumentException("unknown optical generate target: $target")
         }
@@ -501,18 +519,25 @@ class UiCommandE2ETest {
     }
 
     /**
-     * Returns [generateAndHoldAll] to screen_main after one case's generated code has had its
-     * hold window: dismisses the GeneratedDataMatrixDialog, then pops however many nav levels
-     * [generateOneCase] pushed for that case's own `target` (3 for "run" --
-     * categories/commands/{category}/commandDetail; 1 for "nav_group" -- groupPicker), so the
-     * next iteration starts from the identical screen_main state a fresh process would have
-     * given it.
+     * Returns [generateAndHoldAll] to the pager's Default group after one case's generated code
+     * has had its hold window: dismisses the GeneratedDataMatrixDialog, then undoes whatever
+     * [generateOneCase] did to get there. "run" pushed two real routes (commandPicker,
+     * commandDetail -- both real `NavController` destinations), so `pressBack()` twice pops back
+     * to the still-alive pager route underneath. "nav_group" pushed no route at all -- it only
+     * swiped the pager from its list page to its log page (see that branch's own comment) -- so
+     * undoing it is a swipe back, not a pop. Either way waits for screen_default_group
+     * specifically, not just screen_main: that tag now sits on the pager route's own outer
+     * wrapper regardless of which of its two pages is showing, so it alone can't distinguish "back
+     * on the Default group's list, ready for mainListItem_commands/groups" from "still on the log
+     * page" the way it could before this app had more than one screen per route.
      */
     private fun resetToMainAfterGenerate(target: String) {
         composeTestRule.onNodeWithTag("generatedDataMatrixClose").performClick()
-        val popCount = if (target == "run") 3 else 1
-        repeat(popCount) { pressBack() }
-        waitForScreen("screen_main")
+        when (target) {
+            "run" -> repeat(2) { pressBack() }
+            "nav_group" -> composeTestRule.onNodeWithTag("screen_main").performTouchInput { swipeRight() }
+        }
+        waitForScreen("screen_default_group")
     }
 
     /**
@@ -678,12 +703,14 @@ class UiCommandE2ETest {
                     pass(resultBody.substringAfter("->\n", resultBody))
                 }
                 "nav_group" -> {
-                    // Wrapped in try/finally, not just a trailing pressBack after recordPass:
-                    // scanning genuinely navigated here (unlike "run"/"ticket", which never leave
-                    // screen_main), so a title mismatch below has to pop back to screen_main
-                    // before this returns too, or the *next* case in an awaitAndVerifyScanAll
-                    // batch would start from the wrong screen. An earlier version only popped
-                    // back on the success path.
+                    // Wrapped in try/finally, not just a trailing cleanup after recordPass: a
+                    // NavCode.Group scan enters a real group (see PagerScreen.kt's currentGroup),
+                    // so a title mismatch below has to leave it before this returns too, or the
+                    // *next* case in an awaitAndVerifyScanAll batch would start from the wrong
+                    // group. Entering a group pushes no NavController route at all now (unlike the
+                    // pre-pager-rewrite app, where this scan navigated to a distinct
+                    // "commands/{category}" route) -- so leaving one is the groupContextLeave chip
+                    // (see PagerScreen.kt's GroupContextBar), not a pressBack().
                     try {
                         waitForTagWithTimeout("screen_commands", timeoutMs)
                         Log.i(TAG, "$opticalTag screen_commands appeared at ${System.currentTimeMillis()}")
@@ -695,12 +722,12 @@ class UiCommandE2ETest {
                         if (title != want) throw AssertionError("categoryTitle=\"$title\", want \"$want\"")
                         pass()
                     } finally {
-                        // Only meaningful once the screen actually navigated (a timeout above
-                        // means it never left screen_main, so this is a harmless no-op then) --
-                        // see class doc comment for why Espresso.pressBack() isn't used here.
-                        if (composeTestRule.onAllNodesWithTag("screen_commands").fetchSemanticsNodes(atLeastOneRootRequired = false).isNotEmpty()) {
-                            pressBack()
-                            Log.i(TAG, "$opticalTag pressBack complete, returning")
+                        // Only meaningful once the scan actually entered a group (a timeout above
+                        // means it never left the Default group, so this is a harmless no-op then).
+                        if (composeTestRule.onAllNodesWithTag("groupContextLeave").fetchSemanticsNodes(atLeastOneRootRequired = false).isNotEmpty()) {
+                            composeTestRule.onNodeWithTag("groupContextLeave").performClick()
+                            waitForScreen("screen_default_group")
+                            Log.i(TAG, "$opticalTag left group, back to Default, returning")
                         }
                     }
                 }
@@ -834,25 +861,6 @@ class UiCommandE2ETest {
     }
 
     /**
-     * Category/command lists are LazyColumns -- only the currently visible (plus a small prefetch
-     * buffer) rows actually exist in the semantics tree at any moment, so a target further down
-     * (e.g. "Cluster"'s ~30 commands, most below the fold on a phone-sized viewport) isn't
-     * clickable, or even findable, until scrolled into view. [index] is that row's position in
-     * the *real* on-screen list (CategoriesScreen's `categories`/CommandListScreen's `names`,
-     * exactly as rendered), passed to `performScrollToIndex` on the enclosing LazyColumn (tagged
-     * "itemList") to jump straight to it via `LazyListState`, the only approach confirmed live to
-     * reliably reach far-down rows: `performScrollTo()` alone (tried first) only walks forward
-     * from whatever's already composed and silently stops working once a target is far enough
-     * past the initial viewport that it was never composed at all -- it threw "could not find any
-     * node" for the 19th "Cluster" command ("CreateJoinInviteTicket") on a run where the first 18
-     * had scrolled/clicked fine.
-     */
-    private fun clickListItem(text: String, index: Int) {
-        composeTestRule.onNodeWithTag("itemList").performScrollToIndex(index)
-        composeTestRule.onNodeWithTag("listItem_$text").performClick()
-    }
-
-    /**
      * Pops one entry off the current back stack via the Activity's own
      * `OnBackPressedDispatcher` -- see class doc comment for why this, not `Espresso.pressBack()`,
      * is what actually works here. Runs on the main thread (the dispatcher isn't thread-safe to
@@ -933,14 +941,23 @@ class UiCommandE2ETest {
     }
 
     /**
-     * Gets from a fresh launch (MainListScreen, "screen_main" -- see AppRoot's NavHost) to the
-     * full category browser [generateAndHold]'s "run" target navigates through: taps the "Browse
-     * all categories" link and waits for CategoriesScreen to appear.
+     * From the pager's Default group (see GroupPageScreen), reaches [label]'s own
+     * CommandDetailScreen via the "Commands" picker: taps the "Commands" pseudo-item, opens its
+     * search-filterable select, taps the option matching [label] directly (the option's own
+     * testTag, `"${testTag}_option_$label"` -- see SearchableSelectDropdown -- so no typing is
+     * needed to find it; Material3's DropdownMenu is a plain scrollable Column, not a LazyColumn,
+     * so every option already exists in the semantics tree regardless of filter/scroll position,
+     * unlike the old category/command LazyColumns this replaces, which needed an explicit
+     * performScrollToIndex to reach far-down rows), then Submit.
+     * Two real routes deep from the pager (commandPicker, then commandDetail) -- see
+     * [resetToMainAfterGenerate]'s matching pop count.
      */
-    private fun navigateToCategories() {
-        waitForScreen("screen_main")
-        composeTestRule.onNodeWithTag("browseCategories").performClick()
-        waitForScreen("screen_categories")
+    private fun navigateToCommandDetailViaPicker(label: String) {
+        composeTestRule.onNodeWithTag("mainListItem_commands").performClick()
+        waitForScreen("screen_command_picker")
+        composeTestRule.onNodeWithTag("commandPickerSelect").performClick()
+        composeTestRule.onNodeWithTag("commandPickerSelect_option_$label").performClick()
+        composeTestRule.onNodeWithTag("commandPickerOpen").performClick()
     }
 
     /** Reads a plain Text composable's current content by [tag] (e.g. categoryTitle/runConfirmParams). */

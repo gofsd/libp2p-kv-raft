@@ -22,11 +22,25 @@ object CommandExecutor {
         return try {
             val result = withContext(Dispatchers.IO) { spec.run(args) }
             Log.i(TAG, "RESULT: ${spec.label} -> $result")
-            OutputLog.record(spec.label, "(${args.joinToString(", ")}) ->\n$result", LogStatus.SUCCESS)
+            OutputLog.record(
+                spec.label,
+                "(${args.joinToString(", ")}) ->\n$result",
+                LogStatus.SUCCESS,
+                category = spec.category,
+                name = spec.name,
+                args = args,
+            )
             "${spec.label}(${args.joinToString(", ")}) ->\n$result"
         } catch (e: Exception) {
             Log.w(TAG, "RESULT: ${spec.label} FAILED: ${e.message}")
-            OutputLog.record(spec.label, "(${args.joinToString(", ")}) FAILED: ${e.message}", LogStatus.FAILED)
+            OutputLog.record(
+                spec.label,
+                "(${args.joinToString(", ")}) FAILED: ${e.message}",
+                LogStatus.FAILED,
+                category = spec.category,
+                name = spec.name,
+                args = args,
+            )
             "${spec.label}(${args.joinToString(", ")}) FAILED: ${e.message}"
         }
     }

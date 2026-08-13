@@ -506,19 +506,36 @@ in-app "Run" button anywhere, on any screen, for any command. This is deliberate
 feature: it means the UI surface a human operates is, by construction, identical to the surface a
 second physical device drives, so nothing in the app can silently diverge from what's actually
 reachable by scan. It's a single Activity (`MainActivity`) hosting a Jetpack Compose `NavHost`
-(`AppRoot.kt`) — `MainListScreen` ("Commands"/"Groups" shortcuts, "Browse all categories", "Activity
-Log") is the start destination; `CommandPickerScreen`/`GroupPickerScreen` are same-device navigation
-shortcuts into the full `CategoriesScreen` → `CommandListScreen` → `CommandDetailScreen` browser
-(`CommandCatalog.kt`'s ~104-entry `CommandSpec` table: Cluster, KV, Permits, Execute, Log records,
-Group, Command, Links, Dispatch, ExecInvite, Raw, RelayNode, Station); `LogScreen` is the persisted
-Activity Log. Brings the daemon up once via `Start` (joining the build-time-baked-in leader). Every
-call goes through the daemon's IPC exactly like the desktop CLI, just over the Android shared-memory
-transport instead of named shared memory, off the UI thread; `submit`/dispatch calls are forwarded
-from this (never-leader) follower to whichever peer is currently leader, over
-`pkg/daemon.ForwardProtocolID`. The three standing-subscription calls (`WatchExecute`,
-`WatchCommandLog`, `RunCommandDispatcher`) post their callback notifications to a process-wide
-`OutputLog` instead of that one screen's output, since the subscription keeps running after you
-navigate away — `LogScreen` shows that full history plus live updates while it's foregrounded.
+(`AppRoot.kt`) whose only real-content route is `"pager"` (`CommandsPagerScreen`, in
+`PagerScreen.kt`): a 2-page swipeable `HorizontalPager` — no tab bar, the swipe is the control —
+page 0 is the current *group*'s own command list (`GroupPageScreen.kt`), page 1 is the persisted
+Activity Log (`LogScreen.kt`). Every `CommandCatalog.kt` category (Cluster, KV, Permits, Execute,
+Log records, Group, Command, Links, Dispatch, ExecInvite, Raw, RelayNode, Station — its ~104-entry
+`CommandSpec` table) is a "group," held as plain hoisted state (`currentGroup`) in `AppRoot`, not a
+nav-route argument — entering or leaving one just swaps page 0's content and re-scrolls to it,
+no `NavController` push. `"Default"`, the app's starting group, isn't a real category: its own
+page 0 shows exactly two pseudo-items, "Commands" and "Groups," each a generic select-then-Submit
+picker-form (`CommandPickerScreen.kt`/`GroupPickerScreen.kt`) reusing the identical mechanic a real
+command's own params use — "Commands" jumps straight to any single command's `CommandDetailScreen`;
+"Groups" *enters* the picked category (a plain `currentGroup` assignment, nothing generated). A
+small header chip (`GroupContextBar`, visible whenever `currentGroup != "Default"`) is the way back
+out. Brings the daemon up once via `Start` (joining the build-time-baked-in leader). Every call goes
+through the daemon's IPC exactly like the desktop CLI, just over the Android shared-memory transport
+instead of named shared memory, off the UI thread; `submit`/dispatch calls are forwarded from this
+(never-leader) follower to whichever peer is currently leader, over `pkg/daemon.ForwardProtocolID`.
+The three standing-subscription calls (`WatchExecute`, `WatchCommandLog`, `RunCommandDispatcher`)
+post their callback notifications to a process-wide `OutputLog` instead of that one screen's output,
+since the subscription keeps running after you navigate away — the pager's log page shows that full
+history plus live updates while it's foregrounded, plus per-row action buttons (shown once a row
+has a real `CommandSpec` behind it, i.e. every entry `CommandExecutor.execute` itself recorded):
+**Repeat** re-opens that command's own `CommandDetailScreen` with its original params prefilled;
+**Execution ID** shows/copies that row's local log sequence number (`"Log #<id>"`, explicitly not a
+server-side dispatch id — most commands have no such id at all, only some Dispatch/ExecInvite
+results carry one inside their own result text); **Group QR** mints a `NavCode.Group` DataMatrix for
+that row's category — the only place left in the app that can generate one, now that
+`GroupPickerScreen`'s own Submit enters a group instead of generating a code for it; **Group** jumps
+straight into that row's group, the same effect as picking it via the Groups picker-form but a
+one-tap shortcut, no scan or extra screen needed.
 
 `CommandDetailScreen` renders one labeled input field per parameter and two actions: **Generate
 DataMatrix**, always enabled for every spec (unlike an earlier version of this app, which could only
@@ -534,9 +551,10 @@ floating bubble to expand it full-screen. `AppRoot`'s own scan-dispatch collecto
 decoded payload turns out to be: a `RunCode` (any device's Generate DataMatrix button, for any
 spec) shows `RunConfirmDialog` — its Execute button is the *only* production call site of
 `CommandExecutor.execute(spec, args)`, the shared run/catch/record logic every command's result goes
-through, win or fail, always landing in `OutputLog`; a `NavCode.Group` shortcut (`GroupPickerScreen`'s
-own Generate) navigates straight to that category's command list, pure navigation, nothing executes
-or grants anything; a `join_request_ticket` event (still real, signed, capnp-encoded — see [Signed
+through, win or fail, always landing in `OutputLog`; a `NavCode.Group` shortcut (minted from a log
+row's own Group QR button, see above) sets `currentGroup` to that category and collapses the back
+stack to the single existing pager instance if it wasn't already showing — pure navigation, nothing
+executes or grants anything; a `join_request_ticket` event (still real, signed, capnp-encoded — see [Signed
 tickets](#signed-tickets-proving-a-barcode-really-came-from-who-it-claims) below) shows
 `RecruitConfirmDialog`, since admitting a device into a cluster is a grant, not a plain invocation;
 anything else shows `UnrecognizedScanDialog` rather than silently doing nothing. Binary payloads

@@ -21,12 +21,14 @@ import androidx.compose.ui.unit.dp
 private const val TAG = "KVDemo"
 
 /**
- * "Commands": pick any single command from the app's full flat catalog (every category's every
- * CommandSpec, see CommandCatalog.kt) and jump straight to its own CommandDetailScreen -- a
- * same-device navigation shortcut over the two-hop Categories -> category's command list route,
- * nothing more. Generates no code of its own: CommandDetailScreen's own "Generate DataMatrix"
- * button (a [RunCode], the only way any command executes now) is reached from there, the same as
- * navigating in through the full category browser would leave you.
+ * "Commands": one of the Default group's two pseudo-items (see GroupPageScreen) -- pick any
+ * single command from the app's full flat catalog (every category's every CommandSpec, see
+ * CommandCatalog.kt) via a search-filterable select, Submit jumps straight to its own
+ * CommandDetailScreen. A same-device navigation shortcut, nothing more -- generates no code of
+ * its own: CommandDetailScreen's own "Generate DataMatrix" button (a [RunCode], the only way any
+ * command executes now) is reached from there, the same as entering that command's group and
+ * tapping it in its own command list would leave you. [SearchableSelectDropdown], not the plain
+ * [SelectDropdown], since the flat catalog is ~100+ entries -- unusable in an unfilterable menu.
  */
 @Composable
 fun CommandPickerScreen(onNavigateToDetail: (category: String, name: String) -> Unit) {
@@ -45,7 +47,7 @@ fun CommandPickerScreen(onNavigateToDetail: (category: String, name: String) -> 
             modifier = Modifier.padding(bottom = 12.dp),
         )
 
-        SelectDropdown(
+        SearchableSelectDropdown(
             label = "Command",
             options = commands.map { it.label },
             selected = selectedLabel,
@@ -58,12 +60,12 @@ fun CommandPickerScreen(onNavigateToDetail: (category: String, name: String) -> 
             onClick = {
                 val label = selectedLabel ?: return@Button
                 val spec = commands.first { it.label == label }
-                Log.i(TAG, "USER_TAP: Open pressed for ${spec.label}")
+                Log.i(TAG, "USER_TAP: Submit pressed for ${spec.label}")
                 onNavigateToDetail(spec.category, spec.name)
             },
             modifier = Modifier.fillMaxWidth().padding(top = 16.dp).testTag("commandPickerOpen"),
         ) {
-            Text("Open")
+            Text("Submit")
         }
     }
 }

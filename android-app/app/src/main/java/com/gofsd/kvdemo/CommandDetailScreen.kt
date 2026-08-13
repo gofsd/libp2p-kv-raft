@@ -47,18 +47,29 @@ import org.json.JSONArray
  * why. [onNavigateToLog] is only ever invoked for a spec with awaitAdmissionAfterGenerate set,
  * once this device is observed to have actually been admitted to a cluster (see that field's own
  * doc comment on CommandSpec) -- every other spec's Generate flow never calls it.
+ *
+ * [initialParams] seeds the param fields instead of leaving them blank -- used by a log row's
+ * Repeat button (see LogScreen.kt), which navigates here with the original run's own args via
+ * [commandDetailRoute]'s optional query param.
  */
 private const val TAG = "KVDemo"
 
 @Composable
-fun CommandDetailScreen(category: String, name: String, onNavigateToLog: () -> Unit = {}) {
+fun CommandDetailScreen(
+    category: String,
+    name: String,
+    initialParams: List<String> = emptyList(),
+    onNavigateToLog: () -> Unit = {},
+) {
     val context = LocalContext.current
     val spec = remember(category, name) {
         buildCommands(context.filesDir.absolutePath, OutputLog::append)
             .first { it.category == category && it.name == name }
     }
 
-    val paramValues = remember(spec) { mutableStateListOf(*Array(spec.params.size) { "" }) }
+    val paramValues = remember(spec) {
+        mutableStateListOf(*Array(spec.params.size) { i -> initialParams.getOrElse(i) { "" } })
+    }
     var output by remember(spec) { mutableStateOf("") }
     var generating by remember(spec) { mutableStateOf(false) }
     var generatedMatrix by remember(spec) { mutableStateOf<BitMatrix?>(null) }
