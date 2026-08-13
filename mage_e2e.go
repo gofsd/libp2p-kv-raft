@@ -368,21 +368,22 @@ func (E2E) BootstrapAll() error {
 // again -- this is the "version increment based on new tests" behavior. In
 // particular, running e2e:current a second time with nothing new since the
 // last success is a true no-op (prints "no rows to run" and returns
-// immediately) -- unlike All/Release below, it does *not* still walk the
-// android UI catalog/pair scenario every time, since the whole point of
-// "current" is "is there anything new to confirm", and there isn't. Set
-// E2E_TYPES (comma-separated: desktop, web, android, androidui) to run
-// only some test types instead of everything -- see
-// pkg/e2erun.ParseTypes's doc comment; unset/empty runs everything, same
-// as before this existed. ONLY/EXCLUDE are numeric alternatives to
-// E2E_TYPES -- 1=desktop, 2=android, 3=web, 4=androidui (see
+// immediately). Android's real command-execution UI surface
+// (RunCode/real-camera scan, see pkg/e2erun/android_optical.go) is never
+// part of this automated pipeline at all -- it needs a real camera, so it's
+// manual/hardware-gated (see TestManualOpticalScan's own doc comment), run
+// directly via `go test`, not through any mage e2e target. Set E2E_TYPES
+// (comma-separated: desktop, web, android) to run only some test types
+// instead of everything -- see pkg/e2erun.ParseTypes's doc comment;
+// unset/empty runs everything, same as before this existed. ONLY/EXCLUDE
+// are numeric alternatives to E2E_TYPES -- 1=desktop, 2=android, 3=web (see
 // pkg/e2erun.EnvOnly's doc comment) -- ONLY=1,2 runs exactly
 // desktop+android, EXCLUDE=2,3 runs everything except android+web (so
-// desktop+androidui here). Setting more than one of E2E_TYPES/ONLY/
-// EXCLUDE at once is an error, not a silently-resolved precedence.
+// desktop only). Setting more than one of E2E_TYPES/ONLY/EXCLUDE at once is
+// an error, not a silently-resolved precedence.
 //
 // Usage: mage e2e:current
-// Usage: E2E_TYPES=web,androidui mage e2e:current
+// Usage: E2E_TYPES=web mage e2e:current
 // Usage: ONLY=1,2 mage e2e:current
 // Usage: EXCLUDE=2,3 mage e2e:current
 func (E2E) Current() error {
@@ -392,31 +393,27 @@ func (E2E) Current() error {
 }
 
 // All runs every recorded test row across every version, regardless of
-// what's already published -- a full regression pass, always including the
-// android UI catalog/pair scenario walk (unlike Current) even on a run that
-// finds zero rows to (re)execute. Never advances PublishedVersion and never
-// tears down existing nodes first (unlike Release below), so running it
-// manually for a spot check neither changes what the next e2e:current
-// considers "new" nor destroys whatever nodes are already sitting around
-// from prior runs. Set E2E_TYPES (or numeric ONLY/EXCLUDE) the same way
-// Current does to narrow which test types actually run.
+// what's already published -- a full regression pass. Never advances
+// PublishedVersion and never tears down existing nodes first (unlike
+// Release below), so running it manually for a spot check neither changes
+// what the next e2e:current considers "new" nor destroys whatever nodes are
+// already sitting around from prior runs. Set E2E_TYPES (or numeric
+// ONLY/EXCLUDE) the same way Current does to narrow which test types
+// actually run.
 //
 // Usage: mage e2e:all
-// Usage: E2E_TYPES=androidui mage e2e:all
+// Usage: E2E_TYPES=android mage e2e:all
 // Usage: ONLY=1 mage e2e:all
-// Usage: EXCLUDE=3,4 mage e2e:all
+// Usage: EXCLUDE=3 mage e2e:all
 func (E2E) All() error {
-	return runE2ERows(func(f *e2edata.File) []int { return f.AllRowIndices() }, e2eRunOptions{
-		alwaysRunAndroidUI: true,
-	})
+	return runE2ERows(func(f *e2edata.File) []int { return f.AllRowIndices() }, e2eRunOptions{})
 }
 
 // Release runs the same full regression pass as All -- every recorded row
-// plus the android UI catalog/pair walk -- but first destroys every
-// existing e2e node (the same real teardown `mage e2e:destroyall` does),
-// and advances PublishedVersion on success. This is the gate the pre-push
-// hook (see scripts/git-hooks/pre-push) runs instead of e2e:current
-// whenever the push includes a version tag (`mage
+// -- but first destroys every existing e2e node (the same real teardown
+// `mage e2e:destroyall` does), and advances PublishedVersion on success.
+// This is the gate the pre-push hook (see scripts/git-hooks/pre-push) runs
+// instead of e2e:current whenever the push includes a version tag (`mage
 // patch`/`minor`/`major`/`alpha`/`beta`/`rc` followed by `git push
 // --tags`): a version bump is exactly the point where the whole suite
 // should be reconfirmed from a genuinely clean slate, not just replayed
@@ -427,19 +424,18 @@ func (E2E) All() error {
 // rely on) -- there is no separate `mage e2e:destroyall` step to run by
 // hand first. Set E2E_TYPES (or numeric ONLY/EXCLUDE) the same way
 // Current/All do -- e.g. `ONLY=1,2 mage patch && git push --tags` runs the
-// version-tag release gate against just desktop+android, skipping
-// web/androidui for that push. This is the one place a caller reaching
-// for "skip some targets on this particular push" most likely lands, but
-// the variables work identically across Current/All/Release.
+// version-tag release gate against just desktop+android, skipping web for
+// that push. This is the one place a caller reaching for "skip some
+// targets on this particular push" most likely lands, but the variables
+// work identically across Current/All/Release.
 //
 // Usage: mage e2e:release
-// Usage: E2E_TYPES=androidui mage e2e:release
+// Usage: E2E_TYPES=android mage e2e:release
 // Usage: ONLY=1,2 mage e2e:release
 // Usage: EXCLUDE=2,3 mage e2e:release
 func (E2E) Release() error {
 	return runE2ERows(func(f *e2edata.File) []int { return f.AllRowIndices() }, e2eRunOptions{
 		markPublishedOnSuccess: true,
-		alwaysRunAndroidUI:     true,
 		destroyAllFirst:        true,
 	})
 }
@@ -484,12 +480,6 @@ type e2eRunOptions struct {
 	// markPublishedOnSuccess advances PublishedVersion to CurrentVersion
 	// once every selected row passes.
 	markPublishedOnSuccess bool
-	// alwaysRunAndroidUI, when true, still walks the android UI catalog/
-	// pair scenario (when types.AndroidUI is selected) even if selectRows
-	// returned zero rows -- a full regression pass (All/Release) always
-	// wants that walk exercised; Current wants a true no-op instead, since
-	// "nothing new to confirm" should mean exactly that.
-	alwaysRunAndroidUI bool
 	// destroyAllFirst tears down every existing e2e node (the same real
 	// teardown e2e:destroyall does) before running -- see Release's doc
 	// comment on why a version-bump gate wants a genuinely clean slate
@@ -527,7 +517,7 @@ func runE2ERows(selectRows func(*e2edata.File) []int, opts e2eRunOptions) error 
 	}
 
 	rows := selectRows(f)
-	if len(rows) == 0 && (!opts.alwaysRunAndroidUI || !types.AndroidUI) {
+	if len(rows) == 0 {
 		fmt.Println("✅ no rows to run")
 		return nil
 	}

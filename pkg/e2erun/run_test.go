@@ -143,18 +143,18 @@ func TestParseTypes(t *testing.T) {
 	if got != want {
 		t.Fatalf("ParseTypes(\"desktop,android\") = %+v, want %+v", got, want)
 	}
-	// Case/whitespace-insensitive, and the androidui spelling variants.
-	if got, err := ParseTypes(" ANDROIDUI , android-ui , android_ui "); err != nil || got != (Types{AndroidUI: true}) {
-		t.Fatalf("ParseTypes androidui variants = %+v, %v", got, err)
+	// Case/whitespace-insensitive.
+	if got, err := ParseTypes(" WEB "); err != nil || got != (Types{Web: true}) {
+		t.Fatalf("ParseTypes whitespace/case handling = %+v, %v", got, err)
 	}
 	if _, err := ParseTypes("not-a-real-type"); err == nil {
 		t.Fatal("ParseTypes with an unknown entry: want error, got nil")
 	}
 }
 
-// ONLY's target numbering (1=desktop, 2=android, 3=web, 4=androidui) is a
-// public interface -- a script or a human types these numbers -- so this
-// pins the exact mapping, not just "some subset comes back selected".
+// ONLY's target numbering (1=desktop, 2=android, 3=web) is a public
+// interface -- a script or a human types these numbers -- so this pins the
+// exact mapping, not just "some subset comes back selected".
 func TestParseOnly(t *testing.T) {
 	got, err := ParseOnly("1,2")
 	if err != nil {
@@ -172,8 +172,7 @@ func TestParseOnly(t *testing.T) {
 		{"1", Types{Desktop: true}},
 		{"2", Types{Android: true}},
 		{"3", Types{Web: true}},
-		{"4", Types{AndroidUI: true}},
-		{" 2 , 4 ", Types{Android: true, AndroidUI: true}},
+		{" 2 , 3 ", Types{Android: true, Web: true}},
 	} {
 		got, err := ParseOnly(tc.numbers)
 		if err != nil {
@@ -186,21 +185,20 @@ func TestParseOnly(t *testing.T) {
 
 	// Unlike ParseTypes, an empty/whitespace value is an error, not "run
 	// everything" -- see EnvOnly's own doc comment on why.
-	for _, bad := range []string{"", "  ", "0", "5", "abc", "1,", "1,5"} {
+	for _, bad := range []string{"", "  ", "0", "4", "abc", "1,", "1,4"} {
 		if _, err := ParseOnly(bad); err == nil {
 			t.Fatalf("ParseOnly(%q): want error, got nil", bad)
 		}
 	}
 }
 
-// EXCLUDE=2,3 must run everything except android+web -- pinned against
-// magefile.go's own doc-commented example (desktop+androidui survive).
+// EXCLUDE=2,3 must run everything except android+web -- leaving only desktop.
 func TestParseExclude(t *testing.T) {
 	got, err := ParseExclude("2,3")
 	if err != nil {
 		t.Fatalf("ParseExclude(\"2,3\"): %v", err)
 	}
-	want := Types{Desktop: true, AndroidUI: true}
+	want := Types{Desktop: true}
 	if got != want {
 		t.Fatalf("ParseExclude(\"2,3\") = %+v, want %+v (everything except android+web)", got, want)
 	}
@@ -208,15 +206,15 @@ func TestParseExclude(t *testing.T) {
 	// Excluding every target leaves nothing selected -- a legal (if
 	// useless) result, not an error; EnvExclude only rejects a value that
 	// names *no* target at all.
-	got, err = ParseExclude("1,2,3,4")
+	got, err = ParseExclude("1,2,3")
 	if err != nil {
-		t.Fatalf("ParseExclude(\"1,2,3,4\"): %v", err)
+		t.Fatalf("ParseExclude(\"1,2,3\"): %v", err)
 	}
 	if got != (Types{}) {
-		t.Fatalf("ParseExclude(\"1,2,3,4\") = %+v, want the zero Types (nothing selected)", got)
+		t.Fatalf("ParseExclude(\"1,2,3\") = %+v, want the zero Types (nothing selected)", got)
 	}
 
-	for _, bad := range []string{"", "  ", "0", "5", "abc"} {
+	for _, bad := range []string{"", "  ", "0", "4", "abc"} {
 		if _, err := ParseExclude(bad); err == nil {
 			t.Fatalf("ParseExclude(%q): want error, got nil", bad)
 		}
@@ -245,7 +243,7 @@ func TestSelectedTypesConflicts(t *testing.T) {
 	t.Setenv(EnvOnly, "")
 
 	t.Setenv(EnvExclude, "2,3")
-	if got, err := SelectedTypes(); err != nil || got != (Types{Desktop: true, AndroidUI: true}) {
+	if got, err := SelectedTypes(); err != nil || got != (Types{Desktop: true}) {
 		t.Fatalf("SelectedTypes with only %s set = %+v, %v", EnvExclude, got, err)
 	}
 	t.Setenv(EnvExclude, "")

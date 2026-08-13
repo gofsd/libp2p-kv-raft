@@ -12,56 +12,37 @@ import kvmobile.LogCallback
  * CommandDetailScreen). [params] names the ordered text fields to render
  * for it; [run] performs the call against those raw string values (off
  * the UI thread) and returns the text to append to the output log, or
- * throws to report a failure -- CommandDetailScreen renders either
- * outcome the same way.
+ * throws to report a failure. [run] executes exactly one way now: a real
+ * camera scan of a RunCode (category+name+params), confirmed via
+ * RunConfirmDialog, which calls [run] directly through CommandExecutor --
+ * CommandDetailScreen's own Run button is gone. Every spec (bar the one
+ * exception below) shares this uniformly, needing no eventOp/per-spec
+ * wiring at all.
  *
- * [eventOp]/[toEventFields] are set only for specs whose [run] is a
- * direct, single-message wrapper around one pkg/e2edata op -- verified
- * per spec against its actual mobile/kvmobile Go implementation, not
- * inferred from this project's general protocol docs (which describe the
- * low-level SetKey/SetField primitives accurately but don't cover later
- * single-round-trip optimizations like Submit's, or the many "ergonomic"
- * wrappers that do local computation -- key derivation, ticket signing,
- * multi-call orchestration -- before or instead of a single wire event).
- * When set, CommandDetailScreen's "Generate DataMatrix" button builds
- * `{"event": eventOp, "fields": toEventFields(currentValues)}` and passes
- * it to [kvmobile.Kvmobile.encodeEvent]. [rawEventJsonParamIndex] is the
- * one exception: "Raw: SendEvent"'s own single param IS already a full
- * event JSON spec, so it's encoded directly, not wrapped.
- *
- * Every other spec (compound orchestration, local-only computation, or
- * genuinely no wire event at all -- Start/Join/StartSolo's daemon
- * lifecycle, SubmitCommand's 4-primitive dispatch, WatchExecute/
- * WatchCommandLog's standing subscriptions, List*'s paginated
- * ListRange loops, GetGroup/GetCommand's Go-side key derivation, ...)
- * leaves everything below null/false: CommandDetailScreen shows the
- * button disabled with an explanatory tooltip rather than omitting it,
- * closer to "every command form" than silent omission.
- *
- * [generateFromResultBase64] is the other way a spec can be generatable:
- * for a command whose [run] already returns one self-contained, signed,
- * base64-encoded ticket (CreateJoinRequestTicket, and structurally
- * CreateExecInviteTicket/CreateJoinInviteTicket too, though only the
- * first is wired to it today) there's no separate capnp event to build --
- * base64-decoding [run]'s own result IS the payload to render, instead of
- * [eventOp]/[toEventFields]. [awaitAdmissionAfterGenerate], set only for
- * CreateJoinRequestTicket, additionally has CommandDetailScreen poll
- * Kvmobile.listClusterMembers() for this device's own peer id appearing
- * while the generated code's popup is showing -- the only externally
- * observable sign this device's `n.raft` went from pending to admitted
- * (see mobile/kvmobile's own doc comments -- there is no push/watch
- * callback for this transition) -- and, once it does, auto-closes the
- * popup and navigates to the activity log, since a recruited device has
- * nothing further to do with the code once someone else has scanned it.
+ * [generateFromResultBase64] is the one spec-specific exception to that
+ * uniform RunCode generation: for a command whose [run] already returns
+ * one self-contained, signed, base64-encoded ticket (CreateJoinRequestTicket,
+ * and structurally CreateExecInviteTicket/CreateJoinInviteTicket too,
+ * though only the first is wired to it today) the generated code has to
+ * be that real capnp ticket, not a RunCode -- a receiving device scanning
+ * it needs to redeem *this* device's ticket (RecruitConfirmDialog), not
+ * re-run CreateJoinRequestTicket on itself. base64-decoding [run]'s own
+ * result IS the payload to render in that one case.
+ * [awaitAdmissionAfterGenerate], set only for CreateJoinRequestTicket,
+ * additionally has CommandDetailScreen poll Kvmobile.listClusterMembers()
+ * for this device's own peer id appearing while the generated code's
+ * popup is showing -- the only externally observable sign this device's
+ * `n.raft` went from pending to admitted (see mobile/kvmobile's own doc
+ * comments -- there is no push/watch callback for this transition) --
+ * and, once it does, auto-closes the popup and navigates to the activity
+ * log, since a recruited device has nothing further to do with the code
+ * once someone else has scanned it.
  */
 class CommandSpec(
     val category: String,
     val name: String,
     val params: List<String>,
     val run: (List<String>) -> String,
-    val eventOp: String? = null,
-    val toEventFields: ((List<String>) -> Map<String, String>)? = null,
-    val rawEventJsonParamIndex: Int? = null,
     val generateFromResultBase64: Boolean = false,
     val awaitAdmissionAfterGenerate: Boolean = false,
 ) {
@@ -76,17 +57,6 @@ private fun String.toLongOrThrow(field: String): Long =
 private fun String.toBooleanOrThrow(field: String): Boolean =
     toBooleanStrictOrNull() ?: throw IllegalArgumentException("$field must be \"true\" or \"false\"")
 
-// Permit "kind" is a numeric byte on the wire (shmevent.KindBootstrapNode = 2,
-// shmevent.KindClusterJoin = 5) but a string in this UI's params -- see
-// permitKindFromName's Go-side counterpart. Also used by EventBuilderScreen's
-// generic permit_request/confirm/revoke field mapping.
-fun permitKindNumber(kind: String) = if (kind == "cluster-join") "5" else "2"
-
-// "recruit"'s suffrage field is a numeric byte (shmevent.SuffrageVoter = 1,
-// shmevent.SuffrageLearner = 2), a string ("voter"/"learner") in this UI's
-// params -- see RecruitPeer's Go-side suffrage switch. Also used by
-// EventBuilderScreen's generic recruit field mapping.
-fun suffrageNumber(suffrage: String) = if (suffrage == "learner") "2" else "1"
 
 /**
  * The full kvmobile API surface, one CommandSpec per exported function --
@@ -106,17 +76,11 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
         category: String,
         name: String,
         params: List<String>,
-        eventOp: String? = null,
-        toEventFields: ((List<String>) -> Map<String, String>)? = null,
-        rawEventJsonParamIndex: Int? = null,
         generateFromResultBase64: Boolean = false,
         awaitAdmissionAfterGenerate: Boolean = false,
         run: (List<String>) -> String,
     ) {
-        commands += CommandSpec(
-            category, name, params, run, eventOp, toEventFields, rawEventJsonParamIndex,
-            generateFromResultBase64, awaitAdmissionAfterGenerate,
-        )
+        commands += CommandSpec(category, name, params, run, generateFromResultBase64, awaitAdmissionAfterGenerate)
     }
 
     // Cluster lifecycle -- see README's "Follower on Android" section for
@@ -160,16 +124,10 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     add("Cluster", "StartPendingWithKeyAndPort", listOf("keyHex", "port")) { a ->
         Kvmobile.startPendingWithKeyAndPort(dataDir, a[0], a[1].toLongOrThrow("port"))
     }
-    add("Cluster", "GetOwnAddr", emptyList(), eventOp = "get_own_addr") { Kvmobile.getOwnAddr() }
-    add("Cluster", "CreateJoinRequest", emptyList(), eventOp = "join_request_create") { Kvmobile.createJoinRequest() }
-    add(
-        "Cluster", "CancelJoinRequest", listOf("tokenHex"),
-        eventOp = "join_request_cancel", toEventFields = { a -> mapOf("token" to "0x${a[0]}") },
-    ) { a -> Kvmobile.cancelJoinRequest(a[0]); ok() }
-    add(
-        "Cluster", "RecruitPeer", listOf("ticket (addr#tokenHex)", "voter|learner"),
-        eventOp = "recruit", toEventFields = { a -> mapOf("ticket" to a[0], "suffrage" to suffrageNumber(a[1])) },
-    ) { a ->
+    add("Cluster", "GetOwnAddr", emptyList()) { Kvmobile.getOwnAddr() }
+    add("Cluster", "CreateJoinRequest", emptyList()) { Kvmobile.createJoinRequest() }
+    add("Cluster", "CancelJoinRequest", listOf("tokenHex")) { a -> Kvmobile.cancelJoinRequest(a[0]); ok() }
+    add("Cluster", "RecruitPeer", listOf("ticket (addr#tokenHex)", "voter|learner")) { a ->
         Kvmobile.recruitPeer(a[0], a[1])
     }
     // CreateJoinRequestTicket/RedeemJoinRequestTicket are
@@ -182,8 +140,9 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     // like RecruitPeer does for a plain ticket. This is the "recruit me"
     // entry point end to end: generateFromResultBase64 lets
     // CommandDetailScreen's "Generate DataMatrix" button render the
-    // signed ticket itself (no capnp eventOp exists for a compound call
-    // like this), and awaitAdmissionAfterGenerate has it watch for this
+    // signed ticket itself, not a RunCode (there's no "re-run this on the
+    // scanning device" meaning for a compound, already-signed call like
+    // this), and awaitAdmissionAfterGenerate has it watch for this
     // device actually being admitted -- the persistent scanner's own
     // AppRoot dispatch recognizes a scanned join_request_ticket code and
     // routes the *other* device straight to RecruitConfirmDialog instead
@@ -224,10 +183,7 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     // this device's own membership is untouched; only takes effect if
     // this device is itself a raft voter (or forwards to one), true for
     // any real device build -- see Kvmobile.kick's doc comment.
-    add(
-        "Cluster", "Kick", listOf("targetPeerID"),
-        eventOp = "kick", toEventFields = { a -> mapOf("peer_id" to a[0]) },
-    ) { a -> Kvmobile.kick(a[0]); ok() }
+    add("Cluster", "Kick", listOf("targetPeerID")) { a -> Kvmobile.kick(a[0]); ok() }
     add("Cluster", "ListClusters", emptyList()) { Kvmobile.listClusters() }
     add("Cluster", "ListClusterMembers", emptyList()) { Kvmobile.listClusterMembers() }
     add("Cluster", "PeerID", emptyList()) { Kvmobile.peerID() }
@@ -276,10 +232,7 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     add("Station", "ListStations", emptyList()) { Kvmobile.listStations() }
 
     // KV
-    add(
-        "KV", "Submit", listOf("key", "value"),
-        eventOp = "set", toEventFields = { a -> mapOf("key" to a[0], "value" to a[1]) },
-    ) { a -> Kvmobile.submit(a[0], a[1]); ok() }
+    add("KV", "Submit", listOf("key", "value")) { a -> Kvmobile.submit(a[0], a[1]); ok() }
     add("KV", "Get", listOf("key")) { a -> Kvmobile.get(a[0]) }
     add("KV", "RangeScan", listOf("start", "end", "limit (0=unlimited)")) { a ->
         Kvmobile.rangeScan(a[0], a[1], a[2].toLongOrThrow("limit"))
@@ -303,25 +256,13 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     // permitKindFromName's doc comment: "peer"/log-permit kinds were
     // removed when this project's ACL model moved to the unconditional
     // Group/Command catalog below).
-    add(
-        "Permits", "RequestPermit", listOf("kind (bootstrap)", "targetPeerID", "metadata"),
-        eventOp = "permit_request",
-        toEventFields = { a -> mapOf("kind" to permitKindNumber(a[0]), "peer_id" to a[1], "metadata" to a[2]) },
-    ) { a ->
+    add("Permits", "RequestPermit", listOf("kind (bootstrap)", "targetPeerID", "metadata")) { a ->
         Kvmobile.requestPermit(a[0], a[1], a[2]); ok()
     }
-    add(
-        "Permits", "ConfirmPermit", listOf("kind (bootstrap|cluster-join)", "targetPeerID"),
-        eventOp = "permit_confirm",
-        toEventFields = { a -> mapOf("kind" to permitKindNumber(a[0]), "peer_id" to a[1]) },
-    ) { a ->
+    add("Permits", "ConfirmPermit", listOf("kind (bootstrap|cluster-join)", "targetPeerID")) { a ->
         Kvmobile.confirmPermit(a[0], a[1]); ok()
     }
-    add(
-        "Permits", "RevokePermit", listOf("kind (bootstrap)", "targetPeerID"),
-        eventOp = "permit_revoke",
-        toEventFields = { a -> mapOf("kind" to permitKindNumber(a[0]), "peer_id" to a[1]) },
-    ) { a ->
+    add("Permits", "RevokePermit", listOf("kind (bootstrap)", "targetPeerID")) { a ->
         Kvmobile.revokePermit(a[0], a[1]); ok()
     }
 
@@ -390,41 +331,23 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
 
     // Group/Command ACL catalog -- daemon-enforced records, see README's
     // "Group/command ACL" section for the model this mirrors exactly.
-    add(
-        "Group", "CreateGroup", listOf("id", "name", "public (true|false)"),
-        eventOp = "group_put", toEventFields = { a -> mapOf("id" to a[0], "name" to a[1], "public" to a[2]) },
-    ) { a ->
+    add("Group", "CreateGroup", listOf("id", "name", "public (true|false)")) { a ->
         Kvmobile.createGroup(a[0], a[1], a[2].toBooleanOrThrow("public")); ok()
     }
-    add(
-        "Group", "UpdateGroup", listOf("id", "name", "public (true|false)"),
-        eventOp = "group_put", toEventFields = { a -> mapOf("id" to a[0], "name" to a[1], "public" to a[2]) },
-    ) { a ->
+    add("Group", "UpdateGroup", listOf("id", "name", "public (true|false)")) { a ->
         Kvmobile.updateGroup(a[0], a[1], a[2].toBooleanOrThrow("public")); ok()
     }
-    add(
-        "Group", "DeleteGroup", listOf("id"),
-        eventOp = "group_delete", toEventFields = { a -> mapOf("id" to a[0]) },
-    ) { a -> Kvmobile.deleteGroup(a[0]); ok() }
+    add("Group", "DeleteGroup", listOf("id")) { a -> Kvmobile.deleteGroup(a[0]); ok() }
     add("Group", "GetGroup", listOf("id")) { a -> Kvmobile.getGroup(a[0]) }
     add("Group", "ListGroups", emptyList()) { Kvmobile.listGroups() }
 
-    add(
-        "Command", "CreateCommand", listOf("id", "name", "targetPeerID"),
-        eventOp = "command_put", toEventFields = { a -> mapOf("id" to a[0], "name" to a[1], "peer_id" to a[2]) },
-    ) { a ->
+    add("Command", "CreateCommand", listOf("id", "name", "targetPeerID")) { a ->
         Kvmobile.createCommand(a[0], a[1], a[2]); ok()
     }
-    add(
-        "Command", "UpdateCommand", listOf("id", "name", "targetPeerID"),
-        eventOp = "command_put", toEventFields = { a -> mapOf("id" to a[0], "name" to a[1], "peer_id" to a[2]) },
-    ) { a ->
+    add("Command", "UpdateCommand", listOf("id", "name", "targetPeerID")) { a ->
         Kvmobile.updateCommand(a[0], a[1], a[2]); ok()
     }
-    add(
-        "Command", "DeleteCommand", listOf("id"),
-        eventOp = "command_delete", toEventFields = { a -> mapOf("id" to a[0]) },
-    ) { a -> Kvmobile.deleteCommand(a[0]); ok() }
+    add("Command", "DeleteCommand", listOf("id")) { a -> Kvmobile.deleteCommand(a[0]); ok() }
     add("Command", "GetCommand", listOf("id")) { a -> Kvmobile.getCommand(a[0]) }
     add("Command", "ListCommands", emptyList()) { Kvmobile.listCommands() }
     // *WithSpec carry the command's own form definition (opaque JSON,
@@ -438,31 +361,15 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
         Kvmobile.updateCommandWithSpec(a[0], a[1], a[2], a[3]); ok()
     }
 
-    add(
-        "Links", "AddCommandToGroup", listOf("commandID", "groupID"),
-        eventOp = "group_command_put",
-        toEventFields = { a -> mapOf("command_id" to a[0], "group_id" to a[1]) },
-    ) { a ->
+    add("Links", "AddCommandToGroup", listOf("commandID", "groupID")) { a ->
         Kvmobile.addCommandToGroup(a[0], a[1]); ok()
     }
-    add(
-        "Links", "RemoveCommandFromGroup", listOf("commandID", "groupID"),
-        eventOp = "group_command_delete",
-        toEventFields = { a -> mapOf("command_id" to a[0], "group_id" to a[1]) },
-    ) { a ->
+    add("Links", "RemoveCommandFromGroup", listOf("commandID", "groupID")) { a ->
         Kvmobile.removeCommandFromGroup(a[0], a[1]); ok()
     }
     add("Links", "ListGroupsForCommand", listOf("commandID")) { a -> Kvmobile.listGroupsForCommand(a[0]) }
-    add(
-        "Links", "AddPeerToGroup", listOf("peerID", "groupID"),
-        eventOp = "peer_group_put",
-        toEventFields = { a -> mapOf("peer_id" to a[0], "group_id" to a[1]) },
-    ) { a -> Kvmobile.addPeerToGroup(a[0], a[1]); ok() }
-    add(
-        "Links", "RemovePeerFromGroup", listOf("peerID", "groupID"),
-        eventOp = "peer_group_delete",
-        toEventFields = { a -> mapOf("peer_id" to a[0], "group_id" to a[1]) },
-    ) { a ->
+    add("Links", "AddPeerToGroup", listOf("peerID", "groupID")) { a -> Kvmobile.addPeerToGroup(a[0], a[1]); ok() }
+    add("Links", "RemovePeerFromGroup", listOf("peerID", "groupID")) { a ->
         Kvmobile.removePeerFromGroup(a[0], a[1]); ok()
     }
     add("Links", "ListGroupsForPeer", listOf("peerID")) { a -> Kvmobile.listGroupsForPeer(a[0]) }
@@ -572,11 +479,11 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     add("ExecInvite", "RedeemExecInviteTicket", listOf("ticketB64")) { a -> Kvmobile.redeemExecInviteTicket(a[0]) }
 
     // Raw escape hatch -- the same one E2ETest uses, see its own doc
-    // comment and README's "Follower on Android" section. Its own single
-    // param IS already a full event JSON spec (rawEventJsonParamIndex),
-    // so "Generate DataMatrix" encodes it directly instead of wrapping it
-    // in eventOp/toEventFields.
-    add("Raw", "SendEvent", listOf("eventJSON"), rawEventJsonParamIndex = 0) { a -> Kvmobile.sendEvent(a[0]) }
+    // comment and README's "Follower on Android" section. Generatable and
+    // scannable like every other spec now (a RunCode naming "Raw:
+    // SendEvent" with this one eventJSON param) -- no special-casing
+    // needed here anymore.
+    add("Raw", "SendEvent", listOf("eventJSON")) { a -> Kvmobile.sendEvent(a[0]) }
 
     // Test-only utility, not a kvmobile call: keeps this instrumentation
     // invocation's process (and so whatever daemon an earlier op in the

@@ -21,7 +21,7 @@ import (
 
 // EnvTypes is the environment variable Run reads (via SelectedTypes) to
 // filter which test types actually execute, e.g.
-// `E2E_TYPES=web,androidui mage e2e:all`. Unset or empty runs everything --
+// `E2E_TYPES=web mage e2e:all`. Unset or empty runs everything --
 // mage e2e:all/e2e:current keep their documented zero-argument, "run
 // everything" signature (see magefile.go's own doc comment on why mage
 // targets take no optional/variadic args); this is additive filtering
@@ -38,15 +38,13 @@ import (
 const EnvTypes = "E2E_TYPES"
 
 // EnvOnly/EnvExclude are EnvTypes' numeric counterparts: 1-based target
-// numbers instead of names, in a fixed order (1=desktop, 2=android,
-// 3=web, 4=androidui -- see targetNumber) chosen to match how these are
-// usually talked about (the three platforms, then the UI-walk variant of
-// android), not Types' own field declaration order. `ONLY=1,2` runs
-// exactly desktop+android and nothing else; `EXCLUDE=2,3` runs everything
-// except android and web (desktop+androidui here, since EXCLUDE starts
-// from AllTypes and subtracts). Neither accepts an empty value the way
-// EnvTypes does ("run everything") -- an empty ONLY/EXCLUDE is ambiguous
-// (did the caller mean "no targets" or "forgot to set it"?), so
+// numbers instead of names (1=desktop, 2=android, 3=web -- see
+// targetNumber), matching Types' own field declaration order. `ONLY=1,2`
+// runs exactly desktop+android and nothing else; `EXCLUDE=2,3` runs
+// everything except android and web (desktop only here, since EXCLUDE
+// starts from AllTypes and subtracts). Neither accepts an empty value the
+// way EnvTypes does ("run everything") -- an empty ONLY/EXCLUDE is
+// ambiguous (did the caller mean "no targets" or "forgot to set it"?), so
 // SelectedTypes only ever consults them when actually non-empty and
 // ParseOnly/ParseExclude reject an empty/all-whitespace value outright.
 const (
@@ -59,29 +57,29 @@ const (
 // there's no separate "remote"/"relay" toggle, since the SSH-deployed
 // bootstrap/relay leader is required infrastructure every other type joins
 // through (EnsureBootstrap always runs regardless of what's selected here),
-// not an independently runnable test of its own. Android and AndroidUI are
-// separate because they're genuinely separate test mechanisms sharing one
-// android identity (see runAndroidRows's doc comment): Android is the raw
-// E2ETest wire-protocol rows recorded in testdata.json's Rows, AndroidUI is
-// the catalog-driven UiCommandE2ETest walk (testdata.json's UICases) --
-// either can be selected without the other.
+// not an independently runnable test of its own. Android is only the raw
+// E2ETest wire-protocol rows recorded in testdata.json's Rows -- the
+// catalog-driven UI command surface (RunCode/optical-scan) is exercised by
+// the separate, manual/hardware-gated optical suite
+// (pkg/e2erun/android_optical.go), which needs a real camera and so is
+// deliberately never part of this automated pipeline at all (see
+// TestManualOpticalScan's own doc comment).
 type Types struct {
-	Desktop   bool
-	Web       bool
-	Android   bool
-	AndroidUI bool
+	Desktop bool
+	Web     bool
+	Android bool
 }
 
 // AllTypes is every type enabled -- Run's behavior when EnvTypes is unset,
 // preserving mage e2e:all/e2e:current's original "run everything" behavior
 // exactly.
-func AllTypes() Types { return Types{Desktop: true, Web: true, Android: true, AndroidUI: true} }
+func AllTypes() Types { return Types{Desktop: true, Web: true, Android: true} }
 
 // ParseTypes parses a comma-separated EnvTypes value ("desktop,web",
-// "androidui", "android,androidui", ...) into a Types selection --
-// case-insensitive, whitespace around each entry ignored. An empty string
-// means "run everything" (AllTypes()), so unsetting/clearing the
-// environment variable is the same as never having filtered anything.
+// "android", ...) into a Types selection -- case-insensitive, whitespace
+// around each entry ignored. An empty string means "run everything"
+// (AllTypes()), so unsetting/clearing the environment variable is the same
+// as never having filtered anything.
 func ParseTypes(s string) (Types, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -96,14 +94,12 @@ func ParseTypes(s string) (Types, error) {
 			t.Web = true
 		case "android":
 			t.Android = true
-		case "androidui", "android-ui", "android_ui":
-			t.AndroidUI = true
 		case "remote", "relay":
 			// Not an independent toggle -- see Types' doc comment. Accepted
 			// here (rather than rejected) only so spelling it out
 			// explicitly for clarity ("desktop,relay") doesn't error.
 		default:
-			return Types{}, fmt.Errorf("e2erun: unknown %s entry %q (want desktop, web, android, androidui, or remote)", EnvTypes, part)
+			return Types{}, fmt.Errorf("e2erun: unknown %s entry %q (want desktop, web, android, or remote)", EnvTypes, part)
 		}
 	}
 	return t, nil
@@ -111,8 +107,7 @@ func ParseTypes(s string) (Types, error) {
 
 // targetNumber maps one of ONLY/EXCLUDE's 1-based target numbers to the
 // same type name ParseTypes/EnvTypes already accepts -- see EnvOnly's own
-// doc comment for the chosen ordering and why it differs from Types'
-// field order.
+// doc comment for the chosen ordering.
 func targetNumber(n int) (string, bool) {
 	switch n {
 	case 1:
@@ -121,8 +116,6 @@ func targetNumber(n int) (string, bool) {
 		return "android", true
 	case 3:
 		return "web", true
-	case 4:
-		return "androidui", true
 	default:
 		return "", false
 	}
@@ -136,18 +129,18 @@ func targetNumber(n int) (string, bool) {
 func parseNumericTargets(varName, s string) ([]string, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return nil, fmt.Errorf("e2erun: %s must name at least one target number (1=desktop, 2=android, 3=web, 4=androidui)", varName)
+		return nil, fmt.Errorf("e2erun: %s must name at least one target number (1=desktop, 2=android, 3=web)", varName)
 	}
 	var names []string
 	for part := range strings.SplitSeq(s, ",") {
 		part = strings.TrimSpace(part)
 		n, err := strconv.Atoi(part)
 		if err != nil {
-			return nil, fmt.Errorf("e2erun: %s: %q is not a target number (want 1-4: 1=desktop, 2=android, 3=web, 4=androidui)", varName, part)
+			return nil, fmt.Errorf("e2erun: %s: %q is not a target number (want 1-3: 1=desktop, 2=android, 3=web)", varName, part)
 		}
 		name, ok := targetNumber(n)
 		if !ok {
-			return nil, fmt.Errorf("e2erun: %s: %d is not a valid target number (want 1-4: 1=desktop, 2=android, 3=web, 4=androidui)", varName, n)
+			return nil, fmt.Errorf("e2erun: %s: %d is not a valid target number (want 1-3: 1=desktop, 2=android, 3=web)", varName, n)
 		}
 		names = append(names, name)
 	}
@@ -179,10 +172,9 @@ func ParseExclude(s string) (Types, error) {
 	}
 	all := AllTypes()
 	return Types{
-		Desktop:   all.Desktop && !excluded.Desktop,
-		Web:       all.Web && !excluded.Web,
-		Android:   all.Android && !excluded.Android,
-		AndroidUI: all.AndroidUI && !excluded.AndroidUI,
+		Desktop: all.Desktop && !excluded.Desktop,
+		Web:     all.Web && !excluded.Web,
+		Android: all.Android && !excluded.Android,
 	}, nil
 }
 
@@ -241,11 +233,9 @@ func SelectedTypes() (Types, error) {
 // EnsureBootstrap) since EventAdd rows join against it via BootstrapToken,
 // and every type's rows dial through it -- this happens regardless of
 // types, since there's no way to run *any* row without it. It returns an
-// error if any non-skipped selected row ends up failing, or if
-// types.AndroidUI is set and UiCommandE2ETest itself failed (that check
-// has no f.Rows entry of its own to record a per-row outcome into -- see
-// runAndroidRows' doc comment); the caller should still treat f/path as
-// having the real, saved results even when this returns an error.
+// error if any non-skipped selected row ends up failing; the caller should
+// still treat f/path as having the real, saved results even when this
+// returns an error.
 func Run(repoRoot, path string, f *e2edata.File, rowIndices []int, types Types) error {
 	bootstrapMultiaddr, bootstrapWebTransportAddr, bootstrapPeerID, err := EnsureBootstrap(repoRoot, path, f)
 	if err != nil {
@@ -309,11 +299,7 @@ func Run(repoRoot, path string, f *e2edata.File, rowIndices []int, types Types) 
 	// it dials anything, but Android's regular rows run through
 	// Kvmobile.start()'s baked-in, fully automatic join -- there's no
 	// point in that sequence to slot an explicit RequestPublicAccess call
-	// in ahead of it without restructuring E2ETest.kt's setup itself (the
-	// same restructuring the pair scenario's own explicit
-	// StartSoloWithKeyAndPort/StartPendingWithKeyAndPort calls *do* have
-	// room for, and does use self-service -- see
-	// runAndroidPairScenarioOn's own RequestRelayAccess steps).
+	// in ahead of it without restructuring E2ETest.kt's setup itself.
 	//
 	// Granted unconditionally here (not gated on "did the bootstrap just
 	// get reprovisioned") since it's a cheap, idempotent no-op against a
@@ -363,7 +349,10 @@ func Run(repoRoot, path string, f *e2edata.File, rowIndices []int, types Types) 
 	// since rebuilding/reinstalling/relaunching a browser per row would be
 	// prohibitively slow. Both are resolved up front here instead of
 	// through runRow's per-row dispatch.
-	androidResults, androidUICases, androidUIErr := runAndroidRows(repoRoot, f, androidRowIdxs, bootstrapMultiaddr, types.AndroidUI, f.UICases)
+	androidResults, err := runAndroidRows(repoRoot, f, androidRowIdxs, bootstrapMultiaddr)
+	if err != nil {
+		return err
+	}
 	webResults := runWebRows(repoRoot, f, webRowIdxs, bootstrapWebTransportAddr)
 
 	failures := 0
@@ -402,38 +391,6 @@ func Run(repoRoot, path string, f *e2edata.File, rowIndices []int, types Types) 
 			idx, row.Version, row.Node, row.Event.Op, statusName(row.Status))
 		if err := f.Save(path); err != nil {
 			return err
-		}
-	}
-
-	if types.AndroidUI {
-		result := &e2edata.AndroidUIResult{RanAt: time.Now(), Cases: androidUICases}
-		if androidUIErr != nil {
-			fmt.Fprintf(os.Stderr, "e2erun: android UI command test: FAIL: %v\n", androidUIErr)
-			result.Status = e2edata.StatusFail
-			result.Error = androidUIErr.Error()
-			failures++
-		} else {
-			fmt.Fprintln(os.Stderr, "e2erun: android UI command test: PASS")
-			result.Status = e2edata.StatusPass
-		}
-		f.AndroidUIResult = result
-		if err := f.Save(path); err != nil {
-			return err
-		}
-	}
-
-	if types.AndroidUI {
-		if pairResult := runAndroidPairScenario(repoRoot, bootstrapMultiaddr); pairResult != nil {
-			if pairResult.Status == e2edata.StatusFail {
-				fmt.Fprintf(os.Stderr, "e2erun: android join/recruit pair scenario: FAIL: %s\n", pairResult.Error)
-				failures++
-			} else {
-				fmt.Fprintln(os.Stderr, "e2erun: android join/recruit pair scenario: PASS")
-			}
-			f.AndroidUIPairResult = pairResult
-			if err := f.Save(path); err != nil {
-				return err
-			}
 		}
 	}
 

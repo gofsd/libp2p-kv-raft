@@ -19,6 +19,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -216,8 +217,76 @@ func StartWithKey(dataDir, keyHex string) (string, error) {
 }
 
 // start brings up the daemon under dataDirRoot and joins it to the
-// build-time-configured leader.
+// build-time-configured leader, self-healing once if the very first join
+// attempt fails and a relay is baked in (relayPeers).
+//
+// leaderMultiaddr is frequently only reachable through a circuit relay
+// (see this package's doc comment: a phone is the canonical case), and
+// that relay's own circuit-relay v2 service is ACL-gated against its
+// cluster's ReservedGroupRelay membership (pkg/daemon's relayACL) -- a
+// brand new identity with no standing anywhere is a total stranger to it,
+// so its very first join attempt is refused before ever reaching raft.
+// RequestPublicAccess/RequestRelayAccess exist precisely to self-service
+// that standing, but both require an already-`started` local session to
+// dial out and sign the request with (see currentSession) -- which is
+// exactly what a first-ever join, by definition, doesn't have yet. A
+// human operator can break that with `mage requestpublicaccess`/
+// `requestrelayaccess`, but nothing plays that role for a phone on its
+// first launch.
+//
+// So: on a failed join with a relay baked in, solo-bootstrap this same
+// identity into a throwaway single-node cluster of its own purely to get
+// a running session (StartSolo, exactly the standalone-device default
+// this package already recommends), ask the relay for standing under it
+// (RequestPublicAccess -- "safe and cheap to call... idempotent in
+// effect" per its own doc comment), tear the throwaway cluster back down
+// (Stop), and retry the real join now that standing exists. Costs one
+// extra local bootstrap only on this already-exceptional path, and is a
+// harmless no-op if the original failure had nothing to do with relay
+// ACL: the retry below just fails again for the same original reason,
+// which is what's returned. Once the grant lands it persists on the
+// relay's side, so every later launch's very first attempt succeeds
+// directly without ever taking this path again.
 func start(dataDirRoot string, resolveIdentity func(dataDir string) (keyPath, peerID string, err error)) (string, error) {
+	id, err := startOnce(dataDirRoot, resolveIdentity)
+	if err == nil {
+		return id, nil
+	}
+	log.Printf("kvmobile: SELFHEAL: initial join failed: %v", err)
+	if leaderMultiaddr == "" || len(relayPeers()) == 0 {
+		log.Printf("kvmobile: SELFHEAL: skipped (leaderMultiaddr empty or no relay baked in)")
+		return "", err
+	}
+	log.Printf("kvmobile: SELFHEAL: starting solo bootstrap to request public access")
+	if _, soloErr := StartSolo(dataDirRoot); soloErr != nil {
+		log.Printf("kvmobile: SELFHEAL: StartSolo failed: %v", soloErr)
+		return "", err
+	}
+	log.Printf("kvmobile: SELFHEAL: solo started, requesting public access from %s", relayPeers()[0])
+	_, paErr := RequestPublicAccess(relayPeers()[0], "auto-bootstrap")
+	if paErr != nil {
+		log.Printf("kvmobile: SELFHEAL: RequestPublicAccess failed: %v", paErr)
+	} else {
+		log.Printf("kvmobile: SELFHEAL: RequestPublicAccess succeeded")
+	}
+	_ = Stop()
+	if paErr != nil {
+		return "", err
+	}
+	log.Printf("kvmobile: SELFHEAL: retrying real join")
+	if id2, err2 := startOnce(dataDirRoot, resolveIdentity); err2 == nil {
+		log.Printf("kvmobile: SELFHEAL: retry succeeded")
+		return id2, nil
+	} else {
+		log.Printf("kvmobile: SELFHEAL: retry failed: %v", err2)
+	}
+	return "", err
+}
+
+// startOnce is start's single-attempt body -- see start's doc comment for
+// why start itself is a thin self-healing wrapper around this rather than
+// this logic living directly in start.
+func startOnce(dataDirRoot string, resolveIdentity func(dataDir string) (keyPath, peerID string, err error)) (string, error) {
 	mu.Lock()
 	defer mu.Unlock()
 	if started {

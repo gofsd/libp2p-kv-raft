@@ -426,10 +426,10 @@ Android](#follower-on-android) for how a device picks which relays to try):
 2. **The reservation has to be retried after that grant lands.** AutoRelay fires its first
    reservation attempt within milliseconds of the host starting, long before its owner can ask for
    standing, and go-libp2p's default is to back a refused relay off for a full *hour*. A device
-   would therefore advertise only loopback until it was restarted — which is exactly why
-   `pkg/e2erun/android_pair.go` restarts the app between asking for access and reading its own
-   address. `daemon.relayReserveBackoff` shortens that to ~10s, so "request access, then pair"
-   works as one uninterrupted sequence.
+   would therefore advertise only loopback until it was restarted — found exactly this way, running
+   an early two-device Android pairing test that happened to restart the app between asking for
+   access and reading its own address. `daemon.relayReserveBackoff` shortens that to ~10s, so
+   "request access, then pair" works as one uninterrupted sequence.
 3. **Every dial in the flow has to accept a limited (relay) connection.** Opening a stream on one
    requires `network.WithAllowLimitedConn`; without it libp2p quietly waits for a direct connection
    a NATed peer will never provide, and the dial dies on its context deadline with nothing pointing
@@ -499,40 +499,50 @@ which the NDK headers only declare from API 26 onward; building against a lower 
 hides the declaration and fails with a confusing `could not determine what
 C.ASharedMemory_create refers to` linker error rather than a clear availability error.
 
-The app's UI browses the full `Kvmobile` command surface rather than exposing just a few calls. It's
-a single Activity (`MainActivity`) hosting a Jetpack Compose `NavHost` of four routes
-(`AppRoot.kt`/`CategoriesScreen.kt`/`CommandListScreen.kt`/`CommandDetailScreen.kt`/`LogScreen.kt`)
-rather than one Activity per screen — brings the daemon up once via `Start` (joining the
-build-time-baked-in leader) and lists every category from `CommandCatalog.kt`'s ~60-entry
-`CommandSpec` table (Cluster, KV, Permits, Execute, Log records, Group, Command, Links, Dispatch,
-ExecInvite, Raw); tapping one navigates to that category's commands, and tapping a command navigates
-to its own detail screen, which renders one labeled input field per parameter, a Run button, and
-that screen's own scrollable output log. Every call goes through the daemon's IPC exactly like the
-desktop CLI, just over the Android shared-memory transport instead of named shared memory, off the
-UI thread; `submit`/dispatch calls are forwarded from this (never-leader) follower to whichever
-peer is currently leader, over `pkg/daemon.ForwardProtocolID`. The three standing-subscription
-calls (`WatchExecute`, `WatchCommandLog`, `RunCommandDispatcher`) post their callback notifications
-to a process-wide `OutputLog` instead of that one screen's output, since the subscription keeps
-running after you navigate away — `LogScreen` (the categories screen's "Activity Log" button) shows
-that full history plus live updates while it's the foregrounded screen.
+The app's UI browses the full `Kvmobile` command surface rather than exposing just a few calls, and
+**every one of those 104 `CommandCatalog.kt` entries executes exactly one way: generate a DataMatrix
+code on one device, scan it with a real camera on another, confirm, then it runs** — there is no
+in-app "Run" button anywhere, on any screen, for any command. This is deliberate, not a missing
+feature: it means the UI surface a human operates is, by construction, identical to the surface a
+second physical device drives, so nothing in the app can silently diverge from what's actually
+reachable by scan. It's a single Activity (`MainActivity`) hosting a Jetpack Compose `NavHost`
+(`AppRoot.kt`) — `MainListScreen` ("Commands"/"Groups" shortcuts, "Browse all categories", "Activity
+Log") is the start destination; `CommandPickerScreen`/`GroupPickerScreen` are same-device navigation
+shortcuts into the full `CategoriesScreen` → `CommandListScreen` → `CommandDetailScreen` browser
+(`CommandCatalog.kt`'s ~104-entry `CommandSpec` table: Cluster, KV, Permits, Execute, Log records,
+Group, Command, Links, Dispatch, ExecInvite, Raw, RelayNode, Station); `LogScreen` is the persisted
+Activity Log. Brings the daemon up once via `Start` (joining the build-time-baked-in leader). Every
+call goes through the daemon's IPC exactly like the desktop CLI, just over the Android shared-memory
+transport instead of named shared memory, off the UI thread; `submit`/dispatch calls are forwarded
+from this (never-leader) follower to whichever peer is currently leader, over
+`pkg/daemon.ForwardProtocolID`. The three standing-subscription calls (`WatchExecute`,
+`WatchCommandLog`, `RunCommandDispatcher`) post their callback notifications to a process-wide
+`OutputLog` instead of that one screen's output, since the subscription keeps running after you
+navigate away — `LogScreen` shows that full history plus live updates while it's foregrounded.
 
-A DataMatrix scanner (`ScannerHost.kt`/`MainScannerWidget.kt`, ZXing decode over a CameraX frame
-feed) is mounted once, above the `NavHost`, so it's live on every screen rather than scoped to one —
-tap the floating bubble to expand it full-screen. A successful scan calls `Kvmobile.decodeEvent` on
-the decoded bytes and shows a confirm/cancel dialog (`ScanConfirmationDialog.kt`) before ever
-submitting anything; confirming calls `Kvmobile.triggerEvent` (an alias for `sendEvent`) against the
-current cluster. Every command form whose underlying call is a direct, single-message wrapper
-around one `pkg/e2edata` op (verified per spec against its actual Go implementation, not assumed —
-see `CommandSpec.eventOp`/`toEventFields`'s own doc comment in `CommandCatalog.kt`) also gets a
-"Generate DataMatrix" button, calling `Kvmobile.encodeEvent` on the form's current inputs and
-rendering the result as a scannable code (`GeneratedDataMatrixDialog.kt`) — another device can scan
-it and get the same trigger-or-cancel prompt. Compound/orchestration commands (daemon lifecycle,
-`SubmitCommand`'s multi-primitive dispatch, standing subscriptions, paginated `List*` reads, ...)
-show that button disabled with an explanatory caption instead, since they have no single capnp
-event to generate. Binary payloads survive the round trip through ZXing's String-only reader/writer
-via an ISO-8859-1 `ByteArray<->String` conversion (`DataMatrixCodec.kt`) — see that file's doc
-comment, and `DataMatrixCodecTest.kt`'s plain-JVM round-trip tests, for why that's lossless rather
-than assumed.
+`CommandDetailScreen` renders one labeled input field per parameter and two actions: **Generate
+DataMatrix**, always enabled for every spec (unlike an earlier version of this app, which could only
+generate a code for the ~21 commands with a direct capnp-event mapping — see `RunCode`'s own doc
+comment in `NavCode.kt` for why a plain-string, signing-key-free encoding of
+`{category, name, params}` turned out to be a strict superset of that), and **Scan & Execute**, which
+opens the persistent camera scanner to consume a code generated on *this* device rather than
+waiting for one from elsewhere. A DataMatrix scanner (`ScannerHost.kt`/`MainScannerWidget.kt`, ZXing
+decode over a CameraX frame feed, `CONTROL_AF_MODE_CONTINUOUS_PICTURE` plus a periodic explicit
+refocus nudge since continuous-picture autofocus can stop actively hunting on a static scene) is
+mounted once, above the `NavHost`, so it's live on every screen rather than scoped to one — tap the
+floating bubble to expand it full-screen. `AppRoot`'s own scan-dispatch collector forks on what a
+decoded payload turns out to be: a `RunCode` (any device's Generate DataMatrix button, for any
+spec) shows `RunConfirmDialog` — its Execute button is the *only* production call site of
+`CommandExecutor.execute(spec, args)`, the shared run/catch/record logic every command's result goes
+through, win or fail, always landing in `OutputLog`; a `NavCode.Group` shortcut (`GroupPickerScreen`'s
+own Generate) navigates straight to that category's command list, pure navigation, nothing executes
+or grants anything; a `join_request_ticket` event (still real, signed, capnp-encoded — see [Signed
+tickets](#signed-tickets-proving-a-barcode-really-came-from-who-it-claims) below) shows
+`RecruitConfirmDialog`, since admitting a device into a cluster is a grant, not a plain invocation;
+anything else shows `UnrecognizedScanDialog` rather than silently doing nothing. Binary payloads
+(the ticket path) survive the round trip through ZXing's String-only reader/writer via an ISO-8859-1
+`ByteArray<->String` conversion (`DataMatrixCodec.kt`) — see that file's doc comment, and
+`DataMatrixCodecTest.kt`'s plain-JVM round-trip tests, for why that's lossless rather than assumed.
 
 `Kvmobile` runs exactly one daemon per process. `Start(dataDir)`/`StartWithKey(dataDir, keyHex)`
 bring it up joined to the build-time-baked-in leader — the Android equivalent of desktop's
@@ -1453,12 +1463,12 @@ itself, the same "this Go layer hands back data, presentation is the app's job" 
 kvmobile ticket function already follows. Wired into `android-app/`'s `CommandCatalog.kt` UI under
 the existing `Cluster`/`ExecInvite` categories, right beside each ticket kind's plain counterpart,
 and compiles against a real `gomobile bind` rebuild of `kvmobile.aar` (not just against the Go side
-in isolation). Not yet in `test/e2e/testdata.json`'s `UICases`, though — `UiCommandE2ETest.kt`
-sources tailored per-command execute plans from that file rather than hardcoding them (see [End-to-end
-tests / deploy pipeline](#end-to-end-tests--deploy-pipeline) above), and every new entry with no
-tailored case there still gets full navigation-only UI coverage automatically, just not a real
-invocation — adding a tailored, actually-executed case is a deliberate, separately-tracked step that
-needs a real device/emulator pass to validate, not an oversight.
+in isolation). All five ticket commands (`execinvite_create_ticket`/`execinvite_redeem_ticket`/
+`cluster_create_join_invite_ticket`/`cluster_verify_join_invite_ticket`/`join_request_ticket`) have
+real, tailored entries in `test/e2e/testdata.json`'s `android_optical_cases` and passed in a live
+two-device run of the full catalog (see [End-to-end tests / deploy
+pipeline](#end-to-end-tests--deploy-pipeline) below) — `join_request_ticket` in particular exercises
+the real `RecruitConfirmDialog` grant path, not just a plain `RunCode` invocation.
 
 ## Raw Channel
 
@@ -1682,17 +1692,13 @@ bootstrap leader itself for remote, a real Playwright-driven browser check for w
 a real `gomobile bind` (baking that row's node identity and the live bootstrap address into the
 AAR, via the same `kvmobile.SendEvent` raw-event entry point kvctl-cli's `sendevent` exposes on
 desktop/remote) + `./gradlew installDebug installDebugAndroidTest` + `adb shell am instrument`
-against whatever device/emulator is connected, pulling back a real per-row results file (see
-`android-app/app/src/androidTest/.../E2ETest.kt`), then a second, separate `adb shell am instrument`
-invocation of `UiCommandE2ETest.kt` on the same install -- unlike `E2ETest`, which drives
-`Kvmobile.sendEvent` directly and never touches a single screen, this one clicks through the real
-app (CategoriesScreen's category list -> CommandListScreen's command list ->
-CommandDetailScreen's dynamically-rendered param fields and Run button, driven via Compose's own
-test APIs -- `onNodeWithTag`/`performClick`/`performTextInput` against each screen's testTags,
-not Espresso View matchers or Activity-class identity, since the app moved from four Activities to
-one Activity + a NavHost of Composable routes) for literally every `CommandCatalog.kt` entry, so
-the command surface exposed through the UI can never silently drift out of coverage. A command
-failure here fails every row in that node's batch, the same as a
+against whatever device/emulator is connected, pulling back a real per-row results file
+(`android-app/app/src/androidTest/.../E2ETest.kt`) -- the same cross-platform `File.Rows`
+wire-protocol-parity check desktop/web also run under their own `types.Desktop`/`types.Web`, proving
+`Kvmobile.sendEvent`'s own wire behavior matches every other binding's, never touching a single
+screen (see [The real-camera optical harness](#the-real-camera-optical-harness) below for what
+*does* touch the screen -- a separate, manual-only gate, not part of `e2e:current`/`e2e:all`). A
+command failure here fails every row in that node's batch, the same as a
 build/install failure would, since none of them can be trusted to have run against a working app --
 degrading to a clear Skipped status if `gomobile`/`adb`/a connected device aren't available at all,
 and a clear Failed status with the real diagnostic (not just "exit status 1") if the build/install/
@@ -1713,20 +1719,6 @@ mage e2e:all                                                            # run ev
 mage e2e:deletenode <nodeID>                                            # tear down a node's real process/data and remove it
 mage e2e:destroyall                                                     # tear down every node at once
 ```
-
-The two-device pairing scenario (`pkg/e2erun/android_pair.go`, driven from `e2e:all`) is the one
-part of this that is a *sequence* rather than a sweep, and that distinction is load-bearing. The
-cases handed to `UiCommandE2ETest` are a map keyed by command label, and the device-side runner
-originally walked whatever it was given in its own catalog order, category by category — so a step
-built as "resume this daemon, wait, then read its address" silently executed as "resume, read,
-wait", because the sleep lives in a later category than the command it was meant to precede. That
-scenario had therefore never actually waited for anything it thought it was waiting for.
-`e2edata.UICase.Order` fixes it: a caller that stamps every case with its position gets those cases
-run in exactly that order (`runOrderedWalk`), re-entering each command's own category per step;
-callers that stamp nothing keep the original unordered sweep. The scenario also prints each step's
-elapsed time to stderr, because its remaining failure mode is entirely about *when* things happen
-relative to each other — a receiver's hold ending before the sender, three invocations later, gets
-around to dialing it.
 
 `eventName` is one of `set_key`, `set_field`, `get_key`, `get_field`, `get_public_key`,
 `get_private_key`, `add` (see `pkg/shmevent.EventName`). Deployed nodes are never torn down
@@ -1756,3 +1748,71 @@ already-provisioned VPS, into its own isolated directory/port (`pkg/e2erun.Boots
 distinct from any other node manually running on that same host) -- `mage e2e:bootstrap` (or the
 first `e2e:current`/`e2e:all` run) is idempotent: it deploys and starts it only if not already up,
 and otherwise just confirms it's reachable.
+
+### The real-camera optical harness
+
+Android command coverage lives entirely outside `e2e:current`/`e2e:all`, in a separate, manual-only
+gate: `test/e2e/testdata.json`'s `android_optical_cases` (90 cases -- some `CommandCatalog.kt`
+specs need more than one, e.g. a CAS case needs its own priming `Set` first -- covering 88 of the
+catalog's 104 commands; the remaining 16 are initial bootstrap/join calls like
+`StartSolo`/`Join`/`RecruitPeer` that would tear down or reconfigure the very rig running the test,
+legitimately excluded rather than an oversight) and `pkg/e2erun/android_optical.go`'s
+`runOpticalScanSuite`, run against a real two-device rig -- one device's screen a real camera on a
+second device is physically pointed at, the only way any Android command ever executes at all now
+(see [Follower on Android](#follower-on-android) above for the app-side
+RunCode/`CommandExecutor` model this drives).
+No emulator can substitute for either half: device A's generated code has to be read by a real
+sensor, and CI has no such hardware, so this never runs unattended --
+
+```bash
+MANUAL_OPTICAL_SCAN_SERIALS=<generatingDeviceSerial>,<scanningDeviceSerial> \
+  go test ./pkg/e2erun -run TestManualOpticalScan -v
+```
+
+drives it: device A generates every case's DataMatrix code in turn (`UiCommandE2ETest.generateAndHoldAll`)
+while device B scans, confirms, and executes each one (`awaitAndVerifyScanAll`), both running as one
+long-lived `am instrument` invocation per device rather than a fresh process per case -- an earlier
+per-case design relaunched the whole app (a fresh `Kvmobile` session bootstrap) between every one of
+the 90 cases, and that relaunch overhead, confirmed live, dwarfed the actual navigation/scan work
+once multiplied out. Results persist to `test/e2e/testdata.json`'s `android_optical_scan_result`
+(pass/fail status, per-case detail) on every run whether it passed or not, so "did the optical suite
+pass last time" has an answer on disk instead of living only in one run's console output.
+
+Keeping two independent, relaunch-free loops in step without a shared clock is the interesting part.
+Device A can't simply hold each code on screen for a fixed duration and move on: an earlier version
+tried exactly that, and confirmed live it's an active correctness bug, not just a speed tradeoff --
+if device A ever advances *before* device B has actually caught the current code (one slow camera
+focus, one case needing deeper category navigation), device B is now waiting for a code device A has
+already replaced, and every subsequent wait fails the same way for the rest of the run. The fix
+reuses `mobile/kvmobile`'s own Channel API (`OpenChannel`/`ListenChannel`/`SendChannelData` --
+see [Raw Channel](#raw-channel) below) as a genuine cross-device completion signal, deliberately
+*not* the raft-replicated KV store: an early attempt used a plain `Submit`/`Get` key for this and
+found live that even a same-device, no-forwarding `Submit` routinely took several real seconds --
+unsurprising, since a KV write is a raft commit, not the cheap point-to-point notification this
+actually needs. Device A opens a listener once at the start of the batch; device B, once it finishes
+(and *passes*) a case, sends that case's id over its own already-open channel to device A, which
+polls for it and advances the instant it arrives instead of always waiting a fixed duration --
+`BATCH_HOLD_MILLIS`/`FIRST_CASE_HOLD_MILLIS` (and their `awaitAndVerifyScanAll`-side
+counterparts) remain real ceilings, just as fallbacks if that signal never arrives, not the
+normal-case wait.
+
+Device B only ever signals a case it actually passed -- a failed case (wrong/missing scan, a result
+that didn't match what was expected) has nothing useful for device A to advance into, so it stays
+silent. That makes a missing signal within the ceiling mean one of exactly two things, both fatal to
+the rest of the run: device B failed this case, or the signal channel itself is broken -- either way
+there's no sound reason to keep generating codes nobody will correctly consume, so *both* devices
+abort the whole batch the first time this happens rather than cascading through every remaining case
+as a wall of timeouts, which is what an earlier, always-signal-regardless-of-outcome version of this
+mechanism did in practice. A run that hits a genuine problem now fails within a couple of minutes
+with one clear root-cause error, not by silently burning through the rest of a 90-case run.
+
+Live-verified end to end against a real two-device rig (an emulator generating, a real phone
+scanning): all 90 cases passing in one batched run apiece, ~3 minutes total. Getting there surfaced
+a real, previously-undetected bug in `pkg/daemon/forward.go` along the way, not just Android-side
+issues -- `handleForwardSetStream` (the leader-side handler any non-leader node's writes get
+forwarded through) accepted `OpSet`/`OpAppendCommandRequest` but never `OpTxn`, so every `Cas`/`Txn`
+call from a non-leader node failed outright regardless of whether the operation itself was valid.
+`OpTxn`'s own validation already runs raft-authoritatively inside `kvfsm.Apply`, the same discipline
+that makes `OpSet`/`OpAppendCommandRequest` safe to forward with no extra sender-is-a-voter gate, so
+the fix was adding it to that accepted-op list -- a one-line change caught by the optical catalog
+doing exactly the job it exists for.

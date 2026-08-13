@@ -30,16 +30,12 @@ private fun BitMatrix.toBitmap(): Bitmap {
 }
 
 /**
- * Shown by CommandDetailScreen's "Generate DataMatrix" button: either the
- * capnp-encoded bytes [kvmobile.Kvmobile.encodeEvent] returned for the
- * form's current inputs (another device scanning it gets
- * [ScanConfirmationDialog]'s trigger-or-cancel prompt for that same
- * event), or -- for a spec with `generateFromResultBase64` set, e.g.
- * CreateJoinRequestTicket -- a self-contained signed ticket (another
- * device scanning it gets routed to [RecruitConfirmDialog] instead, see
- * AppRoot.kt's scan dispatch). [title] distinguishes the two so this
- * dialog never claims to be "triggering an event" for a ticket that
- * isn't one.
+ * Shown by CommandDetailScreen's "Generate DataMatrix" button: either a plain [RunCode] naming
+ * that spec's category+name+params (another device scanning it gets [RunConfirmDialog]'s
+ * execute-or-cancel prompt), or -- for a spec with `generateFromResultBase64` set, e.g.
+ * CreateJoinRequestTicket -- a self-contained signed ticket (another device scanning it gets
+ * routed to [RecruitConfirmDialog] instead, see AppRoot.kt's scan dispatch). [title] distinguishes
+ * the two so this dialog never claims to be "running a command" for a ticket that isn't one.
  */
 @Composable
 fun GeneratedDataMatrixDialog(

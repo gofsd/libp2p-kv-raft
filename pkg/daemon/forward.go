@@ -265,10 +265,16 @@ func decodeForwardResponse(buf []byte) (uint64, error) {
 // follower reports it as applied. Found exactly this way -- a follower
 // over a relay-adjacent connection (a phone) reporting every Set as
 // successful while nothing was ever persisted, anywhere.
-// OpAppendCommandRequest is accepted here (not just OpSet) for the same
-// reason handleOpForward's doc comment gives: its own ACL check runs
-// raft-authoritatively inside kvfsm.Apply, so this hop needs no separate
-// sender-is-a-voter gate the way OpConfirm/OpDel/OpCascadeDelete do.
+// OpAppendCommandRequest and OpTxn are accepted here (not just OpSet) for
+// the same reason handleOpForward's doc comment gives: both run their own
+// validation/ACL check raft-authoritatively inside kvfsm.Apply (OpTxn's own
+// doc comment: "discipline OpAppendCommandRequest's ACL check already
+// follows"), so this hop needs no separate sender-is-a-voter gate the way
+// OpConfirm/OpDel/OpCascadeDelete do. OpTxn's own omission here (found live
+// running the full android_optical_cases catalog against a real
+// leader+learner pair) meant every CAS/Txn call from any non-leader node
+// failed outright with "expected OpSet or OpAppendCommandRequest, got op 8"
+// regardless of whether the operation itself was valid.
 func (n *Node) handleForwardSetStream(s network.Stream) {
 	defer s.Close()
 
@@ -282,8 +288,8 @@ func (n *Node) handleForwardSetStream(s network.Stream) {
 		writeForwardError(s, fmt.Errorf("forward set: decode command: %w", err))
 		return
 	}
-	if op != kvfsm.OpSet && op != kvfsm.OpAppendCommandRequest {
-		writeForwardError(s, fmt.Errorf("forward set: expected OpSet or OpAppendCommandRequest, got op %d", op))
+	if op != kvfsm.OpSet && op != kvfsm.OpAppendCommandRequest && op != kvfsm.OpTxn {
+		writeForwardError(s, fmt.Errorf("forward set: expected OpSet, OpAppendCommandRequest, or OpTxn, got op %d", op))
 		return
 	}
 

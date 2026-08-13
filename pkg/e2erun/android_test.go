@@ -1,6 +1,7 @@
 package e2erun
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -67,6 +68,27 @@ func TestHasConnectedDevice(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			if got := hasConnectedDevice(c.out); got != c.want {
 				t.Fatalf("hasConnectedDevice(%q) = %v, want %v", c.out, got, c.want)
+			}
+		})
+	}
+}
+
+func TestParseConnectedSerials(t *testing.T) {
+	cases := []struct {
+		name string
+		out  string
+		want []string
+	}{
+		{"no devices, just header", "List of devices attached\n\n", nil},
+		{"one real device", "List of devices attached\nO7AQS4UO9LWWJZI7\tdevice\n\n", []string{"O7AQS4UO9LWWJZI7"}},
+		{"two devices", "List of devices attached\nemulator-5554\tdevice\nemulator-5556\tdevice\n\n", []string{"emulator-5554", "emulator-5556"}},
+		{"offline device excluded", "List of devices attached\nemulator-5554\toffline\nemulator-5556\tdevice\n\n", []string{"emulator-5556"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := parseConnectedSerials(c.out)
+			if !reflect.DeepEqual(got, c.want) {
+				t.Fatalf("parseConnectedSerials(%q) = %v, want %v", c.out, got, c.want)
 			}
 		})
 	}

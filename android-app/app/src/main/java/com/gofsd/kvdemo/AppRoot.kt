@@ -25,6 +25,7 @@ import androidx.navigation.navArgument
 import java.net.URLDecoder
 import java.net.URLEncoder
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kvmobile.Kvmobile
@@ -44,12 +45,12 @@ import org.json.JSONObject
  * every visit).
  *
  * [MainListScreen] ("main") is the start destination: a pull-to-refresh
- * list of "Commands" (-> [CommandPickerScreen]) and "Groups" (->
- * [GroupPickerScreen]), the app's two navigation-shortcut generators (see
- * [NavCode]'s doc comment). The full category browser ([CategoriesScreen],
- * "categories" -> "commands/{category}" -> "commandDetail/{category}/{name}")
- * is unchanged and still reachable from there, just no longer the first
- * screen shown.
+ * list of "Commands" (-> [CommandPickerScreen], a same-device navigation
+ * shortcut only -- it no longer generates a code of its own) and "Groups"
+ * (-> [GroupPickerScreen], still generates a [NavCode.Group] shortcut). The
+ * full category browser ([CategoriesScreen], "categories" ->
+ * "commands/{category}" -> "commandDetail/{category}/{name}") is unchanged
+ * and still reachable from there, just no longer the first screen shown.
  *
  * [ScannerHost] is mounted exactly once here, as a Box sibling of the
  * NavHost, so its camera binds once and stays alive across every screen
@@ -63,22 +64,22 @@ import org.json.JSONObject
  * -- a second LaunchedEffect(Unit) here (same "lives for the whole
  * NavHost's lifetime" reasoning as the Start() one) collects
  * [ScannerCoordinator.scans] and forks on what it decoded to, in order:
- * a [NavCode] (a "Commands"/"Groups" shortcut code some device's Generate
- * button minted) navigates [navController] straight to that command's
- * detail screen or that category's command list -- no dialog, since it's
- * pure navigation and grants/submits nothing; a `join_request_ticket`
- * event (decoded via [kvmobile.Kvmobile.decodeEvent] -- some other
- * device's CreateJoinRequestTicket code, see CommandDetailScreen's
- * awaitAdmissionAfterGenerate handling) routes to [RecruitConfirmDialog]
- * -- admitting a device into this cluster needs its own confirm-then-redeem
- * step, not a blind "Trigger"; every other decodable event, or nothing
- * decodable at all, keeps going through [ScanConfirmationDialog]: scanning
- * alone never submits anything, only a subsequent tap on "Trigger" calls
- * [kvmobile.Kvmobile.sendEvent] (this class's own `triggerEvent` alias) to
- * actually submit the decoded event against the current cluster.
+ * a [RunCode] (any device's CommandDetailScreen "Generate DataMatrix"
+ * button minted this, for any of CommandCatalog.kt's specs) routes to
+ * [RunConfirmDialog] -- this is now the *only* way any command executes,
+ * see that dialog's own doc comment; a [NavCode.Group] shortcut navigates
+ * [navController] straight to that category's command list -- no dialog,
+ * since it's pure navigation and grants/executes nothing; a
+ * `join_request_ticket` event (decoded via [kvmobile.Kvmobile.decodeEvent]
+ * -- some other device's CreateJoinRequestTicket code, see
+ * CommandDetailScreen's awaitAdmissionAfterGenerate handling) routes to
+ * [RecruitConfirmDialog] -- admitting a device into this cluster needs its
+ * own confirm-then-redeem step, not a plain Execute; anything else (an
+ * undecodable scan, or a stray foreign barcode) shows
+ * [UnrecognizedScanDialog] instead of silently doing nothing.
  */
 private const val TAG = "KVDemo"
-private class PendingScan(val decodedJson: String?, val rawText: String)
+private class PendingRun(val category: String, val name: String, val params: List<String>)
 private class PendingRecruitTicket(val ticketB64: String, val sourceAddr: String)
 private fun encodeSegment(s: String) = URLEncoder.encode(s, "UTF-8")
 private fun decodeSegment(s: String) = URLDecoder.decode(s, "UTF-8")
@@ -91,8 +92,9 @@ fun commandDetailRoute(category: String, name: String) =
 fun AppRoot() {
     val context = LocalContext.current
     var statusText by remember { mutableStateOf("Connecting to cluster...") }
-    var pendingScan by remember { mutableStateOf<PendingScan?>(null) }
+    var pendingRun by remember { mutableStateOf<PendingRun?>(null) }
     var pendingRecruitTicket by remember { mutableStateOf<PendingRecruitTicket?>(null) }
+    var pendingUnrecognized by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     // Hoisted above both LaunchedEffects (not created down in the Box below) so the scan
     // collector's own NavCode branch can navigate directly -- a nav-shortcut scan (see NavCode's
@@ -101,6 +103,7 @@ fun AppRoot() {
 
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
+            OutputLog.init(context.filesDir.absolutePath)
             Log.i(TAG, "AUTO: Kvmobile.start() beginning")
             try {
                 val peerID = Kvmobile.start(context.filesDir.absolutePath)
@@ -114,18 +117,59 @@ fun AppRoot() {
     }
 
     LaunchedEffect(Unit) {
+        // Must start collecting immediately, not after any delay: ScannerCoordinator.onScanned
+        // dedupes by comparing against the *last* decoded payload (see that file's own doc
+        // comment), so a code already sitting in front of the camera at Activity launch emits
+        // to `scans` exactly once, and every later frame decoding the same still-displayed code
+        // is a deliberate no-op -- `scans` itself has no replay cache (replay = 0), so a
+        // collector that isn't already subscribed at that one moment misses the emission
+        // entirely (confirmed live: delaying the collect{} call itself, an earlier version of
+        // this fix, made nav-shortcut scans stop being observed at all rather than fixing
+        // anything). The delay that actually matters -- see inside the NavCode branch below --
+        // has to be on the *navigate* action, after the value is already safely received here.
         ScannerCoordinator.scans.collect { bytes ->
             Log.i(TAG, "AUTO: scan received (${bytes.size} bytes), decoding")
-            val navCode = NavCode.decode(DataMatrixCodec.bytesToText(bytes))
+            val text = DataMatrixCodec.bytesToText(bytes)
+
+            val runCode = RunCode.decode(text)
+            if (runCode != null) {
+                Log.i(TAG, "RESULT: run-code scan decoded: $runCode")
+                pendingRun = PendingRun(runCode.category, runCode.name, runCode.params)
+                Log.w(TAG, "ACTION_REQUIRED: RunConfirmDialog shown for ${runCode.category}: ${runCode.name} -- tap Execute or Cancel on this device")
+                ScannerCoordinator.expanded = false
+                return@collect
+            }
+
+            val navCode = NavCode.decode(text)
             if (navCode != null) {
                 Log.i(TAG, "RESULT: nav-shortcut scan decoded: $navCode")
+                // A code already sitting in front of the camera at the exact moment this
+                // Activity launches (this project's own automated optical-scan e2e harness, see
+                // pkg/e2erun/android_optical.go -- not something a human scanning by hand could
+                // ever produce) can have the collect{} above receive and act on a scan within a
+                // few hundred milliseconds of AppRoot's own first composition -- confirmed live
+                // via that harness's own logging, well before NavHost (further down this same
+                // function) has finished attaching its graph to navController (created above) or
+                // even before Kvmobile.start() above has returned. Navigating that early left a
+                // NavBackStackEntry stuck at INITIALIZED, crashing the process on next teardown
+                // ("State must be at least CREATED to move to DESTROYED, but was INITIALIZED").
+                // No real human scan can happen this fast, so delaying the navigate action itself
+                // (not the collection above, which must stay immediate -- see this LaunchedEffect's
+                // own doc comment) is invisible in practice; it exists purely to let the rest of
+                // this Composable's own setup stabilize before acting on an already-received scan.
+                delay(1000)
+                // Defense in depth alongside that delay: currentDestination stays null until
+                // NavHost's own setup completes, so poll for it rather than assume it's ready.
+                while (navController.currentDestination == null) {
+                    delay(16)
+                }
                 when (navCode) {
-                    is NavCode.Command -> navController.navigate(commandDetailRoute(navCode.category, navCode.name))
                     is NavCode.Group -> navController.navigate(commandListRoute(navCode.category))
                 }
                 ScannerCoordinator.expanded = false
                 return@collect
             }
+
             val decodedJson = withContext(Dispatchers.IO) {
                 runCatching { Kvmobile.decodeEvent(bytes) }.getOrNull()
             }
@@ -140,8 +184,8 @@ fun AppRoot() {
                 )
                 Log.w(TAG, "ACTION_REQUIRED: RecruitConfirmDialog shown for source=$sourceAddr -- tap Approve or Cancel on this device")
             } else {
-                pendingScan = PendingScan(decodedJson, DataMatrixCodec.bytesToText(bytes))
-                Log.w(TAG, "ACTION_REQUIRED: ScanConfirmationDialog shown (event=$eventName, decoded=${decodedJson != null}) -- tap Trigger or Cancel on this device")
+                pendingUnrecognized = text
+                Log.w(TAG, "ACTION_REQUIRED: UnrecognizedScanDialog shown -- tap Close on this device")
             }
             // Collapse the fullscreen scanner so the confirmation dialog
             // (drawn above it either way, but this avoids leaving the
@@ -159,23 +203,19 @@ fun AppRoot() {
                         MainListScreen(
                             onCommandsClick = { navController.navigate("commandPicker") },
                             onGroupsClick = { navController.navigate("groupPicker") },
-                            onBuildEventClick = { navController.navigate("eventBuilder") },
-                            onConnectDeviceClick = { navController.navigate("connectDevice") },
                             onBrowseCategories = { navController.navigate("categories") },
                             onLogClick = { navController.navigate("log") },
                         )
                     }
                     composable("commandPicker") {
-                        CommandPickerScreen()
+                        CommandPickerScreen(
+                            onNavigateToDetail = { category, name ->
+                                navController.navigate(commandDetailRoute(category, name))
+                            },
+                        )
                     }
                     composable("groupPicker") {
                         GroupPickerScreen()
-                    }
-                    composable("eventBuilder") {
-                        EventBuilderScreen()
-                    }
-                    composable("connectDevice") {
-                        ConnectDeviceScreen()
                     }
                     composable("categories") {
                         CategoriesScreen(
@@ -220,29 +260,42 @@ fun AppRoot() {
 
                 ScannerHost(modifier = Modifier.align(Alignment.BottomEnd).testTag("scanner_host"))
 
-                val scan = pendingScan
-                if (scan != null) {
-                    ScanConfirmationDialog(
-                        decodedJson = scan.decodedJson,
-                        rawText = scan.rawText,
+                val run = pendingRun
+                if (run != null) {
+                    RunConfirmDialog(
+                        category = run.category,
+                        name = run.name,
+                        params = run.params,
                         onConfirm = {
-                            Log.i(TAG, "USER_TAP: ScanConfirmationDialog Trigger pressed")
-                            val json = scan.decodedJson ?: return@ScanConfirmationDialog
-                            pendingScan = null
+                            Log.i(TAG, "USER_TAP: RunConfirmDialog Execute pressed (${run.category}: ${run.name})")
+                            pendingRun = null
                             scope.launch {
-                                try {
-                                    val result = withContext(Dispatchers.IO) { Kvmobile.sendEvent(json) }
-                                    Log.i(TAG, "RESULT: scanned event sent: $result")
-                                    OutputLog.record("Scanned event", result, LogStatus.SUCCESS)
-                                } catch (e: Exception) {
-                                    Log.w(TAG, "RESULT: scanned event FAILED: ${e.message}")
-                                    OutputLog.record("Scanned event", "FAILED: ${e.message}", LogStatus.FAILED)
+                                val spec = withContext(Dispatchers.IO) {
+                                    buildCommands(context.filesDir.absolutePath, OutputLog::append)
+                                        .firstOrNull { it.category == run.category && it.name == run.name }
+                                }
+                                if (spec == null) {
+                                    Log.w(TAG, "RESULT: no CommandSpec matches ${run.category}: ${run.name}")
+                                    OutputLog.record("${run.category}: ${run.name}", "FAILED: unknown command", LogStatus.FAILED)
+                                } else {
+                                    CommandExecutor.execute(spec, run.params)
                                 }
                             }
                         },
                         onDismiss = {
-                            Log.i(TAG, "USER_TAP: ScanConfirmationDialog Cancel pressed")
-                            pendingScan = null
+                            Log.i(TAG, "USER_TAP: RunConfirmDialog Cancel pressed")
+                            pendingRun = null
+                        },
+                    )
+                }
+
+                val unrecognized = pendingUnrecognized
+                if (unrecognized != null) {
+                    UnrecognizedScanDialog(
+                        rawText = unrecognized,
+                        onDismiss = {
+                            Log.i(TAG, "USER_TAP: UnrecognizedScanDialog Close pressed")
+                            pendingUnrecognized = null
                         },
                     )
                 }

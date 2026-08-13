@@ -31,29 +31,18 @@ private data class MainListItem(val id: String, val label: String)
 private val MAIN_LIST_ITEMS = listOf(
     MainListItem("commands", "Commands"),
     MainListItem("groups", "Groups"),
-    MainListItem("buildEvent", "Build Event"),
-    MainListItem("connectDevice", "Connect to Device"),
 )
 
 /**
- * The app's start screen: a pull-to-refresh list of this app's own DataMatrix generators -- not
- * live data, but pull-to-refresh is still wired up for real (a brief spinner, then the same rows
- * again) since that gesture, not a static menu, is the interaction this screen is modeled on.
+ * The app's start screen: a pull-to-refresh list of this app's navigation shortcuts -- not live
+ * data, but pull-to-refresh is still wired up for real (a brief spinner, then the same rows again)
+ * since that gesture, not a static menu, is the interaction this screen is modeled on.
  *
- * "Commands" opens [CommandPickerScreen] (pick any single command from the full catalog, Generate
- * a code that jumps straight to that command's own detail screen when scanned). "Groups" opens
- * [GroupPickerScreen] (pick a CommandCatalog.kt category, Generate a code that jumps to that
- * category's command list when scanned). Neither of those two executes anything -- see NavCode's
- * own doc comment for why these two codes are pure navigation, distinct from CommandDetailScreen's
- * existing per-command "Generate DataMatrix" button, which encodes the real capnp event.
- *
- * "Build Event" opens [EventBuilderScreen] (pick any hand-constructible event op, fill its own
- * fields, Generate a code that -- scanned elsewhere -- triggers that exact event there). "Connect
- * to Device" opens [ConnectDeviceScreen] (build a `dial_submit_command` event naming a target
- * device -- defaulted to this device's own address -- plus a command to run there; scanning and
- * triggering it on another device makes *that* device dial back and run the command on the named
- * target, which is what makes this the "connect to a device and run a command on it by scanning"
- * flow rather than an ordinary generated event).
+ * "Commands" opens [CommandPickerScreen] (pick any single command from the full catalog, jump
+ * straight to its own CommandDetailScreen to fill params and Generate a [RunCode] -- the only way
+ * any command executes now, see AppRoot's scan dispatch). "Groups" opens [GroupPickerScreen] (pick
+ * a CommandCatalog.kt category, Generate a [NavCode.Group] code that jumps to that category's
+ * command list when scanned -- pure navigation, executes nothing).
  *
  * The full category browser (CategoriesScreen) is unchanged and still reachable -- just no longer
  * the first thing shown -- via [onBrowseCategories].
@@ -63,8 +52,6 @@ private val MAIN_LIST_ITEMS = listOf(
 fun MainListScreen(
     onCommandsClick: () -> Unit,
     onGroupsClick: () -> Unit,
-    onBuildEventClick: () -> Unit,
-    onConnectDeviceClick: () -> Unit,
     onBrowseCategories: () -> Unit,
     onLogClick: () -> Unit,
 ) {
@@ -95,8 +82,6 @@ fun MainListScreen(
                                 when (item.id) {
                                     "commands" -> onCommandsClick()
                                     "groups" -> onGroupsClick()
-                                    "buildEvent" -> onBuildEventClick()
-                                    "connectDevice" -> onConnectDeviceClick()
                                 }
                             }
                             .padding(vertical = 16.dp)

@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -35,27 +34,19 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kvmobile.Kvmobile
 import org.json.JSONArray
-import org.json.JSONObject
 
 /**
- * One CommandSpec's own screen (see CommandCatalog.kt): a labeled input
- * field per parameter, a Run button, and this screen's own local output
- * log of every Run made here -- scoped to this screen alone, not shared
- * with OutputLog/LogScreen (that log is only for the WatchExecute/
- * WatchCommandLog/RunCommandDispatcher notifications CommandCatalog.kt's
- * callbacks deliver on their own schedule, unrelated to which detail
- * screen, if any, is currently open). Fresh each visit -- navigating away
- * and back starts with an empty output log again, the same as the old
- * CommandDetailActivity did every time you switched commands. Replaces
- * that Activity 1:1; the "Generate DataMatrix" button (see
- * CommandCatalog.kt's eventOp/toEventFields, or generateFromResultBase64
- * for a spec like CreateJoinRequestTicket whose run() result IS the
- * payload) is added alongside Run for specs with a single capnp-event or
- * ticket equivalent. [onNavigateToLog] is only ever invoked for a spec
- * with awaitAdmissionAfterGenerate set, once this device is observed to
- * have actually been admitted to a cluster (see that field's own doc
- * comment on CommandSpec) -- every other spec's Generate flow never calls
- * it.
+ * One CommandSpec's own screen (see CommandCatalog.kt): a labeled input field per parameter, a
+ * "Generate DataMatrix" button, and a "Scan & Execute" button. There is no Run button -- every
+ * command in this app executes exactly one way: generate a [RunCode] here (or on another device),
+ * scan it with a real camera, confirm in [RunConfirmDialog], which calls
+ * [CommandExecutor.execute]. Generate is always enabled now (a [RunCode] just needs
+ * category+name+params -- no `eventOp`/signing key required) except for the one
+ * `generateFromResultBase64` spec (CreateJoinRequestTicket), whose generated code has to be the
+ * real signed ticket [spec.run] returns, not a RunCode -- see CommandSpec's own doc comment for
+ * why. [onNavigateToLog] is only ever invoked for a spec with awaitAdmissionAfterGenerate set,
+ * once this device is observed to have actually been admitted to a cluster (see that field's own
+ * doc comment on CommandSpec) -- every other spec's Generate flow never calls it.
  */
 private const val TAG = "KVDemo"
 
@@ -69,12 +60,10 @@ fun CommandDetailScreen(category: String, name: String, onNavigateToLog: () -> U
 
     val paramValues = remember(spec) { mutableStateListOf(*Array(spec.params.size) { "" }) }
     var output by remember(spec) { mutableStateOf("") }
-    var running by remember(spec) { mutableStateOf(false) }
     var generating by remember(spec) { mutableStateOf(false) }
     var generatedMatrix by remember(spec) { mutableStateOf<BitMatrix?>(null) }
     val scope = rememberCoroutineScope()
     val scrollState = rememberScrollState()
-    val canGenerate = spec.eventOp != null || spec.rawEventJsonParamIndex != null || spec.generateFromResultBase64
 
     LaunchedEffect(output) {
         scrollState.animateScrollTo(scrollState.maxValue)
@@ -144,34 +133,8 @@ fun CommandDetailScreen(category: String, name: String, onNavigateToLog: () -> U
             }
         }
 
-        Button(
-            enabled = !running,
-            onClick = {
-                val args = paramValues.toList()
-                Log.i(TAG, "USER_TAP: Run pressed for ${spec.label}(${args.joinToString(", ")})")
-                running = true
-                scope.launch {
-                    val line = try {
-                        val result = withContext(Dispatchers.IO) { spec.run(args) }
-                        Log.i(TAG, "RESULT: ${spec.label} -> $result")
-                        OutputLog.record(spec.label, "(${args.joinToString(", ")}) ->\n$result", LogStatus.SUCCESS)
-                        "${spec.label}(${args.joinToString(", ")}) ->\n$result"
-                    } catch (e: Exception) {
-                        Log.w(TAG, "RESULT: ${spec.label} FAILED: ${e.message}")
-                        OutputLog.record(spec.label, "(${args.joinToString(", ")}) FAILED: ${e.message}", LogStatus.FAILED)
-                        "${spec.label}(${args.joinToString(", ")}) FAILED: ${e.message}"
-                    }
-                    output = if (output.isEmpty()) line else "$output\n\n$line"
-                    running = false
-                }
-            },
-            modifier = Modifier.fillMaxWidth().padding(top = 8.dp).testTag("runButton"),
-        ) {
-            Text("Run")
-        }
-
         OutlinedButton(
-            enabled = canGenerate && !generating,
+            enabled = !generating,
             onClick = {
                 val args = paramValues.toList()
                 Log.i(TAG, "USER_TAP: Generate DataMatrix pressed for ${spec.label}(${args.joinToString(", ")})")
@@ -182,15 +145,7 @@ fun CommandDetailScreen(category: String, name: String, onNavigateToLog: () -> U
                             val resultB64 = withContext(Dispatchers.IO) { spec.run(args) }
                             Base64.decode(resultB64, Base64.DEFAULT)
                         } else {
-                            val eventJson = if (spec.rawEventJsonParamIndex != null) {
-                                args[spec.rawEventJsonParamIndex]
-                            } else {
-                                JSONObject().apply {
-                                    put("event", spec.eventOp)
-                                    put("fields", JSONObject(spec.toEventFields!!(args)))
-                                }.toString()
-                            }
-                            withContext(Dispatchers.IO) { Kvmobile.encodeEvent(eventJson) }
+                            DataMatrixCodec.textToBytes(RunCode.encode(spec.category, spec.name, args))
                         }
                         generatedMatrix = withContext(Dispatchers.Default) { DataMatrixCodec.encode(raw) }
                         Log.w(TAG, "ACTION_REQUIRED: DataMatrix for ${spec.label} is on screen -- scan it with the other device's camera now")
@@ -206,12 +161,15 @@ fun CommandDetailScreen(category: String, name: String, onNavigateToLog: () -> U
         ) {
             Text("Generate DataMatrix")
         }
-        if (!canGenerate) {
-            Text(
-                "No single capnp event for this operation -- not generatable as a code.",
-                style = MaterialTheme.typography.labelSmall,
-                modifier = Modifier.padding(top = 4.dp).testTag("generateDataMatrixUnavailableHint"),
-            )
+
+        OutlinedButton(
+            onClick = {
+                Log.i(TAG, "USER_TAP: Scan & Execute pressed for ${spec.label} (opening scanner)")
+                ScannerCoordinator.expanded = true
+            },
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp).testTag("scanAndExecuteButton"),
+        ) {
+            Text("Scan & Execute")
         }
 
         generatedMatrix?.let { matrix ->
@@ -221,7 +179,7 @@ fun CommandDetailScreen(category: String, name: String, onNavigateToLog: () -> U
                 title = if (spec.awaitAdmissionAfterGenerate) {
                     "Scan this on the recruiting device -- closes automatically once admitted"
                 } else {
-                    "Scan this to trigger the event"
+                    "Scan this on another device to run ${spec.label}"
                 },
             )
         }

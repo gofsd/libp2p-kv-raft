@@ -1,6 +1,7 @@
 package com.gofsd.kvdemo
 
 import android.util.Base64
+import android.util.Log
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.ComposeTimeoutException
@@ -11,6 +12,11 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTextInput
 import androidx.test.platform.app.InstrumentationRegistry
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kvmobile.ChannelCallback
 import kvmobile.Kvmobile
 import org.json.JSONArray
 import org.json.JSONObject
@@ -18,480 +24,828 @@ import org.junit.Assert
 import org.junit.Rule
 import org.junit.Test
 import java.io.File
+import java.nio.charset.StandardCharsets
+import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Real-UI-driven instrumented test: unlike E2ETest (which calls
- * Kvmobile.sendEvent directly, never touching a single screen), this
- * clicks through the actual app -- CategoriesScreen's category list,
- * CommandListScreen's command list, CommandDetailScreen's dynamically-
- * rendered param fields and Run button -- for literally every CommandSpec
- * buildCommands() produces, so the catalog can never silently drift out
- * of coverage (a command added to CommandCatalog.kt with no entry in
- * [cases] below still gets full navigation coverage via [defaultCase],
- * just not a tailored execution).
+ * Real-UI-driven instrumented test for android-app's real-camera two-device optical scan harness
+ * (pkg/e2erun/android_optical.go, driven by test/e2e/testdata.json's android_optical_cases) --
+ * the only way any android command executes now (see CommandCatalog.kt/CommandDetailScreen's own
+ * doc comments on the RunCode rewrite: every command runs by generating a DataMatrix on one
+ * device, a real camera scanning it on another, and a confirm tap executing it there). Unlike
+ * E2ETest (a separate class that calls Kvmobile.sendEvent directly, never touching a single
+ * screen -- still the cross-platform wire-protocol row-replay check, unaffected by any of this),
+ * this drives the actual app: MainListScreen's Commands/Groups shortcuts, CommandDetailScreen's
+ * dynamically-rendered param fields and "Generate DataMatrix" button, the persistent camera
+ * scanner, and RunConfirmDialog/RecruitConfirmDialog's confirm taps.
  *
- * Drives the app via Jetpack Compose's test APIs (onNodeWithTag/
- * performClick/performTextInput) against the [Modifier.testTag]s each
- * screen sets, not Espresso View matchers or Activity-class identity --
- * this app moved from four Activities to one Activity + a NavHost of
- * Composable routes (see AppRoot.kt), which eliminated any distinct
- * Activity subclass to check "am I on the detail screen" against, and any
- * `R.id.*`-addressable View to findViewById. Back navigation is driven
- * directly through the current Activity's own `OnBackPressedDispatcher`
- * (see this class's own [pressBack]), not `Espresso.pressBack()` --
- * confirmed live against a real emulator that the two are *not*
- * interchangeable here: `Espresso.pressBack()` reliably finished the
- * Activity outright ("Pressed back and killed the app") on the very
- * first pop, even though the identical back press worked correctly when
- * sent manually (`adb shell input keyevent 4`) and Compose Navigation's
- * own back handling is otherwise unremarkable -- Espresso's pressBack
- * implementation predates `OnBackPressedDispatcher`/predictive back and
- * does not reliably route through the callback chain NavHost registers
- * with it, at least at the AndroidX versions this project currently
- * pins. Driving the dispatcher directly sidesteps that gap entirely.
+ * Drives the app via Jetpack Compose's test APIs (onNodeWithTag/performClick/performTextInput)
+ * against the [Modifier.testTag]s each screen sets, not Espresso View matchers or Activity-class
+ * identity -- this app is one Activity + a NavHost of Composable routes (see AppRoot.kt), which
+ * eliminated any distinct Activity subclass to check "am I on the detail screen" against, and any
+ * `R.id.*`-addressable View to findViewById. Back navigation is driven directly through the
+ * current Activity's own `OnBackPressedDispatcher` (see this class's own [pressBack]), not
+ * `Espresso.pressBack()` -- confirmed live against a real emulator that the two are *not*
+ * interchangeable here: `Espresso.pressBack()` reliably finished the Activity outright ("Pressed
+ * back and killed the app") on the very first pop, even though the identical back press worked
+ * correctly when sent manually (`adb shell input keyevent 4`) and Compose Navigation's own back
+ * handling is otherwise unremarkable -- Espresso's pressBack implementation predates
+ * `OnBackPressedDispatcher`/predictive back and does not reliably route through the callback chain
+ * NavHost registers with it, at least at the AndroidX versions this project currently pins.
+ * Driving the dispatcher directly sidesteps that gap entirely.
  *
- * Called via `adb shell am instrument -e class
- * com.gofsd.kvdemo.UiCommandE2ETest -e cases <base64>` by
- * pkg/e2erun/android.go, same as E2ETest -- see that file's own doc
- * comment. Two different concerns, two different test classes: E2ETest
- * proves the raw shmevent wire protocol works from a mobile client; this
- * proves every command is actually reachable and operable through the
- * screens a real user taps. pkg/e2erun/android.go itself, and the
- * `e2edata.UICase`/`ui_e2e_results.json` contract below, are unaffected
- * by the Compose rewrite -- android.go only cares about this class's
- * name, the "cases"/"onlyListedCases" instrumentation arg names, and the
- * results file's JSON schema, never about Views/Activities.
- *
- * The "cases" instrumentation argument (see buildCasesFromArg) is
- * base64-encoded JSON -- pkg/e2erun/android.go's runUICommandTest doc
- * comment has the full story, but in short: raw JSON's quotes/braces
- * reliably get mangled somewhere between `adb shell` and `am`'s own
- * argument parser, so it's base64 here specifically to avoid that, not a
- * style preference. Decoded, it's the JSON form of pkg/e2edata.File.UICases,
- * keyed by CommandSpec.label -- this file no longer hardcodes per-command
- * test plans itself, so test/e2e/testdata.json is the single source of
- * truth for both the cross-platform wire-protocol rows and this Android UI
- * command walk. A label with no entry in the parsed map (or no "cases"
- * argument at all, e.g. this test invoked directly via `./gradlew
- * connectedAndroidTest` rather than through pkg/e2erun) still gets full
- * navigation-only coverage via [defaultCase] -- see
- * [runAllCommandsThroughUi]'s loop -- just not a tailored execution.
- *
- * This device's build-time identity joins the shared, long-lived e2e
- * leader as a raft *learner*, not a voter, on its very first join (see
- * buildAndroidAAR's joinSuffrage=learner ldflag) -- deliberately, so
- * voter-gated writes this test executes are safe to actually invoke for
- * real without mutating the shared cluster's membership. That first-join
- * suffrage is NOT a standing guarantee, though: Kvmobile.start's own join
- * is a no-op for an identity that's already a cluster member (see that
- * function's doc comment), so a test identity that was ever admitted as a
- * voter by an *earlier* run (before this suffrage-pinning existed, or via
- * any other path) stays a voter indefinitely -- confirmed directly against
- * this exact shared cluster (and, worse, confirmed to have been able to
- * un-confirm itself: an earlier version of the Kick case below targeted
- * this device's own peer id, which actually executed a real RemoveServer
- * against it once it turned out to be a voter -- see that case's own
- * comment for why it never does that again).
- *
- * This device's *own* listClusterMembers() view of its current role
- * cannot be trusted to answer "am I a voter right now" either: it's this
- * device's locally-replicated snapshot, and confirmed directly to go
- * permanently stale the moment this identity stops actively
- * voting/replicating (a demotion left it reporting itself "voter" long
- * after an independent, direct query against the real leader showed it
- * had actually become "learner," with no further update ever arriving).
- * So voter-gated cases below (CreateJoinInvite/RevokeJoinInvite/Kick,
- * Execute's leader-address resolution) can't key their expected outcome
- * off this device's own reported state the way an earlier version of this
- * file tried to -- they use assertNoCrash instead, the same tolerant
- * "either outcome is fine, just don't crash" treatment Channel: OpenChannel
- * already needed for an unrelated reason (network reachability, not state
- * staleness). Several other commands are genuinely destructive to this
- * device's own
- * membership in that shared cluster if actually invoked (Join/JoinWithKey
- * switch clusters outright; StartPending(WithKey) resets to no-cluster;
- * Stop/Leave/Rm tear the daemon or membership down entirely; RecruitPeer
- * and ListenChannel need a second real device/peer actively cooperating,
- * the latter blocking indefinitely with nobody to unblock it) -- those
- * are marked `execute = false` below: real navigation to their own detail
- * screen (title, param field count) is still verified, but Run is never
- * tapped, exactly the same "browsable but not safely invokable in this
- * shared, single-device topology" reasoning `mage e2e:all`'s own
- * documented one-time-row caveats already apply elsewhere in this
- * project's e2e design.
- *
- * Join/RecruitPeer's "needs a second real device" gap is closed
- * separately, by pkg/e2erun/android_pair.go -- a step-by-step (not
- * single-shot) orchestration across two throwaway, never-shared devices,
- * reusing this same class one small case at a time via the
- * `onlyListedCases` instrumentation arg (see below) rather than a whole
- * new test class. This class's own flat, single-device `cases` sweep
- * still deliberately excludes them, for the reasons above.
- *
- * [buildEventScreenGeneratesDataMatrix]/[connectDeviceScreenGeneratesDataMatrix]
- * cover EventBuilderScreen/ConnectDeviceScreen -- MainListScreen's "Build
- * Event"/"Connect to Device" entries, added alongside "Commands"/"Groups"
- * for hand-constructing any event or a dial_submit_command specifically.
- * Neither is a CommandSpec (they call Kvmobile.encodeEvent/getOwnAddr
- * directly, not through buildCommands()), so runAllCommandsThroughUi's
- * catalog walk structurally cannot reach them -- these two @Test methods
- * are this class's only coverage of that surface, run automatically
- * alongside runAllCommandsThroughUi by the same `-e class
- * com.gofsd.kvdemo.UiCommandE2ETest` instrumentation call (no method
- * filter, so `am instrument` runs every @Test in the class -- see
- * pkg/e2erun/android.go's runUICommandTest). Both only verify Generate
- * reachability (the DataMatrix dialog actually appears), the same
- * "browsable and operable, not necessarily scanned by a second device"
- * scope runAllCommandsThroughUi itself uses for every unpaired command --
- * proving the *scan* side works end-to-end needs a real second device
- * and camera, exactly like Join/RecruitPeer above, and isn't attempted
- * here.
+ * Unlike an earlier version of this class, there is no whole-catalog "cases" sweep anymore: a
+ * command only executes by being scanned, and a scan is inherently a two-device, real-hardware
+ * event, so there is nothing left for a single-device instrumentation invocation to sweep through
+ * on its own. pkg/e2erun/android_optical.go's runOpticalMethod instead invokes exactly one of
+ * [generateAndHold]/[awaitAndVerifyScan]/[verifyLogContains] at a time (via `-e class
+ * com.gofsd.kvdemo.UiCommandE2ETest#<method>`), orchestrating device A (generates, holds) and
+ * device B (scans, confirms, executes) around one test/e2e/testdata.json android_optical_cases
+ * entry -- see that file's own doc comment for the full two-device design, and
+ * TestManualOpticalScan for how to run it against a real rig.
  */
+private const val TAG = "KVDemo"
+
 class UiCommandE2ETest {
 
     @get:Rule
     val composeTestRule = createAndroidComposeRule<MainActivity>()
 
-    /**
-     * One CommandSpec's real-UI test plan. [inputs] are typed into its
-     * param fields in order (must match spec.params.size when [execute]
-     * is true -- checked below, a mismatch is a bug in this file, not a
-     * real per-command failure). [execute] gates whether Run is actually
-     * tapped; false means navigation-only (see class doc comment for
-     * which commands and why). [expect] runs against the exact line
-     * CommandDetailScreen's Run handler appended to its output log --
-     * `"$label(args) ->\n$result"` on success or `"$label(args) FAILED:
-     * $msg"` on a thrown exception -- called only when [execute] is true.
-     */
-    private class Case(
-        val inputs: List<String> = emptyList(),
-        val execute: Boolean = false,
-        val expect: (String) -> Unit = { assertSucceeded(it) },
-        // Re-taps Run (see runCommandWithRetry) for up to this long if the
-        // first attempt's output line contains "FAILED", before giving up
-        // and letting that failure reach [expect] -- for cases whose
-        // success depends on this follower's own local raft apply catching
-        // up with a write this same run just committed on the leader
-        // moments earlier (KV: Get, below), the same follower-replication-
-        // lag window E2ETest.kt's own sendWithRetry already retries around
-        // for get_field/get_key. Zero (the default) means no retry.
-        val retryBudgetMs: Long = 0,
-        // 1-based position in a caller-defined sequence -- see
-        // e2edata.UICase.Order and [runOrderedWalk]. Zero (the default)
-        // means this case belongs to an unordered sweep, which is what
-        // every caller but pkg/e2erun/android_pair.go runs.
-        val order: Int = 0,
-    )
-
     private companion object {
-        // "FAILED" only ever appears in CommandDetailScreen's Run
-        // handler's own catch-branch formatting -- never in a successful
-        // result string in practice, so it's a reliable discriminator
-        // without needing to parse the result's own JSON.
+        // "FAILED" only ever appears in CommandExecutor's own catch-branch formatting -- never in
+        // a successful result string in practice, so it's a reliable discriminator without
+        // needing to parse the result's own JSON.
         fun assertSucceeded(line: String) =
             Assert.assertFalse("expected success, got: $line", line.contains("FAILED"))
 
         fun assertRejected(line: String) =
             Assert.assertTrue("expected a rejection (this device is a learner, not a voter), got: $line", line.contains("FAILED"))
 
-        // Accepts either outcome -- for commands whose success depends on
-        // shared-leader configuration this test doesn't control (e.g.
-        // RequirePermitForLog), where the only thing actually worth
-        // proving is that the UI surfaces *a* clean, well-formed result
-        // either way, never a crash.
+        // Accepts either outcome -- for commands whose success depends on shared-leader
+        // configuration this test doesn't control, where the only thing actually worth proving is
+        // that Execute produces *a* clean, well-formed result either way, never a crash.
         fun assertNoCrash(@Suppress("UNUSED_PARAMETER") line: String) = Unit
 
-        // Bounds how long runCommand waits for CommandDetailScreen's
-        // background coroutine to post a result -- generous enough to
-        // cover a real forwarded-write round trip to the shared remote
-        // leader (and OpenChannel/RedeemExecInvite's own up-to-60s
-        // internal timeouts, see kvmobile's callTimeout) without hanging
-        // the whole suite forever if something is genuinely stuck.
-        //
-        // Raised from 65s once two commands legitimately outgrew it:
-        // RequestRelayAccess, which waits on a real relay reservation
-        // (measured ~30-40s on an emulator through the deployed VPS
-        // relay), and pkg/e2erun/android_pair.go's hold sleep, which has
-        // to keep this device's daemon alive for the whole of another
-        // device's own start-up-and-reserve before it can dial in.
-        const val RUN_TIMEOUT_MS = 180_000L
-        const val POLL_INTERVAL_MS = 250L
+        // Backs OpticalExpectSpec.Result's "contains:<substring>" convention (see
+        // resultExpectation) -- unlike assertSucceeded/assertRejected/assertNoCrash, which only
+        // ever look at whether the result line contains the literal word "FAILED", this actually
+        // checks the command's own reported effect against an expected value.
+        fun assertContains(line: String, want: String) =
+            Assert.assertTrue("expected result to contain \"$want\", got: $line", line.contains(want))
 
-        // Bounds waitForScreen's poll for a navigation target's testTag to
-        // actually appear in the composition. 10s is generous for what's
-        // normally a same-process transition with no network involved --
-        // this exists for the rare case it isn't instant, not to paper
-        // over a real hang.
+        // Bounds how long awaitAndVerifyScan waits for CommandExecutor's background coroutine to
+        // post a result after Execute is tapped -- generous enough to cover a real forwarded-write
+        // round trip to the shared remote leader (and OpenChannel/RedeemExecInvite's own up-to-60s
+        // internal timeouts, see kvmobile's callTimeout) without hanging the whole suite forever if
+        // something is genuinely stuck. Also covers RequestRelayAccess's own real relay
+        // reservation (measured ~30-40s on an emulator through the deployed VPS relay when
+        // granting fresh) and the hold sleep that keeps a device's daemon alive for the whole of
+        // another device's own start-up-and-reserve before it can dial in.
+        const val RUN_TIMEOUT_MS = 180_000L
+
+        // Prefix every generateAndHold/awaitAndVerifyScan/verifyLogContains log line with this so
+        // `adb logcat -s KVDemo:* | grep OPTICAL` isolates the optical-scan harness's own
+        // diagnostic trail from the rest of this app's KVDemo-tagged logging (AppRoot's own
+        // "AUTO: scan received"/"ACTION_REQUIRED: ..." lines included) -- added after a run whose
+        // only failure evidence was a bare timeout/stack trace left real questions ("did a scan
+        // even happen? what did it decode? how far did my own code get before the crash?")
+        // unanswerable without this.
+        const val OPTICAL_LOG_TAG = "OPTICAL:"
+
+        // Bounds waitForScreen's poll for a navigation target's testTag to actually appear in the
+        // composition. 10s is generous for what's normally a same-process transition with no
+        // network involved -- this exists for the rare case it isn't instant, not to paper over a
+        // real hang.
         const val NAV_TIMEOUT_MS = 10_000L
+
+        // generateAndHoldAll/awaitAndVerifyScanAll's own per-case pacing -- unlike the single-case
+        // methods' much larger HoldMillis/TimeoutMs (tuned for a relaunch-per-case run, generous
+        // enough to cover a from-scratch relay reservation on top of the scan itself), both
+        // devices already hold live relay standing throughout an "All" batch (established once at
+        // the top, not re-earned per case), so a real camera scan alone -- confirmed live to
+        // typically decode within ~1s once both devices are already warmed up -- is the only
+        // per-case latency left to budget for.
+        //
+        // BATCH_HOLD_MILLIS must stay >= BATCH_TIMEOUT_MS -- confirmed live the hard way, running
+        // the full 90-case catalog, that this is not just a tuning nicety but a correctness
+        // invariant: generateAndHoldAll advances to the next case on a fixed clock with no
+        // feedback from B at all, so if a single case ever costs B close to its own full
+        // BATCH_TIMEOUT_MS (one slow camera focus, one deeper category's extra navigation), A can
+        // already be showing a *later* case's code by the time B starts waiting for this one. Once
+        // that happens B is permanently behind -- every subsequent wait times out (A always
+        // finishes moving on before B's slower, timeout-bound loop catches up), which is exactly
+        // what a live run showed: clean case-by-case progress through ~12 cases, then an
+        // unbroken chain of "'runConfirmExecute' not shown after 15000ms" for every case after.
+        // Keeping the hold at least as long as the timeout restores the invariant that matters:
+        // A never moves past a code before B's own worst-case wait for it has had a chance to
+        // land, so a single slow case costs at most one case's worth of margin, not the rest of
+        // the run.
+        //
+        // 15s/20s turned out to still be too tight once the signal-based advance (see
+        // awaitCaseSignalOrCeiling) made these ceilings genuine fallbacks rather than the normal
+        // pace-setter: confirmed live across repeated full 90-case runs that ordinary,
+        // non-broken camera decode latency occasionally exceeds 15s even well after warmup and
+        // with a clean line of sight (no fixed case index is consistently the slow one -- it
+        // moves around run to run), so a 15s per-case ceiling still occasionally aborted an
+        // otherwise-healthy run. Raised with real margin over the observed range (near-instant to
+        // ~8s in healthy runs).
+        const val BATCH_HOLD_MILLIS = 30_000L
+        const val BATCH_TIMEOUT_MS = 25_000L
+
+        // generateAndHoldAll holds its *first* case for this much longer than BATCH_HOLD_MILLIS --
+        // device B's own join (to device A, which generateAndHoldAll's own preamble only just
+        // brought up) needs a real relay reservation of its own, re-established from scratch every
+        // process launch, confirmed live to take up to ~90s on a real device. Every later case
+        // shares that same already-established standing (kvmobile.go's own SELFHEAL persists the
+        // grant server-side, and libp2p's reservation-once-open keeps working across the rest of
+        // the run), so only the first case needs this much room -- confirmed live: without it, A
+        // raced through and finished generating an entire short batch before B had even reached
+        // screen_main, let alone started watching.
+        const val FIRST_CASE_HOLD_MILLIS = 100_000L
+
+        // awaitAndVerifyScanAll's own counterpart to FIRST_CASE_HOLD_MILLIS: device A holds case
+        // index 0 on screen for up to FIRST_CASE_HOLD_MILLIS regardless of how quickly B actually
+        // caught it (a fixed sleep, not signalled early on B's success), so case index 0's *own*
+        // code can still be on screen for that entire span, and case index 1's code cannot appear
+        // until that span elapses -- confirmed live: with BATCH_TIMEOUT_MS's ordinary 15s budget
+        // on both, a fast join (B catching case 0 in seconds) made case 1's wait time out at 15s
+        // while A was still ~85s away from ever showing it, cascading into every case after it
+        // timing out too. Applied to indices 0 and 1 only -- case 0 needs it for the same
+        // worst-case-join reason FIRST_CASE_HOLD_MILLIS exists at all (up to ~90s, observed live),
+        // and case 1 needs it purely to outlast A's fixed hold on case 0; index 2 onward is back on
+        // BATCH_HOLD_MILLIS/BATCH_TIMEOUT_MS's already-synchronized fast cadence.
+        const val FIRST_CASE_AWAIT_TIMEOUT_MS = FIRST_CASE_HOLD_MILLIS + 20_000L
+
+        // Both devices are already part of the same live raft cluster for the whole batch (A the
+        // solo leader, B a joined learner), but the raft-replicated KV store is the wrong transport
+        // for this: confirmed live even A's own *local* Submit (no forwarding, no network hop at
+        // all) routinely took several real seconds -- a raft commit, unsurprisingly, since that's
+        // exactly what Submit is for. Kvmobile's Channel API (OpenChannel/ListenChannel/
+        // SendChannelData -- see mobile/kvmobile/channel.go's own doc comment: "a persistent,
+        // unreplicated, bidirectional, multipurpose stream to another peer") is the actual
+        // purpose-built low-latency path this project already has for exactly this kind of
+        // one-off, no-consensus-needed notification, so this mechanism uses that instead: A calls
+        // ListenChannel once (see [startCaseSignalListener]) and records whatever case_id arrives
+        // in [lastSignaledCaseID]; B calls OpenChannel to A's own peer id once (see
+        // [openCaseSignalChannel]) and SendChannelData's the current case_id every time it finishes
+        // one (see [signalCaseDone]).
+        //
+        // B only ever signals a case it actually PASSED -- a failed case (wrong/missing scan,
+        // rejected result that didn't match what was expected) has nothing useful for A to advance
+        // into, so it stays silent instead. That makes a missing signal within the ceiling mean one
+        // of exactly two things, both fatal to the rest of the run: B failed this case, or the
+        // signal channel itself is broken -- either way there is no sound reason to keep generating
+        // 90 codes nobody will ever correctly consume, so both sides abort the whole batch the first
+        // time this happens (see generateAndHoldAll/awaitAndVerifyScanAll's own loops) rather than
+        // cascading through every remaining case as a wall of timeouts, which is what an earlier,
+        // always-signal-regardless-of-outcome version of this mechanism did in practice.
+        const val SIGNAL_POLL_INTERVAL_MS = 200L
+        // Must be one of shmevent.ChannelPurposeName's own fixed strings ("data"/"control"/
+        // "video") or a plain decimal byte -- confirmed live an arbitrary label like
+        // "optical_case_done" is rejected outright ("unknown purpose"), not just logged oddly.
+        // "data" is the correct, semantically-plain choice for this arbitrary small payload.
+        const val SIGNAL_CHANNEL_PURPOSE = "data"
     }
 
-    @Test
-    fun runAllCommandsThroughUi() {
-        val context = InstrumentationRegistry.getInstrumentation().targetContext
-        val dataDir = context.filesDir.absolutePath
+    /** Set by [startCaseSignalListener]'s ChannelCallback (on the channel's own pump thread, per its own doc comment -- hence AtomicReference, not a plain var) to whatever case_id B most recently signalled. */
+    private val lastSignaledCaseID = AtomicReference<String>()
 
-        // Kvmobile.start is idempotent (safe to call again once already
-        // running, see its own doc comment) -- calling it directly here
-        // just to learn this device's own peer id and the shared
-        // cluster's current leader without needing a UI round trip for
-        // fixture data no real user would ever type in by hand. AppRoot's
-        // own LaunchedEffect(Unit) already calls Start too, as part of
-        // composeTestRule launching MainActivity for this test -- the two
-        // calls racing/overlapping is the same idempotent-concurrent-safe
-        // pattern this test relied on before the Compose rewrite (the old
-        // MainActivity.onCreate's own background Thread called Start the
-        // same way, independent of this fixture call). Best-effort:
-        // pkg/e2erun/android_pair.go's AAR build deliberately bakes in no
-        // leaderMultiaddr at all (its two devices only ever use
-        // StartSoloWithKey/StartPendingWithKey, never this build-time-
-        // leader Start), so Start throws "no leader multiaddr baked in at
-        // build time" there on every invocation -- that's expected and
-        // must not fail the whole test, since selfPeerID/leaderPeerID are
-        // unused by that orchestration's own literal, pre-computed case
-        // inputs anyway.
-        val selfPeerID = runCatching { Kvmobile.start(dataDir) }.getOrDefault("")
-        // Best-effort only: this device's own listClusterMembers() is its
-        // locally-replicated snapshot, confirmed directly to go
-        // permanently stale once this identity stops actively voting/
-        // replicating (no further update ever arrives after that point,
-        // not even a delayed one) -- so leaderPeerID below is a plausible
-        // dial target, not a guaranteed-correct one, and no case may
-        // assume this device's own reported role/suffrage reflects its
-        // real current standing (see class doc comment).
-        val members = runCatching { JSONArray(Kvmobile.listClusterMembers()) }.getOrNull()
-        val leaderPeerID = (0 until (members?.length() ?: 0))
-            .map { members!!.getJSONObject(it) }
-            .firstOrNull { it.optString("role") == "leader" }
-            ?.optString("peer_id") ?: selfPeerID
+    /**
+     * Device-A setup, called once before the case loop: opens a listener for device B's own
+     * [signalCaseDone] channel and records every case_id it delivers into [lastSignaledCaseID].
+     * `Kvmobile.listenChannel` blocks internally until a peer actually connects (see its own doc
+     * comment), so this runs on a background coroutine rather than the caller's -- calling it
+     * inline would block [generateAndHoldAll] from ever generating case 0's own code while waiting
+     * for a connection B won't even attempt until well into its own setup. Dispatched via
+     * `Dispatchers.IO` specifically, the same mechanism every other background Kvmobile call in
+     * this app already uses (see CommandExecutor.execute/AppRoot's own Kvmobile.start()) -- an
+     * earlier version of this spawned a raw `java.lang.Thread` instead, confirmed live that crashes
+     * the whole process with a Go runtime fatal error ("bulkBarrierPreWrite: unaligned arguments")
+     * the moment a long-lived blocking gomobile call runs on a thread the Go runtime never
+     * otherwise sees; Dispatchers.IO's own managed thread pool doesn't have that problem.
+     */
+    private fun startCaseSignalListener(opticalTag: String) {
+        CoroutineScope(Dispatchers.IO).launch {
+            val result = runCatching {
+                Kvmobile.listenChannel(object : ChannelCallback {
+                    override fun onData(purpose: String, chunk: ByteArray) {
+                        lastSignaledCaseID.set(String(chunk, StandardCharsets.UTF_8))
+                    }
+                    override fun onClosed(reason: String) {
+                        Log.i(TAG, "$opticalTag signal channel closed: $reason")
+                    }
+                })
+            }
+            Log.i(TAG, "$opticalTag signal channel listener -> ${result.getOrNull()} (error=${result.exceptionOrNull()?.message})")
+        }
+    }
 
-        val casesArg = InstrumentationRegistry.getArguments().getString("cases")
-        val cases = buildCasesFromArg(casesArg, selfPeerID, leaderPeerID)
-        // onlyListedCases: pkg/e2erun/android_pair.go's step-by-step
-        // orchestration passes this so each single-case instrumentation
-        // call only touches the one command it cares about, instead of
-        // walking (and Run-tapping-or-not) the whole ~60-command catalog
-        // every time -- absent (every other call site), behavior is
-        // unchanged from before this flag existed.
-        val onlyListedCases = (InstrumentationRegistry.getArguments().getString("onlyListedCases") ?: "false").toBoolean()
+    /**
+     * Polls [lastSignaledCaseID] for up to [maxMillis], returning true as soon as it reads back
+     * [caseID] rather than always waiting the full duration, or false once [maxMillis] elapses with
+     * no matching signal -- the caller ([generateAndHoldAll]) treats false as fatal to the whole
+     * batch, not just this case (see the class's own doc comment on [SIGNAL_POLL_INTERVAL_MS] for
+     * why).
+     */
+    private fun awaitCaseSignalOrCeiling(caseID: String, maxMillis: Long): Boolean {
+        val deadline = System.currentTimeMillis() + maxMillis
+        while (System.currentTimeMillis() < deadline) {
+            if (lastSignaledCaseID.get() == caseID) return true
+            Thread.sleep(SIGNAL_POLL_INTERVAL_MS)
+        }
+        return false
+    }
 
-        val allCommands = buildCommands(dataDir) { }
-        Assert.assertTrue("catalog is unexpectedly empty", allCommands.isNotEmpty())
-        val commandsToWalk = if (onlyListedCases) allCommands.filter { cases.containsKey(it.label) } else allCommands
+    /**
+     * Device-B setup, called once before the case loop: discovers device A's own peer id (the
+     * "leader" entry in this device's own live cluster membership -- it already joined A as a
+     * learner well before this point) and opens a signal channel to it. Returns null (logged, not
+     * thrown) on any failure -- [signalCaseDone] already treats a missing channel the same as a
+     * failed send, which correctly starves A into aborting the batch either way.
+     */
+    private fun openCaseSignalChannel(opticalTag: String): String? {
+        val leaderPeerID = runCatching {
+            val members = JSONArray(Kvmobile.listClusterMembers())
+            (0 until members.length())
+                .map { members.getJSONObject(it) }
+                .first { it.getString("role") == "leader" }
+                .getString("peer_id")
+        }.getOrNull()
+        if (leaderPeerID == null) {
+            Log.w(TAG, "$opticalTag openCaseSignalChannel: could not discover leader peer id from listClusterMembers")
+            return null
+        }
+        val channelID = runCatching {
+            Kvmobile.openChannel(
+                leaderPeerID,
+                object : ChannelCallback {
+                    override fun onData(purpose: String, chunk: ByteArray) = Unit
+                    override fun onClosed(reason: String) {
+                        Log.i(TAG, "$opticalTag signal channel to $leaderPeerID closed: $reason")
+                    }
+                },
+            )
+        }.getOrNull()
+        Log.i(TAG, "$opticalTag signal channel to leader($leaderPeerID) -> $channelID")
+        return channelID
+    }
 
-        // A caller that stamped every one of its cases with an `order`
-        // (pkg/e2erun/android_pair.go, via e2edata.UICase.Order) is asking
-        // for a *sequence*, not a sweep: run them in exactly that order,
-        // re-entering the right category for each one, instead of the
-        // catalog's own category-by-category walk. Without this the walk
-        // order silently won, and a step's own settle-sleep -- being in the
-        // "Test" category, walked after "Cluster" -- ran after the command
-        // it was supposed to precede, so a scenario built on "resume, wait,
-        // then act" never actually waited. The sweep path (no order stamped,
-        // every other caller) is untouched.
-        val orderedWalk = commandsToWalk
-            .filter { (cases[it.label]?.order ?: 0) > 0 }
-            .sortedBy { cases[it.label]!!.order }
-        if (orderedWalk.size == commandsToWalk.size && orderedWalk.isNotEmpty()) {
-            runOrderedWalk(orderedWalk, cases, context)
+    /** Device B's own signal that it has finished (and passed) [caseID] -- see the class's own doc comment on [SIGNAL_POLL_INTERVAL_MS]. Best-effort: a failure here is indistinguishable to A from B never having passed the case at all, which is the correct fallback -- A aborts the batch either way. */
+    private fun signalCaseDone(caseID: String, signalChannelID: String?, opticalTag: String) {
+        if (signalChannelID == null) {
+            Log.w(TAG, "$opticalTag signalCaseDone($caseID): no signal channel open, skipping")
             return
         }
+        val result = runCatching { Kvmobile.sendChannelData(signalChannelID, SIGNAL_CHANNEL_PURPOSE, caseID.toByteArray(StandardCharsets.UTF_8)) }
+        if (result.isFailure) {
+            Log.w(TAG, "$opticalTag signalCaseDone($caseID) failed: ${result.exceptionOrNull()?.message}")
+        }
+    }
 
-        val failures = mutableListOf<String>()
+    /**
+     * Device-A half of the real-camera optical-scan e2e harness (pkg/e2erun/android_optical.go,
+     * driven by test/e2e/testdata.json's android_optical_cases): decodes a single
+     * [e2edata.OpticalGenerateSpec]-shaped JSON object (plus its own "case_id"/"hold_millis")
+     * from the "opticalSpec" instrumentation arg, generates it via [generateOneCase], and holds
+     * the result on screen for a real camera on a second device to read. A thin single-case
+     * wrapper kept for standalone spot-checking (e.g. `-e class ...#generateAndHold` against one
+     * case by hand) -- [generateAndHoldAll] is what pkg/e2erun/android_optical.go actually drives
+     * now, looping every case in one still-alive session instead of relaunching per case. Silently
+     * returns if the arg is absent, same "this test invoked some other way" tolerance
+     * [instrumentationArgJson] gives any missing/unparsable arg.
+     */
+    @Test
+    fun generateAndHold() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val spec = instrumentationArgJson("opticalSpec") ?: return
+        val caseID = spec.getString("case_id")
+        val holdMillis = spec.optLong("hold_millis", 30_000L)
+        val opticalTag = "$OPTICAL_LOG_TAG generateAndHold case=$caseID"
+        Log.i(TAG, "$opticalTag starting")
+
+        startSoloAndRequestRelay(context, opticalTag)
+        waitForScreen("screen_main")
+        val entry = generateOneCase(context, spec, opticalTag)
+        writeResults(context, JSONArray().put(entry))
+        Log.i(TAG, "$opticalTag holding for ${holdMillis}ms")
+        Thread.sleep(holdMillis)
+        Log.i(TAG, "$opticalTag hold complete, returning")
+    }
+
+    /**
+     * Batched device-A half of the optical harness: decodes {"specs": [...]} (an array of
+     * [e2edata.OpticalGenerateSpec]-shaped objects, each with its own "case_id") from the
+     * "opticalSpecs" instrumentation arg, and loops [generateOneCase] over every one of them in a
+     * single still-alive session -- the StartSolo/RequestRelayAccess preamble runs exactly once
+     * for the whole batch, not once per case, which is the entire point: an earlier per-case
+     * design relaunched a fresh instrumentation process (so a fresh Android app process, a fresh
+     * Kvmobile session bootstrap) for every single case, and that relaunch overhead, confirmed
+     * live, dwarfed the actual navigation/scan work when multiplied by a 90-case run. Between
+     * cases, dismisses the generated code and navigates back to screen_main (see
+     * [resetToMainAfterGenerate]) rather than letting the Activity tear down, so the next case
+     * starts from the same clean state generateAndHold's own single-case version gets for free
+     * from a fresh process. Holds each case until device B signals it's done over a direct signal
+     * channel (see [awaitCaseSignalOrCeiling]/[startCaseSignalListener]), not for a fixed sleep --
+     * [BATCH_HOLD_MILLIS]/[FIRST_CASE_HOLD_MILLIS] remain the fallback ceiling if that signal never
+     * arrives, not the normal-case wait (confirmed live this distinction matters: a fixed hold
+     * shorter than B's own worst-case per-case time is a correctness bug, not just lost speed --
+     * see those constants' own doc comments). Writes the accumulated results array after every
+     * case, not just at the end, so the Go harness could observe partial progress if it ever needed
+     * to (it doesn't today -- it only reads the file once the whole invocation has finished).
+     */
+    @Test
+    fun generateAndHoldAll() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val arg = instrumentationArgJson("opticalSpecs") ?: return
+        val specs = arg.getJSONArray("specs")
+        val opticalTag = "$OPTICAL_LOG_TAG generateAndHoldAll"
+        Log.i(TAG, "$opticalTag starting, ${specs.length()} case(s)")
+
+        startSoloAndRequestRelay(context, opticalTag)
+        waitForScreen("screen_main")
+        startCaseSignalListener(opticalTag)
+
         val results = JSONArray()
-
-        navigateToCategories()
-        // Real on-screen order/content, from the full unfiltered catalog
-        // -- not commandsToWalk, which onlyListedCases may have filtered
-        // down to a subset that no longer matches actual row positions.
-        // See clickListItem's doc comment for why the index must come
-        // from here.
-        val allCategories = allCommands.map { it.category }.distinct()
-        val categories = commandsToWalk.map { it.category }.distinct()
-        for (category in categories) {
-            clickListItem(category, allCategories.indexOf(category))
-            val allNamesInCategory = allCommands.filter { it.category == category }.map { it.name }
-            val commandsInCategory = commandsToWalk.filter { it.category == category }
-            for (spec in commandsInCategory) {
-                val entry = runOneCase(spec, cases[spec.label] ?: Case(), allNamesInCategory.indexOf(spec.name), failures)
-                results.put(entry)
-                writeResults(context, results)
+        for (i in 0 until specs.length()) {
+            val spec = specs.getJSONObject(i)
+            val caseID = spec.optString("case_id", "?")
+            val caseTag = "$opticalTag case=$caseID (${i + 1}/${specs.length()})"
+            val entry = try {
+                generateOneCase(context, spec, caseTag)
+            } catch (e: Throwable) {
+                Log.w(TAG, "$caseTag FAIL error=${e.message}")
+                JSONObject().put("command", "OpticalGenerate: $caseID").put("pass", false).put("error", e.message ?: e.toString())
             }
-            pressBack()
-        }
-
-        if (failures.isNotEmpty()) {
-            Assert.fail("${failures.size} of ${results.length()} command(s) failed:\n" + failures.joinToString("\n"))
-        }
-    }
-
-    /**
-     * EventBuilderScreen: pick the "set" op (the simplest two-field case --
-     * key/value, no numeric/kind encoding to get right), fill both fields,
-     * tap Generate, and confirm the DataMatrix dialog actually renders.
-     * See class doc comment for why this exists as its own @Test rather
-     * than a CommandCatalog.kt entry.
-     */
-    @Test
-    fun buildEventScreenGeneratesDataMatrix() {
-        waitForScreen("screen_main")
-        composeTestRule.onNodeWithTag("mainListItem_buildEvent").performClick()
-        waitForScreen("screen_event_builder")
-
-        composeTestRule.onNodeWithTag("eventOpDropdown").performClick()
-        composeTestRule.onNodeWithTag("eventOpDropdown_option_set").performClick()
-        composeTestRule.onNodeWithTag("eventField_0").performTextInput("e2e-ui-test-key")
-        composeTestRule.onNodeWithTag("eventField_1").performTextInput("e2e-ui-test-value")
-        composeTestRule.onNodeWithTag("generateButton").performClick()
-
-        waitForScreen("generatedDataMatrixImage")
-        composeTestRule.onNodeWithTag("generatedDataMatrixClose").performClick()
-    }
-
-    /**
-     * ConnectDeviceScreen: confirm targetPeer auto-fills from GetOwnAddr
-     * (not left blank), fill commandID/inputsJSON, tap Generate, and
-     * confirm the DataMatrix dialog actually renders. See class doc
-     * comment for why this exists as its own @Test rather than a
-     * CommandCatalog.kt entry.
-     */
-    @Test
-    fun connectDeviceScreenGeneratesDataMatrix() {
-        waitForScreen("screen_main")
-        composeTestRule.onNodeWithTag("mainListItem_connectDevice").performClick()
-        waitForScreen("screen_connect_device")
-
-        try {
-            composeTestRule.waitUntil(RUN_TIMEOUT_MS) { readFieldText("targetPeerField").isNotBlank() }
-        } catch (e: ComposeTimeoutException) {
-            throw AssertionError("targetPeer never auto-filled after ${RUN_TIMEOUT_MS}ms", e)
-        }
-
-        composeTestRule.onNodeWithTag("commandIDField").performTextInput("e2e-ui-test-command")
-        composeTestRule.onNodeWithTag("inputsJSONField").performTextInput("e2e-ui-test-inputs")
-        composeTestRule.onNodeWithTag("generateButton").performClick()
-
-        waitForScreen("generatedDataMatrixImage")
-        composeTestRule.onNodeWithTag("generatedDataMatrixClose").performClick()
-    }
-
-    /**
-     * Runs [ordered] one at a time, in exactly the order the caller asked
-     * for (see [Case.order]), re-entering each command's own category for
-     * every step rather than walking a category's commands together. That
-     * costs one extra back-navigation per step and is the whole point: a
-     * sequence like "resume this daemon, wait 20s, then read its address"
-     * spans two categories, and grouping by category reorders it into
-     * nonsense.
-     */
-    private fun runOrderedWalk(ordered: List<CommandSpec>, cases: Map<String, Case>, context: android.content.Context) {
-        val failures = mutableListOf<String>()
-        val results = JSONArray()
-
-        // Real on-screen order/content -- see clickListItem's doc
-        // comment for why this must come from the full, unfiltered
-        // catalog rather than `ordered` (which is itself already a
-        // caller-selected subset in this walk).
-        val allCommands = buildCommands(InstrumentationRegistry.getInstrumentation().targetContext.filesDir.absolutePath) { }
-        val allCategories = allCommands.map { it.category }.distinct()
-
-        navigateToCategories()
-        for (spec in ordered) {
-            clickListItem(spec.category, allCategories.indexOf(spec.category))
-            val allNamesInCategory = allCommands.filter { it.category == spec.category }.map { it.name }
-            val entry = runOneCase(spec, cases[spec.label] ?: Case(), allNamesInCategory.indexOf(spec.name), failures)
             results.put(entry)
             writeResults(context, results)
-            // Back out of the category list too, so the next step starts
-            // from the same categories screen this one did.
-            pressBack()
-        }
-
-        if (failures.isNotEmpty()) {
-            Assert.fail("${failures.size} of ${results.length()} command(s) failed:\n" + failures.joinToString("\n"))
-        }
-    }
-
-    /**
-     * Navigates into [spec] from its category list, optionally runs it, and
-     * returns the result entry -- shared by the ordered walk and the flat
-     * per-category sweep so both report identically. Leaves the UI back on
-     * the category list (the `finally` press-back), whichever way it went.
-     * [nameIndex] is spec.name's position in its category's real on-screen
-     * command list -- see clickListItem's doc comment.
-     */
-    private fun runOneCase(spec: CommandSpec, case: Case, nameIndex: Int, failures: MutableList<String>): JSONObject {
-        val label = spec.label
-        val entry = JSONObject().put("command", label)
-        try {
-            clickListItem(spec.name, nameIndex)
-            verifyDetailScreen(spec)
-            if (case.execute) {
-                Assert.assertEquals(
-                    "$label: Case.inputs size must match spec.params size",
-                    spec.params.size,
-                    case.inputs.size,
-                )
-                val output = runCommandWithRetry(case.inputs, case.retryBudgetMs)
-                case.expect(output)
-                // Surface the command's real return value back to the Go
-                // harness -- CommandDetailScreen's Run handler's success
-                // format is "$label(args) ->\n$result", so strip that
-                // fixed prefix to recover $result alone (e.g. GetOwnAddr's
-                // address, CreateJoinRequest's token, ListClusterMembers'
-                // JSON) -- needed by pkg/e2erun/android_pair.go's
-                // cross-device orchestration, unused by the flat
-                // per-label sweep.
-                val prefix = "$label(${case.inputs.joinToString(", ")}) ->\n"
-                if (output.startsWith(prefix)) {
-                    entry.put("output", output.removePrefix(prefix))
-                }
+            // Matches awaitAndVerifyScanAll's own `i <= 1` extension (see
+            // FIRST_CASE_AWAIT_TIMEOUT_MS's doc comment) -- confirmed live this asymmetry is a
+            // real bug, not just an unnecessary ceiling gap: B's own budget for case index 1 is
+            // already this generous, so a merely-slow-not-broken decode there (observed live: a
+            // camera refocus mid-decode pushed a single scan past 20s even after the rig was
+            // already warmed up) made A give up and abort the whole batch before B's own,
+            // correctly-sized wait ever had a chance to succeed.
+            val holdCeilingMillis = if (i <= 1) FIRST_CASE_AWAIT_TIMEOUT_MS else BATCH_HOLD_MILLIS
+            Log.i(TAG, "$caseTag awaiting B's completion signal, ceiling ${holdCeilingMillis}ms")
+            if (!awaitCaseSignalOrCeiling(caseID, holdCeilingMillis)) {
+                Log.w(TAG, "$caseTag no completion signal from B within ${holdCeilingMillis}ms -- aborting the rest of the batch (every remaining case would just be generated for nobody to catch)")
+                break
             }
-            entry.put("pass", true)
-        } catch (e: Throwable) {
-            entry.put("pass", false)
-            entry.put("error", e.message ?: e.toString())
-            failures += "$label: ${e.message}"
-        } finally {
-            pressBack()
+            resetToMainAfterGenerate(spec.optString("target", ""))
         }
-        return entry
+        Log.i(TAG, "$opticalTag all ${specs.length()} case(s) generated, returning")
     }
 
     /**
-     * Writes the results file after every entry, not just once at the very
-     * end (an earlier version of this file did that): lets
-     * pkg/e2erun/android_pair.go's runUIStepsBackgroundPeek pull and observe
-     * an early op's own result (e.g. CreateJoinRequest's token) via `adb
-     * pull` while this SAME instrumentation invocation is still running a
-     * later op (e.g. a trailing "Test: SleepMillis" hold keeping this
-     * process -- and so its daemon's listener -- alive for a
-     * concurrently-dialing peer on a different device). The last entry's own
-     * write already covers the final steady-state content, so there is no
-     * separate write after the loop.
+     * Device A's own StartSolo/RequestRelayAccess preamble, shared by [generateAndHold] and
+     * [generateAndHoldAll] -- device A's own build deliberately bakes no leaderMultiaddr (see
+     * TestManualOpticalScan's own doc comment on why: a leader baked to device A's *own* address,
+     * correct for device B's build, would make device A's automatic Kvmobile.start() try to dial
+     * itself), so AppRoot's own auto-Start always fails harmlessly here, and this device needs its
+     * own explicit, idempotent bootstrap before anything that needs a signing key or a real
+     * dialable address can work. Both calls are safe to repeat against an already-provisioned/
+     * already-granted state (see StartSolo's and RequestRelayAccess's own doc comments).
+     */
+    private fun startSoloAndRequestRelay(context: android.content.Context, opticalTag: String) {
+        val startSoloResult = runCatching { Kvmobile.startSolo(context.filesDir.absolutePath) }
+        Log.i(TAG, "$opticalTag startSolo -> ${startSoloResult.getOrNull()} (error=${startSoloResult.exceptionOrNull()?.message})")
+        val relayResult = runCatching { Kvmobile.requestRelayAccess("optical e2e generateAndHold") }
+        Log.i(TAG, "$opticalTag requestRelayAccess -> ${relayResult.getOrNull()} (error=${relayResult.exceptionOrNull()?.message})")
+    }
+
+    /**
+     * Generates one [spec]-described case -- shared by [generateAndHold] (one case, fresh
+     * process) and [generateAndHoldAll] (many cases, one session) -- and returns its
+     * "OpticalGenerate: <case_id>" result entry. Assumes the caller is already on screen_main
+     * (both callers arrange this: a fresh process starts there; a later batch iteration is put
+     * back there by [resetToMainAfterGenerate]) and has already done the StartSolo/
+     * RequestRelayAccess preamble ([startSoloAndRequestRelay]). Navigates to whichever of the
+     * app's two DataMatrix-generating screens `target` names, fills in `params`, taps Generate,
+     * and confirms the code actually rendered -- leaves it on screen (generatedDataMatrixImage)
+     * for the caller to hold/dismiss, since how long to hold and what happens next differs
+     * between the two callers.
+     */
+    private fun generateOneCase(context: android.content.Context, spec: JSONObject, opticalTag: String): JSONObject {
+        val caseID = spec.getString("case_id")
+        val target = spec.getString("target")
+        val category = spec.optString("category", "")
+        fun field(i: Int) = spec.getJSONArray("params").getString(i)
+        val fieldCount = spec.optJSONArray("params")?.length() ?: 0
+
+        when (target) {
+            "run" -> {
+                val name = spec.getString("name")
+                val allCommandsForLookup = buildCommands(context.filesDir.absolutePath, OutputLog::append)
+                val commandSpec = allCommandsForLookup.first { it.category == category && it.name == name }
+
+                // Dispatch: DialSubmitCommand is the one case that needs a RunCommandDispatcher
+                // handler registered on *this* device before generating -- its callback is an
+                // in-process subscription with no persistence across separate instrumentation
+                // invocations (a fresh `am instrument` launch starts a fresh process/daemon
+                // session), so nothing would ever observe device B's dial-in dispatch during the
+                // hold below without doing this here, in the very process that then stays alive
+                // holding the code on screen. Called directly through CommandExecutor, the same
+                // primitive RunConfirmDialog's own Execute button calls -- this is test-harness
+                // setup, not a production UI path, so it doesn't need a scan of its own any more
+                // than the StartSolo/RequestRelayAccess preamble does. CommandCatalog.kt's own
+                // param order for DialSubmitCommand is [targetAddr, commandID, inputsJSON, note],
+                // so field(1) is the commandID to register a handler for.
+                if (category == "Dispatch" && name == "DialSubmitCommand" && fieldCount > 1) {
+                    val dispatcherCommandID = field(1)
+                    Log.i(TAG, "$opticalTag registering RunCommandDispatcher for commandID=$dispatcherCommandID")
+                    val dispatcherSpec = allCommandsForLookup.first { it.category == "Dispatch" && it.name == "RunCommandDispatcher" }
+                    val dispatcherResult = runBlocking { CommandExecutor.execute(dispatcherSpec, listOf(dispatcherCommandID)) }
+                    Log.i(TAG, "$opticalTag RunCommandDispatcher -> $dispatcherResult")
+                }
+
+                // "{{selfAddr}}" is the one substitution token an optical case's own params can
+                // reference (e.g. a Dispatch: DialSubmitCommand case naming its own generating
+                // device as the dial target) -- only known live, resolved here rather than by the
+                // Go harness since "self" naturally means "this device, i.e. whichever one is
+                // running generateAndHold(All)," not something worth threading a value back out to
+                // Go and into a second invocation's args for.
+                fun resolveField(i: Int): String {
+                    val raw = field(i)
+                    if (raw != "{{selfAddr}}") return raw
+                    return runCatching { Kvmobile.getOwnAddr() }.getOrDefault(raw)
+                }
+
+                Log.i(TAG, "$opticalTag navigating to command_detail for ${commandSpec.label}, params=${(0 until fieldCount).map { resolveField(it) }}")
+                navigateToCategories()
+                val allCategories = allCommandsForLookup.map { it.category }.distinct()
+                clickListItem(commandSpec.category, allCategories.indexOf(commandSpec.category))
+                val namesInCategory = allCommandsForLookup.filter { it.category == commandSpec.category }.map { it.name }
+                clickListItem(commandSpec.name, namesInCategory.indexOf(commandSpec.name))
+                waitForScreen("screen_command_detail")
+                for (i in 0 until fieldCount) {
+                    composeTestRule.onNodeWithTag("param_$i").performTextInput(resolveField(i))
+                }
+                composeTestRule.onNodeWithTag("generateDataMatrixButton").performClick()
+                Log.i(TAG, "$opticalTag tapped generateDataMatrixButton")
+            }
+            "nav_group" -> {
+                composeTestRule.onNodeWithTag("mainListItem_groups").performClick()
+                waitForScreen("screen_group_picker")
+                Log.i(TAG, "$opticalTag on screen_group_picker, selecting category=\"$category\"")
+                composeTestRule.onNodeWithTag("groupPickerSelect").performClick()
+                composeTestRule.onNodeWithTag("groupPickerSelect_option_$category").performClick()
+                composeTestRule.onNodeWithTag("groupPickerGenerate").performClick()
+                Log.i(TAG, "$opticalTag tapped groupPickerGenerate")
+            }
+            else -> throw IllegalArgumentException("unknown optical generate target: $target")
+        }
+
+        waitForScreen("generatedDataMatrixImage")
+        Log.i(TAG, "$opticalTag generatedDataMatrixImage rendered, writing result")
+        return JSONObject().put("command", "OpticalGenerate: $caseID").put("pass", true)
+    }
+
+    /**
+     * Returns [generateAndHoldAll] to screen_main after one case's generated code has had its
+     * hold window: dismisses the GeneratedDataMatrixDialog, then pops however many nav levels
+     * [generateOneCase] pushed for that case's own `target` (3 for "run" --
+     * categories/commands/{category}/commandDetail; 1 for "nav_group" -- groupPicker), so the
+     * next iteration starts from the identical screen_main state a fresh process would have
+     * given it.
+     */
+    private fun resetToMainAfterGenerate(target: String) {
+        composeTestRule.onNodeWithTag("generatedDataMatrixClose").performClick()
+        val popCount = if (target == "run") 3 else 1
+        repeat(popCount) { pressBack() }
+        waitForScreen("screen_main")
+    }
+
+    /**
+     * Device-B half of the real-camera optical-scan e2e harness -- see [generateAndHold]'s doc
+     * comment for the overall design. Decodes a single [e2edata.OpticalExpectSpec]-shaped JSON
+     * object (plus its own "case_id"/"timeout_ms") from the "opticalExpect" instrumentation arg,
+     * waits for it via [awaitOneCase], and throws (failing this JUnit test outright) if it
+     * didn't pass. A thin single-case wrapper kept for standalone spot-checking --
+     * [awaitAndVerifyScanAll] is what pkg/e2erun/android_optical.go actually drives now.
+     */
+    @Test
+    fun awaitAndVerifyScan() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val spec = instrumentationArgJson("opticalExpect") ?: return
+        val caseID = spec.getString("case_id")
+        val opticalTag = "$OPTICAL_LOG_TAG awaitAndVerifyScan case=$caseID"
+        Log.i(TAG, "$opticalTag starting")
+
+        requestRelay(opticalTag)
+        waitForScreen("screen_main")
+        val entry = awaitOneCase(spec, opticalTag)
+        writeResults(context, JSONArray().put(entry))
+        if (!entry.getBoolean("pass")) {
+            throw AssertionError(entry.optString("error"))
+        }
+    }
+
+    /**
+     * Batched device-B half of the optical harness: decodes {"specs": [...]} (an array of
+     * [e2edata.OpticalExpectSpec]-shaped objects, each with its own "case_id") from the
+     * "opticalExpects" instrumentation arg, and loops [awaitOneCase] over every one of them in a
+     * single still-alive session -- see [generateAndHoldAll]'s own doc comment for why (the
+     * identical per-case relaunch cost applies symmetrically to this side). A failed case here is
+     * still recorded (so its own error is visible), but the loop stops right there rather than
+     * attempting the rest -- see the class's own doc comment on [SIGNAL_POLL_INTERVAL_MS] for why:
+     * this side's own [signalCaseDone] only ever fires on a pass, so a failed case here also means
+     * A's matching [generateAndHoldAll] is about to abort its own batch the moment this case's hold
+     * ceiling elapses, and there is nothing left worth waiting for. Uses [BATCH_TIMEOUT_MS]
+     * uniformly (see that constant's own doc comment) rather than each case's own timeout_ms.
+     * Writes an "OpticalReady" entry as soon as this device's own RequestRelayAccess completes and
+     * the camera is live, before the case loop starts -- purely diagnostic (how long this device's
+     * own one-time setup actually took, on a run where the first case still failed to show up in
+     * time), not something pkg/e2erun/android_optical.go gates on: device A's own
+     * generateAndHoldAll starts well before this call is even invoked (see that function's own doc
+     * comment for why the ordering runs the other way -- B's join target has to already be up), so
+     * there is no "wait for B" moment left on the Go side to signal into.
+     */
+    @Test
+    fun awaitAndVerifyScanAll() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val arg = instrumentationArgJson("opticalExpects") ?: return
+        val specs = arg.getJSONArray("specs")
+        val opticalTag = "$OPTICAL_LOG_TAG awaitAndVerifyScanAll"
+        Log.i(TAG, "$opticalTag starting, ${specs.length()} case(s)")
+
+        requestRelay(opticalTag)
+        waitForScreen("screen_main")
+        val signalChannelID = openCaseSignalChannel(opticalTag)
+
+        val results = JSONArray()
+        results.put(JSONObject().put("command", "OpticalReady").put("pass", true))
+        writeResults(context, results)
+        Log.i(TAG, "$opticalTag ready, camera scanner is live")
+
+        for (i in 0 until specs.length()) {
+            val spec = specs.getJSONObject(i)
+            val caseID = spec.getString("case_id")
+            if (i <= 1) spec.put("timeout_ms", FIRST_CASE_AWAIT_TIMEOUT_MS)
+            val caseTag = "$opticalTag case=$caseID (${i + 1}/${specs.length()})"
+            val entry = awaitOneCase(spec, caseTag)
+            results.put(entry)
+            writeResults(context, results)
+            if (!entry.getBoolean("pass")) {
+                Log.w(TAG, "$caseTag failed -- not signalling, and stopping here rather than attempting cases A has no reason to still be generating")
+                break
+            }
+            signalCaseDone(caseID, signalChannelID, caseTag)
+        }
+        Log.i(TAG, "$opticalTag all ${specs.length()} case(s) awaited, returning")
+    }
+
+    /**
+     * Device B's own RequestRelayAccess call, shared by [awaitAndVerifyScan] and
+     * [awaitAndVerifyScanAll] -- this device's own build bakes a real leaderMultiaddr (device A's
+     * own address) that AppRoot's automatic Kvmobile.start() already joins on launch, never
+     * StartSolo here (would bootstrap this device its own separate cluster instead of resuming
+     * its role as A's learner). A relay reservation is not persisted across process restarts,
+     * though, and a "run"/"ticket" outcome's own outbound dial needs this device to hold its own
+     * standing, not just the target -- see CLAUDE.md's "both ends need their own relay standing"
+     * note. Best-effort and safe to repeat (idempotent once already granted); a "nav_group"
+     * outcome needs no daemon call at all, so this genuinely cannot regress that one.
+     *
+     * Also force-expands the scanner ([ScannerCoordinator.expanded]) for the rest of this
+     * session: nothing in this harness ever taps the minimized bubble's own expand button, so
+     * without this every automated run scans from that small ~80dp preview the whole time --
+     * doesn't change the underlying ImageAnalysis resolution/capture (a separate CameraX use
+     * case, unaffected by how large Preview is drawn on screen), but does make it possible for
+     * whoever physically aims this device to actually judge framing/focus by eye instead of a
+     * bubble too small to usefully inspect.
+     */
+    private fun requestRelay(opticalTag: String) {
+        val relayResult = runCatching { Kvmobile.requestRelayAccess("optical e2e awaitAndVerifyScan") }
+        Log.i(TAG, "$opticalTag requestRelayAccess -> ${relayResult.getOrNull()} (error=${relayResult.exceptionOrNull()?.message})")
+        composeTestRule.runOnUiThread { ScannerCoordinator.expanded = true }
+    }
+
+    /**
+     * Waits for one [spec]-described expected outcome and confirms/executes it -- shared by
+     * [awaitAndVerifyScan] (one case, fresh process) and [awaitAndVerifyScanAll] (many cases, one
+     * session) -- returning its "OpticalScan: <case_id>" result entry. Never throws: a timeout or
+     * assertion failure is caught and recorded as a failing entry instead, since
+     * [awaitAndVerifyScanAll]'s own loop needs to move on to the next case regardless. Assumes
+     * the caller is already on screen_main and has already called [requestRelay] -- true for a
+     * fresh process, and true between batch iterations since every kind below returns here on its
+     * own (an overlay dialog dismissing, or an explicit [pressBack] after a real navigation) by
+     * the time this returns.
+     */
+    private fun awaitOneCase(spec: JSONObject, opticalTag: String): JSONObject {
+        val caseID = spec.getString("case_id")
+        val kind = spec.getString("kind")
+        val timeoutMs = spec.optLong("timeout_ms", BATCH_TIMEOUT_MS)
+        val resultLabel = "OpticalScan: $caseID"
+        Log.i(TAG, "$opticalTag kind=$kind starting, timeoutMs=$timeoutMs")
+
+        // AppRoot's own scan dispatch collapses the scanner back to its minimized bubble after
+        // every decode (success or not) -- see its own doc comment. requestRelay's initial expand
+        // only covers the very first case in a batch, so re-assert it before every case here too.
+        composeTestRule.runOnUiThread { ScannerCoordinator.expanded = true }
+
+        fun pass(output: String = ""): JSONObject {
+            Log.i(TAG, "$opticalTag PASS output=$output")
+            return JSONObject().put("command", resultLabel).put("pass", true).put("output", output)
+        }
+        fun fail(error: String): JSONObject {
+            Log.w(TAG, "$opticalTag FAIL error=$error")
+            return JSONObject().put("command", resultLabel).put("pass", false).put("error", error)
+        }
+
+        return try {
+            when (kind) {
+                "run" -> {
+                    waitForTagWithTimeout("runConfirmExecute", timeoutMs)
+                    val params = readTagText("runConfirmParams")
+                    Log.i(TAG, "$opticalTag runConfirmExecute appeared, params=$params")
+                    val priorLogSize = OutputLog.snapshot().size
+                    composeTestRule.onNodeWithTag("runConfirmExecute").performClick()
+                    Log.i(TAG, "$opticalTag tapped Execute, waiting for a new OutputLog entry (prior size=$priorLogSize)")
+                    try {
+                        composeTestRule.waitUntil(RUN_TIMEOUT_MS) { OutputLog.snapshot().size > priorLogSize }
+                    } catch (e: ComposeTimeoutException) {
+                        throw AssertionError("no OutputLog entry appeared after tapping Execute", e)
+                    }
+                    val resultBody = OutputLog.snapshot().last().body
+                    Log.i(TAG, "$opticalTag OutputLog result=$resultBody")
+                    val selfPeerID = runCatching { Kvmobile.peerID() }.getOrDefault("")
+                    resultExpectation(spec.optString("result", "succeeded"), selfPeerID)(resultBody)
+                    // CommandExecutor's own success format is "(args) ->\n$result" -- strip that
+                    // fixed prefix to recover $result alone (e.g. DialSubmitCommand's instance
+                    // id), needed by pkg/e2erun/android_optical.go's own VerifyOnDeviceA
+                    // cross-device check; a failure line has no "->\n" separator at all, so
+                    // substringAfter's own default (the untouched string) is exactly right there
+                    // too.
+                    pass(resultBody.substringAfter("->\n", resultBody))
+                }
+                "nav_group" -> {
+                    // Wrapped in try/finally, not just a trailing pressBack after recordPass:
+                    // scanning genuinely navigated here (unlike "run"/"ticket", which never leave
+                    // screen_main), so a title mismatch below has to pop back to screen_main
+                    // before this returns too, or the *next* case in an awaitAndVerifyScanAll
+                    // batch would start from the wrong screen. An earlier version only popped
+                    // back on the success path.
+                    try {
+                        waitForTagWithTimeout("screen_commands", timeoutMs)
+                        Log.i(TAG, "$opticalTag screen_commands appeared at ${System.currentTimeMillis()}")
+                        settleAfterScanTriggeredNavigation()
+                        Log.i(TAG, "$opticalTag settle complete at ${System.currentTimeMillis()}")
+                        val title = readTagText("categoryTitle")
+                        val want = spec.getString("category_title")
+                        Log.i(TAG, "$opticalTag categoryTitle=\"$title\" want=\"$want\"")
+                        if (title != want) throw AssertionError("categoryTitle=\"$title\", want \"$want\"")
+                        pass()
+                    } finally {
+                        // Only meaningful once the screen actually navigated (a timeout above
+                        // means it never left screen_main, so this is a harmless no-op then) --
+                        // see class doc comment for why Espresso.pressBack() isn't used here.
+                        if (composeTestRule.onAllNodesWithTag("screen_commands").fetchSemanticsNodes(atLeastOneRootRequired = false).isNotEmpty()) {
+                            pressBack()
+                            Log.i(TAG, "$opticalTag pressBack complete, returning")
+                        }
+                    }
+                }
+                "ticket" -> {
+                    waitForTagWithTimeout("recruitConfirmApprove", timeoutMs)
+                    Log.i(TAG, "$opticalTag recruitConfirmApprove appeared")
+                    composeTestRule.onNodeWithTag("recruitConfirmApprove").performClick()
+                    Log.i(TAG, "$opticalTag tapped Approve")
+                    pass()
+                }
+                else -> throw IllegalArgumentException("unknown optical expect kind: $kind")
+            }
+        } catch (e: Throwable) {
+            fail(e.message ?: e.toString())
+        }
+    }
+
+    /**
+     * Device-A-side verification for optical-scan cases whose outcome is only observable in
+     * *this* device's own Activity Log, not device B's -- currently just "Dispatch:
+     * DialSubmitCommand" cases, where B executing the scanned RunCode makes B dial back and
+     * submit against A's own RunCommandDispatcher, so the actual dispatch is only ever recorded
+     * in A's own [OutputLog], never B's. Decodes {"contains": "...", "timeoutMs": N} from the
+     * "opticalVerify" instrumentation arg and waits for any [OutputLog] entry (title or body)
+     * containing that substring -- the "Dispatching <commandID>/<instance_id> from <peerID>" line
+     * RunCommandDispatcher's own `appendLog` call produces (see CommandCatalog.kt), with the Go
+     * harness having already substituted the real instance_id it read back from
+     * [awaitAndVerifyScan]'s own result. Polls [OutputLog] directly rather than navigating to
+     * LogScreen -- same object either way, no UI round trip needed.
+     */
+    @Test
+    fun verifyLogContains() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val spec = instrumentationArgJson("opticalVerify") ?: return
+        val want = spec.getString("contains")
+        val timeoutMs = spec.optLong("timeoutMs", 30_000L)
+        val opticalTag = "$OPTICAL_LOG_TAG verifyLogContains"
+        Log.i(TAG, "$opticalTag starting, want=\"$want\" timeoutMs=$timeoutMs, current OutputLog=${OutputLog.snapshot().map { it.title }}")
+
+        waitForScreen("screen_main")
+        try {
+            composeTestRule.waitUntil(timeoutMs) {
+                OutputLog.snapshot().any { it.title.contains(want) || it.body.contains(want) }
+            }
+            Log.i(TAG, "$opticalTag PASS, matched entry present in ${OutputLog.snapshot().map { it.title }}")
+            writeResults(context, JSONArray().put(JSONObject().put("command", "OpticalVerify").put("pass", true)))
+        } catch (e: ComposeTimeoutException) {
+            Log.w(TAG, "$opticalTag FAIL, no match after ${timeoutMs}ms -- full OutputLog=${OutputLog.snapshot()}")
+            writeResults(
+                context,
+                JSONArray().put(
+                    JSONObject().put("command", "OpticalVerify").put("pass", false)
+                        .put("error", "no matching log entry within ${timeoutMs}ms containing \"$want\""),
+                ),
+            )
+            throw AssertionError("no matching log entry containing \"$want\"", e)
+        }
+    }
+
+    /**
+     * Rig-setup utility, not part of the generate/scan round trip: decodes
+     * {"category":"...","name":"...","params":[...]} from the "opticalDirect" instrumentation arg
+     * and runs it straight through [CommandExecutor.execute] -- the exact primitive
+     * [generateAndHold]'s own RunCommandDispatcher pre-registration already calls directly, just
+     * exposed as its own single-purpose entry point here. Exists because bringing up a real
+     * two-device optical rig needs to read back a genuine on-device value (most commonly device
+     * A's own GetOwnAddr, to bake as device B's build-time leaderMultiaddr) before either
+     * `generateAndHold`/`awaitAndVerifyScan` ever run -- and there is deliberately no other way to
+     * do that now that CommandDetailScreen's Run button is gone and ConnectDeviceScreen's own
+     * GetOwnAddr auto-fill went with it. Writes a single ui_e2e_results.json entry the same
+     * `am instrument -e class ...#executeDirect -e opticalDirect <base64>` caller can pull back
+     * with the same plumbing runOpticalMethod already has.
+     */
+    @Test
+    fun executeDirect() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val spec = instrumentationArgJson("opticalDirect") ?: return
+        val category = spec.getString("category")
+        val name = spec.getString("name")
+        val params = spec.optJSONArray("params")?.let { arr -> (0 until arr.length()).map { arr.getString(it) } } ?: emptyList()
+        val holdMillis = spec.optLong("hold_millis", 0L)
+        Log.i(TAG, "$OPTICAL_LOG_TAG executeDirect ${category}: $name(${params.joinToString(", ")})")
+
+        runCatching { Kvmobile.startSolo(context.filesDir.absolutePath) }
+        runCatching { Kvmobile.requestRelayAccess("optical e2e executeDirect") }
+
+        val commandSpec = buildCommands(context.filesDir.absolutePath, OutputLog::append)
+            .firstOrNull { it.category == category && it.name == name }
+        if (commandSpec == null) {
+            Log.w(TAG, "$OPTICAL_LOG_TAG executeDirect: no such command $category: $name")
+            writeResults(context, JSONArray().put(JSONObject().put("command", "OpticalDirect").put("pass", false).put("error", "no such command $category: $name")))
+            return
+        }
+        val result = runBlocking { CommandExecutor.execute(commandSpec, params) }
+        Log.i(TAG, "$OPTICAL_LOG_TAG executeDirect result=$result")
+        writeResults(
+            context,
+            JSONArray().put(JSONObject().put("command", "OpticalDirect").put("pass", true).put("output", result.substringAfter("->\n", result))),
+        )
+        if (holdMillis > 0) {
+            Log.i(TAG, "$OPTICAL_LOG_TAG executeDirect holding for ${holdMillis}ms")
+            Thread.sleep(holdMillis)
+            Log.i(TAG, "$OPTICAL_LOG_TAG executeDirect hold complete, returning")
+        }
+    }
+
+    /**
+     * Resolves an OpticalExpectSpec.Result string ("succeeded"/"rejected"/"no_crash"/
+     * "contains:<substring>", the same convention e2edata.ExpectSucceeded/Rejected/NoCrash
+     * describe) into an assertion against the post-Execute OutputLog body -- [awaitAndVerifyScan]'s
+     * "run" kind only. "{{selfPeerID}}" is the one substitution token an optical case's own Result
+     * can reference (e.g. a GetOwnAddr case's "contains:{{selfPeerID}}") -- only known live, the
+     * same reason the old catalog sweep's token substitution existed at all.
+     */
+    private fun resultExpectation(name: String, selfPeerID: String): (String) -> Unit = when {
+        name == "rejected" -> ::assertRejected
+        name == "no_crash" -> ::assertNoCrash
+        name.startsWith("contains:") -> { line: String -> assertContains(line, name.removePrefix("contains:").replace("{{selfPeerID}}", selfPeerID)) }
+        else -> ::assertSucceeded
+    }
+
+    /**
+     * Writes the results file after every entry, not just once at the very end: lets
+     * pkg/e2erun/android_optical.go's peekOpticalResult pull and observe [generateAndHold]'s own
+     * result (e.g. that the code actually rendered) via `adb pull` while this SAME instrumentation
+     * invocation is still holding the screen open for a concurrently-dialing peer on a different
+     * device.
      */
     private fun writeResults(context: android.content.Context, results: JSONArray) {
         File(context.getExternalFilesDir(null), "ui_e2e_results.json").writeText(results.toString())
     }
 
     /**
-     * Category/command lists are LazyColumns -- only the currently
-     * visible (plus a small prefetch buffer) rows actually exist in the
-     * semantics tree at any moment, so a target further down (e.g.
-     * "Cluster"'s ~30 commands, most below the fold on a phone-sized
-     * viewport) isn't clickable, or even findable, until scrolled into
-     * view. [index] is that row's position in the *real* on-screen list
-     * (CategoriesScreen's `categories`/CommandListScreen's `names`,
-     * exactly as rendered -- see call sites for why this must come from
-     * the full, unfiltered catalog, not `commandsToWalk`), passed to
-     * `performScrollToIndex` on the enclosing LazyColumn (tagged
-     * "itemList") to jump straight to it via `LazyListState`, the only
-     * approach confirmed live to reliably reach far-down rows:
-     * `performScrollTo()` alone (tried first) only walks forward from
-     * whatever's already composed and silently stops working once a
-     * target is far enough past the initial viewport that it was never
-     * composed at all -- it threw "could not find any node" for the
-     * 19th "Cluster" command ("CreateJoinInviteTicket") on a run where
-     * the first 18 had scrolled/clicked fine.
+     * Category/command lists are LazyColumns -- only the currently visible (plus a small prefetch
+     * buffer) rows actually exist in the semantics tree at any moment, so a target further down
+     * (e.g. "Cluster"'s ~30 commands, most below the fold on a phone-sized viewport) isn't
+     * clickable, or even findable, until scrolled into view. [index] is that row's position in
+     * the *real* on-screen list (CategoriesScreen's `categories`/CommandListScreen's `names`,
+     * exactly as rendered), passed to `performScrollToIndex` on the enclosing LazyColumn (tagged
+     * "itemList") to jump straight to it via `LazyListState`, the only approach confirmed live to
+     * reliably reach far-down rows: `performScrollTo()` alone (tried first) only walks forward
+     * from whatever's already composed and silently stops working once a target is far enough
+     * past the initial viewport that it was never composed at all -- it threw "could not find any
+     * node" for the 19th "Cluster" command ("CreateJoinInviteTicket") on a run where the first 18
+     * had scrolled/clicked fine.
      */
     private fun clickListItem(text: String, index: Int) {
         composeTestRule.onNodeWithTag("itemList").performScrollToIndex(index)
@@ -500,13 +854,11 @@ class UiCommandE2ETest {
 
     /**
      * Pops one entry off the current back stack via the Activity's own
-     * `OnBackPressedDispatcher` -- see class doc comment for why this,
-     * not `Espresso.pressBack()`, is what actually works here. Runs on
-     * the main thread (the dispatcher isn't thread-safe to call from a
-     * test's own background thread) and waits for the resulting
-     * recomposition to settle before returning, the same guarantee
-     * `performClick`/`performTextInput` already give every other
-     * navigation action in this file.
+     * `OnBackPressedDispatcher` -- see class doc comment for why this, not `Espresso.pressBack()`,
+     * is what actually works here. Runs on the main thread (the dispatcher isn't thread-safe to
+     * call from a test's own background thread) and waits for the resulting recomposition to
+     * settle before returning, the same guarantee `performClick`/`performTextInput` already give
+     * every other navigation action in this file.
      */
     private fun pressBack() {
         composeTestRule.activity.onBackPressedDispatcher.let { dispatcher ->
@@ -516,14 +868,11 @@ class UiCommandE2ETest {
     }
 
     /**
-     * Polls for [tag] to appear anywhere in the current composition, or
-     * throws once NAV_TIMEOUT_MS elapses -- this test's Compose-native
-     * replacement for the old Activity-class-identity check
-     * (waitForActivity/ActivityLifecycleMonitorRegistry), since a
-     * single-Activity Compose app has no distinct Activity subclass per
-     * screen to check against. Each screen's root Composable
-     * (CategoriesScreen/CommandListScreen/CommandDetailScreen/LogScreen)
-     * carries a stable "screen_*" testTag exactly for this purpose.
+     * Polls for [tag] to appear anywhere in the current composition, or throws once
+     * NAV_TIMEOUT_MS elapses -- this test's Compose-native replacement for the old
+     * Activity-class-identity check, since a single-Activity Compose app has no distinct Activity
+     * subclass per screen to check against. Each screen's root Composable carries a stable
+     * "screen_*" testTag exactly for this purpose.
      */
     private fun waitForScreen(tag: String) {
         try {
@@ -536,12 +885,57 @@ class UiCommandE2ETest {
     }
 
     /**
+     * Same as [waitForScreen] but with a caller-supplied budget instead of the fixed
+     * NAV_TIMEOUT_MS -- used by [awaitAndVerifyScan], whose wait is for a real camera to actually
+     * read a real screen, not an in-process same-activity navigation, and so needs a much more
+     * generous, tunable timeout than ordinary Compose recomposition ever does.
+     */
+    private fun waitForTagWithTimeout(tag: String, timeoutMs: Long) {
+        try {
+            composeTestRule.waitUntil(timeoutMs) {
+                composeTestRule.onAllNodesWithTag(tag).fetchSemanticsNodes(atLeastOneRootRequired = false).isNotEmpty()
+            }
+        } catch (e: ComposeTimeoutException) {
+            throw IllegalStateException("'$tag' not shown after ${timeoutMs}ms", e)
+        }
+    }
+
+    /**
+     * A scan-triggered navigation (see AppRoot.kt's `ScannerCoordinator.scans.collect { ... }`
+     * listener's NavCode.Group branch) calls `navController.navigate(...)` from a coroutine
+     * reacting to the camera scanner, not from a `performClick()` this class's own
+     * `waitUntil`/`waitForIdle` reliably synchronize with -- confirmed live: the target screen's
+     * own testTag appears in the semantics tree (satisfying [waitForTagWithTimeout]) while its
+     * NavBackStackEntry's underlying Android-framework Lifecycle (a separate async dispatch loop
+     * from Compose's own recomposition scheduling, which `waitForIdle` alone does not wait on) is
+     * still mid-transition, not yet RESUMED -- tearing the Activity down at exactly that moment
+     * (recording a result and returning immediately, the normal end of this method) crashed the
+     * whole instrumentation process with "State must be at least CREATED to move to DESTROYED,
+     * but was INITIALIZED". A fixed settle, not a poll: there is no test-visible signal for "this
+     * NavBackStackEntry reached RESUMED" to poll for instead.
+     */
+    private fun settleAfterScanTriggeredNavigation() {
+        composeTestRule.waitForIdle()
+        Thread.sleep(500)
+    }
+
+    /**
+     * Decodes a base64-encoded JSON object instrumentation arg named [argName] -- raw JSON's
+     * quotes/braces don't survive `adb shell am instrument`'s own argument parsing. Returns null
+     * (never throws) for a missing arg, invalid base64, or unparsable JSON -- callers
+     * ([generateAndHold]/[awaitAndVerifyScan]/[verifyLogContains]) treat that as "this test was
+     * invoked some other way," not a failure.
+     */
+    private fun instrumentationArgJson(argName: String): JSONObject? {
+        val raw = InstrumentationRegistry.getArguments().getString(argName) ?: return null
+        val decoded = runCatching { String(Base64.decode(raw, Base64.DEFAULT)) }.getOrNull() ?: return null
+        return runCatching { JSONObject(decoded) }.getOrNull()
+    }
+
+    /**
      * Gets from a fresh launch (MainListScreen, "screen_main" -- see AppRoot's NavHost) to the
-     * full category browser every other walk method here assumes it's already on: taps the
-     * "Browse all categories" link and waits for CategoriesScreen to appear. A one-time prefix for
-     * both [runOneCase]-driving walks below, added when MainListScreen became the app's start
-     * destination -- the walk logic past this point (category-by-category or ordered) is otherwise
-     * unchanged.
+     * full category browser [generateAndHold]'s "run" target navigates through: taps the "Browse
+     * all categories" link and waits for CategoriesScreen to appear.
      */
     private fun navigateToCategories() {
         waitForScreen("screen_main")
@@ -549,119 +943,9 @@ class UiCommandE2ETest {
         waitForScreen("screen_categories")
     }
 
-    private fun verifyDetailScreen(spec: CommandSpec) {
-        waitForScreen("screen_command_detail")
-        for (i in spec.params.indices) {
-            composeTestRule.onNodeWithTag("param_$i").assertExists()
-        }
-        composeTestRule.onNodeWithTag("param_${spec.params.size}").assertDoesNotExist()
-    }
-
-    /** Reads outputText's current full text content from the semantics tree. */
-    private fun readOutputText(): String {
-        val node = composeTestRule.onNodeWithTag("outputText").fetchSemanticsNode()
-        return node.config.getOrNull(SemanticsProperties.Text)?.joinToString("") { it.text } ?: ""
-    }
-
-    /** Reads an OutlinedTextField's current value (its EditableText, not its label) by [tag]. */
-    private fun readFieldText(tag: String): String {
+    /** Reads a plain Text composable's current content by [tag] (e.g. categoryTitle/runConfirmParams). */
+    private fun readTagText(tag: String): String {
         val node = composeTestRule.onNodeWithTag(tag).fetchSemanticsNode()
-        return node.config.getOrNull(SemanticsProperties.EditableText)?.text ?: ""
-    }
-
-    /**
-     * Fills each param field in order, taps Run, and waits (bounded) for a
-     * *new* result to appear -- comparing against outputText's length from
-     * just before this tap, not just non-emptiness, so a second Run on the
-     * same already-visited detail screen (see runCommandWithRetry) doesn't
-     * just re-read a stale result left over from an earlier tap
-     * (CommandDetailScreen's output state only ever appends, never
-     * clears, same as the old CommandDetailActivity.appendOutput did).
-     */
-    private fun runCommand(inputs: List<String>): String {
-        val priorText = readOutputText()
-
-        for (i in inputs.indices) {
-            composeTestRule.onNodeWithTag("param_$i").performTextInput(inputs[i])
-        }
-        composeTestRule.onNodeWithTag("runButton").performClick()
-
-        try {
-            composeTestRule.waitUntil(RUN_TIMEOUT_MS) { readOutputText().length > priorText.length }
-        } catch (e: ComposeTimeoutException) {
-            throw AssertionError("no output after ${RUN_TIMEOUT_MS}ms", e)
-        }
-        return readOutputText().substring(priorText.length).removePrefix("\n\n")
-    }
-
-    /** Retries [runCommand] (a fresh Run tap each time) while its output line reports "FAILED", up to retryBudgetMs total. */
-    private fun runCommandWithRetry(inputs: List<String>, retryBudgetMs: Long): String {
-        val deadline = System.currentTimeMillis() + retryBudgetMs
-        while (true) {
-            val output = runCommand(inputs)
-            if (retryBudgetMs <= 0 || !output.contains("FAILED") || System.currentTimeMillis() >= deadline) return output
-            Thread.sleep(POLL_INTERVAL_MS)
-        }
-    }
-
-    /**
-     * Parses the "cases" instrumentation argument -- base64-encoded JSON
-     * object form of pkg/e2edata.File.UICases, keyed by CommandSpec.label
-     * (see class doc comment for why base64: raw JSON here reliably breaks
-     * `am instrument`'s own argument parsing) -- into this test's
-     * per-command plans, substituting the runtime-only tokens
-     * "{{selfPeerID}}"/"{{leaderPeerID}}"/"{{testKey}}"/"{{testValue}}" in
-     * each input string -- those four values can't be frozen into a
-     * committed file the way every other field can (this device's own
-     * peer id, the cluster's currently-observed leader, and a
-     * randomized-per-run KV test key/value that must stay unique across
-     * runs against this long-lived shared cluster). casesArgBase64 missing,
-     * not valid base64, or decoding to unparsable JSON is treated the same
-     * as `"{}"` -- every command then falls back to [defaultCase]
-     * (navigation-only), never a crash.
-     *
-     * Anything in the live catalog with no entry in the parsed map still
-     * gets [defaultCase] (navigation-only) -- see class doc comment for
-     * the reasoning behind each execute=true/false choice recorded in
-     * test/e2e/testdata.json's "android_ui_cases" section.
-     */
-    private fun buildCasesFromArg(casesArgBase64: String?, selfPeerID: String, leaderPeerID: String): Map<String, Case> {
-        val testKey = "e2e-ui-test-key"
-        val testValue = "e2e-ui-test-value-${System.currentTimeMillis()}"
-        val tokens = mapOf(
-            "{{selfPeerID}}" to selfPeerID,
-            "{{leaderPeerID}}" to leaderPeerID,
-            "{{testKey}}" to testKey,
-            "{{testValue}}" to testValue,
-        )
-        fun substitute(s: String): String {
-            var result = s
-            for ((token, value) in tokens) result = result.replace(token, value)
-            return result
-        }
-        fun expectFor(name: String): (String) -> Unit = when (name) {
-            "rejected" -> ::assertRejected
-            "no_crash" -> ::assertNoCrash
-            else -> ::assertSucceeded
-        }
-
-        val casesJson = casesArgBase64?.let {
-            runCatching { String(Base64.decode(it, Base64.DEFAULT)) }.getOrNull()
-        }
-        val root = runCatching { JSONObject(casesJson ?: "{}") }.getOrDefault(JSONObject())
-        val cases = mutableMapOf<String, Case>()
-        for (label in root.keys()) {
-            val obj = root.getJSONObject(label)
-            val inputsArr = obj.optJSONArray("inputs")
-            val inputs = (0 until (inputsArr?.length() ?: 0)).map { substitute(inputsArr!!.getString(it)) }
-            cases[label] = Case(
-                inputs = inputs,
-                execute = obj.optBoolean("execute", false),
-                expect = expectFor(obj.optString("expect", "succeeded")),
-                retryBudgetMs = obj.optLong("retry_budget_ms", 0L),
-                order = obj.optInt("order", 0),
-            )
-        }
-        return cases
+        return node.config.getOrNull(SemanticsProperties.Text)?.joinToString("") { it.text } ?: ""
     }
 }

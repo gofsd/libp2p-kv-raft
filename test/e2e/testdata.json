@@ -142,7 +142,7 @@
           "key": "hello-android"
         }
       },
-      "status": 1,
+      "status": 0,
       "platform": "android"
     },
     {
@@ -323,870 +323,1911 @@
       "platform": "android"
     }
   ],
-  "android_ui_cases": {
-    "Channel: CloseChannel": {
-      "inputs": [
-        "no-such-channel"
-      ],
-      "execute": true,
-      "expect": "succeeded"
+  "android_optical_cases": [
+    {
+      "case_id": "get_own_addr",
+      "generate": {
+        "target": "run",
+        "category": "Cluster",
+        "name": "GetOwnAddr"
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:{{selfPeerID}}"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Channel: CloseChannelWrite": {
-      "inputs": [
-        "no-such-channel"
-      ],
-      "execute": true,
-      "expect": "succeeded"
+    {
+      "case_id": "nav_group_kv",
+      "generate": {
+        "target": "nav_group",
+        "category": "KV"
+      },
+      "expect": {
+        "kind": "nav_group",
+        "category_title": "KV"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Channel: OpenChannel": {
-      "inputs": [
-        "{{leaderPeerID}}"
-      ],
-      "execute": true,
-      "expect": "no_crash"
+    {
+      "case_id": "kv_submit",
+      "generate": {
+        "target": "run",
+        "category": "KV",
+        "name": "Submit",
+        "params": [
+          "optical-e2e-key",
+          "optical-e2e-value"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Channel: SendChannelData": {
-      "inputs": [
-        "no-such-channel",
-        "",
-        "AA=="
-      ],
-      "execute": true,
-      "expect": "rejected"
+    {
+      "case_id": "join_request_ticket",
+      "generate": {
+        "target": "run",
+        "category": "Cluster",
+        "name": "CreateJoinRequestTicket"
+      },
+      "expect": {
+        "kind": "ticket"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Channel: StopChannel": {
-      "inputs": [
-        "no-such-channel"
-      ],
-      "execute": true,
-      "expect": "no_crash"
+    {
+      "case_id": "dial_submit_command_ping",
+      "generate": {
+        "target": "run",
+        "category": "Dispatch",
+        "name": "DialSubmitCommand",
+        "params": [
+          "{{selfAddr}}",
+          "ping",
+          "optical-e2e-inputs",
+          "optical-e2e-note"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded",
+        "verify_on_device_a": "{{instance_id}}"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Channel: StopListenChannel": {
-      "execute": true,
-      "expect": "succeeded"
+    {
+      "case_id": "cluster_start",
+      "generate": {
+        "target": "run",
+        "category": "Cluster",
+        "name": "Start"
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:{{selfPeerID}}"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Cluster: AccessToken": {
-      "execute": true,
-      "expect": "succeeded"
+    {
+      "case_id": "cluster_create_join_request",
+      "generate": {
+        "target": "run",
+        "category": "Cluster",
+        "name": "CreateJoinRequest"
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Cluster: CancelJoinRequest": {
-      "inputs": [
-        "0000000000000000"
-      ],
-      "execute": true,
-      "expect": "no_crash"
+    {
+      "case_id": "cluster_cancel_join_request",
+      "generate": {
+        "target": "run",
+        "category": "Cluster",
+        "name": "CancelJoinRequest",
+        "params": [
+          "00000000000000000000000000000000"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Cluster: CreateJoinInvite": {
-      "inputs": [
-        "learner"
-      ],
-      "execute": true,
-      "expect": "no_crash"
+    {
+      "case_id": "cluster_create_join_invite",
+      "generate": {
+        "target": "run",
+        "category": "Cluster",
+        "name": "CreateJoinInvite",
+        "params": [
+          "learner"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "rejected"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Cluster: CreateJoinRequest": {
-      "execute": true,
-      "expect": "succeeded"
+    {
+      "case_id": "cluster_revoke_join_invite",
+      "generate": {
+        "target": "run",
+        "category": "Cluster",
+        "name": "RevokeJoinInvite",
+        "params": [
+          "00000000000000000000000000000000"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "rejected"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Cluster: Delete": {
-      "execute": true,
-      "expect": "rejected"
+    {
+      "case_id": "cluster_create_join_invite_ticket",
+      "generate": {
+        "target": "run",
+        "category": "Cluster",
+        "name": "CreateJoinInviteTicket",
+        "params": [
+          "learner"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "rejected"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Cluster: GetOwnAddr": {
-      "execute": true,
-      "expect": "succeeded"
+    {
+      "case_id": "cluster_verify_join_invite_ticket",
+      "generate": {
+        "target": "run",
+        "category": "Cluster",
+        "name": "VerifyJoinInviteTicket",
+        "params": [
+          "bm90LWEtcmVhbC10aWNrZXQ="
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "no_crash"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Cluster: Kick": {
-      "inputs": [
-        "12D3KooWNoSuchPeerNoSuchPeerNoSuchPeer111111"
-      ],
-      "execute": true,
-      "expect": "no_crash"
+    {
+      "case_id": "cluster_kick",
+      "generate": {
+        "target": "run",
+        "category": "Cluster",
+        "name": "Kick",
+        "params": [
+          "12D3KooWNoSuchPeerNoSuchPeerNoSuchPeer111111"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "rejected"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Cluster: ListClusterMembers": {
-      "execute": true,
-      "expect": "succeeded"
+    {
+      "case_id": "cluster_list_clusters",
+      "generate": {
+        "target": "run",
+        "category": "Cluster",
+        "name": "ListClusters"
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Cluster: ListClusters": {
-      "execute": true,
-      "expect": "succeeded"
+    {
+      "case_id": "cluster_list_cluster_members",
+      "generate": {
+        "target": "run",
+        "category": "Cluster",
+        "name": "ListClusterMembers"
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Cluster: PeerID": {
-      "execute": true,
-      "expect": "succeeded"
+    {
+      "case_id": "cluster_peer_id",
+      "generate": {
+        "target": "run",
+        "category": "Cluster",
+        "name": "PeerID"
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:{{selfPeerID}}"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Cluster: RevokeJoinInvite": {
-      "inputs": [
-        "00000000000000000000000000000000"
-      ],
-      "execute": true,
-      "expect": "no_crash"
+    {
+      "case_id": "cluster_access_token",
+      "generate": {
+        "target": "run",
+        "category": "Cluster",
+        "name": "AccessToken"
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Cluster: Start": {
-      "execute": true,
-      "expect": "succeeded"
+    {
+      "case_id": "cluster_request_relay_access",
+      "generate": {
+        "target": "run",
+        "category": "Cluster",
+        "name": "RequestRelayAccess",
+        "params": [
+          "optical catalog test"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Cluster: StartWithKey": {
-      "inputs": [
-        "not-a-real-key-hex"
-      ],
-      "execute": true,
-      "expect": "succeeded"
+    {
+      "case_id": "cluster_request_public_access",
+      "generate": {
+        "target": "run",
+        "category": "Cluster",
+        "name": "RequestPublicAccess",
+        "params": [
+          "/ip4/127.0.0.1/tcp/1/p2p/12D3KooWNoSuchPeerNoSuchPeerNoSuchPeer111111",
+          "optical catalog test"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "no_crash"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Command: CreateCommand": {
-      "inputs": [
-        "e2e-ui-test-command",
-        "e2e ui test",
-        "{{selfPeerID}}"
-      ],
-      "execute": true,
-      "expect": "rejected"
+    {
+      "case_id": "cluster_version",
+      "generate": {
+        "target": "run",
+        "category": "Cluster",
+        "name": "Version"
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Command: DeleteCommand": {
-      "inputs": [
-        "e2e-ui-test-command"
-      ],
-      "execute": true,
-      "expect": "rejected"
+    {
+      "case_id": "relaynode_add",
+      "generate": {
+        "target": "run",
+        "category": "RelayNode",
+        "name": "AddRelayNode",
+        "params": [
+          "/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWNoSuchPeerNoSuchPeerNoSuchPeer111111",
+          "100"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "no_crash"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Command: GetCommand": {
-      "inputs": [
-        "no-such-command"
-      ],
-      "execute": true,
-      "expect": "no_crash"
+    {
+      "case_id": "relaynode_confirm",
+      "generate": {
+        "target": "run",
+        "category": "RelayNode",
+        "name": "ConfirmRelayNode",
+        "params": [
+          "/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWNoSuchPeerNoSuchPeerNoSuchPeer111111"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "rejected"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Command: ListCommands": {
-      "execute": true,
-      "expect": "succeeded"
+    {
+      "case_id": "relaynode_remove",
+      "generate": {
+        "target": "run",
+        "category": "RelayNode",
+        "name": "RemoveRelayNode",
+        "params": [
+          "/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWNoSuchPeerNoSuchPeerNoSuchPeer111111"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "rejected"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Command: UpdateCommand": {
-      "inputs": [
-        "e2e-ui-test-command",
-        "e2e ui test",
-        "{{selfPeerID}}"
-      ],
-      "execute": true,
-      "expect": "rejected"
+    {
+      "case_id": "relaynode_get",
+      "generate": {
+        "target": "run",
+        "category": "RelayNode",
+        "name": "GetRelayNode",
+        "params": [
+          "/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWNoSuchPeerNoSuchPeerNoSuchPeer111111"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "no_crash"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Dispatch: AppendCommandLog": {
-      "inputs": [
-        "",
-        "e2e-ui-test-instance",
-        "{}",
-        "ui e2e test"
-      ],
-      "execute": true,
-      "expect": "no_crash"
+    {
+      "case_id": "relaynode_list",
+      "generate": {
+        "target": "run",
+        "category": "RelayNode",
+        "name": "ListRelayNodes"
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Dispatch: GetCommandRequest": {
-      "inputs": [
-        "no-such-command",
-        "no-such-instance"
-      ],
-      "execute": true,
-      "expect": "no_crash"
+    {
+      "case_id": "station_put",
+      "generate": {
+        "target": "run",
+        "category": "Station",
+        "name": "PutStation",
+        "params": [
+          "{{selfPeerID}}",
+          "optical-e2e-station",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "rejected"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Dispatch: LatestCommandLog": {
-      "inputs": [
-        "e2e-ui-test-instance"
-      ],
-      "execute": true,
-      "expect": "no_crash"
+    {
+      "case_id": "station_delete",
+      "generate": {
+        "target": "run",
+        "category": "Station",
+        "name": "DeleteStation",
+        "params": [
+          "{{selfPeerID}}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "rejected"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Dispatch: ListCommandRequests": {
-      "inputs": [
-        "no-such-command"
-      ],
-      "execute": true,
-      "expect": "succeeded"
+    {
+      "case_id": "station_get",
+      "generate": {
+        "target": "run",
+        "category": "Station",
+        "name": "GetStation",
+        "params": [
+          "{{selfPeerID}}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "no_crash"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Dispatch: ListExecutionsByPeer": {
-      "inputs": [
-        "{{selfPeerID}}"
-      ],
-      "execute": true,
-      "expect": "succeeded"
+    {
+      "case_id": "station_list",
+      "generate": {
+        "target": "run",
+        "category": "Station",
+        "name": "ListStations"
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Dispatch: QueryCommandLog": {
-      "inputs": [
-        "e2e-ui-test-instance",
-        "",
-        "",
-        ""
-      ],
-      "execute": true,
-      "expect": "no_crash"
+    {
+      "case_id": "kv_get",
+      "generate": {
+        "target": "run",
+        "category": "KV",
+        "name": "Get",
+        "params": [
+          "optical-e2e-key"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:optical-e2e-value"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Dispatch: RunCommandDispatcher": {
-      "inputs": [
-        "no-such-command"
-      ],
-      "execute": true,
-      "expect": "succeeded"
+    {
+      "case_id": "kv_range_scan",
+      "generate": {
+        "target": "run",
+        "category": "KV",
+        "name": "RangeScan",
+        "params": [
+          "optical-e2e-k",
+          "optical-e2e-l",
+          "10"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:optical-e2e-key"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Dispatch: StopCommandDispatcher": {
-      "inputs": [
-        "no-such-command"
-      ],
-      "execute": true,
-      "expect": "succeeded"
+    {
+      "case_id": "kv_cas_absent",
+      "generate": {
+        "target": "run",
+        "category": "KV",
+        "name": "CompareAndSwapAbsent",
+        "params": [
+          "optical-e2e-cas-absent-key",
+          "cas-value"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "no_crash"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Dispatch: StopWatchCommandLog": {
-      "inputs": [
-        "e2e-ui-test-instance"
-      ],
-      "execute": true,
-      "expect": "succeeded"
+    {
+      "case_id": "kv_cas_prime",
+      "generate": {
+        "target": "run",
+        "category": "KV",
+        "name": "Submit",
+        "params": [
+          "optical-e2e-cas-key",
+          "cas-initial"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Dispatch: SubmitCommand": {
-      "inputs": [
-        "no-such-command",
-        "{}"
-      ],
-      "execute": true,
-      "expect": "rejected"
+    {
+      "case_id": "kv_cas",
+      "generate": {
+        "target": "run",
+        "category": "KV",
+        "name": "CompareAndSwap",
+        "params": [
+          "optical-e2e-cas-key",
+          "cas-initial",
+          "cas-updated"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:swapped=true"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Dispatch: WatchCommandLog": {
-      "inputs": [
-        "e2e-ui-test-instance"
-      ],
-      "execute": true,
-      "expect": "succeeded"
+    {
+      "case_id": "kv_txn",
+      "generate": {
+        "target": "run",
+        "category": "KV",
+        "name": "Txn",
+        "params": [
+          "optical-e2e-txn-key=txn-value"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "ExecInvite: CreateExecInvite": {
-      "inputs": [
-        "no-such-command",
-        "{}",
-        "0"
-      ],
-      "execute": true,
-      "expect": "rejected"
+    {
+      "case_id": "permits_request",
+      "generate": {
+        "target": "run",
+        "category": "Permits",
+        "name": "RequestPermit",
+        "params": [
+          "bootstrap",
+          "{{selfPeerID}}",
+          "optical catalog test"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "ExecInvite: RedeemExecInvite": {
-      "inputs": [
-        "/ip4/127.0.0.1/tcp/1#00000000000000000000000000000000"
-      ],
-      "execute": true,
-      "expect": "rejected"
+    {
+      "case_id": "permits_confirm",
+      "generate": {
+        "target": "run",
+        "category": "Permits",
+        "name": "ConfirmPermit",
+        "params": [
+          "bootstrap",
+          "{{selfPeerID}}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "rejected"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "ExecInvite: RevokeExecInvite": {
-      "inputs": [
-        "00000000000000000000000000000000"
-      ],
-      "execute": true,
-      "expect": "rejected"
+    {
+      "case_id": "permits_revoke",
+      "generate": {
+        "target": "run",
+        "category": "Permits",
+        "name": "RevokePermit",
+        "params": [
+          "bootstrap",
+          "{{selfPeerID}}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "rejected"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Execute: Execute": {
-      "inputs": [
-        "{{leaderPeerID}}",
-        "{{testValue}}"
-      ],
-      "execute": true,
-      "expect": "no_crash"
+    {
+      "case_id": "execute_execute",
+      "generate": {
+        "target": "run",
+        "category": "Execute",
+        "name": "Execute",
+        "params": [
+          "{{selfPeerID}}",
+          "optical-e2e-execute-value"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "no_crash"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Execute: PollExecute": {
-      "execute": true,
-      "expect": "succeeded"
+    {
+      "case_id": "execute_poll",
+      "generate": {
+        "target": "run",
+        "category": "Execute",
+        "name": "PollExecute"
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Execute: StopWatchExecute": {
-      "execute": true,
-      "expect": "succeeded"
+    {
+      "case_id": "execute_watch",
+      "generate": {
+        "target": "run",
+        "category": "Execute",
+        "name": "WatchExecute"
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Execute: WatchExecute": {
-      "execute": true,
-      "expect": "succeeded"
+    {
+      "case_id": "execute_stop_watch",
+      "generate": {
+        "target": "run",
+        "category": "Execute",
+        "name": "StopWatchExecute"
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Group: CreateGroup": {
-      "inputs": [
-        "e2e-ui-test-group",
-        "e2e ui test",
-        "false"
-      ],
-      "execute": true,
-      "expect": "rejected"
+    {
+      "case_id": "channel_open",
+      "generate": {
+        "target": "run",
+        "category": "Channel",
+        "name": "OpenChannel",
+        "params": [
+          "{{selfPeerID}}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "no_crash"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Group: DeleteGroup": {
-      "inputs": [
-        "e2e-ui-test-group"
-      ],
-      "execute": true,
-      "expect": "rejected"
+    {
+      "case_id": "channel_stop_listen",
+      "generate": {
+        "target": "run",
+        "category": "Channel",
+        "name": "StopListenChannel"
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Group: GetGroup": {
-      "inputs": [
-        "no-such-group"
-      ],
-      "execute": true,
-      "expect": "no_crash"
+    {
+      "case_id": "channel_send_data",
+      "generate": {
+        "target": "run",
+        "category": "Channel",
+        "name": "SendChannelData",
+        "params": [
+          "no-such-channel",
+          "optical-test",
+          "b3B0aWNhbC1lMmU="
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "no_crash"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Group: ListGroups": {
-      "execute": true,
-      "expect": "succeeded"
+    {
+      "case_id": "channel_close_write",
+      "generate": {
+        "target": "run",
+        "category": "Channel",
+        "name": "CloseChannelWrite",
+        "params": [
+          "no-such-channel"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Group: UpdateGroup": {
-      "inputs": [
-        "e2e-ui-test-group",
-        "e2e ui test",
-        "false"
-      ],
-      "execute": true,
-      "expect": "rejected"
+    {
+      "case_id": "channel_close",
+      "generate": {
+        "target": "run",
+        "category": "Channel",
+        "name": "CloseChannel",
+        "params": [
+          "no-such-channel"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "KV: Get": {
-      "inputs": [
-        "{{testKey}}"
-      ],
-      "execute": true,
-      "expect": "succeeded",
-      "retry_budget_ms": 5000
+    {
+      "case_id": "channel_stop",
+      "generate": {
+        "target": "run",
+        "category": "Channel",
+        "name": "StopChannel",
+        "params": [
+          "no-such-channel"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "KV: RangeScan": {
-      "inputs": [
-        "{{testKey}}",
-        "{{testKey}}￿",
-        "10"
-      ],
-      "execute": true,
-      "expect": "succeeded"
+    {
+      "case_id": "logrecords_append",
+      "generate": {
+        "target": "run",
+        "category": "Log records",
+        "name": "LogAppend",
+        "params": [
+          "optical-e2e-test",
+          "optical-e2e-unit",
+          "{}",
+          "optical e2e log append"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "KV: Submit": {
-      "inputs": [
-        "{{testKey}}",
-        "{{testValue}}"
-      ],
-      "execute": true,
-      "expect": "succeeded"
+    {
+      "case_id": "logrecords_query",
+      "generate": {
+        "target": "run",
+        "category": "Log records",
+        "name": "LogQuery",
+        "params": [
+          "optical-e2e-test",
+          "optical-e2e-unit",
+          "",
+          "",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Links: AddCommandToGroup": {
-      "inputs": [
-        "no-such-command",
-        "no-such-group"
-      ],
-      "execute": true,
-      "expect": "rejected"
+    {
+      "case_id": "group_create",
+      "generate": {
+        "target": "run",
+        "category": "Group",
+        "name": "CreateGroup",
+        "params": [
+          "optical-e2e-group",
+          "optical e2e group",
+          "false"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "rejected"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Links: AddPeerToGroup": {
-      "inputs": [
-        "{{selfPeerID}}",
-        "no-such-group"
-      ],
-      "execute": true,
-      "expect": "rejected"
+    {
+      "case_id": "group_update",
+      "generate": {
+        "target": "run",
+        "category": "Group",
+        "name": "UpdateGroup",
+        "params": [
+          "optical-e2e-group",
+          "optical e2e group v2",
+          "false"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "rejected"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Links: ListGroupsForCommand": {
-      "inputs": [
-        "no-such-command"
-      ],
-      "execute": true,
-      "expect": "succeeded"
+    {
+      "case_id": "group_delete",
+      "generate": {
+        "target": "run",
+        "category": "Group",
+        "name": "DeleteGroup",
+        "params": [
+          "optical-e2e-group"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "rejected"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Links: ListGroupsForPeer": {
-      "inputs": [
-        "{{selfPeerID}}"
-      ],
-      "execute": true,
-      "expect": "succeeded"
+    {
+      "case_id": "group_get",
+      "generate": {
+        "target": "run",
+        "category": "Group",
+        "name": "GetGroup",
+        "params": [
+          "optical-e2e-group"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "no_crash"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Links: RemoveCommandFromGroup": {
-      "inputs": [
-        "no-such-command",
-        "no-such-group"
-      ],
-      "execute": true,
-      "expect": "rejected"
+    {
+      "case_id": "group_list",
+      "generate": {
+        "target": "run",
+        "category": "Group",
+        "name": "ListGroups"
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Links: RemovePeerFromGroup": {
-      "inputs": [
-        "{{selfPeerID}}",
-        "no-such-group"
-      ],
-      "execute": true,
-      "expect": "rejected"
+    {
+      "case_id": "command_create",
+      "generate": {
+        "target": "run",
+        "category": "Command",
+        "name": "CreateCommand",
+        "params": [
+          "optical-e2e-command",
+          "optical e2e command",
+          "{{selfPeerID}}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "rejected"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Log records: LogAppend": {
-      "inputs": [
-        "e2e-ui-test",
-        "ui-test-unit",
-        "{}",
-        "ui e2e test"
-      ],
-      "execute": true,
-      "expect": "no_crash"
+    {
+      "case_id": "command_update",
+      "generate": {
+        "target": "run",
+        "category": "Command",
+        "name": "UpdateCommand",
+        "params": [
+          "optical-e2e-command",
+          "optical e2e command v2",
+          "{{selfPeerID}}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "rejected"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Log records: LogQuery": {
-      "inputs": [
-        "e2e-ui-test",
-        "ui-test-unit",
-        "",
-        "",
-        ""
-      ],
-      "execute": true,
-      "expect": "no_crash"
+    {
+      "case_id": "command_delete",
+      "generate": {
+        "target": "run",
+        "category": "Command",
+        "name": "DeleteCommand",
+        "params": [
+          "optical-e2e-command"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "rejected"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Permits: ConfirmPermit": {
-      "inputs": [
-        "peer",
-        "{{selfPeerID}}"
-      ],
-      "execute": true,
-      "expect": "rejected"
+    {
+      "case_id": "command_get",
+      "generate": {
+        "target": "run",
+        "category": "Command",
+        "name": "GetCommand",
+        "params": [
+          "optical-e2e-command"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "no_crash"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Permits: RequestPermit": {
-      "inputs": [
-        "bootstrap",
-        "{{selfPeerID}}",
-        ""
-      ],
-      "execute": true,
-      "expect": "succeeded"
+    {
+      "case_id": "command_list",
+      "generate": {
+        "target": "run",
+        "category": "Command",
+        "name": "ListCommands"
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Permits: RevokePermit": {
-      "inputs": [
-        "peer",
-        "{{selfPeerID}}"
-      ],
-      "execute": true,
-      "expect": "rejected"
+    {
+      "case_id": "command_create_with_spec",
+      "generate": {
+        "target": "run",
+        "category": "Command",
+        "name": "CreateCommandWithSpec",
+        "params": [
+          "optical-e2e-command-spec",
+          "optical e2e command spec",
+          "",
+          "{}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "rejected"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     },
-    "Raw: SendEvent": {
-      "inputs": [
-        "{\"event\":\"get_public_key\"}"
-      ],
-      "execute": true,
-      "expect": "succeeded"
+    {
+      "case_id": "command_update_with_spec",
+      "generate": {
+        "target": "run",
+        "category": "Command",
+        "name": "UpdateCommandWithSpec",
+        "params": [
+          "optical-e2e-command-spec",
+          "optical e2e command spec v2",
+          "",
+          "{}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "rejected"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "links_add_command_to_group",
+      "generate": {
+        "target": "run",
+        "category": "Links",
+        "name": "AddCommandToGroup",
+        "params": [
+          "optical-e2e-command",
+          "optical-e2e-group"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "rejected"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "links_remove_command_from_group",
+      "generate": {
+        "target": "run",
+        "category": "Links",
+        "name": "RemoveCommandFromGroup",
+        "params": [
+          "optical-e2e-command",
+          "optical-e2e-group"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "rejected"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "links_list_groups_for_command",
+      "generate": {
+        "target": "run",
+        "category": "Links",
+        "name": "ListGroupsForCommand",
+        "params": [
+          "optical-e2e-command"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "links_add_peer_to_group",
+      "generate": {
+        "target": "run",
+        "category": "Links",
+        "name": "AddPeerToGroup",
+        "params": [
+          "{{selfPeerID}}",
+          "optical-e2e-group"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "rejected"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "links_remove_peer_from_group",
+      "generate": {
+        "target": "run",
+        "category": "Links",
+        "name": "RemovePeerFromGroup",
+        "params": [
+          "{{selfPeerID}}",
+          "optical-e2e-group"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "rejected"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "links_list_groups_for_peer",
+      "generate": {
+        "target": "run",
+        "category": "Links",
+        "name": "ListGroupsForPeer",
+        "params": [
+          "{{selfPeerID}}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "dispatch_submit_command",
+      "generate": {
+        "target": "run",
+        "category": "Dispatch",
+        "name": "SubmitCommand",
+        "params": [
+          "no-such-command",
+          "{}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "no_crash"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "dispatch_get_command_request",
+      "generate": {
+        "target": "run",
+        "category": "Dispatch",
+        "name": "GetCommandRequest",
+        "params": [
+          "no-such-command",
+          "no-such-instance"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "no_crash"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "dispatch_list_command_requests",
+      "generate": {
+        "target": "run",
+        "category": "Dispatch",
+        "name": "ListCommandRequests",
+        "params": [
+          "no-such-command"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "dispatch_list_executions_by_peer",
+      "generate": {
+        "target": "run",
+        "category": "Dispatch",
+        "name": "ListExecutionsByPeer",
+        "params": [
+          "{{selfPeerID}}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "dispatch_append_command_log",
+      "generate": {
+        "target": "run",
+        "category": "Dispatch",
+        "name": "AppendCommandLog",
+        "params": [
+          "",
+          "optical-e2e-instance",
+          "{}",
+          "optical e2e append"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "dispatch_report_progress",
+      "generate": {
+        "target": "run",
+        "category": "Dispatch",
+        "name": "ReportProgress",
+        "params": [
+          "{{selfPeerID}}",
+          "optical-e2e-instance",
+          "",
+          "optical e2e progress"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "dispatch_query_command_log",
+      "generate": {
+        "target": "run",
+        "category": "Dispatch",
+        "name": "QueryCommandLog",
+        "params": [
+          "optical-e2e-instance",
+          "",
+          "",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "dispatch_latest_command_log",
+      "generate": {
+        "target": "run",
+        "category": "Dispatch",
+        "name": "LatestCommandLog",
+        "params": [
+          "optical-e2e-instance"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:optical-e2e-instance"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "dispatch_watch_command_log",
+      "generate": {
+        "target": "run",
+        "category": "Dispatch",
+        "name": "WatchCommandLog",
+        "params": [
+          "optical-e2e-instance"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "dispatch_stop_watch_command_log",
+      "generate": {
+        "target": "run",
+        "category": "Dispatch",
+        "name": "StopWatchCommandLog",
+        "params": [
+          "optical-e2e-instance"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "dispatch_dial_query_command_log",
+      "generate": {
+        "target": "run",
+        "category": "Dispatch",
+        "name": "DialQueryCommandLog",
+        "params": [
+          "/ip4/127.0.0.1/tcp/1/p2p/12D3KooWNoSuchPeerNoSuchPeerNoSuchPeer111111",
+          "no-such-instance",
+          "",
+          "",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "no_crash"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "dispatch_dial_watch_command_log",
+      "generate": {
+        "target": "run",
+        "category": "Dispatch",
+        "name": "DialWatchCommandLog",
+        "params": [
+          "/ip4/127.0.0.1/tcp/1/p2p/12D3KooWNoSuchPeerNoSuchPeerNoSuchPeer111111",
+          "no-such-instance"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "no_crash"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "dispatch_stop_dial_watch_command_log",
+      "generate": {
+        "target": "run",
+        "category": "Dispatch",
+        "name": "StopDialWatchCommandLog",
+        "params": [
+          "no-such-instance"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "dispatch_run_command_dispatcher",
+      "generate": {
+        "target": "run",
+        "category": "Dispatch",
+        "name": "RunCommandDispatcher",
+        "params": [
+          "optical-e2e-dispatch-command"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "dispatch_stop_command_dispatcher",
+      "generate": {
+        "target": "run",
+        "category": "Dispatch",
+        "name": "StopCommandDispatcher",
+        "params": [
+          "optical-e2e-dispatch-command"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "execinvite_create",
+      "generate": {
+        "target": "run",
+        "category": "ExecInvite",
+        "name": "CreateExecInvite",
+        "params": [
+          "optical-e2e-command",
+          "{}",
+          "0"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "rejected"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "execinvite_revoke",
+      "generate": {
+        "target": "run",
+        "category": "ExecInvite",
+        "name": "RevokeExecInvite",
+        "params": [
+          "00000000000000000000000000000000"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "rejected"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "execinvite_redeem",
+      "generate": {
+        "target": "run",
+        "category": "ExecInvite",
+        "name": "RedeemExecInvite",
+        "params": [
+          "/ip4/127.0.0.1/tcp/1/p2p/12D3KooWNoSuchPeerNoSuchPeerNoSuchPeer111111#00000000000000000000000000000000"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "no_crash"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "execinvite_create_ticket",
+      "generate": {
+        "target": "run",
+        "category": "ExecInvite",
+        "name": "CreateExecInviteTicket",
+        "params": [
+          "optical-e2e-command",
+          "{}",
+          "0"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "rejected"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "execinvite_redeem_ticket",
+      "generate": {
+        "target": "run",
+        "category": "ExecInvite",
+        "name": "RedeemExecInviteTicket",
+        "params": [
+          "bm90LWEtcmVhbC10aWNrZXQ="
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "no_crash"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "raw_send_event",
+      "generate": {
+        "target": "run",
+        "category": "Raw",
+        "name": "SendEvent",
+        "params": [
+          "{\"event\":\"get_own_addr\"}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:{{selfPeerID}}"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
+    },
+    {
+      "case_id": "test_sleep_millis",
+      "generate": {
+        "target": "run",
+        "category": "Test",
+        "name": "SleepMillis",
+        "params": [
+          "500"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 45000,
+      "timeout_ms": 60000
     }
-  },
-  "android_ui_result": {
-    "ran_at": "2026-08-09T22:29:11.994765683+03:00",
-    "status": 1,
-    "error": "node 12D3KooWKsCQyhoer3wGzHuAZ5APEdkCwTggV1VXymKKxPk3BFBg: e2erun: 21 of 83 android UI command(s) failed:\nCluster: Start: expected success, got: Cluster: Start() FAILED: kvmobile: start follower: open /data/user/0/com.gofsd.kvdemo/files/12D3KooWKsCQyhoer3wGzHuAZ5APEdkCwTggV1VXymKKxPk3BFBg-12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi/ready.json: no such file or directory\nCluster: StartWithKey: expected success, got: Cluster: StartWithKey(not-a-real-key-hex) FAILED: kvmobile: decode key: encoding/hex: invalid byte: U+006E 'n'\nCluster: GetOwnAddr: expected success, got: Cluster: GetOwnAddr() FAILED: kvmobile: Start has not completed successfully yet\nCluster: CreateJoinRequest: expected success, got: Cluster: CreateJoinRequest() FAILED: kvmobile: Start has not completed successfully yet\nCluster: Delete: expected a rejection (this device is a learner, not a voter), got: Cluster: Delete() -\u003e\nOK\nCluster: ListClusterMembers: expected success, got: Cluster: ListClusterMembers() FAILED: kvmobile: Start has not completed successfully yet\nCluster: AccessToken: expected success, got: Cluster: AccessToken() FAILED: kvmobile: Start has not completed successfully yet\nKV: Submit: expected success, got: KV: Submit(e2e-ui-test-key, e2e-ui-test-value-1786303494158) FAILED: kvmobile: Start has not completed successfully yet\nKV: Get: expected success, got: KV: Get(e2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-key) FAILED: kvmobile: Start has not completed successfully yet\nKV: RangeScan: expected success, got: KV: RangeScan(e2e-ui-test-key, e2e-ui-test-key￿, 10) FAILED: kvmobile: Start has not completed successfully yet\nPermits: RequestPermit: expected success, got: Permits: RequestPermit(bootstrap, , ) FAILED: kvmobile: Start has not completed successfully yet\nExecute: PollExecute: expected success, got: Execute: PollExecute() FAILED: kvmobile: Start has not completed successfully yet\nChannel: CloseChannelWrite: expected success, got: Channel: CloseChannelWrite(no-such-channel) FAILED: kvmobile: Start has not completed successfully yet\nChannel: CloseChannel: expected success, got: Channel: CloseChannel(no-such-channel) FAILED: kvmobile: Start has not completed successfully yet\nGroup: ListGroups: expected success, got: Group: ListGroups() FAILED: kvmobile: Start has not completed successfully yet\nCommand: ListCommands: expected success, got: Command: ListCommands() FAILED: kvmobile: Start has not completed successfully yet\nLinks: ListGroupsForCommand: expected success, got: Links: ListGroupsForCommand(no-such-command) FAILED: kvmobile: Start has not completed successfully yet\nLinks: ListGroupsForPeer: expected success, got: Links: ListGroupsForPeer() FAILED: kvmobile: Start has not completed successfully yet\nDispatch: ListCommandRequests: expected success, got: Dispatch: ListCommandRequests(no-such-command) FAILED: kvmobile: Start has not completed successfully yet\nDispatch: ListExecutionsByPeer: expected success, got: Dispatch: ListExecutionsByPeer() FAILED: kvmobile: ListExecutionsByPeer: peerID must not be empty\nRaw: SendEvent: expected success, got: Raw: SendEvent({\"event\":\"get_public_key\"}) FAILED: kvmobile: Start has not completed successfully yet",
+  ],
+  "android_optical_scan_result": {
+    "ran_at": "2026-08-13T06:23:40.764172783+03:00",
+    "status": 0,
     "cases": [
       {
-        "command": "Cluster: Start",
-        "pass": false,
-        "error": "expected success, got: Cluster: Start() FAILED: kvmobile: start follower: open /data/user/0/com.gofsd.kvdemo/files/12D3KooWKsCQyhoer3wGzHuAZ5APEdkCwTggV1VXymKKxPk3BFBg-12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi/ready.json: no such file or directory"
-      },
-      {
-        "command": "Cluster: StartWithKey",
-        "pass": false,
-        "error": "expected success, got: Cluster: StartWithKey(not-a-real-key-hex) FAILED: kvmobile: decode key: encoding/hex: invalid byte: U+006E 'n'"
-      },
-      {
-        "command": "Cluster: Join",
+        "case_id": "get_own_addr",
         "pass": true
       },
       {
-        "command": "Cluster: JoinWithKey",
+        "case_id": "nav_group_kv",
         "pass": true
       },
       {
-        "command": "Cluster: StartSolo",
+        "case_id": "kv_submit",
         "pass": true
       },
       {
-        "command": "Cluster: StartSoloWithKey",
+        "case_id": "join_request_ticket",
         "pass": true
       },
       {
-        "command": "Cluster: StartSoloWithKeyAndPort",
+        "case_id": "dial_submit_command_ping",
         "pass": true
       },
       {
-        "command": "Cluster: StartPending",
+        "case_id": "cluster_start",
         "pass": true
       },
       {
-        "command": "Cluster: StartPendingWithKey",
+        "case_id": "cluster_create_join_request",
         "pass": true
       },
       {
-        "command": "Cluster: StartPendingWithKeyAndPort",
+        "case_id": "cluster_cancel_join_request",
         "pass": true
-      },
-      {
-        "command": "Cluster: GetOwnAddr",
-        "pass": false,
-        "error": "expected success, got: Cluster: GetOwnAddr() FAILED: kvmobile: Start has not completed successfully yet"
-      },
-      {
-        "command": "Cluster: CreateJoinRequest",
-        "pass": false,
-        "error": "expected success, got: Cluster: CreateJoinRequest() FAILED: kvmobile: Start has not completed successfully yet"
       },
       {
-        "command": "Cluster: CancelJoinRequest",
+        "case_id": "cluster_create_join_invite",
         "pass": true
       },
       {
-        "command": "Cluster: RecruitPeer",
+        "case_id": "cluster_revoke_join_invite",
         "pass": true
       },
       {
-        "command": "Cluster: CreateJoinRequestTicket",
+        "case_id": "cluster_create_join_invite_ticket",
         "pass": true
       },
       {
-        "command": "Cluster: RedeemJoinRequestTicket",
+        "case_id": "cluster_verify_join_invite_ticket",
         "pass": true
       },
       {
-        "command": "Cluster: CreateJoinInvite",
+        "case_id": "cluster_kick",
         "pass": true
       },
       {
-        "command": "Cluster: RevokeJoinInvite",
+        "case_id": "cluster_list_clusters",
         "pass": true
       },
       {
-        "command": "Cluster: CreateJoinInviteTicket",
+        "case_id": "cluster_list_cluster_members",
         "pass": true
       },
       {
-        "command": "Cluster: VerifyJoinInviteTicket",
+        "case_id": "cluster_peer_id",
         "pass": true
       },
       {
-        "command": "Cluster: Stop",
+        "case_id": "cluster_access_token",
         "pass": true
-      },
-      {
-        "command": "Cluster: Delete",
-        "pass": false,
-        "error": "expected a rejection (this device is a learner, not a voter), got: Cluster: Delete() -\u003e\nOK"
       },
       {
-        "command": "Cluster: Leave",
+        "case_id": "cluster_request_relay_access",
         "pass": true
       },
       {
-        "command": "Cluster: Rm",
+        "case_id": "cluster_request_public_access",
         "pass": true
       },
       {
-        "command": "Cluster: Kick",
+        "case_id": "cluster_version",
         "pass": true
       },
       {
-        "command": "Cluster: ListClusters",
-        "pass": true,
-        "output": "[]"
-      },
-      {
-        "command": "Cluster: ListClusterMembers",
-        "pass": false,
-        "error": "expected success, got: Cluster: ListClusterMembers() FAILED: kvmobile: Start has not completed successfully yet"
-      },
-      {
-        "command": "Cluster: PeerID",
+        "case_id": "relaynode_add",
         "pass": true
       },
       {
-        "command": "Cluster: AccessToken",
-        "pass": false,
-        "error": "expected success, got: Cluster: AccessToken() FAILED: kvmobile: Start has not completed successfully yet"
+        "case_id": "relaynode_confirm",
+        "pass": true
       },
       {
-        "command": "Cluster: RequestRelayAccess",
+        "case_id": "relaynode_remove",
         "pass": true
       },
       {
-        "command": "KV: Submit",
-        "pass": false,
-        "error": "expected success, got: KV: Submit(e2e-ui-test-key, e2e-ui-test-value-1786303494158) FAILED: kvmobile: Start has not completed successfully yet"
+        "case_id": "relaynode_get",
+        "pass": true
       },
       {
-        "command": "KV: Get",
-        "pass": false,
-        "error": "expected success, got: KV: Get(e2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-keye2e-ui-test-key) FAILED: kvmobile: Start has not completed successfully yet"
+        "case_id": "relaynode_list",
+        "pass": true
       },
       {
-        "command": "KV: RangeScan",
-        "pass": false,
-        "error": "expected success, got: KV: RangeScan(e2e-ui-test-key, e2e-ui-test-key￿, 10) FAILED: kvmobile: Start has not completed successfully yet"
+        "case_id": "station_put",
+        "pass": true
       },
       {
-        "command": "Permits: RequestPermit",
-        "pass": false,
-        "error": "expected success, got: Permits: RequestPermit(bootstrap, , ) FAILED: kvmobile: Start has not completed successfully yet"
+        "case_id": "station_delete",
+        "pass": true
       },
       {
-        "command": "Permits: ConfirmPermit",
+        "case_id": "station_get",
         "pass": true
       },
       {
-        "command": "Permits: RevokePermit",
+        "case_id": "station_list",
         "pass": true
       },
       {
-        "command": "Execute: Execute",
+        "case_id": "kv_get",
         "pass": true
       },
       {
-        "command": "Execute: PollExecute",
-        "pass": false,
-        "error": "expected success, got: Execute: PollExecute() FAILED: kvmobile: Start has not completed successfully yet"
+        "case_id": "kv_range_scan",
+        "pass": true
       },
       {
-        "command": "Execute: WatchExecute",
-        "pass": true,
-        "output": "Watching -- notifications appear below as they arrive"
+        "case_id": "kv_cas_absent",
+        "pass": true
       },
       {
-        "command": "Execute: StopWatchExecute",
-        "pass": true,
-        "output": "OK"
+        "case_id": "kv_cas_prime",
+        "pass": true
       },
       {
-        "command": "Channel: OpenChannel",
+        "case_id": "kv_cas",
         "pass": true
       },
       {
-        "command": "Channel: ListenChannel",
+        "case_id": "kv_txn",
         "pass": true
       },
       {
-        "command": "Channel: StopListenChannel",
-        "pass": true,
-        "output": "OK"
+        "case_id": "permits_request",
+        "pass": true
       },
       {
-        "command": "Channel: SendChannelData",
+        "case_id": "permits_confirm",
         "pass": true
       },
       {
-        "command": "Channel: CloseChannelWrite",
-        "pass": false,
-        "error": "expected success, got: Channel: CloseChannelWrite(no-such-channel) FAILED: kvmobile: Start has not completed successfully yet"
+        "case_id": "permits_revoke",
+        "pass": true
       },
       {
-        "command": "Channel: CloseChannel",
-        "pass": false,
-        "error": "expected success, got: Channel: CloseChannel(no-such-channel) FAILED: kvmobile: Start has not completed successfully yet"
+        "case_id": "execute_execute",
+        "pass": true
       },
       {
-        "command": "Channel: StopChannel",
-        "pass": true,
-        "output": "OK"
+        "case_id": "execute_poll",
+        "pass": true
       },
       {
-        "command": "Log records: LogAppend",
+        "case_id": "execute_watch",
         "pass": true
       },
       {
-        "command": "Log records: LogQuery",
+        "case_id": "execute_stop_watch",
         "pass": true
       },
       {
-        "command": "Group: CreateGroup",
+        "case_id": "channel_open",
         "pass": true
       },
       {
-        "command": "Group: UpdateGroup",
+        "case_id": "channel_stop_listen",
         "pass": true
       },
       {
-        "command": "Group: DeleteGroup",
+        "case_id": "channel_send_data",
         "pass": true
       },
       {
-        "command": "Group: GetGroup",
+        "case_id": "channel_close_write",
         "pass": true
       },
       {
-        "command": "Group: ListGroups",
-        "pass": false,
-        "error": "expected success, got: Group: ListGroups() FAILED: kvmobile: Start has not completed successfully yet"
+        "case_id": "channel_close",
+        "pass": true
       },
       {
-        "command": "Command: CreateCommand",
+        "case_id": "channel_stop",
         "pass": true
       },
       {
-        "command": "Command: UpdateCommand",
+        "case_id": "logrecords_append",
         "pass": true
       },
       {
-        "command": "Command: DeleteCommand",
+        "case_id": "logrecords_query",
         "pass": true
       },
       {
-        "command": "Command: GetCommand",
+        "case_id": "group_create",
         "pass": true
       },
       {
-        "command": "Command: ListCommands",
-        "pass": false,
-        "error": "expected success, got: Command: ListCommands() FAILED: kvmobile: Start has not completed successfully yet"
+        "case_id": "group_update",
+        "pass": true
       },
       {
-        "command": "Links: AddCommandToGroup",
+        "case_id": "group_delete",
         "pass": true
       },
       {
-        "command": "Links: RemoveCommandFromGroup",
+        "case_id": "group_get",
         "pass": true
       },
       {
-        "command": "Links: ListGroupsForCommand",
-        "pass": false,
-        "error": "expected success, got: Links: ListGroupsForCommand(no-such-command) FAILED: kvmobile: Start has not completed successfully yet"
+        "case_id": "group_list",
+        "pass": true
       },
       {
-        "command": "Links: AddPeerToGroup",
+        "case_id": "command_create",
         "pass": true
       },
       {
-        "command": "Links: RemovePeerFromGroup",
+        "case_id": "command_update",
         "pass": true
       },
       {
-        "command": "Links: ListGroupsForPeer",
-        "pass": false,
-        "error": "expected success, got: Links: ListGroupsForPeer() FAILED: kvmobile: Start has not completed successfully yet"
+        "case_id": "command_delete",
+        "pass": true
       },
       {
-        "command": "Dispatch: SubmitCommand",
+        "case_id": "command_get",
         "pass": true
       },
       {
-        "command": "Dispatch: GetCommandRequest",
+        "case_id": "command_list",
         "pass": true
       },
       {
-        "command": "Dispatch: ListCommandRequests",
-        "pass": false,
-        "error": "expected success, got: Dispatch: ListCommandRequests(no-such-command) FAILED: kvmobile: Start has not completed successfully yet"
+        "case_id": "command_create_with_spec",
+        "pass": true
       },
       {
-        "command": "Dispatch: ListExecutionsByPeer",
-        "pass": false,
-        "error": "expected success, got: Dispatch: ListExecutionsByPeer() FAILED: kvmobile: ListExecutionsByPeer: peerID must not be empty"
+        "case_id": "command_update_with_spec",
+        "pass": true
       },
       {
-        "command": "Dispatch: AppendCommandLog",
+        "case_id": "links_add_command_to_group",
         "pass": true
       },
       {
-        "command": "Dispatch: QueryCommandLog",
+        "case_id": "links_remove_command_from_group",
         "pass": true
       },
       {
-        "command": "Dispatch: LatestCommandLog",
+        "case_id": "links_list_groups_for_command",
         "pass": true
       },
       {
-        "command": "Dispatch: WatchCommandLog",
-        "pass": true,
-        "output": "Watching -- new records appear below as they arrive"
+        "case_id": "links_add_peer_to_group",
+        "pass": true
       },
       {
-        "command": "Dispatch: StopWatchCommandLog",
-        "pass": true,
-        "output": "OK"
+        "case_id": "links_remove_peer_from_group",
+        "pass": true
       },
       {
-        "command": "Dispatch: RunCommandDispatcher",
-        "pass": true,
-        "output": "Dispatching -- requests for no-such-command are handled as they arrive, logged below"
+        "case_id": "links_list_groups_for_peer",
+        "pass": true
       },
       {
-        "command": "Dispatch: StopCommandDispatcher",
-        "pass": true,
-        "output": "OK"
+        "case_id": "dispatch_submit_command",
+        "pass": true
       },
       {
-        "command": "ExecInvite: CreateExecInvite",
+        "case_id": "dispatch_get_command_request",
         "pass": true
       },
       {
-        "command": "ExecInvite: RevokeExecInvite",
+        "case_id": "dispatch_list_command_requests",
         "pass": true
       },
       {
-        "command": "ExecInvite: RedeemExecInvite",
+        "case_id": "dispatch_list_executions_by_peer",
         "pass": true
       },
       {
-        "command": "ExecInvite: CreateExecInviteTicket",
+        "case_id": "dispatch_append_command_log",
         "pass": true
       },
       {
-        "command": "ExecInvite: RedeemExecInviteTicket",
+        "case_id": "dispatch_report_progress",
         "pass": true
       },
       {
-        "command": "Raw: SendEvent",
-        "pass": false,
-        "error": "expected success, got: Raw: SendEvent({\"event\":\"get_public_key\"}) FAILED: kvmobile: Start has not completed successfully yet"
+        "case_id": "dispatch_query_command_log",
+        "pass": true
       },
       {
-        "command": "Test: SleepMillis",
+        "case_id": "dispatch_latest_command_log",
         "pass": true
-      }
-    ]
-  },
-  "android_ui_pair_result": {
-    "ran_at": "2026-08-07T14:55:57.606378703+03:00",
-    "status": 1,
-    "error": "Cluster: Join (sender): Cluster: Join: expected success, got: Cluster: Join(/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWFJAfkCrgCrKpun4MwuywXkxy3U9RU38zEUeAguTGhzh4/p2p-circuit/p2p/12D3KooWKWhvmbEAPXpRmKb8Zp4P3T8hVxRVWf4wVE7mg3j1ppLJ#999f247916711af254b4b12ddc60cb7f) FAILED: kvmobile: join cluster: shmclient: add: join: connect to leader 12D3KooWKWhvmbEAPXpRmKb8Zp4P3T8hVxRVWf4wVE7mg3j1ppLJ: failed to dial: failed to dial 12D3KooWKWhvmbEAPXpRmKb8Zp4P3T8hVxRVWf4wVE7mg3j1ppLJ: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWFJAfkCrgCrKpun4MwuywXkxy3U9RU38zEUeAguTGhzh4/p2p-circuit] error opening relay circuit: RESOURCE_LIMIT_EXCEEDED (201)",
-    "cases": [
+      },
       {
-        "command": "Cluster: StartSoloWithKey (A, prep)",
+        "case_id": "dispatch_watch_command_log",
         "pass": true
       },
       {
-        "command": "Cluster: RequestRelayAccess (A, prep)",
+        "case_id": "dispatch_stop_watch_command_log",
         "pass": true
       },
       {
-        "command": "Cluster: StartPendingWithKey (B, prep)",
+        "case_id": "dispatch_dial_query_command_log",
         "pass": true
       },
       {
-        "command": "Cluster: RequestRelayAccess (B, prep)",
+        "case_id": "dispatch_dial_watch_command_log",
         "pass": true
       },
       {
-        "command": "Cluster: GetOwnAddr (B, prep)",
+        "case_id": "dispatch_stop_dial_watch_command_log",
         "pass": true
       },
       {
-        "command": "Cluster: CreateJoinRequest (B, prep)",
+        "case_id": "dispatch_run_command_dispatcher",
         "pass": true
       },
       {
-        "command": "Cluster: RecruitPeer (sender)",
+        "case_id": "dispatch_stop_command_dispatcher",
         "pass": true
       },
       {
-        "command": "Cluster: RecruitPeer (receiver)",
+        "case_id": "execinvite_create",
         "pass": true
       },
       {
-        "command": "Cluster: CreateJoinInvite (A, prep)",
+        "case_id": "execinvite_revoke",
         "pass": true
       },
       {
-        "command": "Cluster: GetOwnAddr (A, prep)",
+        "case_id": "execinvite_redeem",
         "pass": true
       },
       {
-        "command": "Cluster: Join (sender)",
-        "pass": false,
-        "error": "Cluster: Join: expected success, got: Cluster: Join(/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWFJAfkCrgCrKpun4MwuywXkxy3U9RU38zEUeAguTGhzh4/p2p-circuit/p2p/12D3KooWKWhvmbEAPXpRmKb8Zp4P3T8hVxRVWf4wVE7mg3j1ppLJ#999f247916711af254b4b12ddc60cb7f) FAILED: kvmobile: join cluster: shmclient: add: join: connect to leader 12D3KooWKWhvmbEAPXpRmKb8Zp4P3T8hVxRVWf4wVE7mg3j1ppLJ: failed to dial: failed to dial 12D3KooWKWhvmbEAPXpRmKb8Zp4P3T8hVxRVWf4wVE7mg3j1ppLJ: all dials failed\n  * [/ip4/63.250.47.155/tcp/4101/p2p/12D3KooWFJAfkCrgCrKpun4MwuywXkxy3U9RU38zEUeAguTGhzh4/p2p-circuit] error opening relay circuit: RESOURCE_LIMIT_EXCEEDED (201)"
+        "case_id": "execinvite_create_ticket",
+        "pass": true
       },
       {
-        "command": "Cluster: Join (receiver)",
-        "pass": false,
-        "error": "member 12D3KooWKzmWL7TZJhBBDqdpesmWp2q63M66MUShhbMLbphyFmPh has role \"learner\", want \"voter\""
+        "case_id": "execinvite_redeem_ticket",
+        "pass": true
       },
       {
-        "command": "Cluster: Leave (B)",
+        "case_id": "raw_send_event",
         "pass": true
       },
       {
-        "command": "Cluster: Leave (verify via A)",
+        "case_id": "test_sleep_millis",
         "pass": true
       }
     ]

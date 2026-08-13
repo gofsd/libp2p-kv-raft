@@ -61,6 +61,19 @@ didn't get one." Add `SKIP_E2E_CHECK` to the PR title or HEAD commit
 message for a change that genuinely doesn't need one (e.g. e2e
 harness/tooling changes themselves).
 
+Android *command* coverage -- every `CommandCatalog.kt` entry actually running correctly through
+the app's UI, not just the wire-protocol row replay `e2e:current`/`e2e:all` do include -- is gated
+even further out than the rest of this section: it needs a real camera physically pointed at a
+second real screen (see README's [The real-camera optical
+harness](README.md#the-real-camera-optical-harness)), which no CI runner or even a typical local
+dev machine has on hand by default. It's not part of `mage e2e:current`/`e2e:all` at all, and
+`check-e2e-gate` doesn't know about it either -- touching `android-app/` doesn't require also
+touching `test/e2e/testdata.json`'s `android_optical_cases` the way a wire-protocol change does. Run
+it by hand (`MANUAL_OPTICAL_SCAN_SERIALS=<genSerial>,<scanSerial> go test ./pkg/e2erun -run
+TestManualOpticalScan -v`) against a real two-device rig before trusting an Android UI change, the
+same "no substitute for the real hardware path" reasoning the rest of this section already applies
+to the SSH leader/browser/emulator legs.
+
 ## Code style
 
 - Comments explain *why*, not *what* -- see this repo's existing doc

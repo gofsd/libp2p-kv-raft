@@ -17,14 +17,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 
 /**
- * Shown instead of the generic [ScanConfirmationDialog] when AppRoot's scan
- * dispatch recognizes a decoded event as `join_request_ticket` -- some
- * other device's CreateJoinRequestTicket code (see CommandDetailScreen's
- * awaitAdmissionAfterGenerate handling on that side). This device is
+ * Shown instead of [RunConfirmDialog] when AppRoot's scan dispatch recognizes a decoded event as
+ * `join_request_ticket` -- some other device's CreateJoinRequestTicket code (see
+ * CommandDetailScreen's awaitAdmissionAfterGenerate handling on that side). This device is
  * already an established raft voter/learner (only an existing member can
  * admit anyone -- see RedeemJoinRequestTicket), so scanning the ticket
- * doesn't submit it as an ordinary event the way ScanConfirmationDialog's
- * "Trigger" does: it stops here first, letting the operator optionally
+ * doesn't run it as an ordinary command the way RunConfirmDialog's
+ * "Execute" does: it stops here first, letting the operator optionally
  * give the device being admitted a human-readable station name (see
  * mobile/kvmobile.PutStation -- purely descriptive, independent of the
  * admission itself) before [onApprove] actually redeems the ticket

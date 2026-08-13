@@ -2153,67 +2153,26 @@ func hexPrefix(s string) (rest string, ok bool) {
 	return "", false
 }
 
-// UIExpectSucceeded/UIExpectRejected/UIExpectNoCrash are UICase.Expect's
-// valid values -- the on-disk names for UiCommandE2ETest.kt's own
-// assertSucceeded/assertRejected/assertNoCrash assertion functions (see
-// that file's doc comment for what each means: a rejection is expected
-// when this device isn't currently a raft voter, no_crash tolerates either
-// outcome for a case whose result depends on state this pipeline doesn't
-// control). Empty/unrecognized defaults to UIExpectSucceeded on the Kotlin
-// side, matching Case's own Kotlin-side default before this file existed.
+// ExpectSucceeded/ExpectRejected/ExpectNoCrash are OpticalExpectSpec.Result's canned values --
+// the on-disk names for UiCommandE2ETest.kt's own assertSucceeded/assertRejected/assertNoCrash
+// assertion functions (see that file's doc comment for what each means: a rejection is expected
+// when this device isn't currently a raft voter, no_crash tolerates either outcome for a case
+// whose result depends on state this pipeline doesn't control). Empty/unrecognized defaults to
+// ExpectSucceeded on the Kotlin side.
+//
+// Result also accepts a fourth, parameterized form these three constants don't cover:
+// "contains:<substring>" (tokens substituted the same as Generate's Params, e.g.
+// "contains:{{testValue}}"), asserting the result line actually contains <substring> rather than
+// merely not reporting "FAILED" -- see UiCommandE2ETest.kt's assertContains. This is what closes
+// the gap between "the command didn't error" and "the command had the effect it should have"
+// (e.g. a KV: Get case checking the exact value an earlier KV: Submit case wrote, not just that
+// Get itself succeeded) -- the three canned checks above can't express that on their own. A case
+// that depends on an earlier case's own effect this way relies on OpticalScanCase.Order.
 const (
-	UIExpectSucceeded = "succeeded"
-	UIExpectRejected  = "rejected"
-	UIExpectNoCrash   = "no_crash"
+	ExpectSucceeded = "succeeded"
+	ExpectRejected  = "rejected"
+	ExpectNoCrash   = "no_crash"
 )
-
-// UICase is one android UiCommandE2ETest test plan entry, keyed by command
-// label ("$category: $name", matching CommandSpec.label in
-// android-app/app/src/main/java/com/gofsd/kvdemo/CommandCatalog.kt) in
-// File.UICases. This is the single source of truth for what
-// UiCommandE2ETest actually does with each catalog command -- moved here
-// (see git history) from a hardcoded Kotlin map so the whole e2e test
-// surface (cross-platform wire rows and the Android UI command walk alike)
-// lives in one reviewable file instead of being split across a JSON file
-// and a Kotlin source file.
-//
-// Inputs may contain the literal tokens "{{selfPeerID}}", "{{leaderPeerID}}",
-// "{{testKey}}", and "{{testValue}}" -- substituted on-device at test run
-// time (see UiCommandE2ETest.kt's substituteTokens) for values that can
-// only be known live (this device's own peer id, the cluster's
-// currently-observed leader, and a randomized-per-run KV test key/value) --
-// there is no way to freeze those into a committed file the way every other
-// field here is frozen.
-//
-// A catalog command with no entry in File.UICases still gets full
-// navigation-only coverage (screen reachable, param field count verified)
-// via UiCommandE2ETest's own default case, just never has Run tapped --
-// see that file's own doc comment for exactly which commands are
-// deliberately left out this way (destructive to this shared cluster, or
-// needing a second cooperating device) and why.
-type UICase struct {
-	Inputs        []string `json:"inputs,omitempty"`
-	Execute       bool     `json:"execute,omitempty"`
-	Expect        string   `json:"expect,omitempty"`
-	RetryBudgetMs int64    `json:"retry_budget_ms,omitempty"`
-
-	// Order, when non-zero, is this case's 1-based position in a sequence
-	// the caller needs run in exactly that order. It exists because this
-	// map is a *map*: without it the device-side runner (UiCommandE2ETest)
-	// walks whatever it was given in its own catalog order, category by
-	// category, which is fine for the flat per-label sweep this structure
-	// was built for and silently wrong for anything with real ordering --
-	// pkg/e2erun/android_pair.go's cross-device steps, where a "resume this
-	// daemon" op has to run before the action it enables and a settle-sleep
-	// has to run between them. Caught live: every settle in that scenario
-	// was executing *after* the command it was supposed to precede (the
-	// sleep is in the "Test" category, walked after "Cluster"), so the
-	// scenario had effectively never waited for anything.
-	//
-	// Set on every case in a sequence or on none: the runner only honors
-	// ordering when every listed case carries it.
-	Order int `json:"order,omitempty"`
-}
 
 // StatusPass/StatusFail/StatusSkipped are the Row.Status conventions this
 // package's runner uses. Any other non-zero value is still "failed" as far
@@ -2247,20 +2206,11 @@ type Row struct {
 	Platform Platform `json:"platform,omitempty"`
 }
 
-// UICaseResult is one command's outcome from the most recent
-// UiCommandE2ETest walk -- the same shape UiCommandE2ETest.kt itself
-// writes to the device's ui_e2e_results.json, pulled back into this file
-// so it survives past the next run overwriting/deleting that on-device
-// file (see pkg/e2erun/android.go's runUICommandTest).
-//
-// Output is the command's own real return value (UiCommandE2ETest.kt
-// strips CommandDetailActivity.onRun's "$label(args) ->\n" prefix before
-// recording it), populated only when Execute was true and the call
-// succeeded -- unused by the flat per-label sweep this type was
-// originally built for, but what lets pkg/e2erun/android_pair.go's
-// step-by-step two-device orchestration thread one step's real result
-// (a ticket string, a ListClusterMembers JSON array) into a later step's
-// input.
+// UICaseResult is the generic shape UiCommandE2ETest.kt's own writeResults writes one
+// instrumentation method's result line as, to the device's ui_e2e_results.json --
+// pkg/e2erun/android_optical.go's generateAndHold/awaitAndVerifyScan/verifyLogContains each pull
+// and parse this same shape (see runOpticalMethod) to learn what a single method invocation
+// actually did, regardless of which of those three it was.
 type UICaseResult struct {
 	Command string `json:"command"`
 	Pass    bool   `json:"pass"`
@@ -2268,52 +2218,115 @@ type UICaseResult struct {
 	Output  string `json:"output,omitempty"`
 }
 
-// AndroidPairCaseResult is one step's outcome from the two-device
-// Join/RecruitPeer orchestration (pkg/e2erun/android_pair.go) -- same
-// {command, pass, error} shape as UICaseResult, minus Output (that
-// package consumes each step's output directly while orchestrating; it
-// isn't meaningful to a reader of the recorded result afterward).
-type AndroidPairCaseResult struct {
-	Command string `json:"command"`
-	Pass    bool   `json:"pass"`
-	Error   string `json:"error,omitempty"`
+// OpticalGenerateSpec is device A's half of one OpticalScanCase: which of android-app's two
+// remaining DataMatrix-generating screens to reach and what to fill in, mirroring
+// UiCommandE2ETest.kt's generateAndHold switch exactly (same field names, snake_case on the wire,
+// read directly by that Kotlin code -- no translation layer). Only two targets exist now that
+// every CommandCatalog.kt spec generates uniformly through CommandDetailScreen (see that screen's
+// own doc comment): EventBuilderScreen/ConnectDeviceScreen and their own bespoke generate targets
+// are gone, fully subsumed by "run".
+type OpticalGenerateSpec struct {
+	// Target selects the generating screen: "run" (CommandDetailScreen's own "Generate
+	// DataMatrix" button -- the uniform path for every CommandCatalog.kt spec, including the one
+	// exception, CreateJoinRequestTicket, whose generateFromResultBase64 flag makes that same
+	// button render a real signed ticket instead of a RunCode -- CommandDetailScreen handles that
+	// distinction internally, so this spec doesn't need to know which case it is), or "nav_group"
+	// (GroupPickerScreen, a pure navigation shortcut unrelated to command execution).
+	Target string `json:"target"`
+	// Category names a CommandCatalog.kt category -- required for both targets: "run" uses it
+	// (with Name) to navigate to the right CommandDetailScreen, "nav_group" uses it alone to
+	// build the NavCode.Group code directly.
+	Category string `json:"category,omitempty"`
+	// Name is the CommandSpec name within Category -- required for "run", unused by "nav_group".
+	Name string `json:"name,omitempty"`
+	// Params are typed into CommandDetailScreen's own ordered param_N fields before Generate --
+	// required (may be an empty list) for "run", unused by "nav_group". May contain the same
+	// substitution tokens Result/VerifyOnDeviceA accept -- see OpticalExpectSpec's doc comment.
+	Params []string `json:"params,omitempty"`
 }
 
-// AndroidPairResult is the most recent outcome of the two-device
-// Join/RecruitPeer scenario (pkg/e2erun/android_pair.go) -- mirrors
-// AndroidUIResult's shape/semantics exactly (one overwritten value, not
-// versioned/appended history; nil means "never run since this field was
-// introduced," not "it failed"), kept as a separate field rather than
-// folded into AndroidUIResult since this exercises a curated, ordered,
-// cross-device scenario, not the flat single-device per-label sweep
-// AndroidUIResult/UICaseResult describe.
-type AndroidPairResult struct {
+// OpticalExpectSpec is device B's half of one OpticalScanCase: what a real camera scan of the
+// generated code should produce there, mirroring UiCommandE2ETest.kt's awaitAndVerifyScan switch.
+type OpticalExpectSpec struct {
+	// Kind selects the expected outcome: "run" (RunConfirmDialog, Execute tapped -- covers every
+	// command now, including what used to be a separate "event" outcome before RunCode unified
+	// them), "nav_group" (silent NavCode.Group navigation, no dialog), or "ticket"
+	// (RecruitConfirmDialog, Approve tapped).
+	Kind string `json:"kind"`
+	// CategoryTitle is CommandListScreen's own categoryTitle text to expect after a "nav_group"
+	// scan.
+	CategoryTitle string `json:"category_title,omitempty"`
+	// Result is required for "run" -- the same succeeded/rejected/no_crash/"contains:<substring>"
+	// convention ExpectSucceeded/ExpectRejected/ExpectNoCrash describe, checked against the
+	// post-Execute OutputLog entry CommandExecutor.execute records on device B. Tokens
+	// ("{{selfPeerID}}", "{{testKey}}", "{{testValue}}", ...) substituted the same as Generate's
+	// own Params.
+	Result string `json:"result,omitempty"`
+	// VerifyOnDeviceA, when non-empty, additionally polls device A's own Activity Log
+	// (OutputLog, not device B's) for an entry containing this string, with the literal
+	// substring "{{instance_id}}" first replaced by whatever instance_id device B's own
+	// CommandExecutor result reported -- needed for "Dispatch: DialSubmitCommand" cases
+	// specifically, since B executing that command makes B dial back and submit against A's own
+	// RunCommandDispatcher, so the actual dispatch is only ever observable on A. Empty (every
+	// other kind) means no cross-device check.
+	VerifyOnDeviceA string `json:"verify_on_device_a,omitempty"`
+}
+
+// OpticalScanCase is one round trip through android-app's real DataMatrix/camera pipeline:
+// device A generates a code (Generate), a real camera on device B reads it, and device B is
+// expected to react as described (Expect). This is the only android command-execution test plan
+// now -- every command in the app executes exactly this way, so there's no separate single-device
+// in-process equivalent left to distinguish it from.
+//
+// A list, not a map keyed by label: there is no natural unique key here (the same category+name
+// could legitimately appear more than once with different Params to test different states), and
+// there is no "every catalog command gets a default entry" fallback -- every case that should run
+// has to be listed explicitly.
+type OpticalScanCase struct {
+	// CaseID names this entry for logging/results -- must be unique across the list, since it's
+	// also the correlation key UiCommandE2ETest.kt's generateAndHold/awaitAndVerifyScan use to
+	// label their own ui_e2e_results.json entries ("OpticalGenerate: <CaseID>"/
+	// "OpticalScan: <CaseID>").
+	CaseID   string              `json:"case_id"`
+	Generate OpticalGenerateSpec `json:"generate"`
+	Expect   OpticalExpectSpec   `json:"expect"`
+	// HoldMillis bounds how long device A keeps the generated code on screen (via a
+	// Thread.sleep after confirming it rendered) for device B's camera to read it, before its
+	// own instrumentation invocation exits and tears the Activity down.
+	HoldMillis int64 `json:"hold_millis"`
+	// TimeoutMs bounds how long device B's own wait for the expected outcome runs before
+	// giving up -- real camera decode latency, unlike an in-process Compose assertion, is
+	// neither instant nor perfectly reliable.
+	TimeoutMs int64 `json:"timeout_ms"`
+	// Order, when non-zero, is this case's 1-based position in a sequence the caller needs run in
+	// exactly that order -- this is a list, not a map, so file order already reads top to bottom,
+	// but Order documents *intent* (a case that depends on a specific earlier case's own effect,
+	// e.g. a "run" case Get-ing a value an earlier "run" case Set) versus cases that merely happen
+	// to be adjacent. Set on every case in a sequence or on none.
+	Order int `json:"order,omitempty"`
+}
+
+// OpticalScanCaseResult is one OpticalScanCase's outcome -- written by the Go orchestrator
+// (pkg/e2erun/android_optical.go) after combining both devices' own results, not by either device
+// directly (unlike UICaseResult, this describes a whole two-device round trip, not one on-device
+// command).
+type OpticalScanCaseResult struct {
+	CaseID string `json:"case_id"`
+	Pass   bool   `json:"pass"`
+	Error  string `json:"error,omitempty"`
+}
+
+// OpticalScanResult is the most recent optical-scan suite's outcome -- same overwritten-not-
+// versioned convention as Row's own AddTest history is not: nil means never run since this field
+// existed, not "it failed". Persisted by TestManualOpticalScan itself (the only thing that ever
+// runs this suite -- see that test's own doc comment on why it's manual/hardware-gated, never part
+// of mage e2e:current/all) after every invocation, so "did the optical suite pass last time" has
+// an answer on disk instead of only ever being visible in that one run's console output.
+type OpticalScanResult struct {
 	RanAt  time.Time               `json:"ran_at"`
 	Status int                     `json:"status"`
 	Error  string                  `json:"error,omitempty"`
-	Cases  []AndroidPairCaseResult `json:"cases,omitempty"`
-}
-
-// AndroidUIResult is the most recent outcome of the catalog-driven
-// UiCommandE2ETest walk (see UICases). Unlike Rows, this isn't
-// versioned/replayed history -- there's one of these, overwritten by every
-// run that includes the androidui type (E2E_TYPES=androidui or the
-// unfiltered default), not appended to. nil (the field entirely absent)
-// means it has never run since this field was introduced, same meaning as
-// a Row.Platform backfill finding nothing to recover: no data, not "it
-// failed."
-//
-// Before this existed, this walk's result was never persisted anywhere --
-// only ever printed to that one run's console output, with nothing on
-// disk to check afterward (not even the transient on-device
-// ui_e2e_results.json survives to the next run, since runUICommandTest
-// deletes it first). A caller wanting to know "did the UI walk pass last
-// time" had no way to answer that except having watched the run happen.
-type AndroidUIResult struct {
-	RanAt  time.Time      `json:"ran_at"`
-	Status int            `json:"status"`
-	Error  string         `json:"error,omitempty"`
-	Cases  []UICaseResult `json:"cases,omitempty"`
+	Cases  []OpticalScanCaseResult `json:"cases,omitempty"`
 }
 
 // File is the on-disk shape of test/e2e/testdata.json.
@@ -2332,18 +2345,14 @@ type File struct {
 	PublishedVersion int          `json:"published_version"`
 	Nodes            map[int]Node `json:"nodes"`
 	Rows             []Row        `json:"rows"`
-	// UICases is the Android UiCommandE2ETest test plan, keyed by command
-	// label -- see UICase's doc comment. Deliberately not versioned/rowed
-	// the way Rows is: it always describes how to exercise whatever
-	// commands the *current* CommandCatalog.kt has, not a historical
-	// regression log of past runs.
-	UICases map[string]UICase `json:"android_ui_cases,omitempty"`
-	// AndroidUIResult is the most recent UiCommandE2ETest walk's outcome --
-	// see that type's own doc comment.
-	AndroidUIResult *AndroidUIResult `json:"android_ui_result,omitempty"`
-	// AndroidUIPairResult is the most recent two-device Join/RecruitPeer
-	// scenario's outcome -- see AndroidPairResult's own doc comment.
-	AndroidUIPairResult *AndroidPairResult `json:"android_ui_pair_result,omitempty"`
+	// OpticalScanCases is the real-camera two-device optical scan suite's test plan -- see
+	// OpticalScanCase's own doc comment. Deliberately not versioned/rowed the way Rows is: it
+	// always describes how to exercise whatever the *current* app can generate/scan, not a
+	// historical regression log of past runs.
+	OpticalScanCases []OpticalScanCase `json:"android_optical_cases,omitempty"`
+	// OpticalScanResult is the most recent optical scan suite's outcome -- see
+	// OpticalScanResult's own doc comment.
+	OpticalScanResult *OpticalScanResult `json:"android_optical_scan_result,omitempty"`
 }
 
 // DefaultPath is where the testdata file lives relative to the repo root.
@@ -2369,9 +2378,6 @@ func Load(path string) (*File, error) {
 	}
 	if f.Nodes == nil {
 		f.Nodes = map[int]Node{}
-	}
-	if f.UICases == nil {
-		f.UICases = map[string]UICase{}
 	}
 	// Backfill Row.Platform for files predating that field: only possible
 	// while the referenced node still exists, which is exactly the state

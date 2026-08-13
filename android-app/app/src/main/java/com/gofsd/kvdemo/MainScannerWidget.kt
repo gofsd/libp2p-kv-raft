@@ -10,6 +10,7 @@ import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.CameraControl
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ExperimentalGetImage
+import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
@@ -69,9 +70,23 @@ import com.google.zxing.NotFoundException
 import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.common.HybridBinarizer
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+
+/**
+ * How often [MainScannerWidget] forces an explicit refocus -- CONTROL_AF_MODE_CONTINUOUS_PICTURE
+ * (set below on both the preview and analysis streams) stops actively re-evaluating focus once it
+ * judges the scene already in focus, and a scanning rig with a fixed camera pointed at a fixed
+ * screen is exactly the static-scene case that setting is least equipped for: confirmed live, a
+ * real device left aimed at an unmoving on-screen code produced *zero* decode activity -- not even
+ * the usual short-noise discards -- for minutes at a time. A periodic explicit
+ * [CameraControl.startFocusAndMetering] nudge forces AF to re-evaluate on a schedule instead of
+ * relying on it to notice a genuinely blurry frame on its own.
+ */
+private const val REFOCUS_INTERVAL_MS = 3_000L
 
 /**
  * The live camera preview + DataMatrix decode loop, ported from
@@ -126,7 +141,15 @@ fun MainScannerWidget(
             .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
             .setResolutionStrategy(
                 ResolutionStrategy(
-                    Size(640, 480),
+                    // 640x480 turned out too coarse for this app's own denser real-world codes:
+                    // confirmed live via a device screenshot mid-scan that a code visibly on
+                    // screen, in frame and legible to the eye in the full preview, still never
+                    // decoded for two full minutes -- at 640x480 a ~30-module-wide DataMatrix that
+                    // doesn't fill most of the frame works out to only a handful of analysis
+                    // pixels per module, which ZXing needs considerably more of to binarize
+                    // reliably. 1280x960 is still comfortably fast to decode per frame on any
+                    // device this app targets, but gives roughly 4x the pixels to work with.
+                    Size(1280, 960),
                     ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER,
                 ),
             )
@@ -183,6 +206,17 @@ fun MainScannerWidget(
 
         camera.cameraInfo.torchState.observe(lifecycleOwner) { state ->
             torchOn = (state == TorchState.ON)
+        }
+
+        // See REFOCUS_INTERVAL_MS's own doc comment. Runs for as long as this LaunchedEffect does
+        // (the widget's whole lifetime -- cancelled automatically on dispose, same as the analyzer
+        // binding above it), centered on the frame since that's where ScanFrameOverlay's own
+        // target window is drawn.
+        while (isActive) {
+            delay(REFOCUS_INTERVAL_MS)
+            val point = previewView.meteringPointFactory.createPoint(0.5f, 0.5f)
+            val action = FocusMeteringAction.Builder(point, FocusMeteringAction.FLAG_AF).disableAutoCancel().build()
+            camera.cameraControl.startFocusAndMetering(action)
         }
     }
 
@@ -318,6 +352,21 @@ private fun ScanFrameOverlay(
     }
 }
 
+/** See [processImageProxySafe]'s short-decode discard for why this floor exists. */
+private const val MIN_PLAUSIBLE_PAYLOAD_BYTES = 20
+
+// A still-displayed code decodes on nearly every analyzed frame (confirmed live: tens of times a
+// second), so logging every single one -- especially across a real-camera optical case's own
+// multi-second/multi-minute hold window -- fills logcat's ring buffer with thousands of identical
+// lines and evicts the far rarer, actually diagnostic ones (OPTICAL:/ACTION_REQUIRED: lines) before
+// pkg/e2erun/android_optical.go's own pullKVDemoLogcat ever gets to read them back. Only the first
+// decode of a given payload is genuinely new information -- every later identical one is exactly
+// the redundancy ScannerCoordinator.onScanned's own dedup already discards -- so gate this log line
+// on the same "did the content actually change" check, kept here (not moved into onScanned itself)
+// so a caller that never reaches ScannerCoordinator still gets exactly one log line per distinct
+// code, not zero.
+private var lastLoggedDecode: ByteArray? = null
+
 /** Decodes one camera frame for a DataMatrix code, delivering the original bytes (not ZXing's raw text) via [DataMatrixCodec.resultToBytes]. */
 @ExperimentalGetImage
 private fun processImageProxySafe(imageProxy: ImageProxy, onResult: (ByteArray) -> Unit) {
@@ -349,8 +398,32 @@ private fun processImageProxySafe(imageProxy: ImageProxy, onResult: (ByteArray) 
         try {
             val result = reader.decode(bitmap)
             val decoded = DataMatrixCodec.resultToBytes(result)
-            Log.i("KVDemo", "AUTO: DataMatrix decoded from camera frame (${decoded.size} bytes)")
-            onResult(decoded)
+            // Every real payload this app ever generates is well over this: the
+            // shortest possible NavCode is its ~30-byte package-qualified prefix
+            // alone (NavCode.GROUP_TAG) plus a category, a RunCode is bigger
+            // still (base64 JSON), and a real shmevent.Msg (the join ticket
+            // path) is bigger still. A single-digit/low-double-digit byte count
+            // is ZXing's checksum occasionally passing on a spurious pattern
+            // (camera noise, screen glare/moire) rather than an actual scanned
+            // code -- observed live running the automated optical-scan harness
+            // (pkg/e2erun/android_optical.go): repeated distinct "8 bytes"
+            // decodes with no real code anywhere in frame, each one reaching
+            // ScannerCoordinator.onScanned and re-triggering a confirmation
+            // dialog, which under rapid repeats kept Compose's recomposer
+            // perpetually busy and made the *real* scan moments later look, to
+            // Espresso's idling check, like it never settled.
+            // Silently dropping these here (never reaching onResult/
+            // ScannerCoordinator at all) also spares a real human the same
+            // spurious "couldn't decode this" dialog on an occasional stray frame.
+            if (decoded.size < MIN_PLAUSIBLE_PAYLOAD_BYTES) {
+                Log.i("KVDemo", "AUTO: discarding implausibly short DataMatrix decode (${decoded.size} bytes) as camera noise")
+            } else {
+                if (lastLoggedDecode?.contentEquals(decoded) != true) {
+                    lastLoggedDecode = decoded
+                    Log.i("KVDemo", "AUTO: DataMatrix decoded from camera frame (${decoded.size} bytes)")
+                }
+                onResult(decoded)
+            }
         } catch (_: NotFoundException) {
             // No code found in this frame, ignore.
         }

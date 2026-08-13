@@ -4,10 +4,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -24,78 +24,51 @@ import (
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
 
-// TestManualRelayProbe is a throwaway, manually-invoked probe answering the
-// one question the whole pair scenario rests on: can a device go from "no
-// standing at all" to "reachable through the relay" inside a single
-// process, with no restart? It starts a pending daemon on one device, asks
-// the baked-in relay for standing, holds that process alive, and -- from
-// this machine, an entirely separate peer -- repeatedly dials the device's
-// own /p2p-circuit address through that same relay. A successful dial is
-// proof the reservation landed, independent of whatever the device's own
-// GetOwnAddr happens to report.
+// loopbackTCPAddrRe matches GetOwnAddr's own last-resort fallback shape,
+// "/ip4/127.0.0.1/tcp/<port>/p2p/<peerid>" -- what a device falls back to
+// advertising if its relay reservation hasn't completed yet. A match here
+// means the device's own address isn't real evidence of relay reachability
+// yet, not something to work around.
+var loopbackTCPAddrRe = regexp.MustCompile(`^/ip4/127\.0\.0\.1/tcp/(\d+)/p2p/(.+)$`)
+
+// TestManualRelayProbe is a throwaway, manually-invoked probe answering a
+// question still relevant to the optical suite's own join-ticket recruiting
+// (pkg/e2erun/android_optical.go): once a device has relay standing, does it
+// *stay* reachable through the relay, or does the reservation lapse while
+// the device is still up and still advertising that address? From this
+// machine, an entirely separate peer, it repeatedly dials the device's own
+// /p2p-circuit address through the relay over a window and reports every
+// attempt.
 //
-// Set MANUAL_RELAY_PROBE_SERIAL=<serial> and
-// MANUAL_RELAY_PROBE_BOOTSTRAP=<relay multiaddr>. Assumes the app is
-// already installed on that device.
+// Unlike an earlier version of this test, it no longer drives the device
+// into that state itself -- that used android_pair.go's uiOp/
+// runUIStepsBackgroundPeek, built on UiCommandE2ETest's Run-button catalog
+// sweep, removed along with every other execute-without-scanning path (see
+// the android-app RunCode rewrite). Bring the device up by hand first
+// (Cluster: StartPending -> RequestRelayAccess -> GetOwnAddr, e.g. via a
+// real camera scan from a second device or the optical suite's own
+// generateAndHold/awaitAndVerifyScan) and pass its own reported address as
+// MANUAL_RELAY_PROBE_DEVICE_ADDR.
+//
+// Set MANUAL_RELAY_PROBE_BOOTSTRAP=<relay multiaddr> and
+// MANUAL_RELAY_PROBE_DEVICE_ADDR=<device's own /p2p-circuit address, from
+// its own GetOwnAddr>.
 func TestManualRelayProbe(t *testing.T) {
-	serial := os.Getenv("MANUAL_RELAY_PROBE_SERIAL")
 	relayAddr := os.Getenv("MANUAL_RELAY_PROBE_BOOTSTRAP")
-	if serial == "" || relayAddr == "" {
-		t.Skip("set MANUAL_RELAY_PROBE_SERIAL=<serial> and MANUAL_RELAY_PROBE_BOOTSTRAP=<relay multiaddr> to run this manually")
+	deviceCircuitAddr := os.Getenv("MANUAL_RELAY_PROBE_DEVICE_ADDR")
+	if relayAddr == "" || deviceCircuitAddr == "" {
+		t.Skip("set MANUAL_RELAY_PROBE_BOOTSTRAP=<relay multiaddr> and MANUAL_RELAY_PROBE_DEVICE_ADDR=<device's own GetOwnAddr> to run this manually")
 	}
-
-	// A key this test keeps, so it knows the device's peer id -- and
-	// therefore its circuit address -- before the device ever reports it.
-	_, rawPriv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate identity: %v", err)
-	}
-	lp2pPriv, err := lp2pcrypto.UnmarshalEd25519PrivateKey(rawPriv)
-	if err != nil {
-		t.Fatalf("unmarshal identity: %v", err)
-	}
-	marshaled, err := lp2pcrypto.MarshalPrivateKey(lp2pPriv)
-	if err != nil {
-		t.Fatalf("marshal identity: %v", err)
-	}
-	keyHex := hex.EncodeToString(marshaled)
-	devicePeerID, err := peer.IDFromPrivateKey(lp2pPriv)
-	if err != nil {
-		t.Fatalf("derive peer id: %v", err)
-	}
-	deviceCircuitAddr := relayAddr + "/p2p-circuit/p2p/" + devicePeerID.String()
-	t.Logf("device peer id: %s", devicePeerID)
-
-	// The device grants itself standing and holds its daemon alive; this
-	// process then dials it through the relay from outside, after an
-	// optional delay standing in for how long the *other* device's own
-	// instrumentation invocation takes to get as far as dialing.
-	ops := []uiOp{
-		{label: "Cluster: StartPendingWithKeyAndPort", inputs: []string{keyHex, "47155"}},
-		{label: "Cluster: RequestRelayAccess", inputs: []string{"relay probe"}},
-		{label: "Cluster: GetOwnAddr"},
-		{label: "Test: SleepMillis", inputs: []string{"120000"}},
-	}
-	start := time.Now()
-	addr, wait, err := runUIStepsBackgroundPeek(serial, ops, "Cluster: GetOwnAddr", 150*time.Second)
-	if err != nil {
-		t.Fatalf("device never reported an address: %v", err)
-	}
-	t.Logf("device reported its own address after %s: %s", time.Since(start).Round(time.Second), addr)
-	if loopbackTCPAddrRe.MatchString(addr) {
-		t.Fatalf("device reported a bare loopback address: %q", addr)
+	if loopbackTCPAddrRe.MatchString(deviceCircuitAddr) {
+		t.Fatalf("MANUAL_RELAY_PROBE_DEVICE_ADDR is a bare loopback address: %q", deviceCircuitAddr)
 	}
 
 	// Dial repeatedly rather than once: the question is not only "is it
-	// reachable" but "for how long does it stay reachable", which is what
-	// the pair scenario actually depends on (the other device needs tens
-	// of seconds of its own start-up before it can dial at all).
-	dialErr := probeReachabilityOverTime(t, relayAddr, deviceCircuitAddr, 110*time.Second, 10*time.Second)
-	if waitErr := wait(); waitErr != nil {
-		t.Logf("device hold ended with: %v", waitErr)
-	}
-	if dialErr != nil {
-		t.Fatalf("device stopped being dialable through the relay: %v", dialErr)
+	// reachable" but "for how long does it stay reachable" -- the device is
+	// assumed to already be up and holding its own daemon alive for the
+	// whole window.
+	if err := probeReachabilityOverTime(t, relayAddr, deviceCircuitAddr, 110*time.Second, 10*time.Second); err != nil {
+		t.Fatalf("device stopped being dialable through the relay: %v", err)
 	}
 }
 
