@@ -17,6 +17,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -30,11 +31,37 @@ import androidx.compose.ui.unit.dp
  *
  * [currentGroup] is hoisted in AppRoot, not a nav-route argument -- that's what lets a log row's
  * "Group" shortcut (see LogScreen.kt) switch context with a plain state assignment, no
- * NavController call, since both pages already live in this one composable. Entering or leaving a
- * group re-scrolls to page 0 ([LaunchedEffect(currentGroup)]); a just-executed command's log entry
- * (set via [focusedLogId], from AppRoot's RunConfirmDialog) re-scrolls to page 1
- * ([LaunchedEffect(focusedLogId)]) -- LogScreen itself then scrolls to and expands the matching
- * row and clears [focusedLogId] via [onFocusedLogConsumed] once it has.
+ * NavController call, since both pages already live in this one composable.
+ *
+ * [currentPage] is hoisted in AppRoot too, not left as this composable's own `rememberPagerState`
+ * state, for a subtler reason: Navigation-Compose disposes and recreates this whole composable's
+ * composition every time something (commandPicker/groupPicker/commandDetail) gets pushed on top
+ * of the "pager" route and popped back off, even though the same `NavBackStackEntry` stays in the
+ * back stack throughout. An earlier version seeded a plain `rememberPagerState(pageCount={2})`
+ * and forced page 0 via `LaunchedEffect(currentGroup){ animateScrollToPage(0) }` -- which fires on
+ * *every* fresh mount of this composable, not just a genuine group change, since Compose has no
+ * way to tell "just recomposed after being disposed" apart from "first ever composition" using
+ * only state local to the disposed-and-recreated composable itself. Confirmed live: a log row's
+ * Repeat button (on page 1) opens CommandDetailScreen, and pressing Back from there always landed
+ * back on page 0 instead of page 1, regardless of `currentGroup` being unchanged the whole time.
+ *
+ * The fix: [pagerState] seeds its `initialPage` from the hoisted [currentPage] (so a fresh mount
+ * starts on the right page with no animation needed), a `snapshotFlow` on `pagerState.settledPage`
+ * mirrors every real settle (user swipe or programmatic) back into [onPageChange] (so a *later*
+ * fresh mount has the latest value to seed from), and jumping to page 0 on a group change is now
+ * driven by whoever actually changes the group explicitly setting `currentPage = 0` alongside it
+ * (see AppRoot.kt's `onGroupChange`/`GroupPickerScreen`/`NavCode.Group` call sites) rather than by
+ * this composable inferring it from a key change that can't be reliably observed across a
+ * dispose+recreate cycle. `LaunchedEffect(currentPage)`'s own guard
+ * (`pagerState.currentPage != currentPage`) is what keeps this from re-triggering a redundant
+ * animation on that same fresh-mount case, since `initialPage` already seeded the correct value.
+ *
+ * A just-executed command's log entry (set via [focusedLogId], from AppRoot's RunConfirmDialog)
+ * re-scrolls to page 1 ([LaunchedEffect(focusedLogId)]) -- LogScreen itself then scrolls to and
+ * expands the matching row and clears [focusedLogId] via [onFocusedLogConsumed] once it has. This
+ * one doesn't need the same treatment as the group-change case: [focusedLogId] is only ever
+ * non-null right when a fresh mount *should* jump to the log page (it's set immediately before
+ * navigating back to "pager"), never as a leftover from an unrelated remount.
  *
  * `testTag("screen_main")` is kept on this composable's root (not renamed to e.g. "screen_pager")
  * deliberately -- it's what the existing android_optical_cases e2e harness waits on to know the
@@ -46,6 +73,8 @@ fun CommandsPagerScreen(
     statusText: String,
     currentGroup: String,
     onGroupChange: (String) -> Unit,
+    currentPage: Int,
+    onPageChange: (Int) -> Unit,
     focusedLogId: Long?,
     onFocusedLogConsumed: () -> Unit,
     onCommandClick: (name: String) -> Unit,
@@ -53,10 +82,15 @@ fun CommandsPagerScreen(
     onOpenGroupsPicker: () -> Unit,
     onRepeat: (LogEntry) -> Unit,
 ) {
-    val pagerState = rememberPagerState(pageCount = { 2 })
+    val pagerState = rememberPagerState(initialPage = currentPage) { 2 }
 
-    LaunchedEffect(currentGroup) {
-        pagerState.animateScrollToPage(0)
+    LaunchedEffect(currentPage) {
+        if (pagerState.currentPage != currentPage) {
+            pagerState.animateScrollToPage(currentPage)
+        }
+    }
+    LaunchedEffect(pagerState) {
+        snapshotFlow { pagerState.settledPage }.collect { onPageChange(it) }
     }
     LaunchedEffect(focusedLogId) {
         // Only the page flip happens here -- LogScreen itself owns clearing focusedLogId (via

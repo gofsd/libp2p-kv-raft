@@ -112,6 +112,18 @@ fun AppRoot() {
     val context = LocalContext.current
     var statusText by remember { mutableStateOf("Connecting to cluster...") }
     var currentGroup by remember { mutableStateOf(DEFAULT_GROUP) }
+    // Hoisted here, not left as CommandsPagerScreen's own rememberPagerState, specifically so it
+    // survives that composable being disposed and recreated -- which Navigation-Compose does to
+    // the "pager" route's own composition every time something (commandPicker/groupPicker/
+    // commandDetail) gets pushed on top of it, even though the same NavBackStackEntry stays in
+    // the back stack the whole time. Popping back (e.g. after a log row's Repeat button opens
+    // CommandDetailScreen, then the system Back button returns) used to always land on page 0
+    // regardless of which page was actually showing before, because the old
+    // LaunchedEffect(currentGroup){ animateScrollToPage(0) } fired on every fresh mount, not just
+    // on a genuine group change -- Compose has no way to tell those two apart from state local to
+    // the disposed-and-recreated composable alone. See PagerScreen.kt's own doc comment for the
+    // full mechanism this state now drives.
+    var currentPage by remember { mutableStateOf(0) }
     var focusedLogId by remember { mutableStateOf<Long?>(null) }
     var pendingRun by remember { mutableStateOf<PendingRun?>(null) }
     var pendingRecruitTicket by remember { mutableStateOf<PendingRecruitTicket?>(null) }
@@ -196,6 +208,7 @@ fun AppRoot() {
                         // to begin with, which is the common case since a scan can only ever land
                         // while already on the pager route or on a route pushed on top of it.
                         currentGroup = navCode.category
+                        currentPage = 0
                         if (navController.currentDestination?.route != "pager") {
                             navController.navigate("pager") {
                                 popUpTo("pager")
@@ -241,7 +254,9 @@ fun AppRoot() {
                         CommandsPagerScreen(
                             statusText = statusText,
                             currentGroup = currentGroup,
-                            onGroupChange = { currentGroup = it },
+                            onGroupChange = { currentGroup = it; currentPage = 0 },
+                            currentPage = currentPage,
+                            onPageChange = { currentPage = it },
                             focusedLogId = focusedLogId,
                             onFocusedLogConsumed = { focusedLogId = null },
                             onCommandClick = { name ->
@@ -265,6 +280,7 @@ fun AppRoot() {
                         GroupPickerScreen(
                             onSubmit = { category ->
                                 currentGroup = category
+                                currentPage = 0
                                 navController.popBackStack()
                             },
                         )
