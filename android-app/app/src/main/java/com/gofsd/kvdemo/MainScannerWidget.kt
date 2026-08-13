@@ -106,7 +106,16 @@ fun MainScannerWidget(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val previewView = remember { PreviewView(context) }
+    // FIT_CENTER (letterboxed, whole sensor frame visible), not PreviewView's own default
+    // FILL_CENTER (crop-to-fill) -- on the minimized bubble specifically (a small, roughly square
+    // container against the camera's wider sensor aspect ratio), FILL_CENTER crops away a large
+    // share of the actual frame just to fill that shape, so a code sitting anywhere outside the
+    // narrow cropped-in view was invisible to whoever's aiming the device even though
+    // ImageAnalysis (a separate CameraX use case, unaffected by Preview's own crop/scale) was
+    // still analyzing that full, wider frame regardless -- decode capability was never actually
+    // smaller in minimized mode, only what a human could *see* to verify alignment against was.
+    // FIT_CENTER makes the two match on any container size/shape.
+    val previewView = remember { PreviewView(context).apply { scaleType = PreviewView.ScaleType.FIT_CENTER } }
 
     var torchOn by remember { mutableStateOf(false) }
     var zoomRatio by remember { mutableStateOf(1f) }
