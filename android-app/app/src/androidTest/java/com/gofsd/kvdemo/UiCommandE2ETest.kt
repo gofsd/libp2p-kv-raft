@@ -176,11 +176,11 @@ class UiCommandE2ETest {
         /** How many times [selectGroupUntilRegistered] re-taps a group option before giving up. */
         const val GROUP_SELECT_ATTEMPTS = 4
 
-        // How many times [awaitScannedTag] waits for a scan's own resulting UI before giving up,
-        // each attempt getting the case's whole timeout budget and each re-arm asking device A for
-        // a matching extension of its own hold, so BATCH_HOLD_MILLIS >= BATCH_TIMEOUT_MS still
-        // holds attempt-for-attempt -- see that constant's own doc comment for why that invariant
-        // is not negotiable.
+        // How many of the case's own timeout budgets [awaitScannedTag] is allowed to spend on a
+        // scan before giving up, spent in [SCAN_LOOK_MS] slices with a re-arm between them, each
+        // re-arm asking device A for a matching extension of its own hold -- so
+        // BATCH_HOLD_MILLIS >= BATCH_TIMEOUT_MS still holds for every look, see that constant's own
+        // doc comment for why that invariant is not negotiable.
         //
         // This was 2, on the reasoning that a case which hasn't produced its tag after a second
         // full look at a code device A is *still* holding isn't going to produce one on a third.
@@ -200,11 +200,28 @@ class UiCommandE2ETest {
         // healthy case still returns on the first attempt in seconds and pays nothing for this.
         const val SCAN_ATTEMPTS = 3
 
+        // How long one look waits before [awaitScannedTag] stops waiting and re-arms, *within* an
+        // attempt's own budget. The whole budget used to be spent as a single look, which made
+        // every stall cost its full 50s before anything was done about it.
+        //
+        // Worth doing because of what the stalls turned out to be. Classified across a 90/90 run,
+        // all five were the same mode: not one frame decoded for the entire look, while the camera
+        // stayed demonstrably healthy (fresh frames, sharpness 0.019 against a best of 0.023, the
+        // app's scan collector still subscribed) and the code sat legibly in frame the whole time
+        // -- a screenshot of the scanning device's own preview, cropped and run through the same
+        // ZXing pipeline offline, decodes it. What ends that state is the camera rebind [forceRescan]
+        // asks for, which is the one thing that resets this camera's 3A. So the rebind should not
+        // wait out a budget sized for a slow decode; a decode that is going to happen at all happens
+        // in 1.5-3s here, so a look with nothing after 10s is already anomalous.
+        const val SCAN_LOOK_MS = 10_000L
+
         // How many times device A will extend a case's own hold ceiling on B's retry signal before
         // giving up on it anyway -- a backstop against a B that somehow signals retries forever,
-        // not a budget anyone should expect to reach. Matches [SCAN_ATTEMPTS]: B sends exactly one
-        // retry per re-arm, so a case that exhausts its attempts also stops asking for extensions.
-        const val MAX_HOLD_EXTENSIONS = SCAN_ATTEMPTS
+        // not a budget anyone should expect to reach. Comfortably above the number of looks
+        // [SCAN_ATTEMPTS] x timeout_ms can be divided into at [SCAN_LOOK_MS] apiece (B signals once
+        // per re-arm, so this has to outlast the looks rather than the attempts), and each extension
+        // only ever means "keep showing the same code", which costs A nothing.
+        const val MAX_HOLD_EXTENSIONS = 20
 
         // Prefix distinguishing B's "still working on this one, keep it on screen" keepalive from
         // its ordinary "this case passed, move on" signal on the same channel (see
@@ -929,6 +946,7 @@ class UiCommandE2ETest {
                     }
                     val resultBody = OutputLog.snapshot().last().body
                     Log.i(TAG, "$opticalTag OutputLog result=$resultBody")
+                    settleAfterDialog("runConfirmExecute")
                     val selfPeerID = runCatching { Kvmobile.peerID() }.getOrDefault("")
                     resultExpectation(spec.optString("result", "succeeded"), selfPeerID)(resultBody)
                     // CommandExecutor's own success format is "(args) ->\n$result" -- strip that
@@ -973,6 +991,7 @@ class UiCommandE2ETest {
                     Log.i(TAG, "$opticalTag recruitConfirmApprove appeared")
                     composeTestRule.onNodeWithTag("recruitConfirmApprove").performClick()
                     Log.i(TAG, "$opticalTag tapped Approve")
+                    settleAfterDialog("recruitConfirmApprove")
                     pass()
                 }
                 else -> throw IllegalArgumentException("unknown optical expect kind: $kind")
@@ -1018,8 +1037,8 @@ class UiCommandE2ETest {
      * not called Looper.prepare()` -- a framework thread, no code of ours anywhere on the stack --
      * after which every later poll ran cleanly and simply never saw a dialog.
      *
-     * The recovery is to look again -- up to [SCAN_ATTEMPTS] times, each attempt getting the case's
-     * whole timeout budget and each re-arm buying a matching extension of device A's own hold (see
+     * The recovery is to look again -- in [SCAN_LOOK_MS] slices, for up to [SCAN_ATTEMPTS] times the
+     * case's own timeout budget, each re-arm buying a matching extension of device A's own hold (see
      * [signalCaseRetry]), so the two devices stay in step however long the case ends up taking --
      * with [forceRescan] in between: device A holds one single code on screen for the whole case, so
      * without re-arming the dedup a second wait would watch a scanner that has already decided it
@@ -1034,25 +1053,31 @@ class UiCommandE2ETest {
      * hierarchy is not available to this harness as things stand.
      */
     private fun awaitScannedTag(tag: String, timeoutMs: Long, opticalTag: String) {
-        val perAttempt = timeoutMs.coerceAtLeast(1L)
+        val budgetMs = timeoutMs.coerceAtLeast(1L) * SCAN_ATTEMPTS
+        val deadline = System.currentTimeMillis() + budgetMs
         var lastError: Throwable? = null
-        repeat(SCAN_ATTEMPTS) { attempt ->
+        var look = 0
+        while (System.currentTimeMillis() < deadline) {
+            val slice = minOf(SCAN_LOOK_MS, deadline - System.currentTimeMillis()).coerceAtLeast(1L)
             try {
-                waitForTagWithTimeout(tag, perAttempt)
+                waitForTagWithTimeout(tag, slice)
                 return
             } catch (e: IllegalStateException) {
                 lastError = e
-                Log.w(TAG, "$opticalTag '$tag' not shown on attempt ${attempt + 1}/$SCAN_ATTEMPTS after ${perAttempt}ms: ${e.message}")
-                if (attempt < SCAN_ATTEMPTS - 1) {
-                    // Ask A to keep this same code up *before* re-arming, not after: the extension
-                    // only helps if it reaches A while A is still holding, and the re-arm below
-                    // deliberately spends REBIND_SETTLE_MS doing nothing.
-                    signalCaseRetry(opticalTag)
-                    forceRescan(opticalTag)
-                }
+                look++
+                Log.w(TAG, "$opticalTag '$tag' not shown on look $look after ${slice}ms (${(deadline - System.currentTimeMillis()) / 1000}s of budget left): ${e.message}")
+                // Ask A to keep this same code up *before* re-arming, not after: the extension only
+                // helps if it reaches A while A is still holding, and the re-arm below deliberately
+                // spends REBIND_SETTLE_MS doing nothing.
+                signalCaseRetry(opticalTag)
+                // Only the first re-arm of a case dumps the semantics tree. It answers "was the
+                // dialog there and the lookup blind, or was it genuinely never composed?", which is
+                // a property of the stall, not of each individual retry -- and at one dump per look
+                // a stubborn case would bury its own log in repeats of the same answer.
+                forceRescan(opticalTag, verbose = look == 1)
             }
         }
-        throw lastError ?: IllegalStateException("'$tag' not shown after ${timeoutMs}ms across $SCAN_ATTEMPTS attempts")
+        throw lastError ?: IllegalStateException("'$tag' not shown after ${budgetMs}ms across $look look(s)")
     }
 
     /**
@@ -1064,7 +1089,7 @@ class UiCommandE2ETest {
      * finishes the Activity outright, which would turn a recoverable missed dialog into a dead
      * instrumentation process, and a fresh scan replaces any pending dialog's state anyway.
      */
-    private fun forceRescan(opticalTag: String) {
+    private fun forceRescan(opticalTag: String, verbose: Boolean = true) {
         Log.i(TAG, "$opticalTag re-arming the scanner for another look at the same code")
         // Reflection rather than a plain `ScannerCoordinator.resetDedup()`: the field is private
         // because nothing in the app has any business clearing it (a human rescanning naturally
@@ -1107,14 +1132,16 @@ class UiCommandE2ETest {
         // Reflection again, for the same reason the dedup clear above uses it: only the private
         // MutableSharedFlow carries subscriptionCount, and the public SharedFlow this object
         // exposes deliberately doesn't.
-        val collectors = runCatching {
-            val field = ScannerCoordinator::class.java.getDeclaredField("_scans")
-            field.isAccessible = true
-            (field.get(ScannerCoordinator) as MutableSharedFlow<*>).subscriptionCount.value
-        }.getOrNull()
-        Log.i(TAG, "$opticalTag scan flow has ${collectors ?: "?"} collector(s) after re-arm")
-        runCatching { composeTestRule.onRoot().printToLog(TAG) }
-            .onFailure { Log.w(TAG, "$opticalTag could not dump the semantics tree: $it") }
+        if (verbose) {
+            val collectors = runCatching {
+                val field = ScannerCoordinator::class.java.getDeclaredField("_scans")
+                field.isAccessible = true
+                (field.get(ScannerCoordinator) as MutableSharedFlow<*>).subscriptionCount.value
+            }.getOrNull()
+            Log.i(TAG, "$opticalTag scan flow has ${collectors ?: "?"} collector(s) after re-arm")
+            runCatching { composeTestRule.onRoot().printToLog(TAG) }
+                .onFailure { Log.w(TAG, "$opticalTag could not dump the semantics tree: $it") }
+        }
 
         // Clearing the dedup only helps if the frames themselves are usable. By the time this runs,
         // device A has been holding one code on screen for a full attempt's worth of seconds and
@@ -1374,6 +1401,31 @@ class UiCommandE2ETest {
     private fun settleAfterNavigation() {
         composeTestRule.waitForIdle()
         Thread.sleep(500)
+    }
+
+    /**
+     * Waits for the confirmation dialog [tag] belongs to to actually be gone, and for the
+     * composition to go idle, before the caller declares a case finished.
+     *
+     * The case this exists for killed a run at case 30 of 90: 150ms after the previous case tapped
+     * Execute and read its result back, the *app* died on the main thread with
+     * `IllegalStateException: LayoutNode should be attached to an owner`, thrown from a Box
+     * placement inside a layout pass -- a dialog window being torn down while a measure/layout pass
+     * was still placing its nodes. Nothing on the harness side can catch that: it is an uncaught
+     * exception in the app process, so the process dies and every remaining case with it.
+     *
+     * What the harness *can* do is stop racing the teardown. Reading an OutputLog entry (which is
+     * ordinary Kotlin state, not Compose state) says the command finished, not that the dialog it
+     * was tapped in has finished going away -- and the very next thing each case does is poll
+     * semantics again, which forces exactly the measure/layout sync that crashed. Waiting for the
+     * dialog to leave the tree first costs a few hundred milliseconds per case and closes that
+     * window.
+     */
+    private fun settleAfterDialog(tag: String) {
+        runCatching {
+            composeTestRule.waitUntil(NAV_TIMEOUT_MS) { !nodeExistsQuietly(tag) }
+        }.onFailure { Log.w(TAG, "AUTO: '$tag' still present after ${NAV_TIMEOUT_MS}ms of settling: $it") }
+        composeTestRule.waitForIdle()
     }
 
     /**
