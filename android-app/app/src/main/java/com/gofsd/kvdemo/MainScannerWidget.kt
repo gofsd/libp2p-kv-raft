@@ -129,6 +129,78 @@ private var lastFrameDigest = 0L
 private var rebindRequested = false
 
 /**
+ * How far below its own best-observed value this camera's frame sharpness has to fall, and for how
+ * long, before [MainScannerWidget] treats the focus as lost and rebinds.
+ *
+ * The failure this exists for, measured by dumping the analyzer's own frames mid-run on the real
+ * two-device rig: sharpness sat at 0.017-0.027 for the first minute of a run, then collapsed by
+ * roughly 6x to 0.0035 and stayed flat at that value for every remaining frame. The camera was
+ * still bound, still delivering fresh frames, and the preview beside it still looked fine -- but
+ * nothing decoded again, and neither the periodic refocus nudge nor an explicit
+ * [CameraControl.startFocusAndMetering] brought it back. A fresh bind is the only lever left.
+ *
+ * A ratio rather than an absolute threshold because absolute sharpness depends on the scene, the
+ * lighting and what is in frame; the collapse is a property of *this* camera against *its own*
+ * recent best, which is what makes it recognisable at all.
+ */
+private const val FOCUS_LOST_RATIO = 0.4
+
+/** How long sharpness must stay below [FOCUS_LOST_RATIO] of its best before a rebind -- long enough that a code briefly leaving the frame is not mistaken for lost focus. */
+private const val FOCUS_LOST_TIMEOUT_MS = 8_000L
+
+/** Exponentially-smoothed sharpness of recent analyzed frames, and the best seen since the last rebind. Written on the decode executor, read from the widget's own coroutine. */
+@Volatile
+private var recentSharpness = 0.0
+
+@Volatile
+private var bestSharpness = 0.0
+
+/** When sharpness was last at or above [FOCUS_LOST_RATIO] of [bestSharpness]. */
+@Volatile
+private var lastSharpAtMs = 0L
+
+/** Ticks of the watchdog loop, for its heartbeat log. */
+private var heartbeatTicks = 0
+
+/**
+ * Mean absolute horizontal gradient over a subsample of rows -- a cheap stand-in for focus. A
+ * sharp frame of a DataMatrix has hard black/white module edges and scores high; the same frame
+ * defocused scores several times lower. Sampled every 8th row and every 2nd pixel, so this reads
+ * well under 10% of the plane.
+ */
+private fun frameSharpness(bytes: ByteArray, width: Int, height: Int): Double {
+    var sum = 0L
+    var n = 0
+    var y = 0
+    while (y < height) {
+        val row = y * width
+        var x = 0
+        while (x < width - 2) {
+            val a = bytes[row + x].toInt() and 0xFF
+            val b = bytes[row + x + 2].toInt() and 0xFF
+            sum += if (a > b) (a - b) else (b - a)
+            n++
+            x += 2
+        }
+        y += 8
+    }
+    return if (n == 0) 0.0 else sum.toDouble() / n / 255.0
+}
+
+/** True once sharpness has sat below [FOCUS_LOST_RATIO] of its best for [FOCUS_LOST_TIMEOUT_MS]. */
+private fun focusLooksLost(): Boolean {
+    if (bestSharpness <= 0.0 || lastSharpAtMs == 0L) return false
+    return System.currentTimeMillis() - lastSharpAtMs > FOCUS_LOST_TIMEOUT_MS
+}
+
+/** Forgets the sharpness baseline, so a freshly-bound camera is judged against what it can do now rather than what the previous bind managed. */
+private fun resetSharpnessBaseline() {
+    bestSharpness = 0.0
+    recentSharpness = 0.0
+    lastSharpAtMs = System.currentTimeMillis()
+}
+
+/**
  * A sampled digest of one luminance plane -- every 997th byte (a prime, so the stride never lines
  * up with the image's own row width and the samples sweep across the whole frame rather than down
  * one column). ~2700 bytes read out of a 2.7MB plane: enough that two genuinely different camera
@@ -317,10 +389,27 @@ fun MainScannerWidget(
         while (isActive) {
             delay(REFOCUS_INTERVAL_MS)
 
+            // A heartbeat, not a diagnostic left in by accident: everything this loop does (the
+            // refocus nudge, the stall watchdog, the rebind request) is silent when working, so a
+            // loop that has quietly stopped running is indistinguishable from one with nothing to
+            // do -- and a stopped loop means focus is never nudged again, which is exactly the
+            // failure this file's other comments describe. One line per 10 ticks is cheap enough
+            // to keep and specific enough to answer "was the watchdog even alive?" from a log.
+            heartbeatTicks++
+            if (heartbeatTicks % 10 == 0) {
+                Log.i("KVDemo", "AUTO: scanner watchdog alive (tick $heartbeatTicks, sharpness=${"%.4f".format(recentSharpness)}, best=${"%.4f".format(bestSharpness)})")
+            }
+
             val idleMs = System.currentTimeMillis() - lastFrameAtMs
-            if (idleMs > FRAME_STALL_TIMEOUT_MS || rebindRequested) {
+            if (idleMs > FRAME_STALL_TIMEOUT_MS || rebindRequested || focusLooksLost()) {
+                val why = when {
+                    idleMs > FRAME_STALL_TIMEOUT_MS -> "no new frame content for ${idleMs}ms"
+                    rebindRequested -> "a rebind was requested"
+                    else -> "focus looks lost (sharpness ${"%.4f".format(recentSharpness)} vs best ${"%.4f".format(bestSharpness)})"
+                }
                 rebindRequested = false
-                Log.w("KVDemo", "AUTO: rebinding the camera (no new frame content for ${idleMs}ms, or a rebind was requested)")
+                resetSharpnessBaseline()
+                Log.w("KVDemo", "AUTO: rebinding the camera -- $why")
                 cameraProvider.unbindAll()
                 camera = cameraProvider.bindToLifecycle(
                     lifecycleOwner,
@@ -538,10 +627,17 @@ private fun processImageProxySafe(imageProxy: ImageProxy, onResult: (ByteArray) 
         // (see FRAME_STALL_TIMEOUT_MS), so only a change in the imagery itself counts as this
         // stream still being alive.
         val digest = luminanceDigest(yuvBytes)
+        val now = System.currentTimeMillis()
         if (digest != lastFrameDigest) {
             lastFrameDigest = digest
-            lastFrameAtMs = System.currentTimeMillis()
+            lastFrameAtMs = now
         }
+
+        // Focus health, tracked per frame and judged by the watchdog -- see FOCUS_LOST_RATIO.
+        val sharpness = frameSharpness(yuvBytes, width, height)
+        recentSharpness = if (recentSharpness == 0.0) sharpness else recentSharpness * 0.8 + sharpness * 0.2
+        if (recentSharpness > bestSharpness) bestSharpness = recentSharpness
+        if (lastSharpAtMs == 0L || recentSharpness >= bestSharpness * FOCUS_LOST_RATIO) lastSharpAtMs = now
 
         val source = PlanarYUVLuminanceSource(yuvBytes, width, height, 0, 0, width, height, false)
         val bitmap = BinaryBitmap(HybridBinarizer(source))
