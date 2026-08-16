@@ -2,13 +2,16 @@ package com.gofsd.kvdemo
 
 import android.util.Base64
 import android.util.Log
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.ComposeTimeoutException
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.printToLog
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTextInput
@@ -18,6 +21,7 @@ import androidx.compose.ui.test.swipeRight
 import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kvmobile.ChannelCallback
@@ -29,6 +33,7 @@ import org.junit.Rule
 import org.junit.Test
 import java.io.File
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -171,14 +176,42 @@ class UiCommandE2ETest {
         /** How many times [selectGroupUntilRegistered] re-taps a group option before giving up. */
         const val GROUP_SELECT_ATTEMPTS = 4
 
-        // How many times [awaitConfirmButton] waits for a scan's confirmation dialog before giving
-        // up, each attempt getting an equal share of the case's own timeout budget (so the total
-        // wait is unchanged and BATCH_HOLD_MILLIS >= BATCH_TIMEOUT_MS still holds -- see that
-        // constant's own doc comment for why that invariant is not negotiable). Two, not more:
-        // between attempts the harness re-arms the scanner (see [forceRescan]), and a case that
-        // still hasn't produced a dialog after a second full look at a code device A is *still*
-        // holding on screen isn't going to produce one on a third.
-        const val SCAN_CONFIRM_ATTEMPTS = 2
+        // How many times [awaitScannedTag] waits for a scan's own resulting UI before giving up,
+        // each attempt getting the case's whole timeout budget and each re-arm asking device A for
+        // a matching extension of its own hold, so BATCH_HOLD_MILLIS >= BATCH_TIMEOUT_MS still
+        // holds attempt-for-attempt -- see that constant's own doc comment for why that invariant
+        // is not negotiable.
+        //
+        // This was 2, on the reasoning that a case which hasn't produced its tag after a second
+        // full look at a code device A is *still* holding isn't going to produce one on a third.
+        // Raised to 3 after a live run showed the flaw in that argument: an attempt can be spent
+        // without ever being a real look. Case 5 ("dial_submit_command_ping") lost attempt 1
+        // outright to the `Can't create handler inside thread ... that has not called
+        // Looper.prepare()` framework flake this class documents on [awaitScannedTag], leaving
+        // exactly one clean look before the case -- and with it the remaining 85 cases -- was
+        // declared failed. Three attempts means a case still gets two genuine looks after losing
+        // one to that flake, and costs nothing on a healthy case, which returns on the first.
+        //
+        // Each attempt now gets the case's *whole* timeout_ms rather than an equal share of it,
+        // because A no longer moves on underneath a case still being retried: B tells it (see
+        // [signalCaseRetry]/[MAX_HOLD_EXTENSIONS]) and A extends its hold. Splitting the budget was
+        // what the hold >= timeout invariant forced back when A's ceiling was fixed -- three looks
+        // of a third the length each, so a decode that genuinely needed 40s could never get it. A
+        // healthy case still returns on the first attempt in seconds and pays nothing for this.
+        const val SCAN_ATTEMPTS = 3
+
+        // How many times device A will extend a case's own hold ceiling on B's retry signal before
+        // giving up on it anyway -- a backstop against a B that somehow signals retries forever,
+        // not a budget anyone should expect to reach. Matches [SCAN_ATTEMPTS]: B sends exactly one
+        // retry per re-arm, so a case that exhausts its attempts also stops asking for extensions.
+        const val MAX_HOLD_EXTENSIONS = SCAN_ATTEMPTS
+
+        // Prefix distinguishing B's "still working on this one, keep it on screen" keepalive from
+        // its ordinary "this case passed, move on" signal on the same channel (see
+        // [signalCaseDone]/[signalCaseRetry]). A case id can never collide with it -- they come
+        // from test/e2e/testdata.json's own android_optical_cases and are plain lowercase
+        // identifiers -- so one channel carries both without any framing beyond this.
+        const val RETRY_SIGNAL_PREFIX = "retry:"
 
         /** How long [forceRescan] gives MainScannerWidget to notice its rebind request and get the camera streaming again -- its watchdog polls on REFOCUS_INTERVAL_MS (3s), plus a moment for the bind itself. */
         const val REBIND_SETTLE_MS = 5_000L
@@ -240,15 +273,23 @@ class UiCommandE2ETest {
         // [openCaseSignalChannel]) and SendChannelData's the current case_id every time it finishes
         // one (see [signalCaseDone]).
         //
-        // B only ever signals a case it actually PASSED -- a failed case (wrong/missing scan,
-        // rejected result that didn't match what was expected) has nothing useful for A to advance
-        // into, so it stays silent instead. That makes a missing signal within the ceiling mean one
-        // of exactly two things, both fatal to the rest of the run: B failed this case, or the
-        // signal channel itself is broken -- either way there is no sound reason to keep generating
-        // 90 codes nobody will ever correctly consume, so both sides abort the whole batch the first
-        // time this happens (see generateAndHoldAll/awaitAndVerifyScanAll's own loops) rather than
-        // cascading through every remaining case as a wall of timeouts, which is what an earlier,
-        // always-signal-regardless-of-outcome version of this mechanism did in practice.
+        // B only ever signals a case *done* once it has actually PASSED -- a failed case (wrong/
+        // missing scan, rejected result that didn't match what was expected) has nothing useful for
+        // A to advance into, so it never claims one. What B does send while a case is still in
+        // doubt is a retry keepalive (see [signalCaseRetry]), one per re-arm, which asks A to keep
+        // the *same* code on screen for another ceiling's worth of time instead of moving on.
+        //
+        // That distinction is what makes a transient miss survivable. Without it, one code that
+        // happened not to decode inside a single ceiling ended the entire run: measured live, a
+        // 90-case run died on case 1 of 90 for exactly this reason, having decoded nothing at all
+        // in 137 seconds, while the identical case decoded in 1.5s minutes later and a repeat run
+        // went 90/90 with three cases needing a re-arm along the way. A missing signal *and* no
+        // keepalive within the ceiling still means one of two things, both still fatal to the rest
+        // of the run -- B has given up on this case, or the signal channel itself is broken --
+        // so both sides still abort the whole batch there (see generateAndHoldAll/
+        // awaitAndVerifyScanAll's own loops) rather than cascading through every remaining case as
+        // a wall of timeouts, which is what an earlier, always-signal-regardless-of-outcome version
+        // of this mechanism did in practice.
         const val SIGNAL_POLL_INTERVAL_MS = 200L
         // Must be one of shmevent.ChannelPurposeName's own fixed strings ("data"/"control"/
         // "video") or a plain decimal byte -- confirmed live an arbitrary label like
@@ -257,8 +298,18 @@ class UiCommandE2ETest {
         const val SIGNAL_CHANNEL_PURPOSE = "data"
     }
 
-    /** Set by [startCaseSignalListener]'s ChannelCallback (on the channel's own pump thread, per its own doc comment -- hence AtomicReference, not a plain var) to whatever case_id B most recently signalled. */
+    /** Set by [startCaseSignalListener]'s ChannelCallback (on the channel's own pump thread, per its own doc comment -- hence AtomicReference, not a plain var) to whatever case_id B most recently signalled as done. */
     private val lastSignaledCaseID = AtomicReference<String>()
+
+    /**
+     * Device A's own view of B's retry keepalives (see [RETRY_SIGNAL_PREFIX]): the case id most
+     * recently asked about, and a counter of how many keepalives have arrived in total. The counter
+     * is what [awaitCaseSignalOrCeiling] actually watches -- the case id alone can't distinguish a
+     * second keepalive for the same case from the first one it already extended on, and every
+     * keepalive is meant to buy one extension.
+     */
+    private val lastRetryCaseID = AtomicReference<String>()
+    private val retrySignalCount = AtomicLong(0)
 
     /**
      * Device-A setup, called once before the case loop: opens a listener for device B's own
@@ -279,7 +330,13 @@ class UiCommandE2ETest {
             val result = runCatching {
                 Kvmobile.listenChannel(object : ChannelCallback {
                     override fun onData(purpose: String, chunk: ByteArray) {
-                        lastSignaledCaseID.set(String(chunk, StandardCharsets.UTF_8))
+                        val payload = String(chunk, StandardCharsets.UTF_8)
+                        if (payload.startsWith(RETRY_SIGNAL_PREFIX)) {
+                            lastRetryCaseID.set(payload.removePrefix(RETRY_SIGNAL_PREFIX))
+                            retrySignalCount.incrementAndGet()
+                        } else {
+                            lastSignaledCaseID.set(payload)
+                        }
                     }
                     override fun onClosed(reason: String) {
                         Log.i(TAG, "$opticalTag signal channel closed: $reason")
@@ -296,11 +353,29 @@ class UiCommandE2ETest {
      * no matching signal -- the caller ([generateAndHoldAll]) treats false as fatal to the whole
      * batch, not just this case (see the class's own doc comment on [SIGNAL_POLL_INTERVAL_MS] for
      * why).
+     *
+     * A retry keepalive for this same case (see [signalCaseRetry]) buys another full [maxMillis]
+     * instead, up to [MAX_HOLD_EXTENSIONS] times: B is telling this device that the code currently
+     * on screen is still the one it wants, and the single most valuable thing A can do about that
+     * is nothing at all -- keep holding it. A keepalive naming some *other* case is ignored: it can
+     * only be a straggler from a case A has already advanced past, and honouring it would extend
+     * the wrong code's hold.
      */
     private fun awaitCaseSignalOrCeiling(caseID: String, maxMillis: Long): Boolean {
-        val deadline = System.currentTimeMillis() + maxMillis
+        var deadline = System.currentTimeMillis() + maxMillis
+        var seenRetries = retrySignalCount.get()
+        var extensions = 0
         while (System.currentTimeMillis() < deadline) {
             if (lastSignaledCaseID.get() == caseID) return true
+            val retries = retrySignalCount.get()
+            if (retries != seenRetries) {
+                seenRetries = retries
+                if (lastRetryCaseID.get() == caseID && extensions < MAX_HOLD_EXTENSIONS) {
+                    extensions++
+                    deadline = System.currentTimeMillis() + maxMillis
+                    Log.i(TAG, "$OPTICAL_LOG_TAG case=$caseID device B asked for another look -- holding this code for a further ${maxMillis}ms (extension $extensions/$MAX_HOLD_EXTENSIONS)")
+                }
+            }
             Thread.sleep(SIGNAL_POLL_INTERVAL_MS)
         }
         return false
@@ -351,6 +426,37 @@ class UiCommandE2ETest {
             Log.w(TAG, "$opticalTag signalCaseDone($caseID) failed: ${result.exceptionOrNull()?.message}")
         }
     }
+
+    /**
+     * Device B's own "this case isn't done, don't take the code away yet" keepalive, sent once per
+     * re-arm from [awaitScannedTag] -- see [RETRY_SIGNAL_PREFIX] and [awaitCaseSignalOrCeiling].
+     * Same best-effort treatment as [signalCaseDone]: if it doesn't land, A simply falls back to
+     * the pre-keepalive behaviour of timing the case out at its own ceiling.
+     *
+     * Silently does nothing when there's no channel and no case in flight, which is the single-case
+     * [awaitAndVerifyScan] path -- nothing on the other side is holding a ceiling there for this to
+     * extend (that method's device-A counterpart is a plain fixed sleep).
+     */
+    private fun signalCaseRetry(opticalTag: String) {
+        val channelID = caseSignalChannelID ?: return
+        val caseID = currentCaseID ?: return
+        val payload = RETRY_SIGNAL_PREFIX + caseID
+        val result = runCatching { Kvmobile.sendChannelData(channelID, SIGNAL_CHANNEL_PURPOSE, payload.toByteArray(StandardCharsets.UTF_8)) }
+        if (result.isFailure) {
+            Log.w(TAG, "$opticalTag signalCaseRetry($caseID) failed: ${result.exceptionOrNull()?.message}")
+        } else {
+            Log.i(TAG, "$opticalTag asked device A to keep holding this code for another look")
+        }
+    }
+
+    /**
+     * Device B's own signal channel to A, and the case it is currently working on -- both set by
+     * [awaitAndVerifyScanAll] so [signalCaseRetry] can reach A from deep inside a case's own scan
+     * wait without every intermediate helper having to thread them through. Null on the single-case
+     * [awaitAndVerifyScan] path, which has no batch to keep in step.
+     */
+    private var caseSignalChannelID: String? = null
+    private var currentCaseID: String? = null
 
     /**
      * Device-A half of the real-camera optical-scan e2e harness (pkg/e2erun/android_optical.go,
@@ -721,6 +827,7 @@ class UiCommandE2ETest {
         requestRelay(opticalTag)
         waitForScreen("screen_main")
         val signalChannelID = openCaseSignalChannel(opticalTag)
+        caseSignalChannelID = signalChannelID
 
         val results = JSONArray()
         results.put(JSONObject().put("command", "OpticalReady").put("pass", true))
@@ -735,6 +842,7 @@ class UiCommandE2ETest {
             // step or the batch desynchronizes.
             if (i <= 1) spec.put("timeout_ms", maxOf(spec.optLong("timeout_ms", 0L), FIRST_CASE_AWAIT_TIMEOUT_MS))
             val caseTag = "$opticalTag case=$caseID (${i + 1}/${specs.length()})"
+            currentCaseID = caseID
             val entry = awaitOneCase(spec, caseTag)
             results.put(entry)
             writeResults(context, results)
@@ -808,7 +916,7 @@ class UiCommandE2ETest {
         return try {
             when (kind) {
                 "run" -> {
-                    awaitConfirmButton("runConfirmExecute", timeoutMs, opticalTag)
+                    awaitScannedTag("runConfirmExecute", timeoutMs, opticalTag)
                     val params = readTagText("runConfirmParams")
                     Log.i(TAG, "$opticalTag runConfirmExecute appeared, params=$params")
                     val priorLogSize = OutputLog.snapshot().size
@@ -841,7 +949,7 @@ class UiCommandE2ETest {
                     // "commands/{category}" route) -- so leaving one is the groupContextLeave chip
                     // (see PagerScreen.kt's GroupContextBar), not a pressBack().
                     try {
-                        waitForTagWithTimeout("screen_commands", timeoutMs)
+                        awaitScannedTag("screen_commands", timeoutMs, opticalTag)
                         Log.i(TAG, "$opticalTag screen_commands appeared at ${System.currentTimeMillis()}")
                         settleAfterNavigation()
                         Log.i(TAG, "$opticalTag settle complete at ${System.currentTimeMillis()}")
@@ -861,7 +969,7 @@ class UiCommandE2ETest {
                     }
                 }
                 "ticket" -> {
-                    awaitConfirmButton("recruitConfirmApprove", timeoutMs, opticalTag)
+                    awaitScannedTag("recruitConfirmApprove", timeoutMs, opticalTag)
                     Log.i(TAG, "$opticalTag recruitConfirmApprove appeared")
                     composeTestRule.onNodeWithTag("recruitConfirmApprove").performClick()
                     Log.i(TAG, "$opticalTag tapped Approve")
@@ -884,9 +992,20 @@ class UiCommandE2ETest {
     }
 
     /**
-     * Waits for a scanned code's confirmation dialog ([tag] being its confirm button's own testTag)
-     * to show up, re-arming the scanner between attempts rather than losing the whole batch to one
-     * missed decode.
+     * Waits for whatever UI a scanned code is supposed to produce -- [tag] being a confirmation
+     * dialog's confirm button ("run"/"ticket") or a navigation target's screen ("nav_group") --
+     * re-arming the scanner between attempts rather than losing the whole batch to one missed
+     * decode.
+     *
+     * Applies to *every* kind, not just the confirm-dialog ones. This started out as
+     * `awaitConfirmButton`, used only by "run"/"ticket", while "nav_group" called
+     * [waitForTagWithTimeout] directly -- one look, no re-arm. Confirmed live that the asymmetry
+     * is what it looks like: a run whose case 1 decoded in 200ms then sat through the whole of
+     * case 2 ("nav_group_kv") without a single decode, device B's watchdog reporting a healthy
+     * camera (sharpness 0.0131 against a best of 0.0153, fresh frames throughout) and device A
+     * holding the code on screen for the full 120s. A "run" case in that state gets a rebind and
+     * a second look and usually recovers; "nav_group" had no such recovery, so the same transient
+     * miss that costs a "run" case a few seconds killed the remaining 88 cases outright.
      *
      * The case this exists for, confirmed live on a real two-device run: case 13 of 90
      * (cluster_kick) decoded perfectly -- device B's own app logged `run-code scan decoded:
@@ -899,9 +1018,10 @@ class UiCommandE2ETest {
      * not called Looper.prepare()` -- a framework thread, no code of ours anywhere on the stack --
      * after which every later poll ran cleanly and simply never saw a dialog.
      *
-     * The recovery is to look *twice*, each attempt getting half the case's own timeout budget (so
-     * the total wait, and BATCH_HOLD_MILLIS >= BATCH_TIMEOUT_MS with it, is unchanged), with
-     * [forceRescan] in between: device A holds one single code on screen for the whole case, so
+     * The recovery is to look again -- up to [SCAN_ATTEMPTS] times, each attempt getting the case's
+     * whole timeout budget and each re-arm buying a matching extension of device A's own hold (see
+     * [signalCaseRetry]), so the two devices stay in step however long the case ends up taking --
+     * with [forceRescan] in between: device A holds one single code on screen for the whole case, so
      * without re-arming the dedup a second wait would watch a scanner that has already decided it
      * has nothing new to report. Confirmed live to work exactly as intended on the very next full
      * run: case 64 of 90 (links_remove_command_from_group) hit the same silent no-dialog wait,
@@ -913,20 +1033,26 @@ class UiCommandE2ETest {
      * separate runs. Worth knowing before reaching for it again -- reading the real window
      * hierarchy is not available to this harness as things stand.
      */
-    private fun awaitConfirmButton(tag: String, timeoutMs: Long, opticalTag: String) {
-        val perAttempt = (timeoutMs / SCAN_CONFIRM_ATTEMPTS).coerceAtLeast(1L)
+    private fun awaitScannedTag(tag: String, timeoutMs: Long, opticalTag: String) {
+        val perAttempt = timeoutMs.coerceAtLeast(1L)
         var lastError: Throwable? = null
-        repeat(SCAN_CONFIRM_ATTEMPTS) { attempt ->
+        repeat(SCAN_ATTEMPTS) { attempt ->
             try {
                 waitForTagWithTimeout(tag, perAttempt)
                 return
             } catch (e: IllegalStateException) {
                 lastError = e
-                Log.w(TAG, "$opticalTag '$tag' not shown on attempt ${attempt + 1}/$SCAN_CONFIRM_ATTEMPTS after ${perAttempt}ms: ${e.message}")
-                if (attempt < SCAN_CONFIRM_ATTEMPTS - 1) forceRescan(opticalTag)
+                Log.w(TAG, "$opticalTag '$tag' not shown on attempt ${attempt + 1}/$SCAN_ATTEMPTS after ${perAttempt}ms: ${e.message}")
+                if (attempt < SCAN_ATTEMPTS - 1) {
+                    // Ask A to keep this same code up *before* re-arming, not after: the extension
+                    // only helps if it reaches A while A is still holding, and the re-arm below
+                    // deliberately spends REBIND_SETTLE_MS doing nothing.
+                    signalCaseRetry(opticalTag)
+                    forceRescan(opticalTag)
+                }
             }
         }
-        throw lastError ?: IllegalStateException("'$tag' not shown after ${timeoutMs}ms")
+        throw lastError ?: IllegalStateException("'$tag' not shown after ${timeoutMs}ms across $SCAN_ATTEMPTS attempts")
     }
 
     /**
@@ -955,6 +1081,40 @@ class UiCommandE2ETest {
             field.set(ScannerCoordinator, null)
         }.onFailure { Log.w(TAG, "$opticalTag could not clear the scanner's dedup state: $it") }
         composeTestRule.runOnUiThread { ScannerCoordinator.expanded = true }
+
+        // A missed scan is not always a missed *decode*. Measured live on a 90-case run that died
+        // on case 16: the app logged `DataMatrix decoded from camera frame (49 bytes)`, `scan
+        // received`, `run-code scan decoded: RunCode(category=Cluster, name=PeerID)` and
+        // `RunConfirmDialog shown` -- everything short of the dialog's own composition, whose log
+        // line never appeared -- and from that moment on the app received no further scans at all,
+        // while device A held the same code up for another 150 seconds and the offline decoder
+        // read that very frame out of a screenshot of B's own preview without difficulty. So the
+        // camera was fine and the state was set; what stopped was Compose acting on it.
+        //
+        // AppRoot sets `pendingRun` from a coroutine on the composition's own dispatcher, and a
+        // state write only invalidates a composition once its snapshot's apply notifications have
+        // been sent. Asking for that explicitly costs nothing when nothing is pending (the common
+        // case, since every healthy case here recomposes on its own) and is the one lever that
+        // turns a write nobody observed into a dialog. Followed by an idle-sync so this returns
+        // only once any recomposition it just unblocked has actually run.
+        composeTestRule.runOnUiThread { Snapshot.sendApplyNotifications() }
+        composeTestRule.waitForIdle()
+
+        // Diagnostics for the same failure: a live collector count says whether AppRoot's own scan
+        // collector is still subscribed at all (it was not receiving anything on that run, which a
+        // count of 0 would explain outright), and the semantics dump says what the harness's own
+        // lookup was really looking at when it "ran cleanly and simply never found" the dialog.
+        // Reflection again, for the same reason the dedup clear above uses it: only the private
+        // MutableSharedFlow carries subscriptionCount, and the public SharedFlow this object
+        // exposes deliberately doesn't.
+        val collectors = runCatching {
+            val field = ScannerCoordinator::class.java.getDeclaredField("_scans")
+            field.isAccessible = true
+            (field.get(ScannerCoordinator) as MutableSharedFlow<*>).subscriptionCount.value
+        }.getOrNull()
+        Log.i(TAG, "$opticalTag scan flow has ${collectors ?: "?"} collector(s) after re-arm")
+        runCatching { composeTestRule.onRoot().printToLog(TAG) }
+            .onFailure { Log.w(TAG, "$opticalTag could not dump the semantics tree: $it") }
 
         // Clearing the dedup only helps if the frames themselves are usable. By the time this runs,
         // device A has been holding one code on screen for a full attempt's worth of seconds and

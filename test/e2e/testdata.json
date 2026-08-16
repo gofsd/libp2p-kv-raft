@@ -393,7 +393,9 @@
         "kind": "run",
         "result": "succeeded",
         "verify_on_device_a": "{{instance_id}}"
-      }
+      },
+      "hold_millis": 120000,
+      "timeout_ms": 100000
     },
     {
       "case_id": "cluster_start",
@@ -1689,9 +1691,8 @@
     }
   ],
   "android_optical_scan_result": {
-    "ran_at": "2026-08-16T06:39:06.942971678+03:00",
-    "status": 1,
-    "error": "72 of 90 optical scan case(s) failed:\ncluster_request_public_access: device B: 'runConfirmExecute' not shown after 25000ms -- the semantics lookup ran cleanly and simply never found it\ncluster_version: device A never produced a result (batch may have stopped early)\nrelaynode_add: device A never produced a result (batch may have stopped early)\nrelaynode_confirm: device A never produced a result (batch may have stopped early)\nrelaynode_remove: device A never produced a result (batch may have stopped early)\nrelaynode_get: device A never produced a result (batch may have stopped early)\nrelaynode_list: device A never produced a result (batch may have stopped early)\nstation_put: device A never produced a result (batch may have stopped early)\nstation_delete: device A never produced a result (batch may have stopped early)\nstation_get: device A never produced a result (batch may have stopped early)\nstation_list: device A never produced a result (batch may have stopped early)\nkv_get: device A never produced a result (batch may have stopped early)\nkv_range_scan: device A never produced a result (batch may have stopped early)\nkv_cas_absent: device A never produced a result (batch may have stopped early)\nkv_cas_prime: device A never produced a result (batch may have stopped early)\nkv_cas: device A never produced a result (batch may have stopped early)\nkv_txn: device A never produced a result (batch may have stopped early)\npermits_request: device A never produced a result (batch may have stopped early)\npermits_confirm: device A never produced a result (batch may have stopped early)\npermits_revoke: device A never produced a result (batch may have stopped early)\nexecute_execute: device A never produced a result (batch may have stopped early)\nexecute_poll: device A never produced a result (batch may have stopped early)\nexecute_watch: device A never produced a result (batch may have stopped early)\nexecute_stop_watch: device A never produced a result (batch may have stopped early)\nchannel_open: device A never produced a result (batch may have stopped early)\nchannel_stop_listen: device A never produced a result (batch may have stopped early)\nchannel_send_data: device A never produced a result (batch may have stopped early)\nchannel_close_write: device A never produced a result (batch may have stopped early)\nchannel_close: device A never produced a result (batch may have stopped early)\nchannel_stop: device A never produced a result (batch may have stopped early)\nlogrecords_append: device A never produced a result (batch may have stopped early)\nlogrecords_query: device A never produced a result (batch may have stopped early)\ngroup_create: device A never produced a result (batch may have stopped early)\ngroup_update: device A never produced a result (batch may have stopped early)\ngroup_delete: device A never produced a result (batch may have stopped early)\ngroup_get: device A never produced a result (batch may have stopped early)\ngroup_list: device A never produced a result (batch may have stopped early)\ncommand_create: device A never produced a result (batch may have stopped early)\ncommand_update: device A never produced a result (batch may have stopped early)\ncommand_delete: device A never produced a result (batch may have stopped early)\ncommand_get: device A never produced a result (batch may have stopped early)\ncommand_list: device A never produced a result (batch may have stopped early)\ncommand_create_with_spec: device A never produced a result (batch may have stopped early)\ncommand_update_with_spec: device A never produced a result (batch may have stopped early)\nlinks_add_command_to_group: device A never produced a result (batch may have stopped early)\nlinks_remove_command_from_group: device A never produced a result (batch may have stopped early)\nlinks_list_groups_for_command: device A never produced a result (batch may have stopped early)\nlinks_add_peer_to_group: device A never produced a result (batch may have stopped early)\nlinks_remove_peer_from_group: device A never produced a result (batch may have stopped early)\nlinks_list_groups_for_peer: device A never produced a result (batch may have stopped early)\ndispatch_submit_command: device A never produced a result (batch may have stopped early)\ndispatch_get_command_request: device A never produced a result (batch may have stopped early)\ndispatch_list_command_requests: device A never produced a result (batch may have stopped early)\ndispatch_list_executions_by_peer: device A never produced a result (batch may have stopped early)\ndispatch_append_command_log: device A never produced a result (batch may have stopped early)\ndispatch_report_progress: device A never produced a result (batch may have stopped early)\ndispatch_query_command_log: device A never produced a result (batch may have stopped early)\ndispatch_latest_command_log: device A never produced a result (batch may have stopped early)\ndispatch_watch_command_log: device A never produced a result (batch may have stopped early)\ndispatch_stop_watch_command_log: device A never produced a result (batch may have stopped early)\ndispatch_dial_query_command_log: device A never produced a result (batch may have stopped early)\ndispatch_dial_watch_command_log: device A never produced a result (batch may have stopped early)\ndispatch_stop_dial_watch_command_log: device A never produced a result (batch may have stopped early)\ndispatch_run_command_dispatcher: device A never produced a result (batch may have stopped early)\ndispatch_stop_command_dispatcher: device A never produced a result (batch may have stopped early)\nexecinvite_create: device A never produced a result (batch may have stopped early)\nexecinvite_revoke: device A never produced a result (batch may have stopped early)\nexecinvite_redeem: device A never produced a result (batch may have stopped early)\nexecinvite_create_ticket: device A never produced a result (batch may have stopped early)\nexecinvite_redeem_ticket: device A never produced a result (batch may have stopped early)\nraw_send_event: device A never produced a result (batch may have stopped early)\ntest_sleep_millis: device A never produced a result (batch may have stopped early)",
+    "ran_at": "2026-08-17T00:17:00.053046407+03:00",
+    "status": 0,
     "cases": [
       {
         "case_id": "get_own_addr",
@@ -1767,363 +1768,291 @@
       },
       {
         "case_id": "cluster_request_public_access",
-        "pass": false,
-        "error": "device B: 'runConfirmExecute' not shown after 25000ms -- the semantics lookup ran cleanly and simply never found it"
+        "pass": true
       },
       {
         "case_id": "cluster_version",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "relaynode_add",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "relaynode_confirm",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "relaynode_remove",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "relaynode_get",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "relaynode_list",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "station_put",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "station_delete",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "station_get",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "station_list",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "kv_get",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "kv_range_scan",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "kv_cas_absent",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "kv_cas_prime",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "kv_cas",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "kv_txn",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "permits_request",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "permits_confirm",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "permits_revoke",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "execute_execute",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "execute_poll",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "execute_watch",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "execute_stop_watch",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "channel_open",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "channel_stop_listen",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "channel_send_data",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "channel_close_write",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "channel_close",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "channel_stop",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "logrecords_append",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "logrecords_query",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "group_create",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "group_update",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "group_delete",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "group_get",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "group_list",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "command_create",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "command_update",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "command_delete",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "command_get",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "command_list",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "command_create_with_spec",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "command_update_with_spec",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "links_add_command_to_group",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "links_remove_command_from_group",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "links_list_groups_for_command",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "links_add_peer_to_group",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "links_remove_peer_from_group",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "links_list_groups_for_peer",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "dispatch_submit_command",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "dispatch_get_command_request",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "dispatch_list_command_requests",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "dispatch_list_executions_by_peer",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "dispatch_append_command_log",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "dispatch_report_progress",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "dispatch_query_command_log",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "dispatch_latest_command_log",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "dispatch_watch_command_log",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "dispatch_stop_watch_command_log",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "dispatch_dial_query_command_log",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "dispatch_dial_watch_command_log",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "dispatch_stop_dial_watch_command_log",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "dispatch_run_command_dispatcher",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "dispatch_stop_command_dispatcher",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "execinvite_create",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "execinvite_revoke",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "execinvite_redeem",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "execinvite_create_ticket",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "execinvite_redeem_ticket",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "raw_send_event",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "test_sleep_millis",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       }
     ]
   }
