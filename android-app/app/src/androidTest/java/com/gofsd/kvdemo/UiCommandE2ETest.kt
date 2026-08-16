@@ -192,13 +192,18 @@ class UiCommandE2ETest {
         // declared failed. Three attempts means a case still gets two genuine looks after losing
         // one to that flake, and costs nothing on a healthy case, which returns on the first.
         //
+        // Raised again to 5 once every look started ending in device A re-showing the code (see
+        // [awaitCaseSignalOrCeiling]) rather than just holding it: each look is now a genuinely
+        // different stimulus, not the same one repeated, so more of them is worth something. A run
+        // died with a case that had not decoded across 10 looks of an unchanging screen.
+        //
         // Each attempt now gets the case's *whole* timeout_ms rather than an equal share of it,
         // because A no longer moves on underneath a case still being retried: B tells it (see
         // [signalCaseRetry]/[MAX_HOLD_EXTENSIONS]) and A extends its hold. Splitting the budget was
         // what the hold >= timeout invariant forced back when A's ceiling was fixed -- three looks
         // of a third the length each, so a decode that genuinely needed 40s could never get it. A
         // healthy case still returns on the first attempt in seconds and pays nothing for this.
-        const val SCAN_ATTEMPTS = 3
+        const val SCAN_ATTEMPTS = 5
 
         // How long one look waits before [awaitScannedTag] stops waiting and re-arms, *within* an
         // attempt's own budget. The whole budget used to be spent as a single look, which made
@@ -372,13 +377,21 @@ class UiCommandE2ETest {
      * why).
      *
      * A retry keepalive for this same case (see [signalCaseRetry]) buys another full [maxMillis]
-     * instead, up to [MAX_HOLD_EXTENSIONS] times: B is telling this device that the code currently
-     * on screen is still the one it wants, and the single most valuable thing A can do about that
-     * is nothing at all -- keep holding it. A keepalive naming some *other* case is ignored: it can
-     * only be a straggler from a case A has already advanced past, and honouring it would extend
-     * the wrong code's hold.
+     * instead, up to [MAX_HOLD_EXTENSIONS] times, and runs [onRetry] -- which re-shows the same
+     * code rather than merely continuing to hold it. A keepalive naming some *other* case is
+     * ignored: it can only be a straggler from a case A has already advanced past, and honouring it
+     * would extend the wrong code's hold.
+     *
+     * Re-showing matters because of what B is actually stuck on when it asks. Measured across
+     * several 90-case runs, a stuck case is not a slow decode: the scanning device's camera stays
+     * healthy by every measure it has (fresh frames, unchanged sharpness, its own analyzer running)
+     * and simply never finds a code in a scene that has not changed in over two minutes, while the
+     * very same frame, screenshotted off that device's preview, decodes offline instantly. B's own
+     * camera rebind does not break the spell. What has never once failed to is the scene changing
+     * -- which is what a human does without thinking, taking the code away and bringing it back.
+     * So that is what A does here.
      */
-    private fun awaitCaseSignalOrCeiling(caseID: String, maxMillis: Long): Boolean {
+    private fun awaitCaseSignalOrCeiling(caseID: String, maxMillis: Long, onRetry: () -> Unit = {}): Boolean {
         var deadline = System.currentTimeMillis() + maxMillis
         var seenRetries = retrySignalCount.get()
         var extensions = 0
@@ -389,8 +402,10 @@ class UiCommandE2ETest {
                 seenRetries = retries
                 if (lastRetryCaseID.get() == caseID && extensions < MAX_HOLD_EXTENSIONS) {
                     extensions++
+                    Log.i(TAG, "$OPTICAL_LOG_TAG case=$caseID device B asked for another look -- re-showing this code and holding it a further ${maxMillis}ms (extension $extensions/$MAX_HOLD_EXTENSIONS)")
+                    runCatching { onRetry() }
+                        .onFailure { Log.w(TAG, "$OPTICAL_LOG_TAG case=$caseID could not re-show this code, holding the existing one instead: $it") }
                     deadline = System.currentTimeMillis() + maxMillis
-                    Log.i(TAG, "$OPTICAL_LOG_TAG case=$caseID device B asked for another look -- holding this code for a further ${maxMillis}ms (extension $extensions/$MAX_HOLD_EXTENSIONS)")
                 }
             }
             Thread.sleep(SIGNAL_POLL_INTERVAL_MS)
@@ -568,7 +583,18 @@ class UiCommandE2ETest {
                 if (i <= 1) FIRST_CASE_AWAIT_TIMEOUT_MS else 0L,
             )
             Log.i(TAG, "$caseTag awaiting B's completion signal, ceiling ${holdCeilingMillis}ms")
-            if (!awaitCaseSignalOrCeiling(caseID, holdCeilingMillis)) {
+            val reshow = {
+                // The same two calls the loop itself uses to move between cases, just aimed back at
+                // the case already in flight: dismiss what's on screen, return to screen_main, and
+                // generate this very spec again. Generating a RunCode or a NavCode is pure
+                // rendering (see RunCode.encode -- no session, no daemon call), so for 86 of the 90
+                // cases this is free; the few ticket cases mint a fresh ticket, which is exactly as
+                // valid to scan as the one it replaces.
+                resetToMainAfterGenerate(spec.optString("target", ""))
+                generateOneCase(context, spec, "$caseTag re-show")
+                Unit
+            }
+            if (!awaitCaseSignalOrCeiling(caseID, holdCeilingMillis, reshow)) {
                 Log.w(TAG, "$caseTag no completion signal from B within ${holdCeilingMillis}ms -- aborting the rest of the batch (every remaining case would just be generated for nobody to catch)")
                 break
             }
