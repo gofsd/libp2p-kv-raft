@@ -9,6 +9,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
@@ -153,8 +154,53 @@ class UiCommandE2ETest {
         // moves around run to run), so a 15s per-case ceiling still occasionally aborted an
         // otherwise-healthy run. Raised with real margin over the observed range (near-instant to
         // ~8s in healthy runs).
-        const val BATCH_HOLD_MILLIS = 30_000L
-        const val BATCH_TIMEOUT_MS = 25_000L
+        //
+        // 25s/30s then hit the same wall again on a real rig, one notch further out: a run that
+        // had already scanned 45 consecutive cases cleanly died on case 46
+        // ("channel_close_write", whose code is *sparser* than most -- a single short param -- so
+        // this was decode latency, not a denser-code effect). Because a missed signal is fatal to
+        // the whole batch by design, one transient slow decode throws away every case after it:
+        // at roughly one miss per ~45 cases, a clean 90-case run is close to a coin flip, and the
+        // rerun costs ~10 minutes of real hardware time. Raising the ceiling is close to free by
+        // contrast -- the signal-based advance (awaitCaseSignalOrCeiling) means a healthy case
+        // still advances the instant B signals, so these numbers are only ever paid on a case
+        // that is genuinely struggling, and only for the one case rather than the run.
+        const val BATCH_HOLD_MILLIS = 60_000L
+        const val BATCH_TIMEOUT_MS = 50_000L
+
+        /** How many times [selectGroupUntilRegistered] re-taps a group option before giving up. */
+        const val GROUP_SELECT_ATTEMPTS = 4
+
+        // How many times [awaitConfirmButton] waits for a scan's confirmation dialog before giving
+        // up, each attempt getting an equal share of the case's own timeout budget (so the total
+        // wait is unchanged and BATCH_HOLD_MILLIS >= BATCH_TIMEOUT_MS still holds -- see that
+        // constant's own doc comment for why that invariant is not negotiable). Two, not more:
+        // between attempts the harness re-arms the scanner (see [forceRescan]), and a case that
+        // still hasn't produced a dialog after a second full look at a code device A is *still*
+        // holding on screen isn't going to produce one on a third.
+        const val SCAN_CONFIRM_ATTEMPTS = 2
+
+        /** How long [forceRescan] gives MainScannerWidget to notice its rebind request and get the camera streaming again -- its watchdog polls on REFOCUS_INTERVAL_MS (3s), plus a moment for the bind itself. */
+        const val REBIND_SETTLE_MS = 5_000L
+
+
+        /** The one substitution token an optical case's own Result may reference -- see [resultExpectation]. */
+        const val SELF_PEER_ID_TOKEN = "{{selfPeerID}}"
+
+        /** How long [awaitOwnCircuitAddr] waits for this device to publish a relay circuit address, and how often it re-checks. */
+        const val CIRCUIT_ADDR_TIMEOUT_MS = 90_000L
+        const val CIRCUIT_ADDR_POLL_MS = 2_000L
+
+        // Do NOT reach for MainScannerManager.setZoom here to make a code bigger in frame, however
+        // reasonable it looks: on this rig's scanning device it silently ends decoding for the
+        // rest of the process. Measured across five two-device runs, every successful decode fell
+        // *before* a setZoomRatio call and not one fell after -- the camera stays bound, the
+        // preview keeps updating and looks correctly magnified, the analyzer keeps being handed
+        // frames, and ZXing simply never finds a code in any of them again. The pixels-per-module
+        // problem zoom appears to solve is real, but the lever that actually works is
+        // MainScannerWidget's own ImageAnalysis resolution (see its analysisSelector, raised to
+        // 1920x1440 for exactly this) -- with that in place the densest code this app generates
+        // decodes in ~1.4s at this rig's fixed geometry, no zoom involved.
 
         // generateAndHoldAll holds its *first* case for this much longer than BATCH_HOLD_MILLIS --
         // device B's own join (to device A, which generateAndHoldAll's own preamble only just
@@ -389,7 +435,15 @@ class UiCommandE2ETest {
             // camera refocus mid-decode pushed a single scan past 20s even after the rig was
             // already warmed up) made A give up and abort the whole batch before B's own,
             // correctly-sized wait ever had a chance to succeed.
-            val holdCeilingMillis = if (i <= 1) FIRST_CASE_AWAIT_TIMEOUT_MS else BATCH_HOLD_MILLIS
+            //
+            // A case may also carry its own hold_millis (see OpticalScanCase's own doc comment
+            // and pkg/e2erun/android_optical.go, which validates hold >= timeout before either
+            // device ever sees it) -- taken as a floor, never a cap, so a per-case budget can
+            // only ever widen the two indices above, not undercut them.
+            val holdCeilingMillis = maxOf(
+                spec.optLong("hold_millis", BATCH_HOLD_MILLIS),
+                if (i <= 1) FIRST_CASE_AWAIT_TIMEOUT_MS else 0L,
+            )
             Log.i(TAG, "$caseTag awaiting B's completion signal, ceiling ${holdCeilingMillis}ms")
             if (!awaitCaseSignalOrCeiling(caseID, holdCeilingMillis)) {
                 Log.w(TAG, "$caseTag no completion signal from B within ${holdCeilingMillis}ms -- aborting the rest of the batch (every remaining case would just be generated for nobody to catch)")
@@ -409,12 +463,51 @@ class UiCommandE2ETest {
      * own explicit, idempotent bootstrap before anything that needs a signing key or a real
      * dialable address can work. Both calls are safe to repeat against an already-provisioned/
      * already-granted state (see StartSolo's and RequestRelayAccess's own doc comments).
+     *
+     * Then waits for this device to actually become *reachable*, not merely granted. Device B's
+     * whole run depends on dialing this device through the relay (its build bakes this device's
+     * `/p2p-circuit/` address as leaderMultiaddr), and RequestRelayAccess returning a grant id is
+     * not the same event as AutoRelay having landed a circuit reservation off the back of it --
+     * the grant is what *permits* the reservation, which is established afterwards, and until it
+     * lands this device advertises no circuit address for anyone to dial. Confirmed live, twice:
+     * B failed with "join cluster: ... failed to dial <A>: all dials failed" while A's own log
+     * showed a perfectly successful `requestRelayAccess -> <grant id>` a second earlier, and a
+     * later GetOwnAddr on A (once it had been up a while) returned the expected
+     * `/ip4/.../p2p-circuit/p2p/<A>` address all along.
+     *
+     * Polling GetOwnAddr for that address is a direct check of the thing B actually needs, and it
+     * belongs here rather than as a longer fixed sleep on the Go side (pkg/e2erun's head start),
+     * which can only ever guess at it from outside. Non-fatal on timeout: a device that never
+     * reserves still has to report its real failures per-case rather than dying in the preamble.
      */
     private fun startSoloAndRequestRelay(context: android.content.Context, opticalTag: String) {
         val startSoloResult = runCatching { Kvmobile.startSolo(context.filesDir.absolutePath) }
         Log.i(TAG, "$opticalTag startSolo -> ${startSoloResult.getOrNull()} (error=${startSoloResult.exceptionOrNull()?.message})")
         val relayResult = runCatching { Kvmobile.requestRelayAccess("optical e2e generateAndHold") }
         Log.i(TAG, "$opticalTag requestRelayAccess -> ${relayResult.getOrNull()} (error=${relayResult.exceptionOrNull()?.message})")
+        awaitOwnCircuitAddr(opticalTag)
+    }
+
+    /**
+     * Polls `Kvmobile.getOwnAddr()` until it reports a `/p2p-circuit/` address -- i.e. until this
+     * device is genuinely dialable by the other one. See [startSoloAndRequestRelay] for why a
+     * granted relay permit alone isn't enough.
+     */
+    private fun awaitOwnCircuitAddr(opticalTag: String) {
+        val deadline = System.currentTimeMillis() + CIRCUIT_ADDR_TIMEOUT_MS
+        while (System.currentTimeMillis() < deadline) {
+            val addr = runCatching { Kvmobile.getOwnAddr() }.getOrDefault("")
+            if (addr.contains("/p2p-circuit/")) {
+                Log.i(TAG, "$opticalTag reachable via relay: $addr")
+                return
+            }
+            Thread.sleep(CIRCUIT_ADDR_POLL_MS)
+        }
+        Log.w(
+            TAG,
+            "$opticalTag still has no /p2p-circuit/ address after ${CIRCUIT_ADDR_TIMEOUT_MS}ms -- " +
+                "device B will probably fail to dial this device; continuing anyway so each case reports its own real result",
+        )
     }
 
     /**
@@ -477,7 +570,7 @@ class UiCommandE2ETest {
                 }
 
                 Log.i(TAG, "$opticalTag navigating to command_detail for ${commandSpec.label}, params=${(0 until fieldCount).map { resolveField(it) }}")
-                navigateToCommandDetailViaPicker(commandSpec.label)
+                navigateToCommandDetailViaPicker(commandSpec.category, commandSpec.name)
                 waitForScreen("screen_command_detail")
                 for (i in 0 until fieldCount) {
                     composeTestRule.onNodeWithTag("param_$i").performTextInput(resolveField(i))
@@ -534,11 +627,41 @@ class UiCommandE2ETest {
     private fun resetToMainAfterGenerate(target: String) {
         composeTestRule.onNodeWithTag("generatedDataMatrixClose").performClick()
         when (target) {
-            "run" -> repeat(2) { pressBack() }
-            "nav_group" -> composeTestRule.onNodeWithTag("screen_main").performTouchInput { swipeRight() }
+            "run" -> {
+                // Pop back to the pager route itself -- bounded, not a fixed count, since the two
+                // navigateToCommandDetailViaPicker/ViaGroup paths (see their own doc comments)
+                // leave different stack depths: Commands picker pushes commandPicker+commandDetail
+                // (2 deep), Groups picker pushes commandDetail alone (1 deep -- GroupPickerScreen's
+                // own Submit already pops itself before commandDetail is pushed). Popping
+                // adaptively handles both without threading which path this case took all the way
+                // through to here.
+                var pops = 0
+                while (pops < 3 && !onDefaultGroupOrLeaveChip()) {
+                    pressBack()
+                    pops++
+                }
+                // The Groups-picker path leaves currentGroup pointed at this case's own category,
+                // not Default -- leave it the same way a human would, via the chip, so every case
+                // starts the next one from the identical Default-group state regardless of which
+                // path it took to get here.
+                if (composeTestRule.onAllNodesWithTag("groupContextLeave").fetchSemanticsNodes(atLeastOneRootRequired = false).isNotEmpty()) {
+                    composeTestRule.onNodeWithTag("groupContextLeave").performClick()
+                }
+            }
+            "nav_group" -> {
+                composeTestRule.onNodeWithTag("screen_main").performTouchInput { swipeRight() }
+                // See settleAfterNavigation's own doc comment (2) -- confirmed live this swipe's
+                // own fling/settle animation isn't always done by the time performTouchInput
+                // returns, and the very next case's first tap can land while it's still settling.
+                settleAfterNavigation()
+            }
         }
         waitForScreen("screen_default_group")
     }
+
+    /** True once back on the pager's own route -- either Default's list directly, or a non-Default group's list (identifiable by its leave chip) -- used by [resetToMainAfterGenerate]'s adaptive pop loop. */
+    private fun onDefaultGroupOrLeaveChip(): Boolean =
+        nodeExists("screen_default_group") || nodeExists("groupContextLeave")
 
     /**
      * Device-B half of the real-camera optical-scan e2e harness -- see [generateAndHold]'s doc
@@ -575,8 +698,10 @@ class UiCommandE2ETest {
      * attempting the rest -- see the class's own doc comment on [SIGNAL_POLL_INTERVAL_MS] for why:
      * this side's own [signalCaseDone] only ever fires on a pass, so a failed case here also means
      * A's matching [generateAndHoldAll] is about to abort its own batch the moment this case's hold
-     * ceiling elapses, and there is nothing left worth waiting for. Uses [BATCH_TIMEOUT_MS]
-     * uniformly (see that constant's own doc comment) rather than each case's own timeout_ms.
+     * ceiling elapses, and there is nothing left worth waiting for. Falls back to
+     * [BATCH_TIMEOUT_MS] for a case that carries no timeout_ms of its own (most of them -- see that
+     * constant's own doc comment); a case that does carry one gets it, which is what lets an
+     * optically harder code (a dense signed ticket, say) buy time without slowing the rest down.
      * Writes an "OpticalReady" entry as soon as this device's own RequestRelayAccess completes and
      * the camera is live, before the case loop starts -- purely diagnostic (how long this device's
      * own one-time setup actually took, on a run where the first case still failed to show up in
@@ -605,7 +730,10 @@ class UiCommandE2ETest {
         for (i in 0 until specs.length()) {
             val spec = specs.getJSONObject(i)
             val caseID = spec.getString("case_id")
-            if (i <= 1) spec.put("timeout_ms", FIRST_CASE_AWAIT_TIMEOUT_MS)
+            // A floor, not an override: a case carrying its own (larger) timeout_ms keeps it, the
+            // same way generateAndHoldAll treats hold_millis on A's side -- the two must stay in
+            // step or the batch desynchronizes.
+            if (i <= 1) spec.put("timeout_ms", maxOf(spec.optLong("timeout_ms", 0L), FIRST_CASE_AWAIT_TIMEOUT_MS))
             val caseTag = "$opticalTag case=$caseID (${i + 1}/${specs.length()})"
             val entry = awaitOneCase(spec, caseTag)
             results.put(entry)
@@ -644,6 +772,7 @@ class UiCommandE2ETest {
         composeTestRule.runOnUiThread { ScannerCoordinator.expanded = true }
     }
 
+
     /**
      * Waits for one [spec]-described expected outcome and confirms/executes it -- shared by
      * [awaitAndVerifyScan] (one case, fresh process) and [awaitAndVerifyScanAll] (many cases, one
@@ -679,7 +808,7 @@ class UiCommandE2ETest {
         return try {
             when (kind) {
                 "run" -> {
-                    waitForTagWithTimeout("runConfirmExecute", timeoutMs)
+                    awaitConfirmButton("runConfirmExecute", timeoutMs, opticalTag)
                     val params = readTagText("runConfirmParams")
                     Log.i(TAG, "$opticalTag runConfirmExecute appeared, params=$params")
                     val priorLogSize = OutputLog.snapshot().size
@@ -714,7 +843,7 @@ class UiCommandE2ETest {
                     try {
                         waitForTagWithTimeout("screen_commands", timeoutMs)
                         Log.i(TAG, "$opticalTag screen_commands appeared at ${System.currentTimeMillis()}")
-                        settleAfterScanTriggeredNavigation()
+                        settleAfterNavigation()
                         Log.i(TAG, "$opticalTag settle complete at ${System.currentTimeMillis()}")
                         val title = readTagText("categoryTitle")
                         val want = spec.getString("category_title")
@@ -732,7 +861,7 @@ class UiCommandE2ETest {
                     }
                 }
                 "ticket" -> {
-                    waitForTagWithTimeout("recruitConfirmApprove", timeoutMs)
+                    awaitConfirmButton("recruitConfirmApprove", timeoutMs, opticalTag)
                     Log.i(TAG, "$opticalTag recruitConfirmApprove appeared")
                     composeTestRule.onNodeWithTag("recruitConfirmApprove").performClick()
                     Log.i(TAG, "$opticalTag tapped Approve")
@@ -741,8 +870,101 @@ class UiCommandE2ETest {
                 else -> throw IllegalArgumentException("unknown optical expect kind: $kind")
             }
         } catch (e: Throwable) {
+            // Log the throwable itself, not just its message: a failure here aborts the whole
+            // batch (see awaitAndVerifyScanAll's own break), so the ~10 minutes of real
+            // two-device hardware time it costs to reproduce is worth far more than the few
+            // logcat lines a stack trace adds. Learned the hard way -- a live run died on
+            // "Can't create handler inside thread ... that has not called Looper.prepare()",
+            // which names no class of ours at all (nothing in this app or harness constructs a
+            // Handler/Looper), so the bare message was not enough to tell which library call on
+            // which thread actually threw it.
+            Log.w(TAG, "$opticalTag FAIL (stack trace follows)", e)
             fail(e.message ?: e.toString())
         }
+    }
+
+    /**
+     * Waits for a scanned code's confirmation dialog ([tag] being its confirm button's own testTag)
+     * to show up, re-arming the scanner between attempts rather than losing the whole batch to one
+     * missed decode.
+     *
+     * The case this exists for, confirmed live on a real two-device run: case 13 of 90
+     * (cluster_kick) decoded perfectly -- device B's own app logged `run-code scan decoded:
+     * RunCode(category=Cluster, name=Kick, ...)` and then `RunConfirmDialog shown` 1.7s into the
+     * case -- yet [waitForTagWithTimeout] never once found `runConfirmExecute` across the following
+     * 50s, and since a failed case stops the batch by design (see [awaitAndVerifyScanAll]), the
+     * remaining 77 cases died with it. The one clue was this class's own predicate-error
+     * diagnostic: the semantics lookup threw exactly once during that window, with
+     * `RuntimeException: Can't create handler inside thread Thread[pool-7-thread-1,5,main] that has
+     * not called Looper.prepare()` -- a framework thread, no code of ours anywhere on the stack --
+     * after which every later poll ran cleanly and simply never saw a dialog.
+     *
+     * The recovery is to look *twice*, each attempt getting half the case's own timeout budget (so
+     * the total wait, and BATCH_HOLD_MILLIS >= BATCH_TIMEOUT_MS with it, is unchanged), with
+     * [forceRescan] in between: device A holds one single code on screen for the whole case, so
+     * without re-arming the dedup a second wait would watch a scanner that has already decided it
+     * has nothing new to report. Confirmed live to work exactly as intended on the very next full
+     * run: case 64 of 90 (links_remove_command_from_group) hit the same silent no-dialog wait,
+     * re-armed, decoded 5s later, passed, and the run finished 90/90 instead of stopping at 64.
+     *
+     * An accessibility-tree fallback was tried here first and removed: `UiAutomation`'s
+     * `rootInActiveWindow` returns null on this rig even with `FLAG_RETRIEVE_INTERACTIVE_WINDOWS`
+     * set on its service info, so it could see neither the dialog nor anything else, on two
+     * separate runs. Worth knowing before reaching for it again -- reading the real window
+     * hierarchy is not available to this harness as things stand.
+     */
+    private fun awaitConfirmButton(tag: String, timeoutMs: Long, opticalTag: String) {
+        val perAttempt = (timeoutMs / SCAN_CONFIRM_ATTEMPTS).coerceAtLeast(1L)
+        var lastError: Throwable? = null
+        repeat(SCAN_CONFIRM_ATTEMPTS) { attempt ->
+            try {
+                waitForTagWithTimeout(tag, perAttempt)
+                return
+            } catch (e: IllegalStateException) {
+                lastError = e
+                Log.w(TAG, "$opticalTag '$tag' not shown on attempt ${attempt + 1}/$SCAN_CONFIRM_ATTEMPTS after ${perAttempt}ms: ${e.message}")
+                if (attempt < SCAN_CONFIRM_ATTEMPTS - 1) forceRescan(opticalTag)
+            }
+        }
+        throw lastError ?: IllegalStateException("'$tag' not shown after ${timeoutMs}ms")
+    }
+
+    /**
+     * Re-arms the scanner so the code device A is *still* holding on screen decodes again: clears
+     * [ScannerCoordinator]'s own last-payload dedup (without which an unchanged code in front of
+     * the camera never re-emits, by design -- see its own doc comment) and re-expands the scanner,
+     * which AppRoot collapses after every decode. Deliberately does *not* press Back to clear a
+     * possibly-showing dialog first: on the pager's own start destination a stray back press
+     * finishes the Activity outright, which would turn a recoverable missed dialog into a dead
+     * instrumentation process, and a fresh scan replaces any pending dialog's state anyway.
+     */
+    private fun forceRescan(opticalTag: String) {
+        Log.i(TAG, "$opticalTag re-arming the scanner for another look at the same code")
+        // Reflection rather than a plain `ScannerCoordinator.resetDedup()`: the field is private
+        // because nothing in the app has any business clearing it (a human rescanning naturally
+        // looks away and back, which changes the decoded bytes on its own), and adding a test-only
+        // hook to the app would mean rebuilding and reinstalling *both* devices' app APKs -- which
+        // are not the same build (device B's bakes device A's leaderMultiaddr, device A's bakes
+        // none, see mobile/kvmobile), so a shared rebuild would break whichever device got the
+        // wrong flavor. The androidTest APK, by contrast, is identical on both and reinstallable on
+        // its own. Failure here is logged, not thrown: the re-arm is a bonus attempt at recovery,
+        // and the caller's remaining wait is still worth making without it.
+        runCatching {
+            val field = ScannerCoordinator::class.java.getDeclaredField("lastScanned")
+            field.isAccessible = true
+            field.set(ScannerCoordinator, null)
+        }.onFailure { Log.w(TAG, "$opticalTag could not clear the scanner's dedup state: $it") }
+        composeTestRule.runOnUiThread { ScannerCoordinator.expanded = true }
+
+        // Clearing the dedup only helps if the frames themselves are usable. By the time this runs,
+        // device A has been holding one code on screen for a full attempt's worth of seconds and
+        // nothing decoded -- the case where, measured live, the camera's own 3A state had gone bad
+        // (frame sharpness collapsing ~6x mid-run and staying there, with the preview beside it
+        // still looking fine). A rebind is the one thing that resets it; see
+        // MainScannerManager.requestRebind. Costs a second or so of dropped frames, out of an
+        // attempt budget of tens of seconds.
+        MainScannerManager.requestRebind()
+        Thread.sleep(REBIND_SETTLE_MS)
     }
 
     /**
@@ -841,11 +1063,31 @@ class UiCommandE2ETest {
      * "run" kind only. "{{selfPeerID}}" is the one substitution token an optical case's own Result
      * can reference (e.g. a GetOwnAddr case's "contains:{{selfPeerID}}") -- only known live, the
      * same reason the old catalog sweep's token substitution existed at all.
+     *
+     * An *unresolved* token is a hard failure rather than a silent substitution. The caller reads
+     * it as `runCatching { Kvmobile.peerID() }.getOrDefault("")`, so a device whose session never
+     * came up yields "" -- and substituting that turns `contains:{{selfPeerID}}` into
+     * `contains:""`, which every possible result line satisfies. Confirmed live, and precisely
+     * the wrong outcome: a run in which device B's `Kvmobile.start()` had failed outright still
+     * recorded its first case as PASS (with the body literally reading "FAILED: kvmobile: Start
+     * has not completed successfully yet"), hiding the one failure that most needed reporting
+     * behind a green case. A token that cannot be resolved means the assertion cannot be
+     * evaluated at all, which is a failure, not a pass.
      */
     private fun resultExpectation(name: String, selfPeerID: String): (String) -> Unit = when {
         name == "rejected" -> ::assertRejected
         name == "no_crash" -> ::assertNoCrash
-        name.startsWith("contains:") -> { line: String -> assertContains(line, name.removePrefix("contains:").replace("{{selfPeerID}}", selfPeerID)) }
+        name.startsWith("contains:") -> { line: String ->
+            val want = name.removePrefix("contains:")
+            if (want.contains(SELF_PEER_ID_TOKEN) && selfPeerID.isEmpty()) {
+                throw AssertionError(
+                    "expectation \"$name\" references $SELF_PEER_ID_TOKEN but this device has no peer id " +
+                        "(Kvmobile.peerID() failed -- its session almost certainly never started), so the " +
+                        "check cannot be evaluated. Result line was: $line",
+                )
+            }
+            assertContains(line, want.replace(SELF_PEER_ID_TOKEN, selfPeerID))
+        }
         else -> ::assertSucceeded
     }
 
@@ -884,9 +1126,7 @@ class UiCommandE2ETest {
      */
     private fun waitForScreen(tag: String) {
         try {
-            composeTestRule.waitUntil(NAV_TIMEOUT_MS) {
-                composeTestRule.onAllNodesWithTag(tag).fetchSemanticsNodes(atLeastOneRootRequired = false).isNotEmpty()
-            }
+            composeTestRule.waitUntil(NAV_TIMEOUT_MS) { nodeExistsQuietly(tag) }
         } catch (e: ComposeTimeoutException) {
             throw IllegalStateException("screen '$tag' not shown after ${NAV_TIMEOUT_MS}ms", e)
         }
@@ -899,30 +1139,79 @@ class UiCommandE2ETest {
      * generous, tunable timeout than ordinary Compose recomposition ever does.
      */
     private fun waitForTagWithTimeout(tag: String, timeoutMs: Long) {
+        // Records whatever the predicate last choked on, so a timeout can say *why* it never saw
+        // the tag. Without this the swallow in nodeExistsQuietly is a diagnostic dead end: a
+        // wedged Compose idle-sync and a genuinely absent node produce the identical bare
+        // "'X' not shown after Nms", which cost a full two-device run to tell apart once already.
+        var lastPredicateError: Throwable? = null
+        var predicateErrors = 0
         try {
             composeTestRule.waitUntil(timeoutMs) {
-                composeTestRule.onAllNodesWithTag(tag).fetchSemanticsNodes(atLeastOneRootRequired = false).isNotEmpty()
+                try {
+                    nodeExists(tag)
+                } catch (e: Throwable) {
+                    lastPredicateError = e
+                    predicateErrors++
+                    false
+                }
             }
         } catch (e: ComposeTimeoutException) {
-            throw IllegalStateException("'$tag' not shown after ${timeoutMs}ms", e)
+            val why = lastPredicateError?.let {
+                " -- the semantics lookup itself failed $predicateErrors time(s), last: ${it::class.java.name}: ${it.message}"
+            } ?: " -- the semantics lookup ran cleanly and simply never found it"
+            throw IllegalStateException("'$tag' not shown after ${timeoutMs}ms$why", e)
         }
     }
 
     /**
-     * A scan-triggered navigation (see AppRoot.kt's `ScannerCoordinator.scans.collect { ... }`
+     * [nodeExists] with any *transient* framework exception swallowed into "not there yet", for
+     * use inside a `waitUntil` predicate. Only the polling predicates use this -- a real timeout
+     * still surfaces as a real failure, and a genuinely wedged UI just times out the way it
+     * always did.
+     *
+     * Fetching semantics nodes internally drives Compose's own idle-sync (waitForIdle ->
+     * Espresso.onIdle), which races this app's continuously-recomposing live camera preview:
+     * confirmed live, with a stack trace, when a 90-case batch died on case 9 with
+     * "java.util.concurrent.ExecutionException: java.lang.IllegalArgumentException:
+     * performMeasureAndLayout called during measure layout" thrown straight out of
+     * [waitForTagWithTimeout]'s predicate. Nothing about that means the tag will never appear --
+     * it means this one poll iteration happened to land mid-layout. Letting it propagate aborts
+     * the entire run (a failed case stops the whole batch by design), which is a wildly
+     * disproportionate outcome for "ask again in a few milliseconds", and costs ~10 minutes of
+     * real two-device hardware time to retry from scratch.
+     */
+    private fun nodeExistsQuietly(tag: String): Boolean = runCatching { nodeExists(tag) }.getOrDefault(false)
+
+    /**
+     * A settle needed after two distinct kinds of transition `waitForIdle()` alone doesn't fully
+     * cover, confirmed live for both:
+     *
+     * (1) A scan-triggered navigation (see AppRoot.kt's `ScannerCoordinator.scans.collect { ... }`
      * listener's NavCode.Group branch) calls `navController.navigate(...)` from a coroutine
      * reacting to the camera scanner, not from a `performClick()` this class's own
-     * `waitUntil`/`waitForIdle` reliably synchronize with -- confirmed live: the target screen's
-     * own testTag appears in the semantics tree (satisfying [waitForTagWithTimeout]) while its
+     * `waitUntil`/`waitForIdle` reliably synchronize with -- the target screen's own testTag
+     * appears in the semantics tree (satisfying [waitForTagWithTimeout]) while its
      * NavBackStackEntry's underlying Android-framework Lifecycle (a separate async dispatch loop
      * from Compose's own recomposition scheduling, which `waitForIdle` alone does not wait on) is
      * still mid-transition, not yet RESUMED -- tearing the Activity down at exactly that moment
-     * (recording a result and returning immediately, the normal end of this method) crashed the
-     * whole instrumentation process with "State must be at least CREATED to move to DESTROYED,
-     * but was INITIALIZED". A fixed settle, not a poll: there is no test-visible signal for "this
-     * NavBackStackEntry reached RESUMED" to poll for instead.
+     * crashed the whole instrumentation process with "State must be at least CREATED to move to
+     * DESTROYED, but was INITIALIZED".
+     *
+     * (2) [resetToMainAfterGenerate]'s `performTouchInput { swipeRight() }` (undoing a "nav_group"
+     * case's own swipe to the log page) -- confirmed live via a real two-device optical run: the
+     * very next case's `mainListItem_commands` tap, fired immediately after `waitForScreen
+     * ("screen_default_group")` succeeded, silently failed to register (no exception, no
+     * `USER_TAP` log line, `screen_command_detail` simply never appeared) often enough to break a
+     * real batch run -- `HorizontalPager`'s own fling/settle animation from the swipe apparently
+     * doesn't always finish idling by the time `performTouchInput` returns control, and a tap that
+     * lands while the pager is still mid-settle can get swallowed by its own gesture-priority
+     * handling instead of reaching the underlying list item.
+     *
+     * A fixed settle, not a poll, in both cases: there is no test-visible signal for "this
+     * NavBackStackEntry reached RESUMED" or "this pager's fling animation has fully settled" to
+     * poll for instead.
      */
-    private fun settleAfterScanTriggeredNavigation() {
+    private fun settleAfterNavigation() {
         composeTestRule.waitForIdle()
         Thread.sleep(500)
     }
@@ -941,23 +1230,140 @@ class UiCommandE2ETest {
     }
 
     /**
-     * From the pager's Default group (see GroupPageScreen), reaches [label]'s own
-     * CommandDetailScreen via the "Commands" picker: taps the "Commands" pseudo-item, opens its
-     * search-filterable select, taps the option matching [label] directly (the option's own
-     * testTag, `"${testTag}_option_$label"` -- see SearchableSelectDropdown -- so no typing is
-     * needed to find it; Material3's DropdownMenu is a plain scrollable Column, not a LazyColumn,
-     * so every option already exists in the semantics tree regardless of filter/scroll position,
-     * unlike the old category/command LazyColumns this replaces, which needed an explicit
-     * performScrollToIndex to reach far-down rows), then Submit.
-     * Two real routes deep from the pager (commandPicker, then commandDetail) -- see
-     * [resetToMainAfterGenerate]'s matching pop count.
+     * Guards [navigateToCommandDetailViaPicker]'s Commands-picker branch to at most once per
+     * instrumentation process -- see that function's own doc comment for why.
      */
-    private fun navigateToCommandDetailViaPicker(label: String) {
-        composeTestRule.onNodeWithTag("mainListItem_commands").performClick()
-        waitForScreen("screen_command_picker")
-        composeTestRule.onNodeWithTag("commandPickerSelect").performClick()
-        composeTestRule.onNodeWithTag("commandPickerSelect_option_$label").performClick()
-        composeTestRule.onNodeWithTag("commandPickerOpen").performClick()
+    private var commandsPickerUsedOnce = false
+
+    /**
+     * From the pager's Default group (see GroupPageScreen), reaches [category]/[name]'s own
+     * CommandDetailScreen. The first call in a given instrumentation process goes through the
+     * "Commands" pseudo-item's search-filterable select (taps the option matching the exact
+     * `"$category: $name"` label directly -- Material3's `DropdownMenu` is a plain scrollable
+     * `Column`, not a `LazyColumn`, so every option already exists in the semantics tree
+     * regardless of filter/scroll position) then Submit -- two real routes deep from the pager
+     * (commandPicker, then commandDetail).
+     *
+     * Every call after the first goes through [navigateToCommandDetailViaGroup] instead --
+     * confirmed live, the hard way, running a real two-device batch: `SearchableSelectDropdown`'s
+     * `DropdownMenuItem` (used only by the Commands picker, given the flat ~104-entry catalog
+     * needs it) silently fails to invoke its own `onClick` on the *second* time its `Popup` is
+     * opened in the same process -- `performClick()`/`performTouchInput { click() }` both report
+     * success (the semantics node is found, the synthetic event dispatches with no exception),
+     * yet neither `onSelect` nor the Submit button's own `onClick` ever fires, confirmed via a
+     * temporary diagnostic `Log.i` inside both. **Not a real app bug** -- a real `adb shell input
+     * tap` at the same coordinates on the same second use works correctly every time, confirmed
+     * live by hand; this is specific to how `AndroidComposeUiTestEnvironment` synthesizes touch
+     * input against a `Popup`-hosted `DropdownMenuItem` recreated a second time. The plain
+     * (non-searchable) `SelectDropdown` GroupPickerScreen uses does **not** have this limitation
+     * -- confirmed live surviving two full uses in the same process back to back -- which is
+     * exactly why [navigateToCommandDetailViaGroup] routes through it instead of retrying the
+     * Commands picker.
+     */
+    private fun navigateToCommandDetailViaPicker(category: String, name: String) {
+        if (!commandsPickerUsedOnce) {
+            commandsPickerUsedOnce = true
+            val label = "$category: $name"
+            composeTestRule.onNodeWithTag("mainListItem_commands").performClick()
+            waitForScreen("screen_command_picker")
+            composeTestRule.onNodeWithTag("commandPickerSelect").performClick()
+            // performScrollTo for the same reason selectGroupUntilRegistered needs it (see its
+            // own doc comment): every option is in the semantics tree regardless of scroll
+            // position, so a label far enough down this ~104-entry list is found but sits outside
+            // the popup's visible window, and the synthesized click silently lands on nothing.
+            // Only case 0 ever takes this branch, and the seed catalog's case 0 happens to be
+            // near the top ("Cluster: GetOwnAddr") -- confirmed live that a case whose label
+            // sorts last ("Test: SleepMillis") hangs here instead, never reaching Generate.
+            composeTestRule.onNodeWithTag("commandPickerSelect_option_$label")
+                .performScrollTo()
+                .performClick()
+            composeTestRule.onNodeWithTag("commandPickerOpen").performClick()
+        } else {
+            navigateToCommandDetailViaGroup(category, name)
+        }
+    }
+
+    /**
+     * The Commands-picker alternative [navigateToCommandDetailViaPicker] falls back to after its
+     * first use -- see that function's own doc comment for why. Enters [category] via the
+     * Groups picker's plain `SelectDropdown` (safe to reuse, unlike `SearchableSelectDropdown`),
+     * then taps [name] directly from that group's own real `LazyColumn` command list -- no popup
+     * involved at all for this second step, so it can't hit the same class of issue either.
+     * `performScrollToIndex` first since a category's command list can run past the first
+     * screenful (mirrors the pre-Phase-3 harness's own `clickListItem` helper, removed when the
+     * "run" target stopped needing it for its *first* navigation -- reinstated here, inline,
+     * for this fallback path only, now that it's needed again).
+     */
+    private fun navigateToCommandDetailViaGroup(category: String, name: String) {
+        composeTestRule.onNodeWithTag("mainListItem_groups").performClick()
+        waitForScreen("screen_group_picker")
+        selectGroupUntilRegistered(category)
+        composeTestRule.onNodeWithTag("groupPickerSubmit").performClick()
+        waitForScreen("screen_commands")
+        val namesInCategory = buildCommands(
+            InstrumentationRegistry.getInstrumentation().targetContext.filesDir.absolutePath,
+            OutputLog::append,
+        ).filter { it.category == category }.map { it.name }
+        composeTestRule.onNodeWithTag("itemList").performScrollToIndex(namesInCategory.indexOf(name))
+        composeTestRule.onNodeWithTag("listItem_$name").performClick()
+    }
+
+    /**
+     * Opens `groupPickerSelect` and taps [category]'s own option, retrying the whole popup
+     * interaction until the selection has demonstrably registered.
+     *
+     * GroupPickerScreen's Submit is `enabled = selectedCategory != null`, so an option tap that
+     * fails to fire its `onSelect` leaves Submit *disabled* -- and `performClick()` on a disabled
+     * Compose button neither throws nor does anything, so the harness sails on and then waits out
+     * the full NAV_TIMEOUT_MS for a `screen_commands` that can never arrive. Confirmed live
+     * exactly that way: a 90-case run reached case 90 of 90 and died on "device A: screen
+     * 'screen_commands' not shown after 10000ms", with no other symptom.
+     *
+     * The `performScrollTo()` is the actual fix, and it is not defensive padding: `DropdownMenu`
+     * puts every option in the semantics tree regardless of scroll position, so a category far
+     * enough down the list is *found* but sits outside the popup's visible window, and the
+     * synthesized click lands on nothing while reporting success. That is deterministic, not
+     * flaky -- confirmed live by this function's own diagnostic, which failed all 4 attempts on
+     * the same category ("Test", the last one in the catalog) while all ~88 earlier navigations
+     * to nearer-the-top categories passed. It also explains, retroactively, an earlier run that
+     * died on case 90 of 90 with a bare "screen_commands not shown after 10000ms".
+     *
+     * The retry loop is kept on top of that for the genuinely intermittent popup-tap flakiness
+     * [navigateToCommandDetailViaPicker] documents for `SearchableSelectDropdown` -- rarer on
+     * this plain `SelectDropdown`, but "survives two uses back to back" (what was confirmed when
+     * that fallback was written) is a much weaker guarantee than the ~88 uses a full catalog run
+     * puts it through. Retrying rather than asserting is right for that part, because it's an
+     * artifact of how the test framework synthesizes touch input against a recreated `Popup`, not
+     * an app defect a human hits. Reopens the popup only when it isn't already showing, since a
+     * failed option tap can leave it open and tapping the select field again would just close it.
+     */
+    private fun selectGroupUntilRegistered(category: String) {
+        repeat(GROUP_SELECT_ATTEMPTS) { attempt ->
+            runCatching {
+                if (!nodeExists("groupPickerSelect_option_$category")) {
+                    composeTestRule.onNodeWithTag("groupPickerSelect").performClick()
+                }
+                composeTestRule.onNodeWithTag("groupPickerSelect_option_$category")
+                    .performScrollTo()
+                    .performClick()
+                composeTestRule.waitForIdle()
+            }
+            if (nodeEnabled("groupPickerSubmit")) return
+            Log.w(TAG, "$OPTICAL_LOG_TAG groupPickerSelect did not register \"$category\" on attempt ${attempt + 1} -- retrying")
+        }
+        throw IllegalStateException("groupPickerSelect never registered a selection for \"$category\" after $GROUP_SELECT_ATTEMPTS attempts")
+    }
+
+    /** True if any node carrying [tag] currently exists in the semantics tree. */
+    private fun nodeExists(tag: String): Boolean =
+        composeTestRule.onAllNodesWithTag(tag).fetchSemanticsNodes(atLeastOneRootRequired = false).isNotEmpty()
+
+    /** True if [tag]'s node exists and is not marked disabled -- see [selectGroupUntilRegistered]. */
+    private fun nodeEnabled(tag: String): Boolean {
+        val node = composeTestRule.onAllNodesWithTag(tag)
+            .fetchSemanticsNodes(atLeastOneRootRequired = false)
+            .firstOrNull() ?: return false
+        return !node.config.contains(SemanticsProperties.Disabled)
     }
 
     /** Reads a plain Text composable's current content by [tag] (e.g. categoryTitle/runConfirmParams). */

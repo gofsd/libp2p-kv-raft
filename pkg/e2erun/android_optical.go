@@ -57,19 +57,39 @@ func runOpticalScanSuite(cases []e2edata.OpticalScanCase, serialA, serialB strin
 		return result
 	}
 
+	// HoldMillis/TimeoutMs travel with every case, so a case whose code is genuinely harder to
+	// read optically can buy itself more time without slowing the other 89 down (see
+	// OpticalScanCase's own doc comments, and UiCommandE2ETest.kt's BATCH_HOLD_MILLIS for the
+	// defaults a case that sets neither falls back to). The hold >= timeout invariant is checked
+	// here rather than on the device: a violation makes device A move on to the next case while
+	// B is still waiting for this one, which desynchronizes the whole batch and reports as a
+	// cascade of unrelated per-case timeouts -- far cheaper to reject up front than to diagnose
+	// from two devices' logs after a ten-minute run.
 	type genSpecEntry struct {
 		e2edata.OpticalGenerateSpec
-		CaseID string `json:"case_id"`
+		CaseID     string `json:"case_id"`
+		HoldMillis int64  `json:"hold_millis,omitempty"`
 	}
 	type expSpecEntry struct {
 		e2edata.OpticalExpectSpec
-		CaseID string `json:"case_id"`
+		CaseID    string `json:"case_id"`
+		TimeoutMs int64  `json:"timeout_ms,omitempty"`
 	}
 	genSpecs := make([]genSpecEntry, len(cases))
 	expSpecs := make([]expSpecEntry, len(cases))
 	for i, c := range cases {
-		genSpecs[i] = genSpecEntry{c.Generate, c.CaseID}
-		expSpecs[i] = expSpecEntry{c.Expect, c.CaseID}
+		if (c.HoldMillis == 0) != (c.TimeoutMs == 0) {
+			result.Status = e2edata.StatusFail
+			result.Error = fmt.Sprintf("case %q sets only one of hold_millis/timeout_ms (%d/%d) -- set both or neither", c.CaseID, c.HoldMillis, c.TimeoutMs)
+			return result
+		}
+		if c.TimeoutMs > c.HoldMillis {
+			result.Status = e2edata.StatusFail
+			result.Error = fmt.Sprintf("case %q has timeout_ms (%d) > hold_millis (%d) -- device B would still be waiting for this case's code after device A stopped showing it", c.CaseID, c.TimeoutMs, c.HoldMillis)
+			return result
+		}
+		genSpecs[i] = genSpecEntry{c.Generate, c.CaseID, c.HoldMillis}
+		expSpecs[i] = expSpecEntry{c.Expect, c.CaseID, c.TimeoutMs}
 	}
 	genArg, err := json.Marshal(map[string]any{"specs": genSpecs})
 	if err != nil {
@@ -88,11 +108,29 @@ func runOpticalScanSuite(cases []e2edata.OpticalScanCase, serialA, serialB strin
 		genDone <- opticalMethodOutcome{results, err}
 	}()
 
-	// A short, fixed head start rather than a peeked readiness signal: A's own StartSolo
-	// bootstrap is fast and self-contained (no dependency on B), so there's nothing meaningful to
-	// peek for here the way B's own join has an "OpticalReady" moment worth waiting on -- this
-	// just avoids B's own am instrument invocation racing the adb call that launches A's.
-	time.Sleep(2 * time.Second)
+	// A fixed head start rather than a peeked readiness signal: there's nothing meaningful to
+	// peek for here the way B's own join has an "OpticalReady" moment worth waiting on -- A's
+	// first observable output (its case-0 "OpticalGenerate" entry) is written well before the
+	// thing B actually needs, so waiting on it would prove nothing.
+	//
+	// What B needs is not merely that A's process is up, but that A's raft has *won its
+	// election*: B's app launches into an automatic Kvmobile.start() join, and a join reaching A
+	// while it's still a Follower is refused outright ("leader rejected join: ERR: not leader").
+	// That failure is fatal to the entire run, not just to B's first case -- with no session, B
+	// can't open the case-signal channel either, so A hits its own no-signal ceiling and aborts
+	// the batch (see UiCommandE2ETest.kt's generateAndHoldAll).
+	//
+	// This was 2 seconds, justified as "A's own StartSolo bootstrap is fast (~2s live)". That
+	// measured a *fresh* bootstrap, which becomes leader immediately. Once A has persisted raft
+	// state (true from its second run onward, and always true for a rig that isn't wiped between
+	// runs), A instead *resumes* that configuration and has to wait out a heartbeat timeout and
+	// run a real election first -- with the widened mobile raft timeouts (kvmobile's own
+	// raftHeartbeatTimeout/raftElectionTimeout, 4s each) that measured 7.5s live, from
+	// "initial configuration" to "entering leader state". So the old 2s raced A's election on
+	// every run against an already-provisioned rig. 25s leaves real margin over that 7.5s for a
+	// slower device, and costs nothing meaningful against a run whose first case already holds
+	// for FIRST_CASE_HOLD_MILLIS.
+	time.Sleep(25 * time.Second)
 
 	bResults, bErr := runOpticalMethod(serialB, "awaitAndVerifyScanAll", "opticalExpects", expArg)
 

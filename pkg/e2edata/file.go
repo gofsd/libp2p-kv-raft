@@ -2290,14 +2290,26 @@ type OpticalScanCase struct {
 	CaseID   string              `json:"case_id"`
 	Generate OpticalGenerateSpec `json:"generate"`
 	Expect   OpticalExpectSpec   `json:"expect"`
-	// HoldMillis bounds how long device A keeps the generated code on screen (via a
-	// Thread.sleep after confirming it rendered) for device B's camera to read it, before its
-	// own instrumentation invocation exits and tears the Activity down.
-	HoldMillis int64 `json:"hold_millis"`
-	// TimeoutMs bounds how long device B's own wait for the expected outcome runs before
-	// giving up -- real camera decode latency, unlike an in-process Compose assertion, is
-	// neither instant nor perfectly reliable.
-	TimeoutMs int64 `json:"timeout_ms"`
+	// HoldMillis bounds how long device A keeps the generated code on screen for device B's
+	// camera to read it; TimeoutMs bounds how long device B waits for the expected outcome
+	// before giving up. Real camera decode latency, unlike an in-process Compose assertion, is
+	// neither instant nor perfectly reliable, and it scales with how dense the generated symbol
+	// is: a 336-byte signed ticket is a 144x144-module DataMatrix that needs materially longer
+	// than the 53-93 byte RunCode most cases generate (measured live on the two-device rig).
+	//
+	// Both are optional and must be set together (pkg/e2erun/android_optical.go rejects a case
+	// setting only one). A case that sets neither -- almost all of them -- falls back to
+	// UiCommandE2ETest.kt's BATCH_HOLD_MILLIS/BATCH_TIMEOUT_MS, which is the right default for
+	// any code a warmed-up rig reads in a second or two; setting them is for the exceptions,
+	// and buys that one case more room without slowing the other 89 down.
+	//
+	// HoldMillis >= TimeoutMs is a correctness invariant, checked before either device is
+	// launched: A advancing to the next case while B is still waiting for this one
+	// desynchronizes the whole batch, which then reports as a cascade of unrelated per-case
+	// timeouts. Both are floors rather than caps for the first two cases in a batch, which
+	// device B's own one-time join/relay setup already extends (see FIRST_CASE_HOLD_MILLIS).
+	HoldMillis int64 `json:"hold_millis,omitempty"`
+	TimeoutMs  int64 `json:"timeout_ms,omitempty"`
 	// Order, when non-zero, is this case's 1-based position in a sequence the caller needs run in
 	// exactly that order -- this is a list, not a map, so file order already reads top to bottom,
 	// but Order documents *intent* (a case that depends on a specific earlier case's own effect,
