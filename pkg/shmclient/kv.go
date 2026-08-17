@@ -215,6 +215,103 @@ func Get(ctx context.Context, peerID, key string) (string, error) {
 	return s.Get(ctx, key)
 }
 
+// RangePair is one key/value pair returned by [Session.ScanRange].
+type RangePair struct {
+	Key   []byte
+	Value []byte
+}
+
+// The two orders [Session.ScanRange] accepts. An empty order means
+// [RangeOrderAsc], the order the underlying primitive produces natively.
+const (
+	RangeOrderAsc  = "asc"
+	RangeOrderDesc = "desc"
+)
+
+// ScanRange collects every pair in [start, end] (both inclusive) into one
+// slice, applying order, then skip, then limit -- the paginated whole-range
+// counterpart to [Session.ListRange]'s single pair, and the one
+// implementation behind both pkg/kvctl.RangeScan and
+// mobile/kvmobile.RangeScan (which each used to carry their own copy of the
+// walk, with nothing keeping the two in step).
+//
+// limit caps how many pairs come back (0 = unlimited); skip drops that many
+// from the front *after* ordering, so the two compose the way an
+// offset/limit pair is normally expected to: descending with skip 1 limit 2
+// returns the second and third pairs counting back from the end of the
+// range, not the second and third from its start.
+//
+// Ascending is what the wire primitive does natively, so this stops as soon
+// as it holds skip+limit pairs and never reads the rest of the range.
+// Descending cannot: listRange answers with the *first* pair at or after a
+// lower bound and has no reverse form, so the last pair in a range is only
+// findable by walking to it. A descending scan therefore costs a round trip
+// per pair in the whole range even when limit is 1, and the cheap
+// alternative -- a `descending` field on listRange's request, letting the
+// store's own ORDER BY do it -- is deliberately not taken here: it would
+// commit every daemon and the hand-mirrored Rust client (web-app) to a new
+// wire field permanently, and an older daemon receiving it would silently
+// answer ascending, which is worse than being slow. Revisit that only if a
+// descending scan over a genuinely large range ever becomes a real
+// workload; the ranges this serves today are bounded by construction.
+func (s *Session) ScanRange(ctx context.Context, start, end []byte, limit, skip int, order string) ([]RangePair, error) {
+	if limit < 0 {
+		return nil, fmt.Errorf("shmclient: scan range: invalid limit %d: must be 0 (unlimited) or positive", limit)
+	}
+	if skip < 0 {
+		return nil, fmt.Errorf("shmclient: scan range: invalid skip %d: must be 0 or positive", skip)
+	}
+	var descending bool
+	switch order {
+	case "", RangeOrderAsc:
+	case RangeOrderDesc:
+		descending = true
+	default:
+		return nil, fmt.Errorf("shmclient: scan range: invalid order %q: must be %q or %q", order, RangeOrderAsc, RangeOrderDesc)
+	}
+
+	// Only meaningful ascending -- see the doc comment. 0 means "read the
+	// whole range", which unlimited and descending both need.
+	var enough int
+	if !descending && limit > 0 {
+		enough = skip + limit
+	}
+
+	var pairs []RangePair
+	lo := start
+	for {
+		key, value, ok, err := s.ListRange(ctx, lo, end)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			break
+		}
+		pairs = append(pairs, RangePair{Key: key, Value: value})
+		if enough > 0 && len(pairs) >= enough {
+			break
+		}
+		// Just past the key just returned, so the next call answers with the
+		// following one -- a 0x00 suffix is the smallest key greater than
+		// this one under the byte-wise comparison the store scans with.
+		lo = append(append([]byte{}, key...), 0x00)
+	}
+
+	if descending {
+		for i, j := 0, len(pairs)-1; i < j; i, j = i+1, j-1 {
+			pairs[i], pairs[j] = pairs[j], pairs[i]
+		}
+	}
+	if skip >= len(pairs) {
+		return nil, nil
+	}
+	pairs = pairs[skip:]
+	if limit > 0 && len(pairs) > limit {
+		pairs = pairs[:limit]
+	}
+	return pairs, nil
+}
+
 // ListRange is the one-shot convenience wrapper around
 // Open+Session.ListRange.
 func ListRange(ctx context.Context, peerID string, start, end []byte) (key, value []byte, ok bool, err error) {

@@ -234,8 +234,12 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     // KV
     add("KV", "Submit", listOf("key", "value")) { a -> Kvmobile.submit(a[0], a[1]); ok() }
     add("KV", "Get", listOf("key")) { a -> Kvmobile.get(a[0]) }
-    add("KV", "RangeScan", listOf("start", "end", "limit (0=unlimited)")) { a ->
-        Kvmobile.rangeScan(a[0], a[1], a[2].toLongOrThrow("limit"))
+    // skip/order make this a real paging call rather than "everything from
+    // the start of the range": skip drops that many pairs from the front of
+    // the *requested* order, so desc+skip counts back from the end of the
+    // range. An empty order means asc.
+    add("KV", "RangeScan", listOf("start", "end", "limit (0=unlimited)", "skip", "order (asc|desc)")) { a ->
+        Kvmobile.rangeScan(a[0], a[1], a[2].toLongOrThrow("limit"), a[3].toLongOrThrow("skip"), a[4])
     }
     // CompareAndSwap/CompareAndSwapAbsent are the safe read-modify-write
     // primitive Get+Submit alone can't express -- a false result means

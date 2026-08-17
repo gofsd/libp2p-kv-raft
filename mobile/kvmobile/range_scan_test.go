@@ -6,9 +6,12 @@ import (
 )
 
 // TestRangeScan drives RangeScan against a real (in-process) leader: sets
-// a handful of keys sharing a prefix plus one deliberately outside it,
-// then checks a scan over just that prefix's range returns exactly the
-// matching keys in ascending order, and that limit caps the result count.
+// a handful of keys sharing a prefix plus one deliberately outside it, then
+// checks a scan over just that prefix's range returns exactly the matching
+// keys in ascending order, and that limit/skip/order page over them the way
+// their doc comments claim -- including the composition that is easiest to
+// get wrong, skip counted from the *requested* order rather than always
+// from the start of the range.
 func TestRangeScan(t *testing.T) {
 	leaderAddr := spawnTestLeader(t, t.TempDir())
 
@@ -34,7 +37,7 @@ func TestRangeScan(t *testing.T) {
 		}
 	}
 
-	resultsJSON, err := RangeScan("scan:", "scan:\xff", 0)
+	resultsJSON, err := RangeScan("scan:", "scan:\xff", 0, 0, "")
 	if err != nil {
 		t.Fatalf("RangeScan: %v", err)
 	}
@@ -56,19 +59,56 @@ func TestRangeScan(t *testing.T) {
 		}
 	}
 
-	limitedJSON, err := RangeScan("scan:", "scan:\xff", 2)
-	if err != nil {
-		t.Fatalf("RangeScan (limit=2): %v", err)
+	// Every paging combination worth naming, against the same three keys.
+	scan := func(t *testing.T, limit, skip int, order string) []KV {
+		t.Helper()
+		raw, err := RangeScan("scan:", "scan:\xff", limit, skip, order)
+		if err != nil {
+			t.Fatalf("RangeScan(limit=%d, skip=%d, order=%q): %v", limit, skip, order, err)
+		}
+		var got []KV
+		if err := json.Unmarshal([]byte(raw), &got); err != nil {
+			t.Fatalf("unmarshal %s: %v", raw, err)
+		}
+		return got
 	}
-	var limited []KV
-	if err := json.Unmarshal([]byte(limitedJSON), &limited); err != nil {
-		t.Fatalf("unmarshal RangeScan (limit=2) result %s: %v", limitedJSON, err)
+	a, b, c := want[0], want[1], want[2]
+	for _, tc := range []struct {
+		name  string
+		limit int
+		skip  int
+		order string
+		want  []KV
+	}{
+		{"limit caps from the front", 2, 0, "", []KV{a, b}},
+		{"skip drops from the front", 0, 1, "", []KV{b, c}},
+		{"skip then limit", 1, 1, "", []KV{b}},
+		{"desc reverses", 0, 0, "desc", []KV{c, b, a}},
+		{"desc limit takes the last keys", 2, 0, "desc", []KV{c, b}},
+		{"desc skip counts from the end", 1, 1, "desc", []KV{b}},
+		{"skip past the end is empty, not an error", 0, 99, "", []KV{}},
+		{"explicit asc matches the default", 0, 0, "asc", []KV{a, b, c}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := scan(t, tc.limit, tc.skip, tc.order)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %d results, want %d: %+v", len(got), len(tc.want), got)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Fatalf("result[%d] = %+v, want %+v (full: %+v)", i, got[i], tc.want[i], got)
+				}
+			}
+		})
 	}
-	if len(limited) != 2 {
-		t.Fatalf("RangeScan (limit=2) returned %d results, want 2: %+v", len(limited), limited)
+
+	// A bad order must be refused rather than silently treated as ascending,
+	// which is the failure mode a caller would never notice.
+	if _, err := RangeScan("scan:", "scan:\xff", 0, 0, "sideways"); err == nil {
+		t.Fatal("RangeScan with an unknown order: want error, got none")
 	}
-	if limited[0] != want[0] || limited[1] != want[1] {
-		t.Fatalf("RangeScan (limit=2) = %+v, want first 2 of %+v", limited, want)
+	if _, err := RangeScan("scan:", "scan:\xff", 0, -1, ""); err == nil {
+		t.Fatal("RangeScan with a negative skip: want error, got none")
 	}
 }
 
@@ -76,7 +116,7 @@ func TestRangeScan(t *testing.T) {
 // -- it must refuse outright, same as Submit/Get do (currentSession's
 // guard), rather than hang or panic.
 func TestRangeScanBeforeStartRefuses(t *testing.T) {
-	if _, err := RangeScan("a", "z", 0); err == nil {
+	if _, err := RangeScan("a", "z", 0, 0, ""); err == nil {
 		t.Fatal("RangeScan before Start: want error, got none")
 	}
 }

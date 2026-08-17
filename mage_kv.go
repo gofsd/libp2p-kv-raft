@@ -60,6 +60,20 @@ func CasAbsent(key, value string) error {
 	return kvctl.CompareAndSwap(key, "", value, true)
 }
 
+// optionalCount parses one of RangeScan's own optional numeric arguments,
+// where "" means "not given" (0) rather than being an error -- see
+// RangeScan's usage line for why they are passed as explicit ""s.
+func optionalCount(name, raw string) (int, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("rangescan: invalid %s %q: %w", name, raw, err)
+	}
+	return v, nil
+}
+
 // RangeScan lists every key/value pair between start and end (both
 // inclusive, lexicographic byte order over the raw key bytes) on the
 // current node's local state, one JSON object per line -- a generic
@@ -67,19 +81,25 @@ func CasAbsent(key, value string) error {
 // instead of one at a time, covering any key in the store (ordinary data
 // as well as this project's own reserved namespaces -- see
 // kvctl.RangeScan's doc comment for why that's not a new privilege for a
-// local caller). limit is a count or "" (unlimited).
+// local caller).
 //
-// Usage: mage rangescan <start> <end> [limit|""]
-func RangeScan(start, end, limit string) error {
-	n := 0
-	if limit != "" {
-		v, err := strconv.Atoi(limit)
-		if err != nil {
-			return fmt.Errorf("rangescan: invalid limit %q: %w", limit, err)
-		}
-		n = v
+// limit is a count or "" (unlimited); skip is a count or "" (none), dropped
+// from the front of the requested order; order is "asc"/"" or "desc". Mage
+// has no notion of an optional argument, so the trailing three are passed
+// as explicit ""s when not wanted -- the same convention this repo's other
+// optional-argument targets already use.
+//
+// Usage: mage rangescan <start> <end> [limit|""] [skip|""] [order|""]
+func RangeScan(start, end, limit, skip, order string) error {
+	n, err := optionalCount("limit", limit)
+	if err != nil {
+		return err
 	}
-	results, err := kvctl.RangeScan(start, end, n)
+	off, err := optionalCount("skip", skip)
+	if err != nil {
+		return err
+	}
+	results, err := kvctl.RangeScan(start, end, n, off, order)
 	if err != nil {
 		return err
 	}

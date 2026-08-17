@@ -46,7 +46,7 @@ mage listclusters                                # show every raft cluster known
 mage listnodes <peerID>                          # query a running node for its cluster's full live peer id list
 mage set <key> <value>
 mage get <key>
-mage rangescan <start> <end> [limit|""]           # list every key/value pair in [start, end] on the current node
+mage rangescan <start> <end> [limit|""] [skip|""] [order|""]   # page over the key/value pairs in [start, end] on the current node
 mage txn "<op> [op...]"                           # atomic multi-key write: k=v, del:k, if:k=v, ifabsent:k
 mage cas <key> <expected> <value>                 # write only if key still holds expected
 mage casabsent <key> <value>                      # write only if key doesn't exist yet
@@ -82,10 +82,12 @@ contrast, needs `peerID` to actually be running: it queries that node's own loca
 `shmevent.KindClusterMember` records for its raft cluster's current live membership (every voter/
 learner/leader, including peers this machine never created and so has no registry entry for at all).
 
-`rangescan <start> <end> [limit]` is the generic counterpart to `set`/`get`: it lists every key/value
-pair in `[start, end]` (both inclusive, lexicographic byte order over the raw key bytes) on the
-current node, not just one key at a time -- covering ordinary data as well as this project's own
-reserved namespaces (`shmevent.SystemKeyPrefix`, `pkg/logrecord`'s prefix), since a local caller
+`rangescan <start> <end> [limit] [skip] [order]` is the generic counterpart to `set`/`get`: it lists
+every key/value pair in `[start, end]` (both inclusive, lexicographic byte order over the raw key
+bytes) on the current node, not just one key at a time -- `order` being `asc` (default) or `desc`,
+`skip` dropping that many pairs from the front of *that* order (so `desc` + `skip` counts back from
+the end of the range) and `limit` capping what comes back -- covering ordinary data as well as this
+project's own reserved namespaces (`shmevent.SystemKeyPrefix`, `pkg/logrecord`'s prefix), since a local caller
 already has unrestricted read access to its own node's entire store the same way `set`/`get` do
 (see `pkg/shmevent`'s doc comment on the shmring same-machine trust boundary) -- this isn't a new
 privilege, just a convenient way to exercise one that already existed via a raw `sendevent` call.

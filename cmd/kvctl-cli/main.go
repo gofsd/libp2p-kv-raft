@@ -631,14 +631,16 @@ func cmdGet(args []string) {
 func cmdRangeScan(args []string) {
 	fs := flag.NewFlagSet("rangescan", flag.ExitOnError)
 	limit := fs.Int("limit", 0, "maximum results to return (0 = unlimited)")
+	skip := fs.Int("skip", 0, "results to drop from the front of the requested order")
+	order := fs.String("order", kvctl.RangeOrderAsc, "key order: asc or desc")
 	fs.Parse(args)
 
 	if fs.NArg() != 2 {
-		fmt.Fprintln(os.Stderr, "usage: kvctl-cli rangescan <start> <end> [-limit N]")
+		fmt.Fprintln(os.Stderr, "usage: kvctl-cli rangescan <start> <end> [-limit N] [-skip N] [-order asc|desc]")
 		os.Exit(2)
 	}
 
-	results, err := kvctl.RangeScan(fs.Arg(0), fs.Arg(1), *limit)
+	results, err := kvctl.RangeScan(fs.Arg(0), fs.Arg(1), *limit, *skip, *order)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "rangescan: %v\n", err)
 		os.Exit(1)

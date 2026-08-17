@@ -152,8 +152,8 @@ func TestAddSetGetAcrossNodes(t *testing.T) {
 // (spawned) node: writes a handful of keys, some sharing a prefix and one
 // deliberately outside it, then checks a scan over just that prefix's
 // range returns exactly the matching keys in ascending byte order, that
-// limit caps the result count, and that RangeScanFrom targets an explicit
-// peer id without disturbing "current".
+// limit/skip/order page over them as documented, and that RangeScanFrom
+// targets an explicit peer id without disturbing "current".
 func TestRangeScan(t *testing.T) {
 	root := repoRoot(t)
 	home := t.TempDir()
@@ -190,7 +190,7 @@ func TestRangeScan(t *testing.T) {
 		}
 	}
 
-	results, err := kvctl.RangeScan("scan:", "scan:\xff", 0)
+	results, err := kvctl.RangeScan("scan:", "scan:\xff", 0, 0, "")
 	if err != nil {
 		t.Fatalf("RangeScan: %v", err)
 	}
@@ -208,15 +208,46 @@ func TestRangeScan(t *testing.T) {
 		}
 	}
 
-	limited, err := kvctl.RangeScan("scan:", "scan:\xff", 2)
-	if err != nil {
-		t.Fatalf("RangeScan (limit=2): %v", err)
+	// The paging surface: limit from the front, skip from the front of
+	// whichever order was asked for, and the two composed. Descending is
+	// where skip is easy to get wrong -- it must count back from the end of
+	// the range, not forward from its start.
+	for _, tc := range []struct {
+		name  string
+		limit int
+		skip  int
+		order string
+		want  []kvctl.KV
+	}{
+		{"limit", 2, 0, "", want[:2]},
+		{"skip", 0, 1, "", want[1:]},
+		{"skip then limit", 1, 1, "", want[1:2]},
+		{"desc", 0, 0, kvctl.RangeOrderDesc, []kvctl.KV{want[2], want[1], want[0]}},
+		{"desc limit", 2, 0, kvctl.RangeOrderDesc, []kvctl.KV{want[2], want[1]}},
+		{"desc skip", 1, 1, kvctl.RangeOrderDesc, []kvctl.KV{want[1]}},
+		{"skip past the end", 0, 99, "", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := kvctl.RangeScan("scan:", "scan:\xff", tc.limit, tc.skip, tc.order)
+			if err != nil {
+				t.Fatalf("RangeScan(limit=%d, skip=%d, order=%q): %v", tc.limit, tc.skip, tc.order, err)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %d results, want %d: %+v", len(got), len(tc.want), got)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Fatalf("result[%d] = %+v, want %+v (full: %+v)", i, got[i], tc.want[i], got)
+				}
+			}
+		})
 	}
-	if len(limited) != 2 {
-		t.Fatalf("RangeScan (limit=2) returned %d results, want 2: %+v", len(limited), limited)
-	}
-	if limited[0] != want[0] || limited[1] != want[1] {
-		t.Fatalf("RangeScan (limit=2) = %+v, want first 2 of %+v", limited, want)
+
+	// An unknown order must be refused, not silently treated as ascending --
+	// a caller who typed "descending" would otherwise get plausible,
+	// wrongly-ordered results and no hint anything went wrong.
+	if _, err := kvctl.RangeScan("scan:", "scan:\xff", 0, 0, "descending"); err == nil {
+		t.Fatal("RangeScan with an unknown order: want error, got none")
 	}
 
 	// RangeScanFrom targets leaderID explicitly, whether or not it's
@@ -228,7 +259,7 @@ func TestRangeScan(t *testing.T) {
 	if err := kvctl.Use(otherID); err != nil {
 		t.Fatalf("Use(other): %v", err)
 	}
-	fromLeader, err := kvctl.RangeScanFrom(leaderID, "scan:", "scan:\xff", 0)
+	fromLeader, err := kvctl.RangeScanFrom(leaderID, "scan:", "scan:\xff", 0, 0, "")
 	if err != nil {
 		t.Fatalf("RangeScanFrom(leader): %v", err)
 	}

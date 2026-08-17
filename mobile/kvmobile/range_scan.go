@@ -13,16 +13,21 @@ type KV struct {
 	Value string `json:"value"`
 }
 
-// RangeScan returns every key/value pair in [start, end] (both inclusive,
+// RangeScan returns the key/value pairs in [start, end] (both inclusive,
 // lexicographic byte order over the raw key bytes) on this device's own
-// locally replicated state, as a JSON array (`"[]"` if none), up to limit
-// results (0 = unlimited) -- the kvmobile counterpart to desktop's
-// kvctl.RangeScan, a generic complement to Submit/Get for inspecting a
-// whole range of keys at once. Like Submit/Get it isn't restricted to any
-// particular namespace -- see kvctl.RangeScan's doc comment for why that's
-// not a new privilege: this device's own daemon is no more (and no less)
-// trusted than it already is for Submit/Get.
-func RangeScan(start, end string, limit int) (string, error) {
+// locally replicated state, as a JSON array (`"[]"` if none) -- the
+// kvmobile counterpart to desktop's kvctl.RangeScan, a generic complement
+// to Submit/Get for inspecting a whole range of keys at once. Like
+// Submit/Get it isn't restricted to any particular namespace -- see
+// kvctl.RangeScan's doc comment for why that's not a new privilege: this
+// device's own daemon is no more (and no less) trusted than it already is
+// for Submit/Get.
+//
+// order is "asc" (the default, and what an empty string means) or "desc";
+// skip drops that many pairs from the front of that order; limit caps how
+// many come back (0 = unlimited). See shmclient.Session.ScanRange for how
+// the three compose and what a descending scan costs.
+func RangeScan(start, end string, limit, skip int, order string) (string, error) {
 	sess, err := currentSession()
 	if err != nil {
 		return "", err
@@ -31,19 +36,13 @@ func RangeScan(start, end string, limit int) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
 
-	lo := []byte(start)
-	hi := []byte(end)
+	pairs, err := sess.ScanRange(ctx, []byte(start), []byte(end), limit, skip, order)
+	if err != nil {
+		return "", fmt.Errorf("kvmobile: range scan: %w", err)
+	}
 	results := []KV{}
-	for limit <= 0 || len(results) < limit {
-		key, value, ok, err := sess.ListRange(ctx, lo, hi)
-		if err != nil {
-			return "", fmt.Errorf("kvmobile: range scan: %w", err)
-		}
-		if !ok {
-			break
-		}
-		results = append(results, KV{Key: string(key), Value: string(value)})
-		lo = append(append([]byte{}, key...), 0x00)
+	for _, p := range pairs {
+		results = append(results, KV{Key: string(p.Key), Value: string(p.Value)})
 	}
 
 	out, err := json.Marshal(results)

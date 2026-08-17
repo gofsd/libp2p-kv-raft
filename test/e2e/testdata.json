@@ -758,7 +758,9 @@
         "params": [
           "optical-e2e-k",
           "optical-e2e-l",
-          "10"
+          "10",
+          "0",
+          "asc"
         ]
       },
       "expect": {
@@ -828,6 +830,97 @@
       "expect": {
         "kind": "run",
         "result": "succeeded"
+      }
+    },
+    {
+      "case_id": "kv_range_scan_seed",
+      "generate": {
+        "target": "run",
+        "category": "KV",
+        "name": "Txn",
+        "params": [
+          "optical-e2e-rs-1=v1 optical-e2e-rs-2=v2 optical-e2e-rs-3=v3 optical-e2e-rs-4=v4 optical-e2e-rs-5=v5"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      }
+    },
+    {
+      "case_id": "kv_range_scan_skip_limit_asc",
+      "generate": {
+        "target": "run",
+        "category": "KV",
+        "name": "RangeScan",
+        "params": [
+          "optical-e2e-rs-",
+          "optical-e2e-rs-9",
+          "2",
+          "1",
+          "asc"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:[{\"key\":\"optical-e2e-rs-2\",\"value\":\"v2\"},{\"key\":\"optical-e2e-rs-3\",\"value\":\"v3\"}]"
+      }
+    },
+    {
+      "case_id": "kv_range_scan_skip_limit_desc",
+      "generate": {
+        "target": "run",
+        "category": "KV",
+        "name": "RangeScan",
+        "params": [
+          "optical-e2e-rs-",
+          "optical-e2e-rs-9",
+          "2",
+          "1",
+          "desc"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:[{\"key\":\"optical-e2e-rs-4\",\"value\":\"v4\"},{\"key\":\"optical-e2e-rs-3\",\"value\":\"v3\"}]"
+      }
+    },
+    {
+      "case_id": "kv_range_scan_order_desc",
+      "generate": {
+        "target": "run",
+        "category": "KV",
+        "name": "RangeScan",
+        "params": [
+          "optical-e2e-rs-",
+          "optical-e2e-rs-9",
+          "0",
+          "0",
+          "desc"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:[{\"key\":\"optical-e2e-rs-5\",\"value\":\"v5\"},{\"key\":\"optical-e2e-rs-4\",\"value\":\"v4\"},{\"key\":\"optical-e2e-rs-3\",\"value\":\"v3\"},{\"key\":\"optical-e2e-rs-2\",\"value\":\"v2\"},{\"key\":\"optical-e2e-rs-1\",\"value\":\"v1\"}]"
+      }
+    },
+    {
+      "case_id": "kv_range_scan_skip_past_end",
+      "generate": {
+        "target": "run",
+        "category": "KV",
+        "name": "RangeScan",
+        "params": [
+          "optical-e2e-rs-",
+          "optical-e2e-rs-9",
+          "0",
+          "99",
+          "asc"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:[]"
       }
     },
     {
@@ -1691,7 +1784,7 @@
     }
   ],
   "android_optical_scan_result": {
-    "ran_at": "2026-08-17T17:12:05.770573572+03:00",
+    "ran_at": "2026-08-17T19:01:06.058529085+03:00",
     "status": 0,
     "cases": [
       {
@@ -1832,6 +1925,26 @@
       },
       {
         "case_id": "kv_txn",
+        "pass": true
+      },
+      {
+        "case_id": "kv_range_scan_seed",
+        "pass": true
+      },
+      {
+        "case_id": "kv_range_scan_skip_limit_asc",
+        "pass": true
+      },
+      {
+        "case_id": "kv_range_scan_skip_limit_desc",
+        "pass": true
+      },
+      {
+        "case_id": "kv_range_scan_order_desc",
+        "pass": true
+      },
+      {
+        "case_id": "kv_range_scan_skip_past_end",
         "pass": true
       },
       {
@@ -2056,6 +2169,6 @@
       }
     ],
     "attempts": 1,
-    "stalls": 2
+    "stalls": 1
   }
 }
