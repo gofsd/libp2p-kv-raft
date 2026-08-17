@@ -38,6 +38,9 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: "1.25.x"
+          # check-latest so this resolves to the newest 1.25 patch rather than
+          # whatever the runner image cached -- see ci.yml's go job.
+          check-latest: true
 
       - name: install mingw-w64 (cgo cross-compiler for windows/amd64 --
           see magefile.go's BuildWindows doc comment)
