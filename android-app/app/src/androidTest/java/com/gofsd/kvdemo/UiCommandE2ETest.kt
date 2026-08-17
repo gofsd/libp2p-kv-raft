@@ -246,6 +246,16 @@ class UiCommandE2ETest {
         const val CIRCUIT_ADDR_TIMEOUT_MS = 90_000L
         const val CIRCUIT_ADDR_POLL_MS = 2_000L
 
+        /**
+         * How many times [awaitSession] re-attempts a join before starting the batch anyway, and
+         * how long it waits between them. Sized against what it is retrying: a relay that refused
+         * the circuit on resource limits, which frees up on the order of minutes, not seconds --
+         * four attempts 20s apart covers a full minute of that without meaningfully delaying a
+         * device whose session (the normal case) is already up on the first check.
+         */
+        const val SESSION_ATTEMPTS = 4
+        const val SESSION_RETRY_DELAY_MS = 20_000L
+
         // Do NOT reach for MainScannerManager.setZoom here to make a code bigger in frame, however
         // reasonable it looks: on this rig's scanning device it silently ends decoding for the
         // rest of the process. Measured across five two-device runs, every successful decode fell
@@ -869,6 +879,7 @@ class UiCommandE2ETest {
 
         requestRelay(opticalTag)
         waitForScreen("screen_main")
+        awaitSession(context, opticalTag)
         val signalChannelID = openCaseSignalChannel(opticalTag)
         caseSignalChannelID = signalChannelID
 
@@ -917,6 +928,39 @@ class UiCommandE2ETest {
      * whoever physically aims this device to actually judge framing/focus by eye instead of a
      * bubble too small to usefully inspect.
      */
+    /**
+     * Makes sure this device actually has a live session before the batch starts, retrying
+     * `Kvmobile.start` if AppRoot's own automatic one did not get there.
+     *
+     * Without this a whole run can be lost to a single transient join failure. Measured live: the
+     * relay refused the circuit to device A with `RESOURCE_LIMIT_EXCEEDED` after several runs in
+     * quick succession, so this device came up with no session at all, and case 1 -- whose
+     * expectation is `contains:{{selfPeerID}}` -- failed on a peer id that could not be resolved,
+     * taking the other 89 cases with it. The relay's own limits free up on their own within
+     * minutes, which is exactly the kind of failure a retry is for.
+     *
+     * `Kvmobile.start` is the right call to repeat: it returns the existing peer id immediately if
+     * a session is already up (see startOnce's `started` short-circuit), and its own SELFHEAL path
+     * re-requests relay standing on a failed join, so a retry here is both harmless and more than
+     * a plain re-attempt. Non-fatal on exhaustion -- the cases themselves report what a missing
+     * session breaks, and a "nav_group" case needs no session at all.
+     */
+    private fun awaitSession(context: android.content.Context, opticalTag: String) {
+        repeat(SESSION_ATTEMPTS) { attempt ->
+            val peerID = runCatching { Kvmobile.peerID() }.getOrDefault("")
+            if (peerID.isNotEmpty()) {
+                if (attempt > 0) Log.i(TAG, "$opticalTag session up after ${attempt + 1} attempt(s): $peerID")
+                return
+            }
+            Log.w(TAG, "$opticalTag no session yet on attempt ${attempt + 1}/$SESSION_ATTEMPTS -- retrying Kvmobile.start")
+            val started = runCatching { Kvmobile.start(context.filesDir.absolutePath) }
+            Log.i(TAG, "$opticalTag Kvmobile.start -> ${started.getOrNull()} (error=${started.exceptionOrNull()?.message})")
+            if (started.getOrNull()?.isNotEmpty() == true) return
+            Thread.sleep(SESSION_RETRY_DELAY_MS)
+        }
+        Log.w(TAG, "$opticalTag still has no session after $SESSION_ATTEMPTS attempt(s) -- continuing anyway, the cases will report what that breaks")
+    }
+
     private fun requestRelay(opticalTag: String) {
         val relayResult = runCatching { Kvmobile.requestRelayAccess("optical e2e awaitAndVerifyScan") }
         Log.i(TAG, "$opticalTag requestRelayAccess -> ${relayResult.getOrNull()} (error=${relayResult.exceptionOrNull()?.message})")
@@ -1158,16 +1202,21 @@ class UiCommandE2ETest {
         // Reflection again, for the same reason the dedup clear above uses it: only the private
         // MutableSharedFlow carries subscriptionCount, and the public SharedFlow this object
         // exposes deliberately doesn't.
+        // Reflection again, for the same reason the dedup clear above uses it: only the private
+        // MutableSharedFlow carries subscriptionCount, and the public SharedFlow this object
+        // exposes deliberately doesn't. Read on every re-arm, not just a verbose one, because it
+        // decides whether re-arming can possibly help at all (see [recoverDeadScanCollector]).
+        val collectors = runCatching {
+            val field = ScannerCoordinator::class.java.getDeclaredField("_scans")
+            field.isAccessible = true
+            (field.get(ScannerCoordinator) as MutableSharedFlow<*>).subscriptionCount.value
+        }.getOrNull()
+        Log.i(TAG, "$opticalTag scan flow has ${collectors ?: "?"} collector(s) after re-arm")
         if (verbose) {
-            val collectors = runCatching {
-                val field = ScannerCoordinator::class.java.getDeclaredField("_scans")
-                field.isAccessible = true
-                (field.get(ScannerCoordinator) as MutableSharedFlow<*>).subscriptionCount.value
-            }.getOrNull()
-            Log.i(TAG, "$opticalTag scan flow has ${collectors ?: "?"} collector(s) after re-arm")
             runCatching { composeTestRule.onRoot().printToLog(TAG) }
                 .onFailure { Log.w(TAG, "$opticalTag could not dump the semantics tree: $it") }
         }
+        recoverDeadScanCollector(opticalTag, collectors)
 
         // Clearing the dedup only helps if the frames themselves are usable. By the time this runs,
         // device A has been holding one code on screen for a full attempt's worth of seconds and
@@ -1178,6 +1227,36 @@ class UiCommandE2ETest {
         // attempt budget of tens of seconds.
         MainScannerManager.requestRebind()
         Thread.sleep(REBIND_SETTLE_MS)
+    }
+
+    /**
+     * Recreates the Activity when AppRoot's own scan collector has gone away, which is the one
+     * state no amount of re-arming can recover from.
+     *
+     * AppRoot dispatches every scan from a single `ScannerCoordinator.scans.collect` in a
+     * `LaunchedEffect(Unit)`. If that coroutine ends, decoded frames still reach
+     * [ScannerCoordinator.onScanned] and are still emitted, but nothing is listening: no dialog,
+     * no navigation, no log line, for the rest of the process's life. Confirmed live -- a run died
+     * at case 19 of 90 with this check reading 0 collectors, seventeen looks at a code device A
+     * kept re-showing, and not one scan dispatched; the Activity was alive and drawing throughout,
+     * so nothing above this could tell the two apart, which is exactly why the count is logged.
+     *
+     * Recreating the Activity rebuilds the composition -- and with it the collector, the camera
+     * bind and the scanner state -- while leaving the *process* alone, so this device keeps the
+     * Kvmobile session and cluster membership it spent its whole startup establishing. That is the
+     * distinction that makes this worth doing rather than failing the run: the session is expensive
+     * and still healthy, and only the UI on top of it is broken.
+     */
+    private fun recoverDeadScanCollector(opticalTag: String, collectors: Int?) {
+        if (collectors != 0) return
+        Log.w(TAG, "$opticalTag AppRoot's scan collector is gone, so no scan can reach the app at all -- recreating the Activity to rebuild the composition (the process, and this device's session with it, is left alone)")
+        runCatching {
+            composeTestRule.activityRule.scenario.recreate()
+            composeTestRule.waitForIdle()
+            waitForScreen("screen_main")
+            composeTestRule.runOnUiThread { ScannerCoordinator.expanded = true }
+            Thread.sleep(REBIND_SETTLE_MS)
+        }.onFailure { Log.w(TAG, "$opticalTag could not recreate the Activity: $it") }
     }
 
     /**
