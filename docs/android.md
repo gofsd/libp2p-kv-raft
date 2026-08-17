@@ -487,12 +487,14 @@ design rationale behind any entry — this table is deliberately just signatures
 
 | Kotlin call | Returns | Purpose |
 |---|---|---|
-| `Kvmobile.requestPermit(kind, targetPeerID, metadata)` | — | `kind` is `"peer"` or `"bootstrap"`. |
+| `Kvmobile.requestPermit(kind, targetPeerID, metadata)` | — | `kind` is `"bootstrap"` (see `permitKindFromName`); `"cluster-join"` is confirm/revoke-side. |
 | `Kvmobile.confirmPermit(kind, targetPeerID)` | — | |
 | `Kvmobile.revokePermit(kind, targetPeerID)` | — | |
-| `Kvmobile.requestLogPermit(logKind, targetPeerID, metadata)` | — | Same idea, scoped to `pkg/logrecord` access. |
-| `Kvmobile.confirmLogPermit(logKind, targetPeerID)` | — | |
-| `Kvmobile.revokeLogPermit(logKind, targetPeerID)` | — | |
+
+There is no log-permit counterpart: `requestLogPermit`/`confirmLogPermit`/
+`revokeLogPermit` and the `"peer"` kind were removed from the wire protocol
+outright, and `pkg/logrecord` access now runs through the Group/Command ACL
+catalog instead (see "Group / Command ACL catalog" below).
 
 ### Execute — raft-bypassing peer-to-peer notification (`kvmobile.go`)
 

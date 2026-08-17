@@ -187,7 +187,7 @@ runs the identical `golangci-lint run ./...` on every push/PR.
 
 Every "user"-to-"raft node" hop in this project — local IPC and the network hop alike — speaks the
 exact same wire struct, defined once in `api/shmevent.capnp` and code-generated into both
-`pkg/shmevent` (Go) and `web-app/src/shmevent.rs` (Rust). One `event` byte, `sourceId`/
+`pkg/shmevent` (Go) and `web-app/src/shmevent/` (Rust). One `event` byte, `sourceId`/
 `destinationId` relational references, a raw `value`, a CRC32, an Ed25519 `signature`, and a
 correlation `id`. A `Set` decomposes into a linked `SetKey`+`SetField` pair, a `Get` is a one-shot
 `GetField`, and `GetPublicKey`/`GetPrivateKey` let a caller with no key yet bootstrap into the same
@@ -198,7 +198,9 @@ or transport code here — see `api/shmevent.capnp`'s doc comment for the full d
 raft node in the mesh — including long-lived bootstrap nodes and Android devices nobody
 force-upgrades — has to agree on what an `Event`/`kvfsm.OpType` byte means, so each one is a
 permanent, hand-duplicated commitment across `pkg/shmevent` (the Go codec), `pkg/daemon`'s dispatch
-switch, `web-app/src/shmevent.rs` (a hand-ported, not generated, Rust mirror), and the
+switch, `web-app/src/shmevent/mod.rs` (the Rust mirror -- generated from the same schema, but its
+union variants and dispatch are still hand-written per event, and `api/shmevent_wire_fixture.json`
+is what catches a mistranscribed one), and the
 `pkg/kvctl`/`mobile/kvmobile` wrapper layers. A new *task* — some operation with typed inputs, ACL,
 durable request/response logging, and a low-latency "it's ready" poke — should instead be
 registered as a `Command` through `pkg/kvctl/dispatch.go`'s `SubmitCommand`/Group-Command catalog

@@ -12,20 +12,19 @@
 //! [`RemoteSession`] only wraps the calls that genuinely need Worker-side
 //! state to build (`log_append`/`append_record`'s author peer id,
 //! `execute`'s two-`EventSetKey`-registrations-then-notify sequence) --
-//! `request_permit`/`request_log_permit`/`poll_execute` have no such need
+//! `request_permit`/`poll_execute` have no such need
 //! (their wire payload is fully determined by the caller's own arguments),
 //! so `MainHandle` on the main-thread side builds those directly and
 //! sends them through `app.rs::handle_request`'s generic proxy arm rather
 //! than through a redundant Worker-side wrapper here.
 //!
-//! `EventPermitConfirm`/`EventPermitRevoke`/`EventLogPermitConfirm`/
-//! `EventLogPermitRevoke` and all eight Group/Command/GroupCommand/
-//! PeerGroup Put/Delete events are refused by `pkg/daemon.handleShmEvent`
+//! `permitConfirm`/`permitRevoke`, the two join-invite and two exec-invite
+//! lifecycle variants, and all ten Group/Command/Station/GroupCommand/
+//! PeerGroup Put/Delete variants are refused by `pkg/daemon.handleShmEvent`
 //! for any remote caller that isn't a current raft voter -- web-app can
-//! never satisfy that, so no wrapper is provided for any of the twelve
-//! (see `pkg/daemon/daemon.go`'s dispatch switch, each of those twelve
-//! cases doing an inline `isVoter(rf, caller.remotePeer)` check before
-//! touching the store).
+//! never satisfy that, so no wrapper is provided for any of the sixteen
+//! (see `pkg/daemon/daemon.go`'s dispatch switch, each of those sixteen
+//! cases calling `requireVoter(n, caller)` before touching the store).
 #![cfg(target_arch = "wasm32")]
 
 use std::cell::RefCell;
@@ -41,7 +40,7 @@ use crate::app::{new_id, reject_if_error, WorkerState};
 use crate::learner::Learner;
 use crate::logrecord;
 use crate::p2p::{self, Error};
-use crate::shmevent::{self, Msg};
+use crate::shmevent::{self, Body, Msg};
 
 /// Bounds Group/Command ids and every `pkg/logrecord` unit_id this crate
 /// writes -- [`kind_prefix_bounds`]'s fixed-width upper bound is built
@@ -170,16 +169,10 @@ impl RemoteSession {
         Ok(resp)
     }
 
-    /// [`RemoteSession::call_msg`] for the common case: a fresh
-    /// correlation id, no `SourceID`/`DestinationID`.
-    pub async fn call(&mut self, event_type: u8, value: Vec<u8>) -> Result<Msg, Error> {
-        self.call_msg(Msg {
-            event_type,
-            value,
-            id: new_id(),
-            ..Default::default()
-        })
-        .await
+    /// [`RemoteSession::call_msg`] for the common case: `body` under a
+    /// fresh correlation id.
+    pub async fn call(&mut self, body: Body) -> Result<Msg, Error> {
+        self.call_msg(Msg::with_id(new_id(), body)).await
     }
 
     /// Writes one `pkg/logrecord` record. `key` must already carry
@@ -188,44 +181,48 @@ impl RemoteSession {
     /// server-side (`pkg/daemon` rejects any other key here). Not
     /// voter-gated -- see `pkg/shmevent.EventLogAppend`'s doc comment.
     pub async fn log_append(&mut self, key: &[u8], value: &[u8]) -> Result<(), Error> {
-        let payload = shmevent::encode_set_payload(key, value).map_err(se)?;
-        self.call(shmevent::EVENT_LOG_APPEND, payload).await?;
+        self.call(Body::LogAppend {
+            key: Some(key.to_vec()),
+            value: Some(value.to_vec()),
+        })
+        .await?;
         Ok(())
     }
 
     /// Direct, unreplicated peer-to-peer notification to `dest_peer_id` --
-    /// see `pkg/shmevent.EventExecute`'s doc comment. Registers this tab's
-    /// own peer id and `dest_peer_id` under fresh correlation ids first
-    /// (`EVENT_SET_KEY` x2), mirroring `pkg/shmclient.Session.Execute`'s
-    /// same two-registration-then-notify sequence.
+    /// see `api/shmevent.capnp`'s `execute` doc comment. Registers this
+    /// tab's own peer id and `dest_peer_id` under fresh correlation ids
+    /// first (`setKey` x2), mirroring `pkg/shmclient.Session.Execute`'s same
+    /// two-registration-then-notify sequence: the `execute` variant's
+    /// `sourceId`/`destinationId` are references to those registrations,
+    /// which is the local-IPC shape of that variant (the network leg names
+    /// `senderPeerId` directly instead -- see its doc comment).
     pub async fn execute(&mut self, dest_peer_id: &str, payload: &[u8]) -> Result<(), Error> {
         let own_id = self.local_peer_id().to_string();
 
         let source_id = new_id();
-        self.call_msg(Msg {
-            event_type: shmevent::EVENT_SET_KEY,
-            value: own_id.into_bytes(),
-            id: source_id,
-            ..Default::default()
-        })
+        self.call_msg(Msg::with_id(
+            source_id,
+            Body::SetKey {
+                value: Some(own_id.into_bytes()),
+            },
+        ))
         .await?;
 
         let destination_id = new_id();
-        self.call_msg(Msg {
-            event_type: shmevent::EVENT_SET_KEY,
-            value: dest_peer_id.as_bytes().to_vec(),
-            id: destination_id,
-            ..Default::default()
-        })
+        self.call_msg(Msg::with_id(
+            destination_id,
+            Body::SetKey {
+                value: Some(dest_peer_id.as_bytes().to_vec()),
+            },
+        ))
         .await?;
 
-        self.call_msg(Msg {
-            event_type: shmevent::EVENT_EXECUTE,
+        self.call(Body::Execute {
             source_id,
             destination_id,
-            value: payload.to_vec(),
-            id: new_id(),
-            ..Default::default()
+            sender_peer_id: String::new(),
+            value: Some(payload.to_vec()),
         })
         .await?;
         Ok(())

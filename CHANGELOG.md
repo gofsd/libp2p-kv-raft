@@ -71,6 +71,36 @@ tracks *changes*, not a full feature description).
   described before it joins and keep its description after it leaves.
 
 ### Changed
+- **`web-app/src/shmevent/` ported to `api/shmevent.capnp`'s union**, the
+  last client still speaking the old flat
+  `Event{event, sourceId, destinationId, value, crc32, signature, id}`
+  struct the Go daemon, `pkg/kvctl` and `mobile/kvmobile` all left behind
+  in the same change -- until now a browser client built from this crate
+  could not talk to the mesh at all, which is what the "KNOWN BROKEN"
+  banners in `README.md`/`web-app/README.md` recorded. `mod.rs` is now a
+  real per-variant `Body` enum over the generated schema, computing CRC32
+  and Ed25519 signatures over the *canonical* capnp encoding the way
+  `pkg/shmevent/sign.go` does, and distinguishing a null pointer from a
+  present-but-empty one (`DataField = Option<Vec<u8>>`) because the two
+  produce different bytes and therefore different signatures. Permit and
+  catalog writes are ordinary union variants now, so the hand-packed
+  `logpermit.rs` is gone and `catalog_keys.rs`/`system.rs` keep only the
+  *store* key layout and stored-record payload framing. Confirmed against
+  the real mesh, not just in tests: `test/e2e/testdata.json` version 6 adds
+  a web node whose six rows (`bootstrap_or_join_cluster`,
+  `get_public_key`, `set_key`, `set_field`, `get_field_by_key`,
+  `get_field_by_registry`) run in a real Chromium tab against the deployed
+  bootstrap node's WebTransport address and pass -- the tab joins as a
+  genuine raft learner and receives `AppendEntries`.
+- **`api/shmevent_wire_fixture.json`**, a committed cross-language wire
+  fixture: one real Go-encoded message per interesting union variant,
+  signed with a fixed test key. Go (`TestWireFixture`) and Rust
+  (`shmevent::tests::go_fixture`) each decode the other's bytes, verify the
+  signature over them, and re-encode byte-for-byte. This is the part a
+  same-language round trip can't do -- it passes just as happily on a wire
+  shape the other side can't read. Regenerate with `go test ./pkg/shmevent
+  -run TestWireFixture -update-wire-fixture` when the schema legitimately
+  changes.
 - **A device may now be the target of many commands.** `kvfsm` no longer
   rejects a second `Command` naming a peer that another command already
   targets, and `peer_id` may be empty for a command not yet bound to a

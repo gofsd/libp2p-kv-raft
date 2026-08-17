@@ -1,17 +1,34 @@
 //! A small op-code band (`u8` 100-127) on the main-thread<->Worker
-//! `shmring_ipc` hop only -- **never** sent to a remote peer, unlike
-//! `shmevent::EVENT_*` (1-27, 255). No Go analog: `mobile/kvmobile`'s
-//! Kotlin/Java FFI boundary calls straight into Go functions with real
-//! typed arguments, so it never needed an operation-code-plus-JSON-body
-//! encoding the way this crate's `Msg`-shaped main-thread<->Worker
-//! channel does. Everything here is a multi-step operation (a local scan
-//! loop, or a local read plus a remote write) that doesn't reduce to one
-//! `shmevent` wire event the way `app.rs`'s generic proxy arm handles
-//! `EVENT_SET`/`EVENT_PERMIT_REQUEST`/etc.
+//! `shmring_ipc` hop only -- **never** sent to a remote peer. No Go analog:
+//! `mobile/kvmobile`'s Kotlin/Java FFI boundary calls straight into Go
+//! functions with real typed arguments, so it never needed an
+//! operation-code-plus-JSON-body encoding the way this crate's `Msg`-shaped
+//! main-thread<->Worker channel does. Everything here is a multi-step
+//! operation (a local scan loop, or a local read plus a remote write) that
+//! doesn't reduce to one `shmevent` union variant the way `app.rs`'s generic
+//! proxy arm handles `set`/`permitRequest`/etc.
 //!
 //! Each op's request/response body is small JSON (reusing `serde_json`,
 //! already a dependency) -- [`dispatch`] is the one entry point
 //! `app.rs::handle_request` calls into.
+//!
+//! # How an op rides on the wire
+//!
+//! These op codes used to live in the wire struct's own `event` byte, in a
+//! band above every real event. The union has no such byte and deliberately
+//! no generic "op code plus blob" variant (see `api/shmevent.capnp`'s doc
+//! comment on what adding one would commit every node in the mesh to), so an
+//! op travels as an `execute` whose `sourceId` is the op code, whose `value`
+//! is the JSON body, and whose `senderPeerId` is [`MAIN_OPS_TAG`].
+//!
+//! `execute` because its shape already is "an opaque payload plus a small
+//! routing number", and the tag because it makes the convention visible in
+//! any dump of this hop *and* keeps it unambiguous against a real
+//! [`crate::app::MainHandle::execute`], which addresses its destination
+//! through the registry (`destinationId`) and leaves `senderPeerId` empty.
+//! This hop has always carried a private convention of its own -- before the
+//! union it packed a destination peer id and a payload into one `value` --
+//! and this is that same idea, spelled where a reader can see it.
 #![cfg(target_arch = "wasm32")]
 
 use std::cell::RefCell;
@@ -37,10 +54,16 @@ pub const OP_LOG_QUERY: u8 = 112;
 pub const OP_APPEND_COMMAND_LOG: u8 = 113;
 pub const OP_LOG_APPEND: u8 = 114;
 
-/// The op-code band's own lower bound, so `app.rs::handle_request` can
-/// route anything `>= OP_BASE` here in one match arm instead of listing
-/// every op individually.
+/// The op-code band's own lower bound. Kept as the band's documented floor
+/// even though routing no longer tests it (an op is recognised by
+/// [`MAIN_OPS_TAG`] now, not by being numerically above every wire event),
+/// so a new op still gets a number from the same reserved range.
 pub const OP_BASE: u8 = 100;
+
+/// Marks an `execute` on the main-thread<->Worker hop as carrying a
+/// main_ops op rather than a real peer-to-peer notification -- see this
+/// module's doc comment. Never appears on any hop between two nodes.
+pub const MAIN_OPS_TAG: &str = "main_ops";
 
 fn learner_or_err(state: &Rc<RefCell<WorkerState>>) -> Result<Rc<crate::learner::Learner>, String> {
     state
@@ -123,6 +146,9 @@ struct LogAppendReq {
 /// (`app.rs::handle_request`) wraps them into an `EVENT_ERROR` `Msg` the
 /// same way every other failure on this hop already is.
 pub async fn dispatch(state: &Rc<RefCell<WorkerState>>, op: u8, value: &[u8]) -> Result<Vec<u8>, String> {
+    if op < OP_BASE {
+        return Err(format!("op {op} is below the main_ops band ({OP_BASE}+)"));
+    }
     match op {
         OP_GET_GROUP => {
             let req: IdReq = decode(value)?;

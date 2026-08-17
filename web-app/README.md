@@ -1,16 +1,5 @@
 # libp2p-kv-raft web client
 
-**KNOWN BROKEN as of the `api/shmevent.capnp` union rewrite:** `src/shmevent.rs` (and its
-`catalog_keys.rs`/`logpermit.rs`/`system.rs` siblings) still hand-pack the old flat
-`Event{event, sourceId, destinationId, value, crc32, signature, id}` struct and were never updated
-to the real per-variant union the Go daemon, `pkg/kvctl`, and Android's `mobile/kvmobile` were all
-migrated to in the same change -- see `src/shmevent.rs`'s own doc comment for the full detail. A
-client built from this crate as it stands cannot talk to the rest of the mesh: every message it
-sends or expects to receive uses a wire shape the daemon side no longer speaks. Porting this crate
-to the new union is its own follow-up, deliberately out of scope for the Go-side rewrite that left
-it in this state. Everything below describes this client's *intended* design, not its current
-working state.
-
 A browser client for [libp2p-kv-raft](..), in Rust compiled to `wasm32-unknown-unknown`. Unlike
 the earlier TypeScript/js-libp2p version of this client, a browser tab here is meant to be a
 **real hashicorp/raft non-voter (learner)**: it joins the cluster's actual raft configuration,
@@ -48,16 +37,24 @@ accept a raw inbound connection the way a real voter's transport requires -- see
   Android device behind carrier-grade NAT already relies on (see
   `pkg/daemon.Config.RelayPeer`'s doc comment) -- and serves `rafttransport.ProtocolID` (the raft
   RPC stream) and `pkg/daemon.ClientProtocolID` (the join handshake and forwarded Set/Get).
-- `src/shmevent.rs` -- Rust port of `pkg/shmevent` (see `api/shmevent.capnp`): the single
+- `src/shmevent/` -- Rust port of `pkg/shmevent` (see `api/shmevent.capnp`): the single
   capnp-encoded struct every "user"-to-"raft node instance" hop in this project speaks --
-  main-thread/Worker here, and `pkg/daemon.ClientProtocolID`'s network hop too. Every message
-  carries one `event` byte, `sourceId`/`destinationId` relational references, a raw `value`, a
-  CRC32, an Ed25519 `signature`, and a correlation `id`; a Set decomposes into a linked
-  `SetKey`+`SetField` pair, a Get is a one-shot `GetField` (or, addressed by a prior `SetKey`'s id,
-  via `SourceID`), and `GetPublicKey`/`GetPrivateKey` are how a caller with no key yet bootstraps
-  into one -- see `api/shmevent.capnp`'s doc comment for the full design and `pkg/shmevent`'s Go
-  twin, generated from the identical schema (`build.rs` runs `capnp compile` at build time).
-  Replaces the old fixed-size `ipcproto.rs`.
+  main-thread/Worker here, and `pkg/daemon.ClientProtocolID`'s network hop too. `mod.rs` is the
+  codec itself: three fields common to every message (`id`, `crc32`, `signature`) plus a union with
+  one variant per logical operation, each carrying its own named typed fields, mirroring the
+  schema's groups one-for-one. A Set decomposes into a linked `SetKey`+`SetField` pair, a Get is a
+  one-shot `GetField` (or, addressed by a prior `SetKey`'s id, via `source_id`), and
+  `GetPublicKey`/`GetPrivateKey` are how a caller with no key yet bootstraps into one. `system.rs`
+  and `catalog_keys.rs` mirror `pkg/shmevent`'s own `system.go`/`catalog.go` split -- the
+  `SystemKeyPrefix` *store* key layout and stored-record payload framing, which is a separate
+  encoding from the wire events, since permit and catalog *writes* are ordinary union variants
+  (`Body::PermitRequest`, `Body::GroupPut`, ...) rather than hand-packed blobs in a generic
+  envelope. See `api/shmevent.capnp`'s doc comment for the full design and `mod.rs`'s own for the
+  two rules (canonical-form CRC/signature payload, and null vs present-but-empty pointers) that
+  make this a byte-compatible mirror of the Go twin rather than a plausible one; both sides are
+  generated from that identical schema (`build.rs` runs `capnp compile` at build time) and pinned
+  against each other by `api/shmevent_wire_fixture.json` (see "Known gaps" below). Replaces the old
+  fixed-size `ipcproto.rs`.
 - `src/shmring_ipc.rs` -- the main-thread/Worker channel carrying `shmevent::Msg`, using
   [`shmring`](https://crates.io/crates/shmring) `0.3.0`'s Rust API directly (both sides of this
   channel are this same crate compiled to wasm, so there's no need for shmring's separate
@@ -142,15 +139,24 @@ file's doc comment); it's skipped with no cluster running.
 
 ## Known gaps / what to verify before relying on this
 
-This was built and its core logic verified in a sandboxed environment with `cargo`/`rustc`,
-`capnp` (built from source into a user prefix), and a wasm32-capable C compiler (via `zig cc` --
-see "Building" above), but no ability to launch a real browser or a live cluster. Verified:
+This crate was originally built and its core logic verified in a sandboxed environment with
+`cargo`/`rustc`, `capnp` (built from source into a user prefix), and a wasm32-capable C compiler
+(via `zig cc` -- see "Building" above), with no ability to launch a real browser or a live cluster;
+the `api/shmevent.capnp` union port has since been run against both. Verified:
 
 - `cargo test` (native): the entire msgpack/raft-wire codec, `pkg/kvfsm` byte compatibility, and
-  the `shmevent` capnp codec (encode/decode, CRC32 corruption detection, Ed25519 sign/verify
-  including tamper detection, and the two-bootstrap-event unsigned exception) -- all passing, and
-  the `pkg/shmevent` Go twin generated from the same `api/shmevent.capnp` schema has its own
-  equivalent passing suite (`go test ./pkg/shmevent/...`).
+  the `shmevent` capnp codec (encode/decode of every union variant, CRC32 corruption detection,
+  Ed25519 sign/verify including tamper detection, and the two-bootstrap-event unsigned exception)
+  -- all passing, and the `pkg/shmevent` Go twin generated from the same `api/shmevent.capnp`
+  schema has its own equivalent passing suite (`go test ./pkg/shmevent/...`).
+- **Cross-language, not just self-consistent:** `api/shmevent_wire_fixture.json` holds one real
+  Go-encoded message per interesting union variant, signed with a fixed test key. Go's
+  `TestWireFixture` and this crate's `shmevent::tests::go_fixture` both read it: each side decodes
+  the other's bytes, verifies the Ed25519 signature over them, and re-encodes to byte-identical
+  output. That is what pins the two implementations to the same wire format -- a Rust round trip
+  alone would pass just as happily on a wire shape the daemon doesn't speak. Regenerate it with
+  `go test ./pkg/shmevent -run TestWireFixture -update-wire-fixture` when the schema legitimately
+  changes, and re-run `cargo test` here: a diff in either direction is the point of the fixture.
 - `wasm-pack build --target web --out-dir pkg` succeeds for real (not just `cargo check`) and
   produces a genuine, complete bundle (`kv_raft_web_bg.wasm`, ~2.7 MB, plus its JS glue) --
   `sqlite-wasm-rs`'s SQLite-to-wasm32 compile included, no stub needed. `npx vite build` then
@@ -164,9 +170,16 @@ see "Building" above), but no ability to launch a real browser or a live cluster
   raft configuration and that the leader's `rafttransport.NetworkTransport` really dials it and
   delivers an `AppendEntries` stream.
 
+- **A real browser tab against the real deployed cluster**, since the union port: `E2E_TYPES=web
+  mage e2e:current` (version 6 in `test/e2e/testdata.json`) drives `tests/e2e.spec.js` in a real
+  Chromium tab, dialing the deployed bootstrap node's WebTransport address, and passes all six
+  rows -- `bootstrap_or_join_cluster` (the tab joins as a genuine raft learner and starts
+  receiving `AppendEntries`), `get_public_key`, `set_key`, `set_field`, `get_field_by_key` and
+  `get_field_by_registry`. That is the port's real proof: every one of those messages crosses
+  `pkg/daemon.ClientProtocolID` in the new union encoding and is decoded, CRC-checked and
+  signature-verified by the Go daemon on the other side.
+
 Not yet verified (needs a real browser and a live cluster to drive):
 
-- A real end-to-end Connect/Set/Get in an actual browser against a live cluster (`tests/set_get.spec.js`
-  is written for exactly this, but has not been run).
 - `SqliteStore`'s OPFS-backed persistence path (`sahpool` VFS) -- `sqlite_store.rs` currently
   opens with the default in-memory VFS; see `SqliteStore::open`'s doc comment for how to switch.

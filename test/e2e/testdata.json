@@ -4,9 +4,10 @@
     "2": "0.0.0",
     "3": "0.0.0",
     "4": "0.0.0",
-    "5": "0.4.2"
+    "5": "0.4.2",
+    "6": "0.4.5"
   },
-  "published_version": 5,
+  "published_version": 6,
   "nodes": {
     "1": {
       "platform": "desktop",
@@ -25,6 +26,12 @@
       "peer_id": "12D3KooWRa2NHZVTVqhVZTN54v9PYTH8RC4Yn42tmDvBaaNzCNoi",
       "public_key": "ea0e786e1f067b7406720fbecdb75cff5f33216c69aa6ab63e6ab019dface1b1",
       "private_key": "ff00ad162aba11c3b056612fa0ca2fb18237e33631182e0fa062b2190f4b9f85ea0e786e1f067b7406720fbecdb75cff5f33216c69aa6ab63e6ab019dface1b1"
+    },
+    "4": {
+      "platform": "web",
+      "peer_id": "12D3KooWJYD428bjszAq1eFiLgUdTCFDvdEC3soq68NGn1aUenen",
+      "public_key": "819594fc33d0fabfc9a015c5577fe0bd3af857119ddd1c7a50490c9eb7cd977b",
+      "private_key": "be42101a8cf03fcb96afc809fbbb731d694650a88723b48f6aff36c79977efd8819594fc33d0fabfc9a015c5577fe0bd3af857119ddd1c7a50490c9eb7cd977b"
     }
   },
   "rows": [
@@ -321,6 +328,77 @@
       },
       "status": 0,
       "platform": "android"
+    },
+    {
+      "version": 6,
+      "node": 4,
+      "event": {
+        "event": "bootstrap_or_join_cluster",
+        "fields": {
+          "leader_addr": "BOOTSTRAP"
+        }
+      },
+      "status": 0,
+      "platform": "web"
+    },
+    {
+      "version": 6,
+      "node": 4,
+      "event": {
+        "event": "get_public_key"
+      },
+      "status": 0,
+      "platform": "web"
+    },
+    {
+      "version": 6,
+      "node": 4,
+      "event": {
+        "event": "set_key",
+        "id": 600,
+        "fields": {
+          "value": "hello-web"
+        }
+      },
+      "status": 0,
+      "platform": "web"
+    },
+    {
+      "version": 6,
+      "node": 4,
+      "event": {
+        "event": "set_field",
+        "fields": {
+          "source_id": "600",
+          "value": "world-web"
+        }
+      },
+      "status": 0,
+      "platform": "web"
+    },
+    {
+      "version": 6,
+      "node": 4,
+      "event": {
+        "event": "get_field_by_key",
+        "fields": {
+          "key": "hello-web"
+        }
+      },
+      "status": 0,
+      "platform": "web"
+    },
+    {
+      "version": 6,
+      "node": 4,
+      "event": {
+        "event": "get_field_by_registry",
+        "fields": {
+          "source_id": "600"
+        }
+      },
+      "status": 0,
+      "platform": "web"
     }
   ],
   "android_optical_cases": [

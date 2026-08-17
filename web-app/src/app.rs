@@ -56,7 +56,7 @@ use crate::client;
 use crate::learner::Learner;
 use crate::main_ops;
 use crate::p2p::{self, Node};
-use crate::shmevent::{self, Msg};
+use crate::shmevent::{self, Body, Msg};
 use crate::shmring_ipc;
 use crate::sqlite_store::SqliteStore;
 
@@ -189,214 +189,242 @@ async fn handle_request(
     sig: Vec<u8>,
 ) -> Vec<u8> {
     let req_id = req.id;
-    if shmevent::requires_signature(req.event_type) {
+    if shmevent::requires_signature(&req.body) {
         let vk = state.borrow().verifying_key;
         if let Err(e) = shmevent::verify(&vk, &req, crc, &sig) {
             return encode_local_response(&state, Msg::error(req_id, e.to_string()));
         }
     }
 
-    let resp = match req.event_type {
-        shmevent::EVENT_SET_KEY => {
-            state
-                .borrow_mut()
-                .registry
-                .insert(req.id, req.value.clone());
-            Msg {
-                event_type: shmevent::EVENT_SET_KEY,
-                id: req_id,
-                value: req.value,
-                ..Default::default()
-            }
+    // Every arm answers with the *same* variant it was asked in, filling
+    // that variant's own response fields -- the shape `pkg/daemon`'s own
+    // dispatch uses (it mutates the request message in place and returns
+    // it), and the reason a caller can read a response without a second
+    // lookup table saying which variant answers which.
+    let resp = match req.body.clone() {
+        Body::SetKey { value } => {
+            let value = value.unwrap_or_default();
+            state.borrow_mut().registry.insert(req_id, value.clone());
+            Msg::with_id(
+                req_id,
+                Body::SetKey {
+                    value: Some(value),
+                },
+            )
         }
 
-        shmevent::EVENT_GET_KEY => match state.borrow().registry.get(&req.source_id).cloned() {
-            Some(value) => Msg {
-                event_type: shmevent::EVENT_GET_KEY,
-                id: req_id,
-                value,
-                ..Default::default()
-            },
-            None => Msg::error(
+        Body::GetKey { source_id, .. } => match state.borrow().registry.get(&source_id).cloned() {
+            Some(key) => Msg::with_id(
                 req_id,
-                format!("no entry registered under id {}", req.source_id),
+                Body::GetKey {
+                    source_id,
+                    key: Some(key),
+                },
             ),
+            None => Msg::error(req_id, format!("no entry registered under id {source_id}")),
         },
 
-        shmevent::EVENT_SET_FIELD => {
-            let key = state.borrow().registry.get(&req.source_id).cloned();
+        Body::SetField { source_id, value } => {
+            let key = state.borrow().registry.get(&source_id).cloned();
             match key {
                 Some(key) => {
                     let key = String::from_utf8_lossy(&key).into_owned();
-                    let value = String::from_utf8_lossy(&req.value).into_owned();
+                    let value = String::from_utf8_lossy(&value.unwrap_or_default()).into_owned();
                     match do_set(&state, &key, &value).await {
-                        Ok(()) => Msg {
-                            event_type: shmevent::EVENT_SET_FIELD,
-                            id: req_id,
-                            ..Default::default()
-                        },
+                        Ok(()) => Msg::with_id(
+                            req_id,
+                            Body::SetField {
+                                source_id,
+                                value: None,
+                            },
+                        ),
+                        Err(e) => Msg::error(req_id, e.to_string()),
+                    }
+                }
+                None => Msg::error(
+                    req_id,
+                    format!("no key registered under id {source_id} -- send SetKey first"),
+                ),
+            }
+        }
+
+        // The old flat protocol folded these two into one event whose
+        // meaning depended on whether source_id was zero; the union splits
+        // them, so each is now its own arm with no mode flag to read.
+        Body::GetFieldByRegistry { source_id, .. } => {
+            let key = state.borrow().registry.get(&source_id).cloned();
+            match key {
+                Some(key) => {
+                    let key = String::from_utf8_lossy(&key).into_owned();
+                    match do_get(&state, &key).await {
+                        Ok(value) => Msg::with_id(
+                            req_id,
+                            Body::GetFieldByRegistry {
+                                source_id,
+                                value: Some(value.into_bytes()),
+                            },
+                        ),
+                        Err(e) => Msg::error(req_id, e.to_string()),
+                    }
+                }
+                None => Msg::error(
+                    req_id,
+                    format!("no key registered under id {source_id} -- send SetKey first"),
+                ),
+            }
+        }
+
+        Body::GetFieldByKey { key, .. } => {
+            let key_bytes = key.unwrap_or_default();
+            let key_str = String::from_utf8_lossy(&key_bytes).into_owned();
+            match do_get(&state, &key_str).await {
+                Ok(value) => Msg::with_id(
+                    req_id,
+                    Body::GetFieldByKey {
+                        key: Some(key_bytes),
+                        value: Some(value.into_bytes()),
+                    },
+                ),
+                Err(e) => Msg::error(req_id, e.to_string()),
+            }
+        }
+
+        Body::GetPublicKey { .. } => {
+            let vk = state.borrow().verifying_key;
+            Msg::with_id(
+                req_id,
+                Body::GetPublicKey {
+                    pub_key: Some(vk.to_bytes().to_vec()),
+                },
+            )
+        }
+
+        Body::GetPrivateKey { .. } => {
+            let sk_bytes = state.borrow().signing_key.to_bytes();
+            Msg::with_id(
+                req_id,
+                Body::GetPrivateKey {
+                    priv_key: Some(sk_bytes.to_vec()),
+                },
+            )
+        }
+
+        // The response overwrites leader_addr with this tab's own peer id,
+        // exactly as pkg/daemon's own bootstrapOrJoinCluster arm does.
+        Body::BootstrapOrJoinCluster { leader_addr } => {
+            match do_connect(&state, &leader_addr).await {
+                Ok(peer_id) => Msg::with_id(
+                    req_id,
+                    Body::BootstrapOrJoinCluster {
+                        leader_addr: peer_id.to_string(),
+                    },
+                ),
+                Err(e) => Msg::error(req_id, e.to_string()),
+            }
+        }
+
+        Body::PublicAccess {
+            target_peer, note, ..
+        } => match do_public_access(&state, &target_peer, &note).await {
+            Ok(instance_id) => Msg::with_id(
+                req_id,
+                Body::PublicAccess {
+                    target_peer,
+                    note,
+                    instance_id,
+                },
+            ),
+            Err(e) => Msg::error(req_id, e.to_string()),
+        },
+
+        // main_ops's own op band, carried inside an `execute` -- see
+        // main_ops::MAIN_OPS_TAG for why that variant and how it stays
+        // distinguishable from a real Execute below.
+        Body::Execute {
+            source_id,
+            sender_peer_id,
+            value,
+            ..
+        } if sender_peer_id == main_ops::MAIN_OPS_TAG => {
+            let op = u8::try_from(source_id).unwrap_or(0);
+            match main_ops::dispatch(&state, op, &value.unwrap_or_default()).await {
+                Ok(value) => Msg::with_id(
+                    req_id,
+                    Body::Execute {
+                        source_id,
+                        destination_id: 0,
+                        sender_peer_id,
+                        value: Some(value),
+                    },
+                ),
+                Err(e) => Msg::error(req_id, e),
+            }
+        }
+
+        // A real Execute, addressed the same way pkg/ipc's local shape
+        // addresses one: destination_id references a prior SetKey holding
+        // the destination peer id. do_execute then drives the real
+        // registration-then-notify sequence against the leader (see
+        // RemoteSession::execute).
+        Body::Execute {
+            destination_id,
+            value,
+            ..
+        } => {
+            let dest = state.borrow().registry.get(&destination_id).cloned();
+            match dest {
+                Some(dest) => {
+                    let dest_peer_id = String::from_utf8_lossy(&dest).into_owned();
+                    match do_execute(&state, &dest_peer_id, &value.unwrap_or_default()).await {
+                        Ok(()) => Msg::with_id(
+                            req_id,
+                            Body::Execute {
+                                source_id: 0,
+                                destination_id,
+                                sender_peer_id: String::new(),
+                                value: None,
+                            },
+                        ),
                         Err(e) => Msg::error(req_id, e.to_string()),
                     }
                 }
                 None => Msg::error(
                     req_id,
                     format!(
-                        "no key registered under id {} -- send SetKey first",
-                        req.source_id
+                        "no destination peer id registered under id {destination_id} -- send SetKey first"
                     ),
                 ),
             }
         }
 
-        shmevent::EVENT_GET_FIELD => {
-            let key = if req.source_id != 0 {
-                match state.borrow().registry.get(&req.source_id).cloned() {
-                    Some(k) => k,
-                    None => {
-                        return encode_local_response(
-                            &state,
-                            Msg::error(
-                                req_id,
-                                format!(
-                                    "no key registered under id {} -- send SetKey first",
-                                    req.source_id
-                                ),
-                            ),
-                        );
-                    }
-                }
-            } else {
-                req.value.clone()
-            };
-            let key = String::from_utf8_lossy(&key).into_owned();
-            match do_get(&state, &key).await {
-                Ok(value) => Msg {
-                    event_type: shmevent::EVENT_GET_FIELD,
-                    id: req_id,
-                    value: value.into_bytes(),
-                    ..Default::default()
-                },
-                Err(e) => Msg::error(req_id, e.to_string()),
-            }
-        }
-
-        shmevent::EVENT_GET_PUBLIC_KEY => {
-            let vk = state.borrow().verifying_key;
-            Msg {
-                event_type: shmevent::EVENT_GET_PUBLIC_KEY,
-                id: req_id,
-                value: vk.to_bytes().to_vec(),
-                ..Default::default()
-            }
-        }
-
-        shmevent::EVENT_GET_PRIVATE_KEY => {
-            let sk_bytes = state.borrow().signing_key.to_bytes();
-            Msg {
-                event_type: shmevent::EVENT_GET_PRIVATE_KEY,
-                id: req_id,
-                value: sk_bytes.to_vec(),
-                ..Default::default()
-            }
-        }
-
-        shmevent::EVENT_ADD => {
-            let target_addr = String::from_utf8_lossy(&req.value).into_owned();
-            match do_connect(&state, &target_addr).await {
-                Ok(peer_id) => Msg {
-                    event_type: shmevent::EVENT_ADD,
-                    id: req_id,
-                    value: peer_id.to_string().into_bytes(),
-                    ..Default::default()
-                },
-                Err(e) => Msg::error(req_id, e.to_string()),
-            }
-        }
-
-        // Value is "target_addr" or "target_addr#note" -- matches
-        // pkg/shmclient.Session.PublicAccess's identical `#`-separated
-        // convention (see do_public_access's doc comment).
-        shmevent::EVENT_PUBLIC_ACCESS => {
-            let raw = String::from_utf8_lossy(&req.value).into_owned();
-            let (target_addr, note) = match raw.split_once('#') {
-                Some((addr, note)) => (addr.to_string(), note.to_string()),
-                None => (raw, String::new()),
-            };
-            match do_public_access(&state, &target_addr, &note).await {
-                Ok(instance_id) => Msg {
-                    event_type: shmevent::EVENT_PUBLIC_ACCESS,
-                    id: req_id,
-                    value: instance_id.into_bytes(),
-                    ..Default::default()
-                },
-                Err(e) => Msg::error(req_id, e.to_string()),
-            }
-        }
-
-        // Generic proxy for every remaining single-round-trip event that's
-        // actually reachable from a non-voting learner (see
-        // crate::client's doc comment for the twelve voter-gated events
-        // deliberately absent here): the Worker forwards req.value to the
-        // leader unchanged and hands the response straight back, exactly
-        // the shape RemoteSession::call already is.
-        shmevent::EVENT_SET
-        | shmevent::EVENT_LIFECYCLE_WRITE
-        | shmevent::EVENT_LOG_APPEND
-        | shmevent::EVENT_LOG_PERMIT_REQUEST
-        | shmevent::EVENT_POLL_EXECUTE => {
-            let event_type = req.event_type;
+        // Generic proxy for every remaining single-round-trip variant
+        // that's actually reachable from a non-voting learner (see
+        // crate::client's doc comment for the voter-gated ones
+        // deliberately absent here): the Worker forwards the request body
+        // to the leader unchanged and hands the response body straight
+        // back.
+        body @ (Body::Set { .. }
+        | Body::LogAppend { .. }
+        | Body::PermitRequest { .. }
+        | Body::PollExecute { .. }) => {
             let result = async {
                 let mut sess = client::RemoteSession::from_worker_state(&state)?;
-                sess.call(event_type, req.value.clone()).await
+                sess.call(body).await
             }
             .await;
             match result {
-                Ok(resp) => Msg {
-                    event_type,
-                    id: req_id,
-                    value: resp.value,
-                    ..Default::default()
-                },
+                Ok(resp) => Msg::with_id(req_id, resp.body),
                 Err(e) => Msg::error(req_id, e.to_string()),
             }
         }
 
-        // Main-thread-facing EVENT_EXECUTE packs dest_peer_id and payload
-        // together via encode_set_payload -- a private convention of this
-        // hop only (do_execute unpacks it and drives the real two-
-        // EventSetKey-then-EventExecute wire sequence against the leader
-        // itself, see RemoteSession::execute).
-        shmevent::EVENT_EXECUTE => {
-            match shmevent::decode_set_payload(&req.value) {
-                Ok((dest_peer_id, payload)) => {
-                    let dest_peer_id = String::from_utf8_lossy(dest_peer_id).into_owned();
-                    match do_execute(&state, &dest_peer_id, payload).await {
-                        Ok(()) => Msg {
-                            event_type: shmevent::EVENT_EXECUTE,
-                            id: req_id,
-                            ..Default::default()
-                        },
-                        Err(e) => Msg::error(req_id, e.to_string()),
-                    }
-                }
-                Err(e) => Msg::error(req_id, e.to_string()),
-            }
-        }
-
-        // main_ops's own op-code band (100-127) -- multi-step/local-read
-        // operations that don't reduce to one shmevent wire event. See
-        // main_ops's doc comment.
-        op if op >= main_ops::OP_BASE => match main_ops::dispatch(&state, op, &req.value).await {
-            Ok(value) => Msg {
-                event_type: op,
-                id: req_id,
-                value,
-                ..Default::default()
-            },
-            Err(e) => Msg::error(req_id, e),
-        },
-
-        other => Msg::error(req_id, format!("unknown event {other}")),
+        other => Msg::error(
+            req_id,
+            format!(
+                "{} is not reachable from this client",
+                shmevent::event_name(&other)
+            ),
+        ),
     };
 
     encode_local_response(&state, resp)
@@ -495,12 +523,12 @@ async fn do_connect(
     let set_key_resp = call_remote(
         &mut handle,
         target_peer,
-        Msg {
-            event_type: shmevent::EVENT_SET_KEY,
-            value: self_id.to_string().into_bytes(),
-            id: set_key_id,
-            ..Default::default()
-        },
+        Msg::with_id(
+            set_key_id,
+            Body::SetKey {
+                value: Some(self_id.to_string().into_bytes()),
+            },
+        ),
         Some(&signing_key),
     )
     .await?;
@@ -509,13 +537,13 @@ async fn do_connect(
     let add_resp = call_remote(
         &mut handle,
         target_peer,
-        Msg {
-            event_type: shmevent::EVENT_ADD,
-            source_id: set_key_id,
-            value: self_addr.to_string().into_bytes(),
-            id: new_id(),
-            ..Default::default()
-        },
+        Msg::with_id(
+            new_id(),
+            Body::AddLearner {
+                claimed_peer_id: set_key_id,
+                addr: self_addr.to_string(),
+            },
+        ),
         Some(&signing_key),
     )
     .await?;
@@ -591,20 +619,19 @@ async fn do_public_access(
     let value = record
         .encode()
         .map_err(|e| p2p::Error(format!("public_access: encode record: {e}")))?;
-    let payload = shmevent::encode_set_payload(&key, &value)
-        .map_err(|e| p2p::Error(format!("public_access: encode payload: {e}")))?;
 
     let signing_key = state.borrow().signing_key.clone();
     let mut handle = handle;
     let resp = call_remote(
         &mut handle,
         target_peer,
-        Msg {
-            event_type: shmevent::EVENT_LOG_APPEND,
-            value: payload,
-            id: new_id(),
-            ..Default::default()
-        },
+        Msg::with_id(
+            new_id(),
+            Body::LogAppend {
+                key: Some(key),
+                value: Some(value),
+            },
+        ),
         Some(&signing_key),
     )
     .await?;
@@ -624,10 +651,8 @@ async fn call_remote(
 }
 
 pub(crate) fn reject_if_error(resp: &Msg) -> Result<(), p2p::Error> {
-    if resp.event_type == shmevent::EVENT_ERROR {
-        return Err(p2p::Error(
-            String::from_utf8_lossy(&resp.value).into_owned(),
-        ));
+    if let Body::Error { message } = &resp.body {
+        return Err(p2p::Error(message.clone()));
     }
     Ok(())
 }
@@ -653,12 +678,12 @@ async fn do_set(
     let set_key_resp = call_remote(
         &mut handle,
         leader,
-        Msg {
-            event_type: shmevent::EVENT_SET_KEY,
-            value: key.as_bytes().to_vec(),
-            id: set_key_id,
-            ..Default::default()
-        },
+        Msg::with_id(
+            set_key_id,
+            Body::SetKey {
+                value: Some(key.as_bytes().to_vec()),
+            },
+        ),
         Some(&signing_key),
     )
     .await?;
@@ -667,13 +692,13 @@ async fn do_set(
     let set_field_resp = call_remote(
         &mut handle,
         leader,
-        Msg {
-            event_type: shmevent::EVENT_SET_FIELD,
-            source_id: set_key_id,
-            value: value.as_bytes().to_vec(),
-            id: new_id(),
-            ..Default::default()
-        },
+        Msg::with_id(
+            new_id(),
+            Body::SetField {
+                source_id: set_key_id,
+                value: Some(value.as_bytes().to_vec()),
+            },
+        ),
         Some(&signing_key),
     )
     .await?;
@@ -799,22 +824,21 @@ impl MainHandleInner {
         }
         let resp = self
             .call(
-                &Msg {
-                    event_type: shmevent::EVENT_GET_PRIVATE_KEY,
-                    id: new_id(),
-                    ..Default::default()
-                },
+                &Msg::with_id(new_id(), Body::GetPrivateKey { priv_key: None }),
                 None,
             )
             .await?;
-        if resp.event_type == shmevent::EVENT_ERROR {
-            // Not routed through into_js_result: that lossy-UTF8-decodes
-            // `value`, which is correct for an actual error message but
-            // would corrupt the raw key bytes on the success path below.
-            return Err(JsValue::from_str(&String::from_utf8_lossy(&resp.value)));
-        }
-        let seed: [u8; 32] = resp
-            .value
+        let priv_key = match resp.body {
+            Body::Error { message } => return Err(JsValue::from_str(&message)),
+            Body::GetPrivateKey { priv_key } => priv_key.unwrap_or_default(),
+            other => {
+                return Err(JsValue::from_str(&format!(
+                    "get_private_key answered with {}",
+                    shmevent::event_name(&other)
+                )))
+            }
+        };
+        let seed: [u8; 32] = priv_key
             .get(..32)
             .and_then(|s| s.try_into().ok())
             .ok_or_else(|| JsValue::from_str("invalid private key length in response"))?;
@@ -823,24 +847,21 @@ impl MainHandleInner {
         Ok(key)
     }
 
-    /// Signs and sends `Msg{event_type, value, id: new_id()}` (the shape
-    /// every single-round-trip call below reduces to), rejecting an
-    /// `EVENT_ERROR` response.
-    async fn call_signed(&self, event_type: u8, value: Vec<u8>) -> Result<Msg, JsValue> {
+    /// Signs and sends `body` under a fresh correlation id (the shape every
+    /// single-round-trip call below reduces to), rejecting an `error`
+    /// response.
+    async fn call_signed(&self, body: Body) -> Result<Msg, JsValue> {
+        self.call_signed_with_id(new_id(), body).await
+    }
+
+    /// [`MainHandleInner::call_signed`] under a caller-chosen id -- for the
+    /// one case that needs it, a `setKey` whose id a following message
+    /// cites (see [`MainHandle::execute`]).
+    async fn call_signed_with_id(&self, id: u16, body: Body) -> Result<Msg, JsValue> {
         let signing_key = self.ensure_key().await?;
-        let resp = self
-            .call(
-                &Msg {
-                    event_type,
-                    value,
-                    id: new_id(),
-                    ..Default::default()
-                },
-                Some(&signing_key),
-            )
-            .await?;
-        if resp.event_type == shmevent::EVENT_ERROR {
-            return Err(JsValue::from_str(&String::from_utf8_lossy(&resp.value)));
+        let resp = self.call(&Msg::with_id(id, body), Some(&signing_key)).await?;
+        if let Body::Error { message } = &resp.body {
+            return Err(JsValue::from_str(message));
         }
         Ok(resp)
     }
@@ -848,10 +869,25 @@ impl MainHandleInner {
     /// [`MainHandleInner::call_signed`] with a JSON-encoded request body
     /// against one of `main_ops`'s `OP_*` codes, returning the raw
     /// response bytes (JSON, decoded by the caller into whatever shape
-    /// that op returns).
+    /// that op returns). See `main_ops::MAIN_OPS_TAG` for how an op rides
+    /// inside an `execute` variant.
     async fn call_op<Req: serde::Serialize>(&self, op: u8, req: &Req) -> Result<Vec<u8>, JsValue> {
         let value = serde_json::to_vec(req).map_err(|e| JsValue::from_str(&e.to_string()))?;
-        Ok(self.call_signed(op, value).await?.value)
+        let resp = self
+            .call_signed(Body::Execute {
+                source_id: op as u16,
+                destination_id: 0,
+                sender_peer_id: main_ops::MAIN_OPS_TAG.to_string(),
+                value: Some(value),
+            })
+            .await?;
+        match resp.body {
+            Body::Execute { value, .. } => Ok(value.unwrap_or_default()),
+            other => Err(JsValue::from_str(&format!(
+                "op {op} answered with {}",
+                shmevent::event_name(&other)
+            ))),
+        }
     }
 
     async fn call_op_str<Req: serde::Serialize>(&self, op: u8, req: &Req) -> Result<String, JsValue> {
@@ -890,12 +926,12 @@ impl MainHandle {
         let resp = self
             .inner
             .call(
-                &Msg {
-                    event_type: shmevent::EVENT_ADD,
-                    value: target_multiaddr.into_bytes(),
-                    id: new_id(),
-                    ..Default::default()
-                },
+                &Msg::with_id(
+                    new_id(),
+                    Body::BootstrapOrJoinCluster {
+                        leader_addr: target_multiaddr,
+                    },
+                ),
                 Some(&key),
             )
             .await?;
@@ -910,12 +946,12 @@ impl MainHandle {
         let set_key_resp = self
             .inner
             .call(
-                &Msg {
-                    event_type: shmevent::EVENT_SET_KEY,
-                    value: key.into_bytes(),
-                    id: set_key_id,
-                    ..Default::default()
-                },
+                &Msg::with_id(
+                    set_key_id,
+                    Body::SetKey {
+                        value: Some(key.into_bytes()),
+                    },
+                ),
                 Some(&signing_key),
             )
             .await?;
@@ -924,13 +960,13 @@ impl MainHandle {
         let set_field_resp = self
             .inner
             .call(
-                &Msg {
-                    event_type: shmevent::EVENT_SET_FIELD,
-                    source_id: set_key_id,
-                    value: value.into_bytes(),
-                    id: new_id(),
-                    ..Default::default()
-                },
+                &Msg::with_id(
+                    new_id(),
+                    Body::SetField {
+                        source_id: set_key_id,
+                        value: Some(value.into_bytes()),
+                    },
+                ),
                 Some(&signing_key),
             )
             .await?;
@@ -942,12 +978,13 @@ impl MainHandle {
         let resp = self
             .inner
             .call(
-                &Msg {
-                    event_type: shmevent::EVENT_GET_FIELD,
-                    value: key.into_bytes(),
-                    id: new_id(),
-                    ..Default::default()
-                },
+                &Msg::with_id(
+                    new_id(),
+                    Body::GetFieldByKey {
+                        key: Some(key.into_bytes()),
+                        value: None,
+                    },
+                ),
                 Some(&signing_key),
             )
             .await?;
@@ -977,7 +1014,7 @@ impl MainHandle {
         if req.id == 0 {
             req.id = new_id();
         }
-        let signing_key = if shmevent::requires_signature(req.event_type) {
+        let signing_key = if shmevent::requires_signature(&req.body) {
             Some(self.inner.ensure_key().await?)
         } else {
             None
@@ -986,13 +1023,18 @@ impl MainHandle {
         shmevent::msg_to_json(&resp).map_err(js_shmevent_err)
     }
 
-    // --- Permits (RequestPermit/RequestLogPermit only -- Confirm/Revoke
-    // are voter-gated server-side and permanently unreachable from a
-    // non-voting learner, see crate::client's doc comment) ---
+    // --- Permits (requestPermit only -- Confirm/Revoke are voter-gated
+    // server-side and permanently unreachable from a non-voting learner,
+    // see crate::client's doc comment) ---
 
-    /// Lodges a pending permit record. `kind` is `"peer"` or
-    /// `"bootstrap"` (see `shmevent::system::kind_from_name`). Matches
-    /// `mobile/kvmobile.RequestPermit`.
+    /// Lodges a pending permit record. `kind` is one of
+    /// `shmevent::system::kind_from_name`'s names (`"bootstrap"`,
+    /// `"cluster-join"`, ...). Matches `mobile/kvmobile.RequestPermit`.
+    ///
+    /// The old generic lifecycle envelope this used to hand-pack (a kind
+    /// byte, an action byte and an inner blob inside one `value`) is gone:
+    /// `permitRequest` is its own variant with named fields now, so the
+    /// request is the wire message rather than something encoded into one.
     #[wasm_bindgen(js_name = requestPermit)]
     pub async fn request_permit(
         &self,
@@ -1002,40 +1044,12 @@ impl MainHandle {
     ) -> Result<(), JsValue> {
         let kind_byte = shmevent::system::kind_from_name(&kind)
             .ok_or_else(|| JsValue::from_str(&format!("unknown permit kind {kind:?}")))?;
-        let inner = shmevent::system::encode_permit_request_payload(
-            kind_byte,
-            target_peer_id.as_bytes(),
-            metadata.as_bytes(),
-        )
-        .map_err(js_shmevent_err)?;
-        let payload = shmevent::system::encode_lifecycle_write_payload(
-            kind_byte,
-            shmevent::system::LIFECYCLE_ACTION_REQUEST,
-            &inner,
-        );
         self.inner
-            .call_signed(shmevent::EVENT_LIFECYCLE_WRITE, payload)
-            .await?;
-        Ok(())
-    }
-
-    /// Lodges a pending log-permit record, scoped by an arbitrary
-    /// `log_kind` string. Matches `mobile/kvmobile.RequestLogPermit`.
-    #[wasm_bindgen(js_name = requestLogPermit)]
-    pub async fn request_log_permit(
-        &self,
-        log_kind: String,
-        target_peer_id: String,
-        metadata: String,
-    ) -> Result<(), JsValue> {
-        let payload = shmevent::logpermit::encode_log_permit_request_payload(
-            &log_kind,
-            target_peer_id.as_bytes(),
-            metadata.as_bytes(),
-        )
-        .map_err(js_shmevent_err)?;
-        self.inner
-            .call_signed(shmevent::EVENT_LOG_PERMIT_REQUEST, payload)
+            .call_signed(Body::PermitRequest {
+                kind: kind_byte,
+                peer_id: target_peer_id,
+                metadata,
+            })
             .await?;
         Ok(())
     }
@@ -1229,10 +1243,30 @@ impl MainHandle {
 
     /// Direct, unreplicated peer-to-peer notification to `dest_peer_id`.
     /// Matches `mobile/kvmobile.Execute`.
+    ///
+    /// Registers `dest_peer_id` with a `setKey` first and cites it from the
+    /// `execute`'s `destinationId` -- the same relational shape `pkg/ipc`'s
+    /// own local callers use, replacing the private "pack both into one
+    /// value" convention this hop needed while every event shared a single
+    /// opaque `value` field.
     pub async fn execute(&self, dest_peer_id: String, value: String) -> Result<(), JsValue> {
-        let payload = shmevent::encode_set_payload(dest_peer_id.as_bytes(), value.as_bytes())
-            .map_err(js_shmevent_err)?;
-        self.inner.call_signed(shmevent::EVENT_EXECUTE, payload).await?;
+        let dest_id = new_id();
+        self.inner
+            .call_signed_with_id(
+                dest_id,
+                Body::SetKey {
+                    value: Some(dest_peer_id.into_bytes()),
+                },
+            )
+            .await?;
+        self.inner
+            .call_signed(Body::Execute {
+                source_id: 0,
+                destination_id: dest_id,
+                sender_peer_id: String::new(),
+                value: Some(value.into_bytes()),
+            })
+            .await?;
         Ok(())
     }
 
@@ -1244,18 +1278,25 @@ impl MainHandle {
     pub async fn poll_execute(&self) -> Result<String, JsValue> {
         let resp = self
             .inner
-            .call_signed(shmevent::EVENT_POLL_EXECUTE, Vec::new())
-            .await?;
-        let out = if resp.value.is_empty() {
-            serde_json::json!({ "pending": false })
-        } else {
-            let (sender_peer_id, payload) =
-                shmevent::decode_execute_notification(&resp.value).map_err(js_shmevent_err)?;
-            serde_json::json!({
-                "pending": true,
-                "sender_peer_id": String::from_utf8_lossy(sender_peer_id),
-                "value": String::from_utf8_lossy(payload),
+            .call_signed(Body::PollExecute {
+                sender_peer_id: String::new(),
+                value: None,
             })
+            .await?;
+        // An empty inbox answers with the request unchanged (pkg/daemon's
+        // pollExecute arm returns `m` untouched when nothing is queued), so
+        // "nothing pending" is exactly "the response fields are still
+        // empty" -- no separate sentinel.
+        let out = match resp.body {
+            Body::PollExecute {
+                sender_peer_id,
+                value,
+            } if !sender_peer_id.is_empty() || value.is_some() => serde_json::json!({
+                "pending": true,
+                "sender_peer_id": sender_peer_id,
+                "value": String::from_utf8_lossy(&value.unwrap_or_default()),
+            }),
+            _ => serde_json::json!({ "pending": false }),
         };
         serde_json::to_string(&out).map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -1291,11 +1332,30 @@ fn js_shmevent_err(e: shmevent::Error) -> JsValue {
     JsValue::from_str(&e.to_string())
 }
 
+/// The one string a `MainHandle` method hands back to JS for `resp`: an
+/// `error`'s message becomes the rejection, and every other variant yields
+/// whichever field is *its* answer.
+///
+/// Under the flat struct this was just "read `value`"; the union gives each
+/// variant its own response field, so the mapping is explicit -- and a
+/// variant nobody here asks for is a bug worth naming rather than an empty
+/// string.
 fn into_js_result(resp: Msg) -> Result<String, JsValue> {
-    if resp.event_type == shmevent::EVENT_ERROR {
-        Err(JsValue::from_str(&String::from_utf8_lossy(&resp.value)))
-    } else {
-        Ok(String::from_utf8_lossy(&resp.value).into_owned())
+    let text = |v: Option<Vec<u8>>| String::from_utf8_lossy(&v.unwrap_or_default()).into_owned();
+    match resp.body {
+        Body::Error { message } => Err(JsValue::from_str(&message)),
+        // connect: the response carries this tab's own peer id here.
+        Body::BootstrapOrJoinCluster { leader_addr } => Ok(leader_addr),
+        Body::SetKey { value } => Ok(text(value)),
+        Body::SetField { .. } => Ok(String::new()),
+        Body::GetKey { key, .. } => Ok(text(key)),
+        Body::GetFieldByKey { value, .. } | Body::GetFieldByRegistry { value, .. } => Ok(text(value)),
+        Body::GetOwnAddr { addr } => Ok(addr),
+        Body::PublicAccess { instance_id, .. } => Ok(instance_id),
+        other => Err(JsValue::from_str(&format!(
+            "unexpected {} response",
+            shmevent::event_name(&other)
+        ))),
     }
 }
 
@@ -1368,27 +1428,34 @@ fn spawn_watch_loop(inner: Rc<MainHandleInner>, kind: WatchKind, cb: js_sys::Fun
     }
 }
 
-/// [`MainHandle::watch_execute`]'s loop body -- drains
-/// `EVENT_POLL_EXECUTE` in a tight loop while notifications keep being
-/// found, sleeping [`WATCH_EXECUTE_POLL_INTERVAL_MS`] between polls once
-/// the queue is empty.
+/// [`MainHandle::watch_execute`]'s loop body -- drains `pollExecute` in a
+/// tight loop while notifications keep being found, sleeping
+/// [`WATCH_EXECUTE_POLL_INTERVAL_MS`] between polls once the queue is empty.
 async fn run_execute_watch(inner: Rc<MainHandleInner>, stop_flag: &Cell<bool>, cb: &js_sys::Function) {
     loop {
         if stop_flag.get() {
             return;
         }
-        let found = match inner.call_signed(shmevent::EVENT_POLL_EXECUTE, Vec::new()).await {
-            Ok(msg) if !msg.value.is_empty() => match shmevent::decode_execute_notification(&msg.value) {
-                Ok((sender_peer_id, payload)) => {
-                    invoke_callback2(
-                        cb,
-                        &String::from_utf8_lossy(sender_peer_id),
-                        &String::from_utf8_lossy(payload),
-                    );
-                    true
-                }
-                Err(_) => false,
-            },
+        let poll = inner
+            .call_signed(Body::PollExecute {
+                sender_peer_id: String::new(),
+                value: None,
+            })
+            .await;
+        // An empty inbox answers with the request's own still-empty fields
+        // -- see MainHandle::poll_execute.
+        let found = match poll.map(|msg| msg.body) {
+            Ok(Body::PollExecute {
+                sender_peer_id,
+                value,
+            }) if !sender_peer_id.is_empty() || value.is_some() => {
+                invoke_callback2(
+                    cb,
+                    &sender_peer_id,
+                    &String::from_utf8_lossy(&value.unwrap_or_default()),
+                );
+                true
+            }
             _ => false,
         };
         if stop_flag.get() {

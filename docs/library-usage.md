@@ -210,7 +210,6 @@ for exact semantics of each:
 - `LogAppend(ctx, key, value []byte) error` — raw `pkg/logrecord` write; prefer `pkg/logrecord.BuildKey`+`Record.Encode` to build `key`/`value`, or use `kvctl.LogAppend` for the friendly form
 - `ListRange(ctx, start, end []byte) (key, value []byte, ok bool, err error)` — one match at a time; loop, narrowing `start` past the last returned key, for a full range scan
 - `RequestPermit`/`ConfirmPermit`/`RevokePermit(ctx, kind byte, peerID, metadata []byte) error`
-- `RequestLogPermit`/`ConfirmLogPermit`/`RevokeLogPermit(ctx, logKind string, peerID, metadata []byte) error`
 - `Execute(ctx, destPeerID string, payload []byte) error` — direct unreplicated peer-to-peer send, not stored anywhere
 - `PollExecute(ctx) (senderPeerID string, payload []byte, ok bool, err error)`
 
@@ -354,8 +353,8 @@ kvctl-cli get mykey
 Run `kvctl-cli -h` (or read `cmd/kvctl-cli/main.go`) for the full command
 set — it mirrors `pkg/kvctl`'s exported functions one-to-one (`addnode`,
 `resumenode`, `use`, `set`, `get`, `logappend`, `logquery`, `execute`,
-`pollexecute`, `requestpermit`/`confirmpermit`/`revokepermit`, the
-`logpermit` equivalents, and `sendevent` for raw `pkg/shmevent` dispatch).
+`pollexecute`, `requestpermit`/`confirmpermit`/`revokepermit`, and
+`sendevent` for raw `pkg/shmevent` dispatch).
 `KVSTORE_HOME` controls where its registry/node data lives, same as the Go
 API.
 

@@ -22,8 +22,10 @@ this file covers this repo's own architecture and `mage` workflow instead.
   `sourceId`/`destinationId` relational references, a raw `value`, a CRC32, an Ed25519 `signature`,
   and a correlation `id` — a Set decomposes into a linked `SetKey`+`SetField` pair, a Get is a
   one-shot `GetField`, and `GetPublicKey`/`GetPrivateKey` are how a caller with no key yet
-  bootstraps into the same key the node itself holds. `pkg/shmevent` (Go) and `web-app/src/shmevent.rs`
-  (Rust) are both generated from this identical schema. See its doc comment for the full design.
+  bootstraps into the same key the node itself holds. `pkg/shmevent` (Go) and `web-app/src/shmevent/`
+  (Rust) are both generated from this identical schema, and `api/shmevent_wire_fixture.json` — real
+  Go-encoded messages both sides decode, signature-verify, and re-encode byte-for-byte — is what
+  keeps them honest about it. See its doc comment for the full design.
 - `pkg/ipc` — request/response IPC between a short-lived CLI process and the daemon, over shmring
   ring buffers carrying `pkg/shmevent.Msg`. `ipc.go` is the desktop (named shared-memory) transport;
   `ipc_android.go` is the Android transport (`ASharedMemory`, no named rendezvous, so client and
@@ -220,8 +222,7 @@ kept CRC32/signature computation compatible across peers running different build
 survived `api/shmevent.capnp`'s union rewrite: every variant now has its own self-describing,
 variable-length fields, replacing the old hand-packed flat `value :Data` design the padding trick
 existed to patch around (see that schema's own doc comment on "Design: a real union"); the only
-remaining traces of the old scheme are stale comments in `catalog.go`/`channelframe.go` and the
-already-unported `web-app/src/shmevent/mod.rs` (see that crate's own "KNOWN BROKEN" doc comment).
+remaining traces of the old scheme are stale comments in `catalog.go`/`channelframe.go`.
 
 For a while that left every raw payload a caller can write or send — `SetKey`/`SetField`/`Set`,
 each `Txn` op's value, `LogAppend`, `Execute`/`ExecuteNotification`, `ChannelSend`,
@@ -969,18 +970,6 @@ just appending to it.
 
 ### Client in a browser
 
-**KNOWN BROKEN as of the `api/shmevent.capnp` union rewrite:** `web-app/src/shmevent.rs` — the
-crate's own hand-ported mirror of `pkg/shmevent`, described below — still assumes the old flat
-`Event{event, sourceId, destinationId, value, crc32, signature, id}` struct and was never updated
-to the real per-variant union every other client (desktop, Android) was migrated to in the same
-change (see that schema's own doc comment on "Design: a real union"). A browser client built from
-this crate as it stands **cannot talk to the rest of the mesh** — every message it sends or expects
-to receive uses a wire shape the daemon side no longer speaks. Porting `web-app/src/shmevent.rs`
-(and its `catalog_keys.rs`/`logpermit.rs`/`system.rs` siblings, which hand-pack the same flat shape)
-to the new union is its own follow-up, deliberately out of scope for the Go-side rewrite that left
-it in this state, and everything below describes the *intended* design this client is built toward,
-not its current working state.
-
 Unlike the desktop CLI and the Android app, a browser tab can never be a raft *voter*: a voter's
 transport must be independently dialable by any other voter at any time, and a browser sandbox has
 no way to accept a raw inbound connection. But it turns out a tab *can* be a raft **non-voter
@@ -990,7 +979,7 @@ followers](#follower-on-android) above) — so `web-app/` is designed to be a re
 member of the cluster, in Rust compiled to `wasm32-unknown-unknown` over `rust-libp2p`: it
 reimplements `hashicorp/raft`'s `NetworkTransport` msgpack wire protocol to receive genuine
 `AppendEntries` replication, backed by real SQLite (`sqlite-wasm-rs`) for the replicated log and kv
-table. Joining is meant to happen over `pkg/daemon.ClientProtocolID`, speaking `pkg/shmevent`'s
+table. Joining happens over `pkg/daemon.ClientProtocolID`, speaking `pkg/shmevent`'s
 capnp struct: the browser first fetches the target's Ed25519 key (`EventGetPrivateKey`, unsigned —
 the one bootstrap exception), then sends a signed `EventSetKey`+`EventAdd` pair (own peer id, then
 own reserved address) to `handleAddLearner`, which calls `raft.AddNonvoter` — forwarding to the
@@ -998,6 +987,16 @@ real leader server-side if the dialed node isn't it, one hop, mirroring how a vo
 request forwards (`pkg/daemon.ForwardJoinProtocolID`). A Set still forwards to the leader the same
 way (as a signed `EventSetKey`+`EventSetField` pair); a Get reads this tab's own
 locally-replicated state.
+
+`web-app/src/shmevent/` is generated from the same `api/shmevent.capnp` schema as `pkg/shmevent`,
+but generation only settles the *field layout* — which variant each event maps onto, and the
+canonical-form CRC32/signature payload both sides have to agree on byte-for-byte, are still written
+once per language. `api/shmevent_wire_fixture.json` is what pins them together: one real Go-encoded
+message per interesting union variant, signed with a fixed test key, which `go test ./pkg/shmevent
+-run TestWireFixture` and `cargo test` (`shmevent::tests::go_fixture`) each decode, signature-verify,
+and re-encode to identical bytes. Regenerate it with `-update-wire-fixture` when the schema
+legitimately changes, and treat an unexplained diff on either side as the cross-language break it
+is — a same-language round trip passes just as happily on a wire shape the other side can't read.
 
 Every node already listens on a browser-reachable WebTransport address (`newHost` adds it
 alongside the existing TCP/QUIC listeners); `advertisedAddrs()`/`ready.json` include it
