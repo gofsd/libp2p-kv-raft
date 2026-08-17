@@ -189,6 +189,24 @@ tracks *changes*, not a full feature description).
   workload.
 
 ### Fixed
+- **A data race on `followerReplication.peer` in `hashicorp/raft`**, fixed in a new
+  `thirdparty/raft` patched copy (pinned via `replace`, the same pattern
+  `thirdparty/anet`/`thirdparty/libc` already use -- see README's "Vendored
+  dependency patch"). `peer` is documented upstream as protected by `peerLock`
+  and the write side takes it, but three reads did not: `updateLastAppended`'s
+  `s.commitment.match(s.peer.ID, ...)` plus two error-path log statements. A new
+  `getPeer()` accessor, shaped like the existing `LastContact()`, now guards all
+  three. The write only happens when a peer's address changes under a live
+  leader, which is routine here (a node swapping a direct address for a
+  `/p2p-circuit` relay one) but rare in a typical deployment -- so this is more
+  load-bearing for this project than for upstream. Not fixable by upgrading:
+  upstream `main` (`v1.7.4-0.20260727055746`) still has it. Found as a CI
+  `-race` failure that took down `TestRelayLeaderReplicatesToPeerBehindItself`
+  and three `TestRecruit*` tests at once. Carries its own regression test
+  (`TestUpdateLastAppendedReadsPeerUnderLock`, which fails under `-race`
+  against unpatched upstream and passes with the fix) plus a CI step to run
+  it -- a nested module is invisible to `./...`, so without that step the
+  patch could be silently dropped by a future re-vendor with nothing failing.
 - A `Join` through a relay circuit (`connect to leader ...: error opening relay circuit:
   NO_RESERVATION (204)`) could fail outright even though the leader was genuinely reachable,
   reproduced twice pairing two Android devices over the deployed relay. `NO_RESERVATION` means

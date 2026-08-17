@@ -256,6 +256,13 @@ protocol — not new task types.
   64-bit and which otherwise crashes the app with `SIGSYS` the instant SQLite opens its database
   file (hit running the Android app in the emulator, an x86_64 image -- a real arm64 phone never
   had those legacy syscalls to begin with). See README's "Vendored dependency patch" section.
+- `thirdparty/raft` — a local patched copy of `github.com/hashicorp/raft` v1.7.3 (also pinned via
+  `replace`), guarding three unlocked reads of `followerReplication.peer` — a field upstream
+  documents as protected by `peerLock`, and whose write side does take it — behind a new
+  `getPeer()` accessor. The write only fires when a peer's address changes under a live leader,
+  which is routine here (direct address → `/p2p-circuit` relay one) and rare upstream, so this
+  races far more readily in this project than in a typical deployment. Not fixable by upgrading:
+  upstream `main` still has it. See README's "Vendored dependency patch" section.
 
 ## Node connectivity policy
 

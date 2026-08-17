@@ -16,5 +16,12 @@ vendored in-tree under thirdparty/:
     See thirdparty/libc/LICENSE (and LICENSE-3RD-PARTY.md for that
     project's own further third-party attributions) for the full text.
 
+  - thirdparty/raft: a patched copy of github.com/hashicorp/raft.
+    Mozilla Public License 2.0, Copyright (c) HashiCorp, Inc.
+    See thirdparty/raft/LICENSE for the full text. Modified file:
+    replication.go (marked in-file as LOCAL PATCH), which under MPL
+    2.0 stays under that same license -- the rest of this project's
+    Apache-2.0 licensing is unaffected, since MPL 2.0 is file-scoped.
+
 See CLAUDE.md's "Vendored dependency patch" section for why each of
 these is patched rather than used unmodified from upstream.

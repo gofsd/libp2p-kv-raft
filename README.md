@@ -1698,6 +1698,25 @@ GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc`) but hasn't been run on a 
 machine -- there wasn't one available to validate against, so treat the resulting `.exe`s as
 untested until someone runs them for real.
 
+`thirdparty/raft` is a local, patched copy of `github.com/hashicorp/raft` v1.7.3 (pinned via a
+`replace` directive in `go.mod`), fixing a data race on `followerReplication.peer`. That field is
+documented upstream as protected by `peerLock`, and `startStopReplication` does take the write lock
+when a follower's address changes (`raft.go`'s `s.peer = server`) -- but three reads never took the
+read lock: `updateLastAppended`'s `s.commitment.match(s.peer.ID, ...)` and two error-path log
+statements (`replicateTo`'s pipeline failure, `handleStaleTerm`). The patch adds a `getPeer()`
+accessor in the same shape as the existing `LastContact()` and routes those three through it; every
+other read in the file already took `peerLock.RLock()` inline. Upstream `main`
+(`v1.7.4-0.20260727055746`) still has it, so there is no newer release to bump to.
+
+This matters more here than for a typical raft deployment, because the write side is only reached
+when a peer's address actually changes under a live leader -- which is routine in this project, as
+a node swaps a direct address for a `/p2p-circuit` relay one (see "Node connectivity policy"). It
+surfaced 2026-08-17 as a CI failure in the `-race` build (`mage integration`), where it took down
+`TestRelayLeaderReplicatesToPeerBehindItself` and three `TestRecruit*` tests at once; it does not
+reproduce reliably on an unloaded machine, so treat a local green `-race` run as weak evidence
+either way. The race is real regardless of the test failures: a torn read of `s.peer.ID` feeds the
+wrong server ID into `commitment.match`, which is what advances the leader's commit index.
+
 ## Testing
 
 ```bash

@@ -141,3 +141,5 @@ tool (
 replace github.com/wlynxg/anet => ./thirdparty/anet
 
 replace modernc.org/libc => ./thirdparty/libc
+
+replace github.com/hashicorp/raft => ./thirdparty/raft

@@ -109,6 +109,16 @@ jobs:
       - name: mage integration
         run: mage integration
 
+      # thirdparty/raft is a nested module, so every `./...` above stops at its
+      # go.mod and never reaches it -- which would leave the local peerLock
+      # patch's own regression test permanently unrun, and the patch itself
+      # free to be silently dropped by a future re-vendor. This runs just that
+      # one test (it needs -race to prove anything at all). See README's
+      # "Vendored dependency patch" section.
+      - name: thirdparty/raft patch regression test
+        working-directory: thirdparty/raft
+        run: go test -race -run TestUpdateLastAppendedReadsPeerUnderLock -count=1 .
+
   govulncheck:
     name: govulncheck
     runs-on: ubuntu-latest
