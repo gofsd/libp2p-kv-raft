@@ -2339,6 +2339,21 @@ type OpticalScanResult struct {
 	Status int                     `json:"status"`
 	Error  string                  `json:"error,omitempty"`
 	Cases  []OpticalScanCaseResult `json:"cases,omitempty"`
+	// Attempts is how many whole batches this run actually spent -- 1 on a run that measured its
+	// cases the first time, more when a batch died without measuring anything and was re-run (see
+	// pkg/e2erun's opticalCrashRetries). Recorded because "did it pass" and "did it pass on the
+	// first try" are genuinely different questions about this suite, and only the first one was ever
+	// answerable from disk: a retried 90/90 and a clean 90/90 both persisted as an identical
+	// status: 0, leaving the distinction to live in a human's memory of watching the run. A rig
+	// whose first-try rate is the thing being improved needs that number written down.
+	Attempts int `json:"attempts,omitempty"`
+	// Stalls is how many times device B had to take another look at a code device A was already
+	// holding on screen (UiCommandE2ETest's own re-arm path). Zero is a run where every case
+	// decoded first time; a rising count is the early warning that decode reliability is slipping
+	// while the suite still passes, which is exactly the state this suite was in for most of its
+	// history. Counted from device B's own logcat, so it stays a measurement of the camera path
+	// rather than of the orchestrator.
+	Stalls int `json:"stalls,omitempty"`
 }
 
 // File is the on-disk shape of test/e2e/testdata.json.

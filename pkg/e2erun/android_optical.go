@@ -45,6 +45,10 @@ const (
 func runOpticalScanSuite(cases []e2edata.OpticalScanCase, serialA, serialB string) *e2edata.OpticalScanResult {
 	for attempt := 0; ; attempt++ {
 		result, crashed := runOpticalScanBatch(cases, serialA, serialB)
+		// Attempts counts batches spent, not batches retried, so a clean run records 1 rather than
+		// omitting the field -- see OpticalScanResult.Attempts for why a retried pass and a
+		// first-try pass must not persist identically.
+		result.Attempts = attempt + 1
 		if !crashed || attempt >= opticalCrashRetries {
 			return result
 		}
@@ -136,7 +140,7 @@ func runOpticalScanBatch(cases []e2edata.OpticalScanCase, serialA, serialB strin
 
 	genDone := make(chan opticalMethodOutcome, 1)
 	go func() {
-		results, crashed, err := runOpticalMethod(serialA, "generateAndHoldAll", "opticalSpecs", genArg)
+		results, _, crashed, err := runOpticalMethod(serialA, "generateAndHoldAll", "opticalSpecs", genArg)
 		genDone <- opticalMethodOutcome{results, err, crashed}
 	}()
 
@@ -164,13 +168,15 @@ func runOpticalScanBatch(cases []e2edata.OpticalScanCase, serialA, serialB strin
 	// for FIRST_CASE_HOLD_MILLIS.
 	time.Sleep(25 * time.Second)
 
-	bResults, bCrashed, bErr := runOpticalMethod(serialB, "awaitAndVerifyScanAll", "opticalExpects", expArg)
+	bResults, bLog, bCrashed, bErr := runOpticalMethod(serialB, "awaitAndVerifyScanAll", "opticalExpects", expArg)
 
 	// Block until A's own batch invocation has genuinely finished before proceeding to the
 	// VerifyOnDeviceA pass below, which reuses serialA for a fresh, separate call -- the same
 	// "don't start a new invocation against A while the last one is still winding down" reasoning
 	// the old per-case handoff needed, just amortized over the whole run instead of every case.
 	genRes := <-genDone
+
+	result.Stalls = strings.Count(bLog, opticalStallMarker)
 
 	var failed []string
 	for _, c := range cases {
@@ -228,7 +234,7 @@ func verifyOnDeviceA(serialA string, c e2edata.OpticalScanCase, scanResult *e2ed
 	if err != nil {
 		return fmt.Errorf("encode verify spec: %w", err)
 	}
-	vResults, _, vErr := runOpticalMethod(serialA, "verifyLogContains", "opticalVerify", verifyArg)
+	vResults, _, _, vErr := runOpticalMethod(serialA, "verifyLogContains", "opticalVerify", verifyArg)
 	vResult := findResult(vResults, "OpticalVerify")
 	if vResult == nil {
 		if vErr != nil {
@@ -290,6 +296,14 @@ const opticalCrashMarker = "Process crashed"
 // the Activity from inside the run was tried and does not rebuild the composition.
 const opticalCollectorGoneMarker = "AppRoot's scan collector is gone"
 
+// opticalStallMarker is what device B logs each time a code device A is already holding on screen
+// failed to produce its expected UI within one look, and B re-armed for another (see
+// UiCommandE2ETest.kt's awaitScannedTag, whose log line this must stay in step with). Counted into
+// OpticalScanResult.Stalls: every one of these is a rebind and a lost ~10 seconds that a healthy
+// camera path would not have needed, and counting them turns "the suite still passes" into a number
+// that says whether it is passing comfortably or barely.
+const opticalStallMarker = "not shown on look"
+
 // stopAppProcesses force-stops the app under test and its instrumentation on serial, then waits for
 // the app's process to actually be gone before returning.
 //
@@ -329,7 +343,7 @@ func stopAppProcesses(serial string) {
 // UiCommandE2ETest.kt's writeResults). Reuses that exact on-device path/pull/parse plumbing
 // runUICommandTest already established, just targeting one specific method instead of the whole
 // class.
-func runOpticalMethod(serial, method, argName string, argJSON []byte) ([]e2edata.UICaseResult, bool, error) {
+func runOpticalMethod(serial, method, argName string, argJSON []byte) ([]e2edata.UICaseResult, string, bool, error) {
 	stopAppProcesses(serial)
 
 	deviceResultsPath := fmt.Sprintf("/sdcard/Android/data/%s/files/ui_e2e_results.json", androidAppID)
@@ -380,17 +394,17 @@ func runOpticalMethod(serial, method, argName string, argJSON []byte) ([]e2edata
 		fmt.Fprintf(os.Stderr, "e2erun: optical: %s's app process crashed during %s -- whatever cases had not run yet measured nothing\n", serial, method)
 	}
 	if err := pull.Run(); err != nil {
-		return nil, crashed, fmt.Errorf("pull results for %s (instrument err: %v, output: %s): %w: %s\ndevice KVDemo logcat:\n%s", method, instrumentErr, out.String(), err, pullOut.String(), deviceLog)
+		return nil, deviceLog, crashed, fmt.Errorf("pull results for %s (instrument err: %v, output: %s): %w: %s\ndevice KVDemo logcat:\n%s", method, instrumentErr, out.String(), err, pullOut.String(), deviceLog)
 	}
 	data, err := os.ReadFile(localResultsPath)
 	if err != nil {
-		return nil, crashed, fmt.Errorf("read results for %s: %w", method, err)
+		return nil, deviceLog, crashed, fmt.Errorf("read results for %s: %w", method, err)
 	}
 	var results []e2edata.UICaseResult
 	if err := json.Unmarshal(data, &results); err != nil {
-		return nil, crashed, fmt.Errorf("parse results for %s: %w (raw: %s)", method, err, data)
+		return nil, deviceLog, crashed, fmt.Errorf("parse results for %s: %w (raw: %s)", method, err, data)
 	}
-	return results, crashed, nil
+	return results, deviceLog, crashed, nil
 }
 
 // pullKVDemoLogcat dumps serial's current KVDemo-tagged logcat buffer (see runOpticalMethod's own

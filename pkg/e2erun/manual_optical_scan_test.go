@@ -2,8 +2,10 @@ package e2erun
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -34,6 +36,14 @@ import (
 //
 // Cases come from test/e2e/testdata.json's android_optical_cases -- see OpticalScanCase's own
 // doc comment.
+//
+// MANUAL_OPTICAL_SCAN_CASES=<caseID>[,<caseID>...] narrows the run to those cases, in file order,
+// for the mini-batch that is the cheap way to check a rig-level or scanner-level change before
+// committing a full ~6-minute 90-case run to it (see the "3-case mini-batch" habit this harness's
+// history is full of). A filtered run deliberately does *not* persist its result: overwriting
+// android_optical_scan_result -- the on-disk answer to "did the whole suite pass last time" -- with
+// a 3-case subset would silently destroy that answer, and a filtered run is a diagnostic, never a
+// measurement of the suite.
 func TestManualOpticalScan(t *testing.T) {
 	spec := os.Getenv("MANUAL_OPTICAL_SCAN_SERIALS")
 	if spec == "" {
@@ -60,13 +70,37 @@ func TestManualOpticalScan(t *testing.T) {
 		t.Fatal("test/e2e/testdata.json has no android_optical_cases entries")
 	}
 
-	result := runOpticalScanSuite(file.OpticalScanCases, serialA, serialB)
+	cases := file.OpticalScanCases
+	only := os.Getenv("MANUAL_OPTICAL_SCAN_CASES")
+	if only != "" {
+		wanted := map[string]bool{}
+		for _, id := range strings.Split(only, ",") {
+			if id = strings.TrimSpace(id); id != "" {
+				wanted[id] = true
+			}
+		}
+		cases = nil
+		for _, c := range file.OpticalScanCases {
+			if wanted[c.CaseID] {
+				cases = append(cases, c)
+				delete(wanted, c.CaseID)
+			}
+		}
+		if len(wanted) > 0 {
+			t.Fatalf("MANUAL_OPTICAL_SCAN_CASES names case(s) android_optical_cases has no entry for: %v", slices.Sorted(maps.Keys(wanted)))
+		}
+		t.Logf("running %d of %d case(s) (MANUAL_OPTICAL_SCAN_CASES=%s) -- this result will NOT be persisted", len(cases), len(file.OpticalScanCases), only)
+	}
+
+	result := runOpticalScanSuite(cases, serialA, serialB)
 	data, _ := json.MarshalIndent(result, "", "  ")
 	t.Logf("result:\n%s", data)
 
-	file.OpticalScanResult = result
-	if err := file.Save(testdataPath); err != nil {
-		t.Fatalf("save testdata (result was: %s): %v", result.Error, err)
+	if only == "" {
+		file.OpticalScanResult = result
+		if err := file.Save(testdataPath); err != nil {
+			t.Fatalf("save testdata (result was: %s): %v", result.Error, err)
+		}
 	}
 
 	if result.Status != e2edata.StatusPass {

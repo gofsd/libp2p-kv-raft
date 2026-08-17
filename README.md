@@ -1834,3 +1834,39 @@ call from a non-leader node failed outright regardless of whether the operation 
 that makes `OpSet`/`OpAppendCommandRequest` safe to forward with no extra sender-is-a-voter gate, so
 the fix was adding it to that accepted-op list -- a one-line change caught by the optical catalog
 doing exactly the job it exists for.
+
+#### Why decodes fail when nothing looks wrong
+
+The dominant way this suite used to lose a run was a case that decoded *nothing* while every
+observable said the camera was fine: in focus, frames fresh and changing, scan collector subscribed,
+and the code plainly legible in a screenshot of device B's own preview. What settles this in one step
+rather than several two-device runs is dumping the analyzer's own luminance plane
+(`MainScannerWidget.maybeDumpFrame`, off unless a `dump_frames` marker file exists in the app's
+external files dir) and replaying those frames through the identical ZXing pipeline on the host --
+`HybridBinarizer` over a `PlanarYUVLuminanceSource`, `DATA_MATRIX` + `TRY_HARDER` -- which turns a
+two-minute hardware experiment into a one-second one. Two real causes came out of it, both invisible
+from anywhere else:
+
+- **A padded row stride.** An `ImageProxy`'s luminance plane is only tightly packed when the camera
+  HAL says so; it may pad each row out past the image width, and this one does on some
+  reconfigurations. Reading it as `width` bytes per row shears every row progressively left, leaving
+  a perfectly sharp, perfectly fresh, completely undecodable image next to a preview that still looks
+  right (the HAL renders that itself, stride and all). `processImageProxySafe` sizes and indexes by
+  `rowStride` throughout, and logs once when a padded plane shows up.
+- **Midtone compression, the bigger one.** A bright screen showing the code in an otherwise dark room
+  makes auto-exposure meter for the whole frame and land the code's white background in the midtones,
+  where its modules span too few luminance steps for `HybridBinarizer`'s block thresholds to separate
+  them. Measured on 61 frames dumped from a stalled run: **1 of 61 decoded raw, 49 of 61 with a
+  gamma-2.6 midtone lift** (one failing case's own frames went 0/25 to 22/25). A plain linear
+  contrast stretch does nothing here -- the dark surround already puts the frame across the full
+  0..255 range, so only a nonlinear lift changes anything. `decodeRawOrLifted` therefore tries the
+  frame as delivered first and the lifted copy only if that finds nothing, so no scene that already
+  decodes can be made worse. Live effect on the rig: a case that had failed three runs in a row after
+  ~250s of looking decoded in 2.3s, and a three-case batch went from 18 re-arms to none.
+
+`OpticalScanResult` records `attempts` and `stalls` alongside the per-case detail, because "it
+passed" and "it passed on the first try, without the camera needing a second look at anything" are
+different questions and only the first was ever answerable from disk. `MANUAL_OPTICAL_SCAN_CASES=<caseID>[,...]`
+narrows a run to named cases for exactly the cheap three-case probe worth running before committing
+to a full one -- a filtered run deliberately does not persist its result, since overwriting the
+suite's recorded outcome with a subset would destroy the thing that record is for.
