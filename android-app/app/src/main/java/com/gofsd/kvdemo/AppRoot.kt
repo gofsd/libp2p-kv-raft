@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -26,6 +27,9 @@ import java.net.URLDecoder
 import java.net.URLEncoder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.retry
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kvmobile.Kvmobile
@@ -160,7 +164,19 @@ fun AppRoot() {
         // this fix, made nav-shortcut scans stop being observed at all rather than fixing
         // anything). The delay that actually matters -- see inside the NavCode branch below --
         // has to be on the *navigate* action, after the value is already safely received here.
-        ScannerCoordinator.scans.collect { bytes ->
+        // onEach + retry rather than a bare collect: an exception escaping this body used to escape
+        // the LaunchedEffect with it, and an exception out of a LaunchedEffect cancels the whole
+        // composition's effect scope -- which takes this collector *and* MainScannerWidget's camera
+        // bind down together while the Activity stays alive and keeps drawing its last frame. That
+        // is exactly the state this harness spent runs chasing as "AppRoot's scan collector is
+        // gone": no dialog, no navigation, no scans, nothing decoding, no exception logged, and no
+        // way back short of a fresh process (recreating the Activity was tried and does not rebuild
+        // the composition). Nothing in a scan's own handling -- decoding bytes, parsing JSON out of
+        // a payload a camera read off a screen, a navigate on a controller mid-transition -- is
+        // worth that outcome, so a throw here is logged and the collector resubscribes instead.
+        // `catch` alone would not do: it *completes* the flow, leaving the same zero-collector state
+        // this exists to prevent.
+        ScannerCoordinator.scans.onEach { bytes ->
             Log.i(TAG, "AUTO: scan received (${bytes.size} bytes), decoding")
             val text = DataMatrixCodec.bytesToText(bytes)
 
@@ -170,7 +186,7 @@ fun AppRoot() {
                 pendingRun = PendingRun(runCode.category, runCode.name, runCode.params)
                 Log.w(TAG, "ACTION_REQUIRED: RunConfirmDialog shown for ${runCode.category}: ${runCode.name} -- tap Execute or Cancel on this device")
                 ScannerCoordinator.expanded = false
-                return@collect
+                return@onEach
             }
 
             val navCode = NavCode.decode(text)
@@ -218,7 +234,7 @@ fun AppRoot() {
                     }
                 }
                 ScannerCoordinator.expanded = false
-                return@collect
+                return@onEach
             }
 
             val decodedJson = withContext(Dispatchers.IO) {
@@ -243,7 +259,17 @@ fun AppRoot() {
             // camera view expanded and pointless behind the dialog) reads
             // as the natural next step, not a random popup mid-scan.
             ScannerCoordinator.expanded = false
-        }
+        }.retry { t ->
+            Log.w(TAG, "AUTO: a scan's own handling threw -- logged and ignored, the scan collector stays subscribed", t)
+            true
+        }.collect()
+    }
+
+    // Says so in the log if AppRoot ever leaves the composition while its Activity lives on -- the
+    // one explanation for a vanished scan collector that the guard above cannot rule out, and
+    // indistinguishable from every other cause without this line.
+    DisposableEffect(Unit) {
+        onDispose { Log.w(TAG, "AUTO: AppRoot left the composition -- its scan collector and camera bind are gone with it") }
     }
 
     MaterialTheme {

@@ -69,11 +69,13 @@ import com.google.zxing.DecodeHintType
 import com.google.zxing.MultiFormatReader
 import com.google.zxing.NotFoundException
 import com.google.zxing.PlanarYUVLuminanceSource
+import com.google.zxing.Result
 import com.google.zxing.common.HybridBinarizer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -127,6 +129,136 @@ private var lastFrameDigest = 0L
  */
 @Volatile
 private var rebindRequested = false
+
+/** One-shot guard so the padded-stride notice (see [processImageProxySafe]) is logged once, not per frame. */
+private var loggedRowStride = false
+
+/**
+ * Exponent of the midtone lift [decodeRawOrLifted] applies to a frame the binarizer could not find
+ * a code in. 2.6 is measured, not chosen: sweeping it over 61 analyzer frames dumped from a real
+ * stalled optical run (see [maybeDumpFrame]) decoded 5/61 at 1.6, 33/61 at 2.0, 41/61 at 2.2,
+ * **49/61 at 2.6**, and 47/61 at 3.5 -- against **1/61 for the raw frames those runs actually
+ * failed on**.
+ */
+private const val MIDTONE_LIFT_GAMMA = 2.6
+
+/**
+ * `v -> 255 * (v/255)^(1/[MIDTONE_LIFT_GAMMA])`, precomputed once. A per-pixel `pow` would be
+ * ~2 million calls per frame; a 256-entry table makes the whole lift one array read per pixel.
+ */
+private val midtoneLiftLut = IntArray(256) { v ->
+    Math.round(255.0 * Math.pow(v / 255.0, 1.0 / MIDTONE_LIFT_GAMMA)).toInt().coerceIn(0, 255)
+}
+
+/** Scratch buffer for the lifted copy, reused across frames for the same reason [luminanceBuffer] is. */
+private var liftedBuffer: ByteArray? = null
+
+/** True once a decode has come from the lifted pass, so that is logged once rather than per frame. */
+private var loggedMidtoneLift = false
+
+/**
+ * Decodes [luma] -- first exactly as the camera delivered it, then, if that found nothing, with a
+ * midtone lift applied ([MIDTONE_LIFT_GAMMA]).
+ *
+ * The second pass is here because of a measured, reproducible failure that looks nothing like an
+ * imaging problem from outside: on a rig whose camera was in focus, whose frames were fresh, and
+ * whose preview showed the code sharply, whole cases decoded *nothing* for their entire budget --
+ * and dumping the analyzer's own bytes ([maybeDumpFrame]) and replaying them through this exact
+ * pipeline on a host decoded **1 of 61** frames, while the same 61 frames with this lift applied
+ * decoded **49**. One failing case's frames went from 0/25 to 22/25.
+ *
+ * The cause is the scene, not the camera: a bright screen displaying the code sits in a dark room,
+ * so auto-exposure meters for the whole frame and lands the code's white background in the
+ * midtones, where its modules span too few luminance steps for [HybridBinarizer]'s block
+ * thresholds to separate them. Nothing about that is visible in a screenshot (the preview stream
+ * is rendered by the HAL with its own tone curve) or in a sharpness measure (the edges are all
+ * still there, just compressed) -- which is why this cost several runs to find. A plain linear
+ * contrast stretch does *not* help, measured the same way (1/61 at a 0.5% clip, 4/61 at 10%): the
+ * frame already spans the full 0..255 range thanks to the dark surround, so only a nonlinear lift
+ * of the midtones changes anything.
+ *
+ * Raw first, lift second, rather than always lifting: a frame that already decodes is the common
+ * case in ordinary lighting, and this way no scene that works today can be made worse by the lift.
+ * The cost is one extra LUT pass and decode attempt on frames that were going to fail anyway, on a
+ * KEEP_ONLY_LATEST analyzer where the only currency is frame rate.
+ */
+private fun decodeRawOrLifted(
+    reader: MultiFormatReader,
+    luma: ByteArray,
+    rowStride: Int,
+    width: Int,
+    height: Int,
+): Result {
+    fun bitmapOf(bytes: ByteArray) =
+        BinaryBitmap(HybridBinarizer(PlanarYUVLuminanceSource(bytes, rowStride, height, 0, 0, width, height, false)))
+
+    try {
+        return reader.decode(bitmapOf(luma))
+    } catch (_: NotFoundException) {
+        // Fall through to the lifted attempt below.
+    }
+
+    var lifted = liftedBuffer
+    if (lifted == null || lifted.size != luma.size) {
+        lifted = ByteArray(luma.size)
+        liftedBuffer = lifted
+    }
+    for (i in luma.indices) lifted[i] = midtoneLiftLut[luma[i].toInt() and 0xff].toByte()
+    // decode() keeps state from the failed attempt above; decodeWithState would reuse a hint set
+    // chosen for an image this is not. reset() is what MultiFormatReader documents for reusing one
+    // reader across unrelated images.
+    reader.reset()
+    val result = reader.decode(bitmapOf(lifted))
+    if (!loggedMidtoneLift) {
+        loggedMidtoneLift = true
+        Log.i("KVDemo", "AUTO: a frame decoded only after the midtone lift (gamma $MIDTONE_LIFT_GAMMA) -- the raw plane's midtones were too compressed to binarize")
+    }
+    return result
+}
+
+/**
+ * Where [maybeDumpFrame] writes analyzer frames, and when it last wrote one. Set by
+ * [MainScannerWidget] from its own context, since the decode path itself has none.
+ */
+@Volatile
+private var frameDumpDir: File? = null
+private var lastFrameDumpAtMs = 0L
+
+/** How often [maybeDumpFrame] writes a frame while it is switched on -- often enough to catch a stall, rare enough not to become the reason for one. */
+private const val FRAME_DUMP_INTERVAL_MS = 2_000L
+
+/**
+ * Writes the analyzer's own luminance plane to a PGM, but only while a "dump_frames" marker file
+ * exists in the app's external files directory.
+ *
+ * This exists because the analyzer's view is the one thing about this scanner that cannot be
+ * observed any other way. A screenshot shows the *preview* stream, which the camera renders
+ * separately, and on the two-device optical rig those two disagreed: cases whose code the preview
+ * displayed sharply and which decoded offline from that screenshot were never decoded by the
+ * analyzer looking at the same scene. Guessing at the difference cost several two-device runs;
+ * a PGM of exactly the bytes ZXing was handed settles it in one.
+ *
+ * Off unless the marker file is there, so it costs a `File.exists()` every couple of seconds and
+ * nothing else. Switch it on with
+ * `adb shell touch /sdcard/Android/data/com.gofsd.kvdemo/files/dump_frames` and collect with
+ * `adb pull /sdcard/Android/data/com.gofsd.kvdemo/files/frames`.
+ */
+private fun maybeDumpFrame(luma: ByteArray, rowStride: Int, width: Int, height: Int) {
+    val dir = frameDumpDir ?: return
+    val now = System.currentTimeMillis()
+    if (now - lastFrameDumpAtMs < FRAME_DUMP_INTERVAL_MS) return
+    lastFrameDumpAtMs = now
+    if (!File(dir, "dump_frames").exists()) return
+    runCatching {
+        val out = File(dir, "frames").apply { mkdirs() }
+        File(out, "frame-$now.pgm").outputStream().buffered().use { sink ->
+            sink.write("P5\n$width $height\n255\n".toByteArray())
+            for (y in 0 until height) {
+                sink.write(luma, y * rowStride, width)
+            }
+        }
+    }.onFailure { Log.w("KVDemo", "AUTO: could not dump an analyzer frame: $it") }
+}
 
 /**
  * How far below its own best-observed value this camera's frame sharpness has to fall, and for how
@@ -358,6 +490,7 @@ fun MainScannerWidget(
         Log.i("KVDemo", "AUTO: camera bound, scanner live (analysis resolution ${imageAnalyzer.resolutionInfo?.resolution})")
 
         MainScannerManager.setup(context.applicationContext, camera.cameraControl)
+        frameDumpDir = context.getExternalFilesDir(null)
 
         // The saved zoom can only be re-applied once the camera has reported its real
         // min/max ratio -- restoring before that would clamp against the placeholder 1f..1f
@@ -633,13 +766,34 @@ private fun processImageProxySafe(imageProxy: ImageProxy, onResult: (ByteArray) 
         // running in. Safe to share without synchronization because every call arrives on the
         // single-threaded decodeExecutor (see its own construction in MainScannerWidget) -- one
         // frame is ever in flight here at a time, which the analyzerScanning gate enforces too.
-        val needed = yBuffer.remaining()
+        //
+        // Sized and indexed by the plane's own rowStride, never by width. An ImageProxy's luminance
+        // plane is only tightly packed when the camera HAL says so: it is free to pad every row out
+        // to a stride wider than the image, and this one does, depending on how the stream happens
+        // to be configured. Reading such a plane as if it were width bytes per row shifts every row
+        // left by a growing amount -- a shear that leaves a perfectly sharp, perfectly fresh,
+        // completely undecodable image, while the preview beside it (which the HAL renders itself,
+        // stride and all) still looks exactly right.
+        //
+        // That is not hypothetical: it is what made whole 90-case optical runs die. A case would
+        // stall, the harness would ask for a camera rebind, the rebind would come back with a
+        // padded stride, and from that moment nothing decoded again for the life of the process --
+        // rebinding never fixed it, only a fresh process did, which is precisely the signature a
+        // stride that changes on re-configuration produces.
+        val rowStride = yPlane.rowStride
+        val needed = rowStride * height
         var yuvBytes = luminanceBuffer
         if (yuvBytes == null || yuvBytes.size != needed) {
             yuvBytes = ByteArray(needed)
             luminanceBuffer = yuvBytes
         }
-        yBuffer.get(yuvBytes)
+        // The plane's last row carries no padding, so it can be shorter than rowStride -- copy what
+        // is actually there rather than insisting on the full stride-aligned size.
+        yBuffer.get(yuvBytes, 0, minOf(yBuffer.remaining(), needed))
+        if (rowStride != width && !loggedRowStride) {
+            loggedRowStride = true
+            Log.i("KVDemo", "AUTO: analyzer luminance plane is padded (rowStride=$rowStride for width=$width) -- decoding honours the stride")
+        }
 
         // Freshness, not arrival: a frozen analysis stream keeps delivering frames at full rate
         // (see FRAME_STALL_TIMEOUT_MS), so only a change in the imagery itself counts as this
@@ -652,13 +806,13 @@ private fun processImageProxySafe(imageProxy: ImageProxy, onResult: (ByteArray) 
         }
 
         // Focus health, tracked per frame and judged by the watchdog -- see FOCUS_LOST_RATIO.
-        val sharpness = frameSharpness(yuvBytes, width, height)
+        maybeDumpFrame(yuvBytes, rowStride, width, height)
+
+        val sharpness = frameSharpness(yuvBytes, rowStride, height)
         recentSharpness = if (recentSharpness == 0.0) sharpness else recentSharpness * 0.8 + sharpness * 0.2
         if (recentSharpness > bestSharpness) bestSharpness = recentSharpness
         if (lastSharpAtMs == 0L || recentSharpness >= bestSharpness * FOCUS_LOST_RATIO) lastSharpAtMs = now
 
-        val source = PlanarYUVLuminanceSource(yuvBytes, width, height, 0, 0, width, height, false)
-        val bitmap = BinaryBitmap(HybridBinarizer(source))
         val reader = MultiFormatReader().apply {
             setHints(
                 mapOf(
@@ -669,7 +823,7 @@ private fun processImageProxySafe(imageProxy: ImageProxy, onResult: (ByteArray) 
         }
 
         try {
-            val result = reader.decode(bitmap)
+            val result = decodeRawOrLifted(reader, yuvBytes, rowStride, width, height)
             val decoded = DataMatrixCodec.resultToBytes(result)
             // Every real payload this app ever generates is well over this: the
             // shortest possible NavCode is its ~30-byte package-qualified prefix
