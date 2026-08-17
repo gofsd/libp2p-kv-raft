@@ -31,9 +31,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 1.25.x rather than go-version-file: go.mod -- release artifacts should
+      # carry the newest patched stdlib of the minor go.mod targets, not the
+      # older floor that directive records. See ci.yml's go job for the full
+      # reasoning, including why not `stable`.
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: "1.25.x"
 
       - name: install mingw-w64 (cgo cross-compiler for windows/amd64 --
           see magefile.go's BuildWindows doc comment)

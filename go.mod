@@ -2,7 +2,12 @@ module github.com/gofsd/libp2p-kv-raft
 
 go 1.25.9
 
-toolchain go1.25.12
+// The patch level CI builds and scans with (see .github/workflows/ci.yml's
+// go job): go1.25.13 is where the ten stdlib advisories govulncheck was
+// reporting are fixed. Ignored by a GOTOOLCHAIN=local developer toolchain,
+// which is why the `go` directive above stays a floor rather than following
+// this.
+toolchain go1.25.13
 
 require (
 	capnproto.org/go/capnp/v3 v3.1.0-alpha.2
