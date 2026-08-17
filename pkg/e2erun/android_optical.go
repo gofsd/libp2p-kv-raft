@@ -202,7 +202,8 @@ func runOpticalScanBatch(cases []e2edata.OpticalScanCase, serialA, serialB strin
 	// Only worth retrying while something actually went wrong: a batch that passed despite an app
 	// dying on its way out (the instrumentation's own teardown, after the last case) has already
 	// measured everything it was asked to.
-	return result, (genRes.crashed || bCrashed) && result.Status != e2edata.StatusPass
+	unmeasured := genRes.crashed || bCrashed || strings.Contains(result.Error, opticalCollectorGoneMarker)
+	return result, unmeasured && result.Status != e2edata.StatusPass
 }
 
 // verifyOnDeviceA runs OpticalScanCase c's own VerifyOnDeviceA check -- a short, separate
@@ -273,6 +274,14 @@ type opticalMethodOutcome struct {
 // substring rather than the whole line because the runner's exact framing differs between a crash
 // during a test and one during setup, and both mean the same thing here (see opticalCrashRetries).
 const opticalCrashMarker = "Process crashed"
+
+// opticalCollectorGoneMarker is what device B reports when its app can no longer receive scans at
+// all -- AppRoot dispatches every scan from a single collector, and once that is gone nothing
+// decoded reaches the app again for the life of that process (see UiCommandE2ETest.kt's
+// SCAN_COLLECTOR_GONE, which this must stay in step with). Like a crash, and unlike a failing case,
+// it says nothing about the cases it cut short, and only a fresh process can undo it -- recreating
+// the Activity from inside the run was tried and does not rebuild the composition.
+const opticalCollectorGoneMarker = "AppRoot's scan collector is gone"
 
 // runOpticalMethod invokes exactly one @Test method in UiCommandE2ETest (via `-e class
 // ClassName#method`, not the whole class) on serial, passing argJSON -- base64-encoded, same

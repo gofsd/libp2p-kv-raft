@@ -235,6 +235,13 @@ class UiCommandE2ETest {
         // identifiers -- so one channel carries both without any framing beyond this.
         const val RETRY_SIGNAL_PREFIX = "retry:"
 
+        /**
+         * Marker text for "this app process can no longer receive scans at all" -- see
+         * [awaitScannedTag]. Matched verbatim by pkg/e2erun/android_optical.go, which re-runs the
+         * whole batch in fresh processes when it sees it, so the two strings have to stay in step.
+         */
+        const val SCAN_COLLECTOR_GONE = "AppRoot's scan collector is gone"
+
         /** How long [forceRescan] gives MainScannerWidget to notice its rebind request and get the camera streaming again -- its watchdog polls on REFOCUS_INTERVAL_MS (3s), plus a moment for the bind itself. */
         const val REBIND_SETTLE_MS = 5_000L
 
@@ -1136,6 +1143,21 @@ class UiCommandE2ETest {
                 lastError = e
                 look++
                 Log.w(TAG, "$opticalTag '$tag' not shown on look $look after ${slice}ms (${(deadline - System.currentTimeMillis()) / 1000}s of budget left): ${e.message}")
+                // The one state where looking again is provably pointless, so say so immediately
+                // rather than spending the rest of the budget on it. AppRoot dispatches every scan
+                // from a single collect; with no collector, a decoded frame reaches nothing, and
+                // the camera bind -- an effect in the same composition -- is gone with it, so
+                // nothing decodes either. Confirmed live twice: a run spent seventeen looks in this
+                // state, and another thirteen, without one scan being dispatched, while device A
+                // dutifully re-showed the code each time. Recreating the Activity from here does
+                // not bring it back (tried: the composition never re-ran, no camera re-bind, the
+                // count stayed 0), and nothing else in this process can rebuild a composition. Only
+                // a fresh process can, which is the Go orchestrator's job -- so fail fast with a
+                // message it recognises (see android_optical.go's opticalCollectorGoneMarker) and
+                // let it re-run the batch from scratch.
+                if (scanCollectorCount() == 0) {
+                    throw IllegalStateException("$SCAN_COLLECTOR_GONE -- AppRoot dispatches every scan from one collector and it is no longer subscribed, so no scan can reach the app and no further case in this process can pass")
+                }
                 // Ask A to keep this same code up *before* re-arming, not after: the extension only
                 // helps if it reaches A while A is still holding, and the re-arm below deliberately
                 // spends REBIND_SETTLE_MS doing nothing.
@@ -1202,21 +1224,11 @@ class UiCommandE2ETest {
         // Reflection again, for the same reason the dedup clear above uses it: only the private
         // MutableSharedFlow carries subscriptionCount, and the public SharedFlow this object
         // exposes deliberately doesn't.
-        // Reflection again, for the same reason the dedup clear above uses it: only the private
-        // MutableSharedFlow carries subscriptionCount, and the public SharedFlow this object
-        // exposes deliberately doesn't. Read on every re-arm, not just a verbose one, because it
-        // decides whether re-arming can possibly help at all (see [recoverDeadScanCollector]).
-        val collectors = runCatching {
-            val field = ScannerCoordinator::class.java.getDeclaredField("_scans")
-            field.isAccessible = true
-            (field.get(ScannerCoordinator) as MutableSharedFlow<*>).subscriptionCount.value
-        }.getOrNull()
-        Log.i(TAG, "$opticalTag scan flow has ${collectors ?: "?"} collector(s) after re-arm")
+        Log.i(TAG, "$opticalTag scan flow has ${scanCollectorCount() ?: "?"} collector(s) after re-arm")
         if (verbose) {
             runCatching { composeTestRule.onRoot().printToLog(TAG) }
                 .onFailure { Log.w(TAG, "$opticalTag could not dump the semantics tree: $it") }
         }
-        recoverDeadScanCollector(opticalTag, collectors)
 
         // Clearing the dedup only helps if the frames themselves are usable. By the time this runs,
         // device A has been holding one code on screen for a full attempt's worth of seconds and
@@ -1230,34 +1242,18 @@ class UiCommandE2ETest {
     }
 
     /**
-     * Recreates the Activity when AppRoot's own scan collector has gone away, which is the one
-     * state no amount of re-arming can recover from.
+     * How many collectors [ScannerCoordinator]'s scan flow currently has -- 1 in a healthy app, and
+     * the single most decisive thing this harness can ask when a case stops decoding.
      *
-     * AppRoot dispatches every scan from a single `ScannerCoordinator.scans.collect` in a
-     * `LaunchedEffect(Unit)`. If that coroutine ends, decoded frames still reach
-     * [ScannerCoordinator.onScanned] and are still emitted, but nothing is listening: no dialog,
-     * no navigation, no log line, for the rest of the process's life. Confirmed live -- a run died
-     * at case 19 of 90 with this check reading 0 collectors, seventeen looks at a code device A
-     * kept re-showing, and not one scan dispatched; the Activity was alive and drawing throughout,
-     * so nothing above this could tell the two apart, which is exactly why the count is logged.
-     *
-     * Recreating the Activity rebuilds the composition -- and with it the collector, the camera
-     * bind and the scanner state -- while leaving the *process* alone, so this device keeps the
-     * Kvmobile session and cluster membership it spent its whole startup establishing. That is the
-     * distinction that makes this worth doing rather than failing the run: the session is expensive
-     * and still healthy, and only the UI on top of it is broken.
+     * Reflection because only the private MutableSharedFlow carries `subscriptionCount`; the public
+     * SharedFlow the object exposes deliberately doesn't. Null if the field can't be read at all,
+     * which is never treated as a failure -- it just means this check has nothing to say.
      */
-    private fun recoverDeadScanCollector(opticalTag: String, collectors: Int?) {
-        if (collectors != 0) return
-        Log.w(TAG, "$opticalTag AppRoot's scan collector is gone, so no scan can reach the app at all -- recreating the Activity to rebuild the composition (the process, and this device's session with it, is left alone)")
-        runCatching {
-            composeTestRule.activityRule.scenario.recreate()
-            composeTestRule.waitForIdle()
-            waitForScreen("screen_main")
-            composeTestRule.runOnUiThread { ScannerCoordinator.expanded = true }
-            Thread.sleep(REBIND_SETTLE_MS)
-        }.onFailure { Log.w(TAG, "$opticalTag could not recreate the Activity: $it") }
-    }
+    private fun scanCollectorCount(): Int? = runCatching {
+        val field = ScannerCoordinator::class.java.getDeclaredField("_scans")
+        field.isAccessible = true
+        (field.get(ScannerCoordinator) as MutableSharedFlow<*>).subscriptionCount.value
+    }.getOrNull()
 
     /**
      * Device-A-side verification for optical-scan cases whose outcome is only observable in
