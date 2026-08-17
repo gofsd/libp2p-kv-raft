@@ -298,6 +298,28 @@ func startOnce(dataDirRoot string, resolveIdentity func(dataDir string) (keyPath
 	return startAgainst(dataDirRoot, leaderMultiaddr, joinSuffrage, resolveIdentity)
 }
 
+// abortRun shuts down the daemon startAgainst just launched, on a path where startup got far
+// enough to have one but not far enough to keep it -- and, crucially, *waits* for it to actually
+// exit, the same way Stop does.
+//
+// Cancelling without waiting is what made a failed join poison every retry after it. Measured live
+// on the two-device optical rig: a relay refused the circuit with RESOURCE_LIMIT_EXCEEDED, so the
+// sess.Add below failed and returned after a bare cancel(); the very next Start call (in that case
+// the app's own automatic one, queued behind this one on mu) then opened the same store while the
+// cancelled daemon was still on its way down, and died with "open store: database is locked (5)
+// (SQLITE_BUSY)". From then on the directory had no ready.json and every further attempt failed
+// with that instead, so one transient relay refusal turned into a permanently unstartable session
+// for the life of the process. Waiting here means a retry finds the store released, which is the
+// difference between one lost attempt and a lost run.
+func abortRun(cancel context.CancelFunc, errC <-chan error) {
+	cancel()
+	select {
+	case <-errC:
+	case <-time.After(callTimeout):
+		log.Printf("kvmobile: a daemon cancelled during startup did not exit within %s -- a retry may still find its store locked", callTimeout)
+	}
+}
+
 // startAgainst is the shared "bring up the in-process daemon under
 // dataDirRoot and join it to leaderAddr" implementation behind both
 // start (Start/StartWithKey, always against the build-time leaderMultiaddr,
@@ -353,7 +375,7 @@ func startAgainst(dataDirRoot, leaderAddr, suffrage string, resolveIdentity func
 	}()
 
 	if err := waitForReady(clusterDir, errC, callTimeout); err != nil {
-		cancel()
+		abortRun(cancel, errC)
 		return "", fmt.Errorf("kvmobile: start follower: %w", err)
 	}
 
@@ -377,7 +399,7 @@ func startAgainst(dataDirRoot, leaderAddr, suffrage string, resolveIdentity func
 	defer addCancel()
 	sess, err := shmclient.Open(addCtx, id)
 	if err != nil {
-		cancel()
+		abortRun(cancel, errC)
 		return "", fmt.Errorf("kvmobile: fetch signing key: %w", err)
 	}
 	addValue := leaderAddr
@@ -385,7 +407,7 @@ func startAgainst(dataDirRoot, leaderAddr, suffrage string, resolveIdentity func
 		addValue += " learner"
 	}
 	if _, err := sess.Add(addCtx, addValue); err != nil {
-		cancel()
+		abortRun(cancel, errC)
 		return "", fmt.Errorf("kvmobile: join cluster: %w", err)
 	}
 
