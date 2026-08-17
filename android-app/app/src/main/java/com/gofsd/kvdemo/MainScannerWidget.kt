@@ -410,23 +410,40 @@ fun MainScannerWidget(
                 rebindRequested = false
                 resetSharpnessBaseline()
                 Log.w("KVDemo", "AUTO: rebinding the camera -- $why")
-                cameraProvider.unbindAll()
-                camera = cameraProvider.bindToLifecycle(
-                    lifecycleOwner,
-                    CameraSelector.DEFAULT_BACK_CAMERA,
-                    preview,
-                    imageAnalyzer,
-                )
+                // Explicitly on the main thread, like every other CameraX call in this loop -- see
+                // the metering nudge below for what happens when that is merely assumed.
+                camera = withContext(Dispatchers.Main) {
+                    cameraProvider.unbindAll()
+                    val rebound = cameraProvider.bindToLifecycle(
+                        lifecycleOwner,
+                        CameraSelector.DEFAULT_BACK_CAMERA,
+                        preview,
+                        imageAnalyzer,
+                    )
+                    MainScannerManager.setup(context.applicationContext, rebound.cameraControl)
+                    // The old cameraInfo's LiveData stops emitting once its camera is unbound, so
+                    // the zoom/torch state this widget draws would freeze at whatever it last saw
+                    // without re-observing the new one. LiveData.observe is itself main-thread-only.
+                    observeCameraState(rebound)
+                    rebound
+                }
                 lastFrameAtMs = System.currentTimeMillis()
-                MainScannerManager.setup(context.applicationContext, camera.cameraControl)
-                // The old cameraInfo's LiveData stops emitting once its camera is unbound, so the
-                // zoom/torch state this widget draws would freeze at whatever it last saw without
-                // re-observing the new one.
-                observeCameraState(camera)
                 Log.i("KVDemo", "AUTO: camera rebound after stall (analysis resolution ${imageAnalyzer.resolutionInfo?.resolution})")
                 continue
             }
 
+            // withContext(Dispatchers.Main), not a bare call: PreviewView.getMeteringPointFactory
+            // asserts it is on the main thread, and this coroutine only *usually* is. It resumes on
+            // whatever dispatcher the composition it belongs to provides, which is the main thread
+            // in the running app but not under Compose's instrumentation test environment, where a
+            // frame can be driven from another thread entirely. Measured on the two-device optical
+            // rig: this line threw "Not in application's main thread" from a background frame,
+            // which killed this LaunchedEffect -- taking the refocus loop, the stall watchdog and
+            // (because the failure propagates to the composition's effect scope) AppRoot's scan
+            // collector with it, so the app went silently deaf to every later scan. Asking for the
+            // main thread costs nothing when already on it and makes the requirement true rather
+            // than assumed.
+            withContext(Dispatchers.Main) {
             val point = previewView.meteringPointFactory.createPoint(0.5f, 0.5f)
             // No disableAutoCancel, and AE metered alongside AF: the point of this nudge is to
             // make the camera re-evaluate focus, and pinning the result does the opposite. A
@@ -442,6 +459,7 @@ fun MainScannerWidget(
             // bad lock lasts until the next frame instead of the rest of the process.
             val action = FocusMeteringAction.Builder(point, FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE).build()
             camera.cameraControl.startFocusAndMetering(action)
+            }
         }
     }
 

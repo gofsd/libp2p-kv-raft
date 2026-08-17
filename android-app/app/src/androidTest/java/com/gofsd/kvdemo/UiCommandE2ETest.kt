@@ -992,6 +992,7 @@ class UiCommandE2ETest {
         val timeoutMs = spec.optLong("timeout_ms", BATCH_TIMEOUT_MS)
         val resultLabel = "OpticalScan: $caseID"
         Log.i(TAG, "$opticalTag kind=$kind starting, timeoutMs=$timeoutMs")
+        logCompositionHealth("the start of $caseID")
 
         // AppRoot's own scan dispatch collapses the scanner back to its minimized bubble after
         // every decode (success or not) -- see its own doc comment. requestRelay's initial expand
@@ -1249,6 +1250,30 @@ class UiCommandE2ETest {
      * SharedFlow the object exposes deliberately doesn't. Null if the field can't be read at all,
      * which is never treated as a failure -- it just means this check has nothing to say.
      */
+    /**
+     * Asks Compose whether its composition is still healthy, and says so in the log.
+     *
+     * Compose's test environment does not report a composition that has failed until something
+     * interacts with it: it holds the exception and rethrows it at the next `waitForIdle` or
+     * semantics fetch, once. So a probe *is* the diagnosis -- calling waitForIdle here either
+     * returns quietly or hands over the exact throwable that killed the composition, which is the
+     * one thing the "collector is gone" symptom never revealed on its own.
+     *
+     * Paired with [scanCollectorCount] at the start of every case so a death can be pinned to the
+     * single case that caused it rather than to the later case that first noticed. Both are cheap;
+     * the collector read is a field access and an idle composition makes waitForIdle a no-op.
+     */
+    private fun logCompositionHealth(where: String) {
+        val collectors = scanCollectorCount()
+        val idle = runCatching { composeTestRule.waitForIdle() }
+        val failure = idle.exceptionOrNull()
+        if (failure != null) {
+            Log.w(TAG, "AUTO: composition is not healthy at $where (scan collectors=$collectors) -- waitForIdle threw", failure)
+        } else if (collectors != 1) {
+            Log.w(TAG, "AUTO: composition idled cleanly at $where but the scan flow has $collectors collector(s), not 1")
+        }
+    }
+
     private fun scanCollectorCount(): Int? = runCatching {
         val field = ScannerCoordinator::class.java.getDeclaredField("_scans")
         field.isAccessible = true
@@ -1440,6 +1465,10 @@ class UiCommandE2ETest {
                 } catch (e: Throwable) {
                     lastPredicateError = e
                     predicateErrors++
+                    // Logged as it happens, not only summarised in a timeout message that may never
+                    // be reached: this is where a failed composition's stored exception surfaces
+                    // (see nodeExistsQuietly), and the summary keeps only the last one.
+                    Log.w(TAG, "AUTO: semantics lookup for '$tag' threw on poll $predicateErrors", e)
                     false
                 }
             }
@@ -1468,7 +1497,19 @@ class UiCommandE2ETest {
      * disproportionate outcome for "ask again in a few milliseconds", and costs ~10 minutes of
      * real two-device hardware time to retry from scratch.
      */
-    private fun nodeExistsQuietly(tag: String): Boolean = runCatching { nodeExists(tag) }.getOrDefault(false)
+    private fun nodeExistsQuietly(tag: String): Boolean =
+        try {
+            nodeExists(tag)
+        } catch (e: Throwable) {
+            // Swallowed for control flow, but never silently. Compose's test environment holds a
+            // failed composition's exception and rethrows it on the next interaction -- a semantics
+            // fetch is an interaction -- so the one report of what killed a composition can arrive
+            // here, at a poll whose only job was to ask whether a node exists yet. Losing it costs
+            // a whole run to reproduce, so it goes to the log with its stack before being turned
+            // into "not there yet".
+            Log.w(TAG, "AUTO: semantics lookup for '$tag' threw (treated as not-yet-present)", e)
+            false
+        }
 
     /**
      * A settle needed after two distinct kinds of transition `waitForIdle()` alone doesn't fully
