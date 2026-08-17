@@ -35,6 +35,13 @@ const opticalDeviceAVerifyTimeoutMs = 30_000
 // measured nothing into one that measures what it was asked to.
 const opticalCrashRetries = 1
 
+// How long stopAppProcesses waits for a force-stopped app process to actually disappear, and how
+// often it re-checks.
+const (
+	appStopTimeout      = 30 * time.Second
+	appStopPollInterval = 500 * time.Millisecond
+)
+
 func runOpticalScanSuite(cases []e2edata.OpticalScanCase, serialA, serialB string) *e2edata.OpticalScanResult {
 	for attempt := 0; ; attempt++ {
 		result, crashed := runOpticalScanBatch(cases, serialA, serialB)
@@ -283,6 +290,38 @@ const opticalCrashMarker = "Process crashed"
 // the Activity from inside the run was tried and does not rebuild the composition.
 const opticalCollectorGoneMarker = "AppRoot's scan collector is gone"
 
+// stopAppProcesses force-stops the app under test and its instrumentation on serial, then waits for
+// the app's process to actually be gone before returning.
+//
+// `am instrument` force-stops the target package itself, so this looks redundant -- it is not. The
+// scanning device in this rig runs HyperOS, which *freezes* background processes rather than
+// killing them, and a frozen process still holds its file locks. Measured live: a batch retry
+// launched seconds after the previous batch ended, and the new daemon died in startup with
+// "open store: database is locked (5) (SQLITE_BUSY)" against its own SQLite store, so the retry --
+// the whole point of which is to salvage a run -- was guaranteed to fail. Waiting for the pid to
+// disappear is what makes the store's lock actually available to the next process.
+//
+// Best-effort throughout: a device that reports no pid, or an adb that fails, just means there is
+// nothing to wait for, and the invocation that follows reports any real problem itself.
+func stopAppProcesses(serial string) {
+	for _, pkg := range []string{androidTestAppID, androidAppID} {
+		stop := exec.Command("adb", "shell", "am", "force-stop", pkg)
+		withSerial(stop, serial)
+		_ = stop.Run()
+	}
+	deadline := time.Now().Add(appStopTimeout)
+	for time.Now().Before(deadline) {
+		pidof := exec.Command("adb", "shell", "pidof", androidAppID)
+		withSerial(pidof, serial)
+		out, _ := pidof.Output()
+		if strings.TrimSpace(string(out)) == "" {
+			return
+		}
+		time.Sleep(appStopPollInterval)
+	}
+	fmt.Fprintf(os.Stderr, "e2erun: optical: %s's app process was still alive after %s of waiting for it to stop -- continuing anyway\n", serial, appStopTimeout)
+}
+
 // runOpticalMethod invokes exactly one @Test method in UiCommandE2ETest (via `-e class
 // ClassName#method`, not the whole class) on serial, passing argJSON -- base64-encoded, same
 // reasoning as runUICommandTest's own casesJSON -- as the argName instrumentation arg, and
@@ -291,6 +330,8 @@ const opticalCollectorGoneMarker = "AppRoot's scan collector is gone"
 // runUICommandTest already established, just targeting one specific method instead of the whole
 // class.
 func runOpticalMethod(serial, method, argName string, argJSON []byte) ([]e2edata.UICaseResult, bool, error) {
+	stopAppProcesses(serial)
+
 	deviceResultsPath := fmt.Sprintf("/sdcard/Android/data/%s/files/ui_e2e_results.json", androidAppID)
 	rm := exec.Command("adb", "shell", "rm", "-f", deviceResultsPath)
 	withSerial(rm, serial)
