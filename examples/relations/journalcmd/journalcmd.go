@@ -226,9 +226,19 @@ func (s *Service) Run(commandID string, stop <-chan struct{}, onError func(error
 // is reported as a result rather than dropped -- a request nothing ever
 // wrote a terminal entry for would be retried forever.
 func (s *Service) Handle(req kvctl.CommandRequest) (map[string]string, string) {
+	return s.Answer(req.InstanceID, req.CommandID, req.RequestedBy, req.Inputs)
+}
+
+// Answer is Handle without pkg/kvctl's request type, for a caller whose
+// dispatcher is a different one -- mobile/kvmobile has its own, ported
+// rather than shared (see that package's dispatch.go), and this is what
+// lets both drive the identical service rather than two implementations
+// of it that have to be kept saying the same thing.
+func (s *Service) Answer(instanceID, commandID, requestedBy, inputs string) (map[string]string, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), handlerTimeout)
 	defer cancel()
 
+	req := dispatch{instanceID: instanceID, commandID: commandID, requestedBy: requestedBy, inputs: inputs}
 	result, err := s.answer(ctx, req)
 	if err != nil {
 		result = Result{Op: result.Op, Error: err.Error()}
@@ -270,14 +280,22 @@ func (s *Service) narrate(result Result) string {
 	}
 }
 
+// dispatch is one request to answer, whichever dispatcher delivered it.
+type dispatch struct {
+	instanceID  string
+	commandID   string
+	requestedBy string
+	inputs      string
+}
+
 // answer is Handle without the reporting: it parses the request and runs
 // the operation.
-func (s *Service) answer(ctx context.Context, req kvctl.CommandRequest) (Result, error) {
+func (s *Service) answer(ctx context.Context, req dispatch) (Result, error) {
 	var parsed Request
-	if req.Inputs == "" {
+	if req.inputs == "" {
 		return Result{}, fmt.Errorf("journalcmd: this command takes a JSON request; see Request")
 	}
-	if err := json.Unmarshal([]byte(req.Inputs), &parsed); err != nil {
+	if err := json.Unmarshal([]byte(req.inputs), &parsed); err != nil {
 		return Result{}, fmt.Errorf("journalcmd: inputs are not a request: %w", err)
 	}
 
@@ -369,7 +387,7 @@ func (s *Service) answer(ctx context.Context, req kvctl.CommandRequest) (Result,
 	}
 }
 
-func (s *Service) appendLine(ctx context.Context, req kvctl.CommandRequest, parsed Request) (relations.Entity, error) {
+func (s *Service) appendLine(ctx context.Context, req dispatch, parsed Request) (relations.Entity, error) {
 	cells, err := s.cells(ctx, req, parsed)
 	if err != nil {
 		return relations.Zero, err
@@ -377,7 +395,7 @@ func (s *Service) appendLine(ctx context.Context, req kvctl.CommandRequest, pars
 	return s.Journal.Append(ctx, cells...)
 }
 
-func (s *Service) correctLine(ctx context.Context, req kvctl.CommandRequest, parsed Request) (relations.Entity, error) {
+func (s *Service) correctLine(ctx context.Context, req dispatch, parsed Request) (relations.Entity, error) {
 	superseded, err := relations.ParseEntity(parsed.Line)
 	if err != nil {
 		return relations.Zero, err
@@ -415,7 +433,7 @@ func (s *Service) voidLine(ctx context.Context, parsed Request) error {
 // column takes a number and a closed vocabulary takes only what it
 // admits. Provenance is added last, from the dispatch rather than from
 // the submitter.
-func (s *Service) cells(ctx context.Context, req kvctl.CommandRequest, parsed Request) ([]relations.Cell, error) {
+func (s *Service) cells(ctx context.Context, req dispatch, parsed Request) ([]relations.Cell, error) {
 	if len(parsed.Cells) == 0 {
 		return nil, fmt.Errorf("journalcmd: a line needs at least one filled column")
 	}
@@ -436,19 +454,19 @@ func (s *Service) cells(ctx context.Context, req kvctl.CommandRequest, parsed Re
 		cells = append(cells, cell)
 	}
 
-	if s.SubmitterColumn != "" && req.RequestedBy != "" {
+	if s.SubmitterColumn != "" && req.requestedBy != "" {
 		field, err := j.DefineField(ctx, s.SubmitterColumn, relations.InputTerm)
 		if err != nil {
 			return nil, err
 		}
-		cells = append(cells, relations.TermCell(field, req.RequestedBy))
+		cells = append(cells, relations.TermCell(field, req.requestedBy))
 	}
-	if s.RequestColumn != "" && req.InstanceID != "" {
+	if s.RequestColumn != "" && req.instanceID != "" {
 		field, err := j.DefineField(ctx, s.RequestColumn, relations.InputText)
 		if err != nil {
 			return nil, err
 		}
-		cells = append(cells, relations.RemarkCell(field, req.InstanceID))
+		cells = append(cells, relations.RemarkCell(field, req.instanceID))
 	}
 	return cells, nil
 }

@@ -509,6 +509,11 @@ func Stop() error {
 	runErrC = nil
 	cancelRun = nil
 	mu.Unlock()
+	// Anything holding the session this daemon had must let go of it: a
+	// journal opened against it is bound to a peer id and a session that
+	// no longer exist, and a later Start is a different device as far as
+	// the log is concerned (see journal.go).
+	resetJournals()
 	return nil
 }
 

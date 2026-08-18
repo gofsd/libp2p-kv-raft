@@ -36,6 +36,14 @@ type node struct {
 // Node returns a Backend bound to the daemon running as peerID.
 func Node(peerID string) Backend { return &node{peerID: peerID} }
 
+// Session returns a Backend over a session somebody else already opened.
+//
+// This is what a caller with no registry needs: mobile/kvmobile runs its
+// daemon in the same process as the app and holds one session for its
+// lifetime, so there is nothing to resolve a peer id against and no
+// second session worth opening.
+func Session(sess *shmclient.Session) Backend { return &node{sess: sess} }
+
 // CurrentNode returns a Backend bound to whichever node `mage use`
 // selected -- the same "current node" pkg/kvctl's own Set/Get resolve
 // against, so an example driven from a shell behaves the way the rest of
@@ -57,6 +65,9 @@ func (n *node) session(ctx context.Context) (*shmclient.Session, error) {
 	defer n.mu.Unlock()
 	if n.sess != nil {
 		return n.sess, nil
+	}
+	if n.peerID == "" {
+		return nil, fmt.Errorf("relations: this backend has neither a session nor a peer id")
 	}
 	sess, err := shmclient.Open(ctx, n.peerID)
 	if err != nil {

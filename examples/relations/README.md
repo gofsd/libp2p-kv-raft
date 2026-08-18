@@ -438,6 +438,14 @@ local reads failed 0 times both with a dispatcher running and without — the di
 is not what costs anything. Nothing is lost when a call does time out; it is simply made again, and
 "command <id> not found" is usually that timeout rather than a missing command.
 
+**On a phone.** `mobile/kvmobile` has the same commands, gomobile-shaped — JSON in, JSON out, since
+the binding carries no maps or structs: `JournalForm`, `JournalAppend`, `JournalCorrect`,
+`JournalVoid`, `JournalPage`, `JournalIdentity`, `JournalCountersign`, `JournalSignOff`, and
+`JournalServe`/`JournalDefine`/`JournalVocabulary`/`JournalVerify` for a device that owns a book
+rather than only writing to somebody else's. It drives the *same* service through kvmobile's own
+dispatcher rather than a second implementation of it (`Service.Answer` is the seam), so a phone and a
+desktop cannot drift apart about what a request means.
+
 **Who signed it.** The node running the dispatcher writes the line, so the line's signature is that
 node's. The submitter's attestation is not lost: it is the `CommandRequest` itself, authored by the
 submitting peer, replicated through raft and ACL-checked by the FSM on the way in. Every line the

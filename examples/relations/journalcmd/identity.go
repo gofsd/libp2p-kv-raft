@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/gofsd/libp2p-kv-raft/examples/relations"
-	"github.com/gofsd/libp2p-kv-raft/pkg/kvctl"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -36,8 +35,8 @@ type Identity struct {
 // identity answers OpIdentity: it declares the submitter's actor if this
 // is the first time the log has seen it, and reports the page state a
 // signature would be made against.
-func (s *Service) identity(ctx context.Context, req kvctl.CommandRequest) (Identity, error) {
-	actor, err := s.actorFor(ctx, req.RequestedBy)
+func (s *Service) identity(ctx context.Context, req dispatch) (Identity, error) {
+	actor, err := s.actorFor(ctx, req.requestedBy)
 	if err != nil {
 		return Identity{}, err
 	}
@@ -51,7 +50,7 @@ func (s *Service) identity(ctx context.Context, req kvctl.CommandRequest) (Ident
 	}
 	return Identity{
 		Actor: actor.String(),
-		Name:  req.RequestedBy,
+		Name:  req.requestedBy,
 		Log:   s.Journal.Store().Log,
 		Page:  page,
 		Lines: lines,
@@ -109,7 +108,7 @@ func ed25519KeyOf(peerID string) (ed25519.PublicKey, error) {
 // necessary: that the record is authored by *this* submitter's actor. A
 // device may only hand over its own signature -- otherwise one could
 // hold somebody else's and produce it at a moment of its own choosing.
-func (s *Service) signedLink(ctx context.Context, req kvctl.CommandRequest, parsed Request) (relations.SignedLink, error) {
+func (s *Service) signedLink(ctx context.Context, req dispatch, parsed Request) (relations.SignedLink, error) {
 	if parsed.Signed == nil {
 		return relations.SignedLink{}, fmt.Errorf("journalcmd: this operation is your own signature; sign the record and send it in \"signed\"")
 	}
@@ -117,7 +116,7 @@ func (s *Service) signedLink(ctx context.Context, req kvctl.CommandRequest, pars
 	if err != nil {
 		return relations.SignedLink{}, err
 	}
-	actor, err := s.actorFor(ctx, req.RequestedBy)
+	actor, err := s.actorFor(ctx, req.requestedBy)
 	if err != nil {
 		return relations.SignedLink{}, err
 	}

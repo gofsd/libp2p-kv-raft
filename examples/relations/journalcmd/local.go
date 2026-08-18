@@ -2,6 +2,7 @@ package journalcmd
 
 import (
 	"context"
+	"crypto/ed25519"
 	"fmt"
 	"time"
 
@@ -26,14 +27,7 @@ const openTimeout = 20 * time.Second
 // self-authored, which is the ordinary bootstrap any signing identity
 // has -- somebody's first signature is always on their own name.
 func OpenLocalJournal(log uint8) (*relations.Journal, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), openTimeout)
-	defer cancel()
-
 	signer, err := LocalSigner()
-	if err != nil {
-		return nil, err
-	}
-	pub, err := ed25519KeyOf(signer.PeerID)
 	if err != nil {
 		return nil, err
 	}
@@ -41,10 +35,23 @@ func OpenLocalJournal(log uint8) (*relations.Journal, error) {
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), openTimeout)
+	defer cancel()
+	return OpenJournalOn(ctx, backend, log, signer.PeerID, signer.Key)
+}
 
-	store := relations.New(backend, log, relations.Zero, signer.Key)
+// OpenJournalOn is OpenLocalJournal for a caller that already has a
+// backend and a key -- mobile/kvmobile, which holds both and has no
+// registry to resolve them from. peerID is the identity the log will
+// know this writer by, and key must be its own.
+func OpenJournalOn(ctx context.Context, backend relations.Backend, log uint8, peerID string, key ed25519.PrivateKey) (*relations.Journal, error) {
+	pub, err := ed25519KeyOf(peerID)
+	if err != nil {
+		return nil, err
+	}
+	store := relations.New(backend, log, relations.Zero, key)
 	journal := relations.NewJournal(store)
-	actor, err := journal.Actor(ctx, signer.PeerID, pub)
+	actor, err := journal.Actor(ctx, peerID, pub)
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +65,7 @@ func OpenLocalJournal(log uint8) (*relations.Journal, error) {
 		return nil, fmt.Errorf("journalcmd: actor %s went missing while opening the log", actor)
 	}
 	if decl.Record.Author != actor {
-		if err := store.DeclareActor(ctx, actor, signer.PeerID, pub); err != nil {
+		if err := store.DeclareActor(ctx, actor, peerID, pub); err != nil {
 			return nil, err
 		}
 	}
