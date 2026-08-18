@@ -58,13 +58,26 @@ func writeShiftLog(t *testing.T, j *relations.Journal) ([]relations.Entity, map[
 	t.Helper()
 	ctx := context.Background()
 
+	// The columns say what they hold, so a form can be generated from the
+	// schema and a cell of the wrong kind is refused rather than written.
+	columns := []struct {
+		name  string
+		input relations.InputKind
+	}{
+		{fieldShift, relations.InputTerm},
+		{fieldOperator, relations.InputTerm},
+		{fieldMachine, relations.InputTerm},
+		{fieldOperation, relations.InputTerm},
+		{fieldResult, relations.InputTerm},
+		{fieldPieces, relations.InputNumber},
+	}
 	fields := make(map[string]relations.Entity)
-	for _, name := range []string{fieldShift, fieldOperator, fieldMachine, fieldOperation, fieldResult, fieldPieces} {
-		e, err := j.Field(ctx, name)
+	for _, column := range columns {
+		e, err := j.DefineField(ctx, column.name, column.input)
 		if err != nil {
-			t.Fatalf("Field(%s): %v", name, err)
+			t.Fatalf("DefineField(%s): %v", column.name, err)
 		}
-		fields[name] = e
+		fields[column.name] = e
 	}
 
 	var entries []relations.Entity

@@ -61,6 +61,8 @@ package relations
 import (
 	"crypto/sha256"
 	"fmt"
+	"strconv"
+	"strings"
 )
 
 // The namespace byte -- the first byte of every key this package writes.
@@ -138,6 +140,34 @@ func (e Entity) Bytes() [EntityLen]byte {
 // appear in a key, so a printed entity and a printed key line up.
 func (e Entity) String() string {
 	return fmt.Sprintf("%02x.%02x.%02x.%02x", e.Log, e.Page, e.Type, e.ID)
+}
+
+// ParseEntity is String's inverse: it reads back the four hex bytes
+// String prints, which is how an entity survives a round trip through
+// JSON, a URL or a form field.
+func ParseEntity(s string) (Entity, error) {
+	parts := strings.Split(s, ".")
+	if len(parts) != EntityLen {
+		return Zero, fmt.Errorf("relations: %q is not an entity (want four dot-separated hex bytes)", s)
+	}
+	var e Entity
+	for i, part := range parts {
+		b, err := strconv.ParseUint(part, 16, 8)
+		if err != nil {
+			return Zero, fmt.Errorf("relations: %q is not an entity: %w", s, err)
+		}
+		switch i {
+		case 0:
+			e.Log = uint8(b)
+		case 1:
+			e.Page = uint8(b)
+		case 2:
+			e.Type = uint8(b)
+		case 3:
+			e.ID = uint8(b)
+		}
+	}
+	return e, nil
 }
 
 // Value is e as the 32-bit number its four bytes spell, most

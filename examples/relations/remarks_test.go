@@ -21,7 +21,7 @@ func TestRemarkRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Field: %v", err)
 	}
-	remarks, err := j.Field(ctx, fieldRemarks)
+	remarks, err := j.DefineField(ctx, fieldRemarks, relations.InputText)
 	if err != nil {
 		t.Fatalf("Field: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestRemarkIsCoveredByTheChain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Field: %v", err)
 	}
-	remarks, err := j.Field(ctx, fieldRemarks)
+	remarks, err := j.DefineField(ctx, fieldRemarks, relations.InputText)
 	if err != nil {
 		t.Fatalf("Field: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestRemarksAreNotADictionary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Field: %v", err)
 	}
-	remarks, err := j.Field(ctx, fieldRemarks)
+	remarks, err := j.DefineField(ctx, fieldRemarks, relations.InputText)
 	if err != nil {
 		t.Fatalf("Field: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestAppendRejectsAMalformedRemark(t *testing.T) {
 	st, _, _ := newStore(t)
 	j := relations.NewJournal(st)
 
-	remarks, err := j.Field(ctx, fieldRemarks)
+	remarks, err := j.DefineField(ctx, fieldRemarks, relations.InputText)
 	if err != nil {
 		t.Fatalf("Field: %v", err)
 	}

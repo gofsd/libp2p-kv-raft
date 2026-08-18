@@ -110,6 +110,7 @@ type Journal struct {
 	fieldNames map[Entity]string            // field entity -> name
 	vocab      map[Entity]map[string]Entity // field -> term text -> term entity
 	terms      map[Entity]TermInfo          // term entity -> its field and text
+	inputs     map[Entity]InputKind         // field entity -> what its cells hold
 }
 
 // TermInfo is a dictionary entry: which field's vocabulary it belongs to
@@ -120,6 +121,69 @@ type TermInfo struct {
 	Text  string
 }
 
+// InputKind is what a column holds, recorded in the field's own
+// declaration so that the schema describes itself.
+//
+// Until this existed, a column's type was decided one cell at a time by
+// whichever constructor a writer happened to use, which meant nothing
+// could describe the book without reading it -- no form could be
+// generated from the schema, and nothing stopped a number landing in a
+// column of names. It is one byte on the declaration, and it survives a
+// rename (which preserves the payload).
+type InputKind uint8
+
+const (
+	// InputTerm is a value from the column's own vocabulary: the normal
+	// case, and the zero value, so a column declared before this existed
+	// reads as one.
+	InputTerm InputKind = 0
+	// InputNumber is a quantity.
+	InputNumber InputKind = 1
+	// InputText is free text -- a remarks column.
+	InputText InputKind = 2
+)
+
+func (k InputKind) String() string {
+	switch k {
+	case InputTerm:
+		return "term"
+	case InputNumber:
+		return "number"
+	case InputText:
+		return "text"
+	default:
+		return fmt.Sprintf("input(%d)", uint8(k))
+	}
+}
+
+// ParseInputKind is String's inverse, for a caller reading a column type
+// off the wire.
+func ParseInputKind(s string) (InputKind, error) {
+	switch s {
+	case "term", "":
+		return InputTerm, nil
+	case "number":
+		return InputNumber, nil
+	case "text":
+		return InputText, nil
+	default:
+		return 0, fmt.Errorf("relations: %q is not a column type (want term, number or text)", s)
+	}
+}
+
+// cellInput is what kind of column a cell needs, so Append can check the
+// two agree.
+func (c Cell) cellInput() InputKind {
+	switch {
+	case c.Numeric:
+		return InputNumber
+	case c.Free:
+		return InputText
+	default:
+		return InputTerm
+	}
+}
+
 // NewJournal returns a Journal writing through st.
 func NewJournal(st *Store) *Journal {
 	return &Journal{
@@ -128,6 +192,7 @@ func NewJournal(st *Store) *Journal {
 		fieldNames: make(map[Entity]string),
 		vocab:      make(map[Entity]map[string]Entity),
 		terms:      make(map[Entity]TermInfo),
+		inputs:     make(map[Entity]InputKind),
 	}
 }
 
@@ -141,21 +206,94 @@ func (j *Journal) Store() *Store { return j.st }
 // intended use, and two processes starting at once still end up with one
 // column (see intern).
 func (j *Journal) Field(ctx context.Context, name string) (Entity, error) {
+	return j.field(ctx, name, InputTerm, false)
+}
+
+// DefineField is Field with the column's type stated: what its cells
+// hold, so the schema can describe itself to a form and Append can
+// refuse a cell of the wrong kind.
+//
+// Find-or-create like Field, and it checks rather than overwrites: a
+// column that already exists as a different type is a schema conflict
+// and is reported as one, not silently redefined under whatever was
+// written before.
+func (j *Journal) DefineField(ctx context.Context, name string, input InputKind) (Entity, error) {
+	return j.field(ctx, name, input, true)
+}
+
+func (j *Journal) field(ctx context.Context, name string, input InputKind, declared bool) (Entity, error) {
 	if name == "" {
 		return Zero, fmt.Errorf("relations: field name must not be empty")
 	}
 	if e, ok := j.cachedField(name); ok {
+		if declared {
+			if err := j.checkFieldInput(ctx, e, name, input); err != nil {
+				return Zero, err
+			}
+		}
 		return e, nil
 	}
-	e, err := j.intern(ctx, j.fieldOwner(), TypeField, name, nil)
+	e, err := j.intern(ctx, j.fieldOwner(), TypeField, name, []byte{byte(input)}, nil)
 	if err != nil {
 		return Zero, err
+	}
+	if declared {
+		if err := j.checkFieldInput(ctx, e, name, input); err != nil {
+			return Zero, err
+		}
 	}
 	j.mu.Lock()
 	j.fields[name] = e
 	j.fieldNames[e] = name
 	j.mu.Unlock()
 	return e, nil
+}
+
+// checkFieldInput reports a column already declared as a different type.
+func (j *Journal) checkFieldInput(ctx context.Context, field Entity, name string, want InputKind) error {
+	got, err := j.FieldInput(ctx, field)
+	if err != nil {
+		return err
+	}
+	if got != want {
+		return fmt.Errorf("relations: column %q already holds %s, not %s", name, got, want)
+	}
+	return nil
+}
+
+// FieldInput returns what a column holds. A column declared before
+// column types existed, or created through Field rather than
+// DefineField, reads as InputTerm.
+func (j *Journal) FieldInput(ctx context.Context, field Entity) (InputKind, error) {
+	j.mu.Lock()
+	kind, ok := j.inputs[field]
+	j.mu.Unlock()
+	if ok {
+		return kind, nil
+	}
+	if field.Type != TypeField {
+		return 0, fmt.Errorf("relations: %s is not a column", field)
+	}
+	decl, found, err := j.st.Declaration(ctx, field)
+	if err != nil {
+		return 0, err
+	}
+	if !found {
+		return 0, fmt.Errorf("relations: column %s is not declared", field)
+	}
+	kind = InputTerm
+	if len(decl.Record.Data) > 0 {
+		kind = InputKind(decl.Record.Data[0])
+	}
+	j.mu.Lock()
+	j.inputs[field] = kind
+	j.mu.Unlock()
+	return kind, nil
+}
+
+// FieldName returns a column's heading.
+func (j *Journal) FieldName(ctx context.Context, field Entity) (string, error) {
+	return j.fieldName(ctx, field)
 }
 
 // Term returns the dictionary term of field whose text is text,
@@ -181,7 +319,7 @@ func (j *Journal) Term(ctx context.Context, field Entity, text string) (Entity, 
 	if e, ok := j.cachedTerm(field, text); ok {
 		return e, nil
 	}
-	term, err := j.intern(ctx, field, TypeTerm, text, func(term Entity) ([]Op, error) {
+	term, err := j.intern(ctx, field, TypeTerm, text, nil, func(term Entity) ([]Op, error) {
 		ops, err := j.st.LinkOps(term, field, KindTermOf, nil)
 		if err != nil {
 			return nil, err
@@ -408,6 +546,8 @@ func (j *Journal) renameCached(e, owner Entity, old, text string) {
 		delete(j.fields, old)
 		j.fields[text] = e
 		j.fieldNames[e] = text
+		// The column type rides on the declaration's payload, which
+		// Rename preserves, so the cached kind stays valid.
 	case TypeTerm:
 		if j.vocab[owner] != nil {
 			delete(j.vocab[owner], old)
@@ -503,7 +643,7 @@ func (j *Journal) resolveBucket(ctx context.Context, owner Entity, text string, 
 // The retry is what makes the loser cheap: it costs one refused
 // transaction and one re-read, and no id is consumed, because the
 // callback runs before anything is applied.
-func (j *Journal) intern(ctx context.Context, owner Entity, typ uint8, text string, link func(Entity) ([]Op, error)) (Entity, error) {
+func (j *Journal) intern(ctx context.Context, owner Entity, typ uint8, text string, data []byte, link func(Entity) ([]Op, error)) (Entity, error) {
 	_, candidates, err := j.bucket(ctx, owner, text)
 	if err != nil {
 		return Zero, err
@@ -514,7 +654,7 @@ func (j *Journal) intern(ctx context.Context, owner Entity, typ uint8, text stri
 		return e, nil
 	}
 
-	e, err := j.st.AllocateWith(ctx, SchemaPage, typ, KindDeclaration, text, nil,
+	e, err := j.st.AllocateWith(ctx, SchemaPage, typ, KindDeclaration, text, data,
 		func(e Entity) ([]Op, error) {
 			raw, candidates, err := j.bucket(ctx, owner, text)
 			if err != nil {
@@ -632,6 +772,16 @@ func (j *Journal) appendLine(ctx context.Context, cells []Cell, extra func(Entit
 			return Zero, fmt.Errorf("relations: append: field %s given twice in one entry", c.Field)
 		}
 		seen[c.Field] = true
+		// A column says what it holds, so a cell of the wrong kind is a
+		// mistake worth catching here rather than a surprise in the
+		// rendered page.
+		want, err := j.FieldInput(ctx, c.Field)
+		if err != nil {
+			return Zero, err
+		}
+		if got := c.cellInput(); got != want {
+			return Zero, fmt.Errorf("relations: append: column %s holds %s, but this cell is %s", c.Field, want, got)
+		}
 		if c.Numeric && c.Free {
 			return Zero, fmt.Errorf("relations: append: cell for field %s is both a number and free text", c.Field)
 		}

@@ -27,7 +27,7 @@ func TestRenderPageReadsLikeThePage(t *testing.T) {
 
 	j := relations.NewJournal(operatorStore)
 	entries, fields := writeShiftLog(t, j)
-	remarks, err := j.Field(ctx, fieldRemarks)
+	remarks, err := j.DefineField(ctx, fieldRemarks, relations.InputText)
 	if err != nil {
 		t.Fatalf("Field: %v", err)
 	}

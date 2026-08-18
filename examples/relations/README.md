@@ -131,6 +131,10 @@ endpoint.
 | `KindCountersign` | entry → actor, authored *by* that actor: the second signature. |
 | `KindPageSignoff` | page → status marker: this page is closed, by whom, with how many lines. |
 | `KindFieldState` | field → status marker: whether this column's vocabulary is closed. |
+
+A column also records **what it holds** — term, number or text — in its own declaration
+(`DefineField`), which is what lets the schema describe itself to a form and what makes a cell of
+the wrong kind an error rather than a surprise in the rendered page.
 | `KindDerivedFrom` | output unit → input unit (see the genealogy layer) |
 | `KindSuperseded` / `KindVoided` | line → status marker, with the replacement (or the reason it was struck) in the payload |
 | `KindSupersedes` | replacement line → the line it replaced |
@@ -381,6 +385,56 @@ or, when it does not:
 ```
 chain: BROKEN after 0 events -- relations: chain: event 1 (line on 01.01.03.01) does not match its digest ...
 ```
+
+## Driving it over commands
+
+`journalcmd/` puts the log behind this repo's Group/Command catalog, which is the one thing that
+changes what the record can *prove*. The journal's own records are ordinary user-namespace Sets, so
+anything that can reach a daemon can write them — signatures and the chain make tampering evident,
+not impossible. A Command is different: **who may submit one is checked inside the raft FSM**
+(`isPermittedForCommand`, against `KindGroup`/`KindCommand`/`KindGroupCommand`/`KindPeerGroup`
+records only a voter may write).
+
+So: give devices command/group standing and nothing else, keep the journal on the node the command
+names as its target, and the catalog becomes the front door. `TestLiveSubmissionNeedsStanding` takes
+a peer out of the group and watches the FSM refuse the submission before any of this code runs.
+
+> Do **not** also give those devices the `remote` group. A peer with that standing can do forwarded
+> Sets of arbitrary keys, which walks straight around the front door into the journal's namespace.
+
+Two operations, which is what a form-driven client needs:
+
+| op | what it does |
+| --- | --- |
+| `form` | returns the log's schema — its columns, what each holds, and the admissible values of any closed vocabulary |
+| `append` / `correct` / `void` | submits a filled form, which the service turns into cells of the right kind and writes as one line |
+| `render` | returns a page as text |
+
+The form is **generated from the declarations themselves**, so what a phone draws and what the log
+enforces cannot drift apart: a column's type comes from its own declaration (`DefineField`), its
+options from its vocabulary, and a closed vocabulary refuses an unlisted value at submit time as
+well as omitting it from the form. `Append` refuses a cell of the wrong kind for the same reason.
+
+```go
+form, _ := journalcmd.FetchForm("shift-log", 20*time.Second)   // draw it
+line, _ := journalcmd.AppendLine("shift-log", map[string]string{
+    "operator": "Ivanova", "machine": "Lathe-2", "result": "OK", "pieces": "120",
+}, 20*time.Second)                                             // submit it
+```
+
+**Who signed it.** The node running the dispatcher writes the line, so the line's signature is that
+node's. The submitter's attestation is not lost: it is the `CommandRequest` itself, authored by the
+submitting peer, replicated through raft and ACL-checked by the FSM on the way in. Every line the
+service writes records the requester and the instance id, so a line always points back at the
+signed, permission-checked request that asked for it.
+
+Countersigning and page sign-off are deliberately **not** exposed over commands. Both are somebody's
+personal signature, and a service that wrote them on a submitter's behalf would be recording the
+node's signature under someone else's name — exactly the assurance a countersignature exists to
+provide. Those need the submitting device to sign the record itself and hand over the bytes;
+`Record.Encode` already preserves a supplied signature, so the missing piece is a `Store` entry
+point that writes a pre-signed record and a client that produces one from the device's own
+`GetPrivateKey`.
 
 ## Compatibility with `examples/genealogy`
 
