@@ -424,6 +424,19 @@ line, _ := journalcmd.AppendLine("shift-log", map[string]string{
 }, 20*time.Second)                                             // submit it
 ```
 
+**Running it from a shell.** `mage journalserve <commandID> <log>` runs the service on the node that
+owns the log; `mage journalform`, `journalappend`, `journalcorrect`, `journalvoid`,
+`journalcountersign`, `journalsignoff`, `journalpage` and `journalidentity` submit commands and would
+work unchanged from a device with no write access to the log's namespace. `mage journaldefine`,
+`journalvocabulary` and `journalverify` are local and operator-side: the schema, and checking a record
+you were handed.
+
+One measured caveat: a running dispatcher polls the local daemon every 250ms, which contends with
+other processes' IPC calls to it. About one local CLI read in ten fails with "context deadline
+exceeded" while `journalserve` runs, and none when it does not. Nothing is lost — the call is simply
+made again — but a script that submits in a loop should expect it, and "command <id> not found" is
+usually a timed-out read rather than a missing command.
+
 **Who signed it.** The node running the dispatcher writes the line, so the line's signature is that
 node's. The submitter's attestation is not lost: it is the `CommandRequest` itself, authored by the
 submitting peer, replicated through raft and ACL-checked by the FSM on the way in. Every line the
