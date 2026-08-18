@@ -44,13 +44,22 @@
 // on every line it writes, so a line always points back at the signed,
 // permission-checked request that asked for it.
 //
-// Two acts are deliberately *not* exposed here: countersigning and
-// signing off a page. Both are somebody's personal signature, and a
-// service that wrote them on a submitter's behalf would be recording the
-// node's signature under somebody else's name -- which is exactly the
-// assurance a countersignature exists to provide. Those need the
-// submitting device to sign the record itself and hand over the bytes;
-// see the README.
+// # Signing without writing
+//
+// Two acts are somebody's *personal* signature, and this service cannot
+// make them: a countersignature it signed would carry the node's
+// signature under somebody else's name, which is exactly the assurance a
+// countersignature exists to give. Those go the other way round -- the
+// device builds and signs the record where it is (relations.SignLink
+// needs no Store and no access to the log), hands over the bytes, and
+// this service checks them and writes them verbatim. See sign.go for the
+// submitting side.
+//
+// Which actor a device signs as is derived from the peer id its request
+// was authored under, whose Ed25519 key that peer id carries -- so
+// nothing is trusted from the request except what the FSM already
+// established by accepting it, and a device can only ever sign as
+// itself.
 package journalcmd
 
 import (
@@ -77,6 +86,17 @@ const (
 	OpVoid = "void"
 	// OpRender returns a page as text. It writes nothing.
 	OpRender = "render"
+	// OpIdentity returns the actor entity this submitter signs as, and
+	// what a signature would have to say about the page right now. It
+	// writes nothing to the log itself, but it does declare the actor on
+	// first use -- which is the one moment a peer id is bound to a key.
+	OpIdentity = "identity"
+	// OpCountersign records an endorsement the submitter signed itself,
+	// and OpSignoff a page sign-off it signed itself. Both carry the
+	// signed record in Request.Signed; see the package doc on why these
+	// two cannot be written on a submitter's behalf.
+	OpCountersign = "countersign"
+	OpSignoff     = "signoff"
 )
 
 // Request is the inputs JSON a submitter passes to SubmitCommand.
@@ -91,8 +111,41 @@ type Request struct {
 	Line string `json:"line,omitempty"`
 	// Reason is the term explaining a void.
 	Reason string `json:"reason,omitempty"`
-	// Page is which page to render; zero means the one being written.
+	// Page is which page to render or sign off; zero means the one being
+	// written.
 	Page uint8 `json:"page,omitempty"`
+	// Signed carries a record the submitter signed with its own key, for
+	// the operations that are somebody's personal signature rather than
+	// a request for one.
+	Signed *SignedLink `json:"signed,omitempty"`
+}
+
+// SignedLink is relations.SignedLink on the wire: the two entities the
+// relation runs between, and both directions of the record, each signed
+// for its own key.
+type SignedLink struct {
+	A       string `json:"a"`
+	B       string `json:"b"`
+	Forward []byte `json:"forward"`
+	Index   []byte `json:"index"`
+}
+
+// Decode turns a wire link back into the one the journal checks.
+func (l SignedLink) Decode() (relations.SignedLink, error) {
+	a, err := relations.ParseEntity(l.A)
+	if err != nil {
+		return relations.SignedLink{}, err
+	}
+	b, err := relations.ParseEntity(l.B)
+	if err != nil {
+		return relations.SignedLink{}, err
+	}
+	return relations.SignedLink{A: a, B: b, Forward: l.Forward, Index: l.Index}, nil
+}
+
+// EncodeSignedLink is Decode's inverse, for a submitter building one.
+func EncodeSignedLink(link relations.SignedLink) SignedLink {
+	return SignedLink{A: link.A.String(), B: link.B.String(), Forward: link.Forward, Index: link.Index}
 }
 
 // Result is what the service records as the command's outcome, in the
@@ -103,9 +156,11 @@ type Result struct {
 	// Line and Page are where a written line landed.
 	Line string `json:"line,omitempty"`
 	Page uint8  `json:"page,omitempty"`
-	// Form is OpForm's answer; Text is OpRender's.
-	Form *Form  `json:"form,omitempty"`
-	Text string `json:"text,omitempty"`
+	// Form is OpForm's answer; Text is OpRender's; Identity is
+	// OpIdentity's.
+	Form     *Form     `json:"form,omitempty"`
+	Text     string    `json:"text,omitempty"`
+	Identity *Identity `json:"identity,omitempty"`
 	// Error is set instead of the rest when the request was refused.
 	Error string `json:"error,omitempty"`
 }
@@ -202,6 +257,12 @@ func (s *Service) narrate(result Result) string {
 		return "wrote line " + result.Line + ", superseding the one it corrects"
 	case OpVoid:
 		return "struck line " + result.Line + " through"
+	case OpIdentity:
+		return "identity " + result.Identity.Actor
+	case OpCountersign:
+		return "recorded an endorsement of line " + result.Line
+	case OpSignoff:
+		return fmt.Sprintf("closed page %d", result.Page)
 	case OpRender:
 		return fmt.Sprintf("rendered page %d", result.Page)
 	default:
@@ -248,6 +309,45 @@ func (s *Service) answer(ctx context.Context, req kvctl.CommandRequest) (Result,
 		}
 		return Result{Op: OpVoid, Line: parsed.Line}, nil
 
+	case OpIdentity:
+		identity, err := s.identity(ctx, req)
+		if err != nil {
+			return Result{Op: OpIdentity}, err
+		}
+		return Result{Op: OpIdentity, Page: identity.Page, Identity: &identity}, nil
+
+	case OpCountersign:
+		line, err := relations.ParseEntity(parsed.Line)
+		if err != nil {
+			return Result{Op: OpCountersign}, err
+		}
+		link, err := s.signedLink(ctx, req, parsed)
+		if err != nil {
+			return Result{Op: OpCountersign}, err
+		}
+		if err := s.Journal.CountersignWith(ctx, line, link); err != nil {
+			return Result{Op: OpCountersign}, err
+		}
+		return Result{Op: OpCountersign, Line: parsed.Line}, nil
+
+	case OpSignoff:
+		page := parsed.Page
+		if page == 0 {
+			current, _, err := s.currentPage(ctx)
+			if err != nil {
+				return Result{Op: OpSignoff}, err
+			}
+			page = current
+		}
+		link, err := s.signedLink(ctx, req, parsed)
+		if err != nil {
+			return Result{Op: OpSignoff}, err
+		}
+		if err := s.Journal.SignOffPageWith(ctx, page, link); err != nil {
+			return Result{Op: OpSignoff}, err
+		}
+		return Result{Op: OpSignoff, Page: page}, nil
+
 	case OpRender:
 		page := parsed.Page
 		if page == 0 {
@@ -264,8 +364,8 @@ func (s *Service) answer(ctx context.Context, req kvctl.CommandRequest) (Result,
 		return Result{Op: OpRender, Page: page, Text: text}, nil
 
 	default:
-		return Result{}, fmt.Errorf("journalcmd: %q is not an operation (want %s, %s, %s, %s or %s)",
-			parsed.Op, OpForm, OpAppend, OpCorrect, OpVoid, OpRender)
+		return Result{}, fmt.Errorf("journalcmd: %q is not an operation (want %s, %s, %s, %s, %s, %s, %s or %s)",
+			parsed.Op, OpForm, OpIdentity, OpAppend, OpCorrect, OpVoid, OpCountersign, OpSignoff, OpRender)
 	}
 }
 

@@ -267,3 +267,126 @@ func TestLiveSubmissionNeedsStanding(t *testing.T) {
 		t.Fatal("a peer removed from the group still submitted a command")
 	}
 }
+
+// TestLiveDeviceSignedOperations is the pair of acts a service must not
+// perform on anybody's behalf: the submitting device signs the record
+// itself, and the node that owns the log checks it and writes it down.
+func TestLiveDeviceSignedOperations(t *testing.T) {
+	ctx := context.Background()
+	root := repoRoot(t)
+	t.Setenv(registry.EnvHome, t.TempDir())
+
+	reg, err := registry.Open()
+	if err != nil {
+		t.Fatalf("registry.Open: %v", err)
+	}
+	t.Cleanup(func() { killAllRegistered(t, reg) })
+
+	peerID, err := kvctl.AddNodeWithArgs(root, fastRaftArgs)
+	if err != nil {
+		t.Fatalf("AddNode: %v", err)
+	}
+	if err := kvctl.PutGroup(liveGroupID, "Shift operators", false); err != nil {
+		t.Fatalf("PutGroup: %v", err)
+	}
+	if err := kvctl.PutCommand(liveCommandID, "Shift log", peerID); err != nil {
+		t.Fatalf("PutCommand: %v", err)
+	}
+	if err := kvctl.CreateGroupCommand(liveCommandID, liveGroupID); err != nil {
+		t.Fatalf("CreateGroupCommand: %v", err)
+	}
+	if err := kvctl.AddPeerToGroup(peerID, liveGroupID); err != nil {
+		t.Fatalf("AddPeerToGroup: %v", err)
+	}
+
+	backend, err := relations.CurrentNode()
+	if err != nil {
+		t.Fatalf("CurrentNode: %v", err)
+	}
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	actor := relations.Entity{Log: testLog, Page: relations.SchemaPage, Type: relations.TypeActor, ID: 1}
+	store := relations.New(backend, testLog, actor, priv)
+	if err := store.DeclareActor(ctx, actor, "the log node", pub); err != nil {
+		t.Fatalf("DeclareActor: %v", err)
+	}
+	journal := relations.NewJournal(store)
+	defineShiftLog(t, journal)
+
+	stop := make(chan struct{})
+	defer close(stop)
+	go journalcmd.New(journal).Run(liveCommandID, stop, func(err error) { t.Logf("dispatcher: %v", err) })
+
+	line, err := journalcmd.AppendLine(liveCommandID, map[string]string{"result": "OK", "pieces": "120"}, liveTimeout)
+	if err != nil {
+		t.Fatalf("AppendLine: %v", err)
+	}
+
+	// The device's own key, read from its own node -- it never leaves.
+	signer, err := journalcmd.LocalSigner()
+	if err != nil {
+		t.Fatalf("LocalSigner: %v", err)
+	}
+	identity, err := signer.Identity(liveCommandID, liveTimeout)
+	if err != nil {
+		t.Fatalf("Identity: %v", err)
+	}
+	if identity.Name != peerID {
+		t.Fatalf("the log knows this submitter as %q, want %s", identity.Name, peerID)
+	}
+	device, err := relations.ParseEntity(identity.Actor)
+	if err != nil {
+		t.Fatalf("ParseEntity: %v", err)
+	}
+
+	if err := signer.Countersign(liveCommandID, line, liveTimeout); err != nil {
+		t.Fatalf("Countersign: %v", err)
+	}
+
+	// The endorsement is the device's own: authored by its actor, and
+	// verifying against the key that actor was declared with -- which is
+	// the key its peer id carries, not the log node's.
+	entry, err := relations.ParseEntity(line)
+	if err != nil {
+		t.Fatalf("ParseEntity: %v", err)
+	}
+	signatures, err := journal.Countersignatures(ctx, entry)
+	if err != nil {
+		t.Fatalf("Countersignatures: %v", err)
+	}
+	if len(signatures) != 1 || signatures[0].Actor != device || signatures[0].Name != peerID {
+		t.Fatalf("countersignatures = %+v, want one by %s", signatures, peerID)
+	}
+	endorsement, found, err := store.Lookup(ctx, entry, device)
+	if err != nil || !found {
+		t.Fatalf("Lookup = %v, %v", found, err)
+	}
+	if endorsement.Record.Author == actor {
+		t.Fatal("the endorsement is authored by the log node, not by the device that signed it")
+	}
+	if err := store.Verify(ctx, endorsement); err != nil {
+		t.Fatalf("Verify(endorsement): %v", err)
+	}
+
+	// Closing the page, likewise signed by the device.
+	if err := signer.SignOffPage(liveCommandID, 0, liveTimeout); err != nil {
+		t.Fatalf("SignOffPage: %v", err)
+	}
+	signoff, found, err := journal.PageStatus(ctx, relations.FirstEntryPage)
+	if err != nil || !found {
+		t.Fatalf("PageStatus = %v, %v", found, err)
+	}
+	if signoff.By != device || signoff.Name != peerID {
+		t.Fatalf("the page was closed by %s (%q), want the device", signoff.By, signoff.Name)
+	}
+
+	// A second sign-off is refused, and the whole book still adds up.
+	if err := signer.SignOffPage(liveCommandID, relations.FirstEntryPage, liveTimeout); err == nil {
+		t.Fatal("a page was signed off twice")
+	}
+	if _, err := journal.VerifyChain(ctx); err != nil {
+		t.Fatalf("VerifyChain: %v", err)
+	}
+}

@@ -24,8 +24,18 @@ const KindPageSignoff byte = 0x0E
 var ErrPageSignedOff = errors.New("relations: this page has already been signed off")
 
 // PageEntity is the entity standing for one page of this log.
-func (j *Journal) PageEntity(page uint8) Entity {
-	return Entity{Log: j.st.Log, Page: page, Type: TypePage, ID: 0}
+func (j *Journal) PageEntity(page uint8) Entity { return PageEntityOf(j.st.Log, page) }
+
+// PageEntityOf and StatusMarkerOf are the same two entities derived from
+// a log byte alone, for a caller that has no Journal -- a device signing
+// a sign-off elsewhere needs to name exactly the record the log will
+// check, without being able to read the log at all. See SignLink.
+func PageEntityOf(log, page uint8) Entity {
+	return Entity{Log: log, Page: page, Type: TypePage, ID: 0}
+}
+
+func StatusMarkerOf(log uint8) Entity {
+	return Entity{Log: log, Page: SchemaPage, Type: TypeEntry, ID: 0}
 }
 
 // SignOffPage rules a page off: it records who closed it and when, and
@@ -44,6 +54,22 @@ func (j *Journal) SignOffPage(ctx context.Context, page uint8) error {
 	if page < FirstEntryPage {
 		return fmt.Errorf("relations: sign off: page %d is not a page of entries", page)
 	}
+	lines, err := j.st.LastAllocated(ctx, page, TypeEntry)
+	if err != nil {
+		return err
+	}
+	write, err := j.st.LinkOps(j.PageEntity(page), j.StatusMarker(), KindPageSignoff, []byte{lines})
+	if err != nil {
+		return err
+	}
+	return j.signOffPage(ctx, page, write)
+}
+
+// signOffPage is the write both sign-off paths share -- this store's own
+// signature, or one made elsewhere (see SignOffPageWith). write is the
+// pair of ops recording it; closing the page and chaining the event ride
+// along in the same transaction either way.
+func (j *Journal) signOffPage(ctx context.Context, page uint8, write []Op) error {
 	if err := j.checkSignable(ctx, page); err != nil {
 		return err
 	}
@@ -51,21 +77,13 @@ func (j *Journal) SignOffPage(ctx context.Context, page uint8) error {
 	subject := j.PageEntity(page)
 	key := RelationKey(subject, j.StatusMarker())
 	for attempt := 0; attempt < allocRetries; attempt++ {
-		lines, err := j.st.LastAllocated(ctx, page, TypeEntry)
-		if err != nil {
-			return err
-		}
 		closeOps, err := j.st.ClosePageOps(ctx, page, TypeEntry)
-		if err != nil {
-			return err
-		}
-		signOps, err := j.st.LinkOps(subject, j.StatusMarker(), KindPageSignoff, []byte{lines})
 		if err != nil {
 			return err
 		}
 
 		ops := append([]Op{{Kind: OpCompareAbsent, Key: key}}, closeOps...)
-		ops = append(ops, signOps...)
+		ops = append(ops, write...)
 		chain, err := j.chainEventOps(ctx, Zero, ops)
 		if err != nil {
 			return err

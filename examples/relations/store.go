@@ -215,6 +215,32 @@ func (s *Store) AllocateWith(ctx context.Context, page, typ uint8, kind byte, na
 				pre = Op{Kind: OpCompare, Key: counterKey, Value: raw}
 			}
 
+			// An id whose declaration already exists was placed by hand
+			// rather than handed out here (Declare and DeclareActor both
+			// take an entity the caller chose), so the counter knows
+			// nothing about it. Step over it: allocation must never
+			// overwrite something already there, which would leave two
+			// different things claiming one entity -- and if those were
+			// actors, signatures would start verifying against the wrong
+			// key.
+			taken := false
+			for ; next != 0; next++ {
+				candidate := DeclarationKey(Entity{Log: s.Log, Page: uint8(p), Type: typ, ID: next})
+				if _, exists, err := s.get(ctx, candidate); err != nil {
+					return Zero, err
+				} else if !exists {
+					break
+				}
+				taken = true
+			}
+			if next == 0 {
+				// Every id from here to 255 is spoken for. The counter is
+				// left where it is; the page loop moves on.
+				if taken {
+					continue
+				}
+			}
+
 			// 255 is the last usable id, so bumping past it stores 0 --
 			// the "full" marker the read above skips on.
 			var after uint8
@@ -235,6 +261,10 @@ func (s *Store) AllocateWith(ctx context.Context, page, typ uint8, kind byte, na
 
 			ops := []Op{
 				pre,
+				// ...and the id itself must still be free at the moment
+				// of writing, so the skip above cannot be raced by
+				// somebody declaring that entity by hand in between.
+				{Kind: OpCompareAbsent, Key: declKey},
 				{Kind: OpSet, Key: counterKey, Value: counterValue},
 				{Kind: OpSet, Key: declKey, Value: declValue},
 			}

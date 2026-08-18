@@ -111,9 +111,7 @@ func (s EntryStatus) Live() bool { return s.State == StateLive }
 // Scanning its backlinks is the audit query a paper book cannot answer
 // without being read cover to cover: every correction ever made, in one
 // pass. See Corrections.
-func (j *Journal) StatusMarker() Entity {
-	return Entity{Log: j.st.Log, Page: SchemaPage, Type: TypeEntry, ID: 0}
-}
+func (j *Journal) StatusMarker() Entity { return StatusMarkerOf(j.st.Log) }
 
 // Correct writes a replacement for an existing line: the new line is
 // appended at the end of the book exactly like any other, and in the

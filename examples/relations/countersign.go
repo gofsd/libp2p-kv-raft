@@ -38,22 +38,30 @@ var ErrAlreadyCountersigned = errors.New("relations: this actor has already coun
 // an endorsement past.
 func (j *Journal) Countersign(ctx context.Context, entry Entity) error {
 	actor := j.st.Author
+	ops, err := j.st.LinkOps(entry, actor, KindCountersign, nil)
+	if err != nil {
+		return err
+	}
+	return j.countersign(ctx, entry, actor, ops)
+}
+
+// countersign is the write both endorsement paths share: the checks, the
+// preconditions that make them airtight, the chained event and the
+// retry. write is the pair of ops recording the endorsement -- signed by
+// this store, or by the endorser elsewhere (see CountersignWith).
+func (j *Journal) countersign(ctx context.Context, entry, actor Entity, write []Op) error {
 	if err := j.checkCountersignable(ctx, entry, actor); err != nil {
 		return err
 	}
 
 	key := RelationKey(entry, actor)
 	for attempt := 0; attempt < allocRetries; attempt++ {
-		ops, err := j.st.LinkOps(entry, actor, KindCountersign, nil)
-		if err != nil {
-			return err
-		}
-		ops = append([]Op{
+		ops := append([]Op{
 			// Nobody may endorse this line twice...
 			{Kind: OpCompareAbsent, Key: key},
 			// ...and it has to still stand at the moment of endorsing.
 			{Kind: OpCompareAbsent, Key: RelationKey(entry, j.StatusMarker())},
-		}, ops...)
+		}, write...)
 
 		chain, err := j.chainEventOps(ctx, Zero, ops)
 		if err != nil {

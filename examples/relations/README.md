@@ -408,6 +408,8 @@ Two operations, which is what a form-driven client needs:
 | --- | --- |
 | `form` | returns the log's schema — its columns, what each holds, and the admissible values of any closed vocabulary |
 | `append` / `correct` / `void` | submits a filled form, which the service turns into cells of the right kind and writes as one line |
+| `identity` | which actor this device signs as, and the page state a signature must commit to |
+| `countersign` / `signoff` | records a signature the device made itself (see below) |
 | `render` | returns a page as text |
 
 The form is **generated from the declarations themselves**, so what a phone draws and what the log
@@ -428,13 +430,34 @@ submitting peer, replicated through raft and ACL-checked by the FSM on the way i
 service writes records the requester and the instance id, so a line always points back at the
 signed, permission-checked request that asked for it.
 
-Countersigning and page sign-off are deliberately **not** exposed over commands. Both are somebody's
-personal signature, and a service that wrote them on a submitter's behalf would be recording the
-node's signature under someone else's name — exactly the assurance a countersignature exists to
-provide. Those need the submitting device to sign the record itself and hand over the bytes;
-`Record.Encode` already preserves a supplied signature, so the missing piece is a `Store` entry
-point that writes a pre-signed record and a client that produces one from the device's own
-`GetPrivateKey`.
+### Signing without writing
+
+Countersigning and page sign-off are somebody's *personal* signature, so the service cannot make
+them: a record it signed would carry the node's signature under someone else's name — exactly the
+assurance a countersignature exists to give. Those two go the other way round.
+
+The device builds the record and signs it **where it is**, with its own key, and hands over the
+bytes (`relations.SignLink` needs no `Store` and no access to the log). The node that owns the log
+checks the signature against the key that actor declared, checks the record is exactly what it
+claims to be, and writes it verbatim — it never signs on anybody's behalf, and it *cannot*, because
+it does not have the key.
+
+```go
+signer, _ := journalcmd.LocalSigner()             // this node's own Ed25519 key, read locally
+signer.Countersign("shift-log", line, timeout)    // signed here, checked and recorded there
+signer.SignOffPage("shift-log", 0, timeout)
+```
+
+Which actor a device signs as is **derived from the peer id its request was authored under**, whose
+Ed25519 key the peer id itself carries. So enrolment is not a story: nothing is trusted from the
+request except the peer id the FSM already established by accepting it, an actor is bound to a key
+once and cannot be rebound, and a device can only sign as itself. `TestSignedRecordsAreCheckedNotTrusted`
+walks the ways of getting this wrong — wrong key, wrong author, wrong line, wrong record kind, two
+halves that disagree, an actor nobody declared — and each is refused.
+
+A sign-off signature also commits to **how many lines the page held**, and the log refuses a stale
+one rather than recording it as something its signer did not say: a line that landed in between
+means signing again against the count the log reports.
 
 ## Compatibility with `examples/genealogy`
 

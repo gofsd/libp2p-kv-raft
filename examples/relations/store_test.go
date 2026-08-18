@@ -262,3 +262,39 @@ func mustSignature(t *testing.T, st *relations.Store, e relations.Entity) []byte
 	}
 	return decl.Record.Signature
 }
+
+// TestAllocateStepsOverAHandPlacedID pins the bug this check exists for:
+// Declare and DeclareActor take an entity the caller chose, so an id can
+// exist without the counter knowing. Allocating over it would leave two
+// different things claiming one entity -- and when those are actors,
+// signatures start verifying against the wrong key.
+func TestAllocateStepsOverAHandPlacedID(t *testing.T) {
+	ctx := context.Background()
+	st, _, _ := newStore(t)
+
+	const typ uint8 = 0x70
+	placed := relations.Entity{Log: testLog, Page: 0, Type: typ, ID: 1}
+	if err := st.Declare(ctx, placed, relations.KindDeclaration, "placed by hand", nil); err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+
+	allocated, err := st.Allocate(ctx, 0, typ, relations.KindDeclaration, "allocated", nil)
+	if err != nil {
+		t.Fatalf("Allocate: %v", err)
+	}
+	if allocated == placed {
+		t.Fatal("the allocator handed out an id that was already taken")
+	}
+	if allocated.ID != 2 {
+		t.Fatalf("the allocator handed out id %d, want 2 (stepping over the one already there)", allocated.ID)
+	}
+
+	// And the one placed by hand is untouched.
+	decl, found, err := st.Declaration(ctx, placed)
+	if err != nil || !found {
+		t.Fatalf("Declaration = %v, %v", found, err)
+	}
+	if decl.Record.Name != "placed by hand" {
+		t.Fatalf("the hand-placed entity now reads %q", decl.Record.Name)
+	}
+}
