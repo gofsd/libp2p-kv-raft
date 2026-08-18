@@ -823,12 +823,27 @@ class UiCommandE2ETest {
      * the catalog's own membership check, which pkg/kvctl and kvmobile
      * both test directly. A real deployment names the peers it admits.
      *
-     * Idempotent across cases and across runs: every step here is
-     * find-or-create (a column already declared as the same type, a
-     * vocabulary value already interned, a command already published),
-     * and the whole thing is skipped after the first Journal case in a
-     * session. Failures are logged rather than thrown -- a second run
-     * against a device whose book already exists must not abort the batch.
+     * Idempotent across cases and across runs, with one expected
+     * exception: every step is find-or-create (a column already declared
+     * as the same type, a vocabulary value already interned, a command
+     * already published), and the whole thing is skipped after the first
+     * Journal case in a session -- but closing an already-closed
+     * vocabulary is deliberately an error in the journal itself, so a
+     * second run logs `vocabulary of <field> is already closed` here.
+     * That line is expected and means the book is in the state these
+     * cases need, which is why every step is logged rather than thrown:
+     * a re-run against a device whose book already exists must not abort
+     * the batch.
+     *
+     * Verified live on the two-device rig (2026-08-19): all seven Journal
+     * cases pass, including the device-signed countersignature. One
+     * scheduling caveat worth knowing before running them as a filtered
+     * mini-batch: device B checks its *own* replica for the command's
+     * group standing, and a freshly joined B can be a heartbeat or two
+     * behind (kvmobile widens raft timeouts to 4s), so a Journal case run
+     * first fails with "is not permitted to submit command". In the full
+     * suite they run late and B is long warm; in a mini-batch, put a
+     * cheap case such as get_own_addr in front of them.
      */
     /** Whether [ensureJournalBook] has already run in this instrumentation session. */
     private var journalBookReady = false
