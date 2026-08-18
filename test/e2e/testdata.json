@@ -1859,6 +1859,122 @@
         "kind": "run",
         "result": "succeeded"
       }
+    },
+    {
+      "case_id": "journal_form",
+      "generate": {
+        "target": "run",
+        "category": "Journal",
+        "name": "Form",
+        "params": [
+          "optical-journal"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:operator"
+      },
+      "order": 1
+    },
+    {
+      "case_id": "journal_append",
+      "generate": {
+        "target": "run",
+        "category": "Journal",
+        "name": "Append",
+        "params": [
+          "optical-journal",
+          "{\"operator\":\"Ivanova\",\"machine\":\"Lathe-2\",\"result\":\"OK\",\"pieces\":\"120\"}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "order": 2
+    },
+    {
+      "case_id": "journal_append_closed_vocabulary",
+      "generate": {
+        "target": "run",
+        "category": "Journal",
+        "name": "Append",
+        "params": [
+          "optical-journal",
+          "{\"operator\":\"Nobody\"}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "rejected"
+      },
+      "order": 3
+    },
+    {
+      "case_id": "journal_page",
+      "generate": {
+        "target": "run",
+        "category": "Journal",
+        "name": "Page",
+        "params": [
+          "optical-journal",
+          "0"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:Ivanova"
+      },
+      "order": 4
+    },
+    {
+      "case_id": "journal_identity",
+      "generate": {
+        "target": "run",
+        "category": "Journal",
+        "name": "Identity",
+        "params": [
+          "optical-journal"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:{{selfPeerID}}"
+      },
+      "order": 5
+    },
+    {
+      "case_id": "journal_verify",
+      "generate": {
+        "target": "run",
+        "category": "Journal",
+        "name": "Verify",
+        "params": [
+          "1"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:chain:"
+      },
+      "order": 6
+    },
+    {
+      "case_id": "journal_countersign",
+      "generate": {
+        "target": "run",
+        "category": "Journal",
+        "name": "Countersign",
+        "params": [
+          "optical-journal",
+          "01.01.03.01"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "no_crash"
+      },
+      "order": 7
     }
   ],
   "android_optical_scan_result": {

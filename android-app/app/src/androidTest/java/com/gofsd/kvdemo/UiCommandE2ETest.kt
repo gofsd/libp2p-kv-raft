@@ -249,6 +249,25 @@ class UiCommandE2ETest {
         /** The one substitution token an optical case's own Result may reference -- see [resultExpectation]. */
         const val SELF_PEER_ID_TOKEN = "{{selfPeerID}}"
 
+        /**
+         * The log book device A owns for the optical rig's Journal cases, and the Command device B
+         * submits against -- see [ensureJournalBook]. These names are the contract between that
+         * setup and testdata.json's own android_optical_cases entries, which name the same command
+         * id in their params: a case saying "optical-journal" and a device serving "optical-shift-log"
+         * would leave every Journal case timing out with nothing to say why, so they live here as
+         * constants rather than being typed twice.
+         *
+         * The columns are the same shift log examples/relations' own tests and README use, minus
+         * the ones a submitter never fills in: what a device writes is a form, and the form comes
+         * from these declarations.
+         */
+        const val OPTICAL_JOURNAL_LOG = "1"
+        const val OPTICAL_JOURNAL_COMMAND_ID = "optical-journal"
+        const val OPTICAL_JOURNAL_GROUP_ID = "optical-journal-writers"
+        const val OPTICAL_JOURNAL_COLUMNS =
+            """{"operator":"term","machine":"term","result":"term","pieces":"number","remarks":"text"}"""
+        const val OPTICAL_JOURNAL_OPERATORS = """["Ivanova","Petrov"]"""
+
         /** How long [awaitOwnCircuitAddr] waits for this device to publish a relay circuit address, and how often it re-checks. */
         const val CIRCUIT_ADDR_TIMEOUT_MS = 90_000L
         const val CIRCUIT_ADDR_POLL_MS = 2_000L
@@ -723,6 +742,17 @@ class UiCommandE2ETest {
                     Log.i(TAG, "$opticalTag RunCommandDispatcher -> $dispatcherResult")
                 }
 
+                // Journal cases need this device to actually own a log book
+                // and be answering for it before device B scans anything --
+                // the same "harness setup, not a production UI path"
+                // reasoning as the dispatcher pre-registration above, and
+                // for the same underlying reason: a RunCommandDispatcher
+                // subscription lives in this process and would not survive
+                // being set up anywhere else.
+                if (category == "Journal") {
+                    ensureJournalBook(allCommandsForLookup, opticalTag)
+                }
+
                 // "{{selfAddr}}" is the one substitution token an optical case's own params can
                 // reference (e.g. a Dispatch: DialSubmitCommand case naming its own generating
                 // device as the dial target) -- only known live, resolved here rather than by the
@@ -775,6 +805,52 @@ class UiCommandE2ETest {
         waitForScreen("generatedDataMatrixImage")
         Log.i(TAG, "$opticalTag generatedDataMatrixImage rendered, writing result")
         return JSONObject().put("command", "OpticalGenerate: $caseID").put("pass", true)
+    }
+
+    /**
+     * Makes this device the owner of the optical rig's log book, once per
+     * instrumentation session: declares the book's columns, closes one
+     * vocabulary so a case can prove a closed set is actually enforced,
+     * publishes the Command device B submits against, and starts serving
+     * it.
+     *
+     * The group is created **public**, which is the one thing here that
+     * would be wrong outside a test rig: a public group admits any peer
+     * with no membership record at all (see pkg/kvctl's
+     * isPermittedForCommand). That is deliberate -- this device has no way
+     * to learn device B's peer id before B has scanned anything, and the
+     * property these cases exist to check is the journal round trip, not
+     * the catalog's own membership check, which pkg/kvctl and kvmobile
+     * both test directly. A real deployment names the peers it admits.
+     *
+     * Idempotent across cases and across runs: every step here is
+     * find-or-create (a column already declared as the same type, a
+     * vocabulary value already interned, a command already published),
+     * and the whole thing is skipped after the first Journal case in a
+     * session. Failures are logged rather than thrown -- a second run
+     * against a device whose book already exists must not abort the batch.
+     */
+    /** Whether [ensureJournalBook] has already run in this instrumentation session. */
+    private var journalBookReady = false
+
+    private fun ensureJournalBook(allCommands: List<CommandSpec>, opticalTag: String) {
+        if (journalBookReady) return
+        journalBookReady = true
+
+        fun step(category: String, name: String, params: List<String>) {
+            val spec = allCommands.first { it.category == category && it.name == name }
+            val outcome = runCatching { runBlocking { CommandExecutor.execute(spec, params) } }
+            Log.i(TAG, "$opticalTag journal setup ${spec.label} -> ${outcome.getOrNull() ?: outcome.exceptionOrNull()?.message}")
+        }
+
+        step("Journal", "Define", listOf(OPTICAL_JOURNAL_LOG, OPTICAL_JOURNAL_COLUMNS))
+        step("Journal", "Vocabulary", listOf(OPTICAL_JOURNAL_LOG, "operator", OPTICAL_JOURNAL_OPERATORS, "true"))
+
+        val selfPeerID = runCatching { Kvmobile.peerID() }.getOrDefault("")
+        step("Command", "CreateCommand", listOf(OPTICAL_JOURNAL_COMMAND_ID, "Optical shift log", selfPeerID))
+        step("Group", "CreateGroup", listOf(OPTICAL_JOURNAL_GROUP_ID, "Optical shift log writers", "true"))
+        step("Links", "AddCommandToGroup", listOf(OPTICAL_JOURNAL_COMMAND_ID, OPTICAL_JOURNAL_GROUP_ID))
+        step("Journal", "Serve", listOf(OPTICAL_JOURNAL_COMMAND_ID, OPTICAL_JOURNAL_LOG))
     }
 
     /**

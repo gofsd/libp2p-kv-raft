@@ -482,6 +482,61 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     }
     add("ExecInvite", "RedeemExecInviteTicket", listOf("ticketB64")) { a -> Kvmobile.redeemExecInviteTicket(a[0]) }
 
+    // Journal -- the log book examples/relations/journalcmd serves behind a
+    // Command (see examples/relations/README.md). Two roles live here, and
+    // the split is worth reading before using them:
+    //
+    //   - Serve/StopServe/Define/Vocabulary/Verify are for a device that
+    //     *owns* a book: they write its schema and run the dispatcher that
+    //     answers everybody else. Define/Vocabulary write journal keys
+    //     directly, which only the owning device can do.
+    //   - Form/Append/Correct/Void/Page/Identity/Countersign/SignOff are
+    //     for a device that only writes *into* somebody else's book. They
+    //     submit a Command and touch no journal key at all, so a device
+    //     granted command standing and nothing else can keep a log without
+    //     being able to write to the store behind it -- which is the whole
+    //     reason to drive a log this way from a phone.
+    //
+    // Form is what a form-driven screen would call first: it returns the
+    // book's columns, what each holds, and the values a closed vocabulary
+    // admits, generated from the log's own declarations so what a device
+    // draws and what the log enforces cannot drift apart.
+    add("Journal", "Serve", listOf("commandID", "log")) { a ->
+        Kvmobile.journalServe(a[0], a[1].toLongOrThrow("log")); ok()
+    }
+    add("Journal", "StopServe", listOf("commandID")) { a -> Kvmobile.stopJournalServe(a[0]); ok() }
+    add("Journal", "Define", listOf("log", "columnsJSON")) { a ->
+        Kvmobile.journalDefine(a[0].toLongOrThrow("log"), a[1])
+    }
+    add("Journal", "Vocabulary", listOf("log", "column", "valuesJSON", "close (true|false)")) { a ->
+        Kvmobile.journalVocabulary(a[0].toLongOrThrow("log"), a[1], a[2], a[3].toBooleanOrThrow("close"))
+    }
+    add("Journal", "Verify", listOf("log")) { a -> Kvmobile.journalVerify(a[0].toLongOrThrow("log")) }
+    add("Journal", "Form", listOf("commandID")) { a -> Kvmobile.journalForm(a[0]) }
+    add("Journal", "Append", listOf("commandID", "cellsJSON")) { a -> Kvmobile.journalAppend(a[0], a[1]) }
+    add("Journal", "Correct", listOf("commandID", "line", "cellsJSON")) { a ->
+        Kvmobile.journalCorrect(a[0], a[1], a[2])
+    }
+    add("Journal", "Void", listOf("commandID", "line", "reason (blank ok)")) { a ->
+        Kvmobile.journalVoid(a[0], a[1], a[2]); ok()
+    }
+    add("Journal", "Page", listOf("commandID", "page (0=current)")) { a ->
+        Kvmobile.journalPage(a[0], a[1].toLongOrThrow("page"))
+    }
+    add("Journal", "Identity", listOf("commandID")) { a -> Kvmobile.journalIdentity(a[0]) }
+    // Countersign/SignOff are this device's own signature, made here with
+    // a key that never leaves it: the record is built and signed on this
+    // device and handed over as bytes, and the device that owns the book
+    // checks it and writes it verbatim. It could not produce this
+    // signature itself, which is exactly what makes an endorsement worth
+    // having. A device may not endorse a line it wrote itself.
+    add("Journal", "Countersign", listOf("commandID", "line")) { a ->
+        Kvmobile.journalCountersign(a[0], a[1]); ok()
+    }
+    add("Journal", "SignOff", listOf("commandID", "page (0=current)")) { a ->
+        Kvmobile.journalSignOff(a[0], a[1].toLongOrThrow("page")); ok()
+    }
+
     // Raw escape hatch -- the same one E2ETest uses, see its own doc
     // comment and README's "Follower on Android" section. Generatable and
     // scannable like every other spec now (a RunCode naming "Raw:
