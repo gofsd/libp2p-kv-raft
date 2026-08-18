@@ -177,12 +177,19 @@ pub fn decode_group_payload(payload: &[u8]) -> String {
 /// into its stored value: a 2-byte big-endian length prefix for name,
 /// then name, then peer_id verbatim. Matches
 /// `pkg/shmevent.EncodeCommandPayload`.
+///
+/// The name is bounded one byte below [`COMMAND_PAYLOAD_V2_SENTINEL`], not
+/// at it: a name of exactly 0xFFFF bytes would write a v1 payload whose
+/// first two bytes are the v2 marker, and
+/// [`decode_command_payload_full`] would read it back as a v2 record with
+/// an empty name and peer id. Mirrors `pkg/shmevent.checkCommandNameLen`.
 pub fn encode_command_payload(name: &str, peer_id: &[u8]) -> Result<Vec<u8>, Error> {
     let name_bytes = name.as_bytes();
-    if name_bytes.len() > 0xFFFF {
+    if name_bytes.len() >= COMMAND_PAYLOAD_V2_SENTINEL {
         return Err(Error(format!(
-            "command name too long: {} bytes",
-            name_bytes.len()
+            "command name too long: {} bytes (max {})",
+            name_bytes.len(),
+            COMMAND_PAYLOAD_V2_SENTINEL - 1
         )));
     }
     let mut buf = Vec::with_capacity(2 + name_bytes.len() + peer_id.len());
@@ -205,9 +212,11 @@ pub fn decode_command_payload(payload: &[u8]) -> Result<(String, &[u8]), Error> 
 ///
 /// A Command record grew a third field -- the form definition a client renders
 /// inputs from -- and v1's layout had no room for one, since `peer_id` is its
-/// trailing field and takes the rest of the buffer. v2 is marked by an
-/// impossible v1 name length (`0xFFFF`; the whole value is capped far below
-/// that) followed by explicitly length-prefixed fields. Go's
+/// trailing field and takes the rest of the buffer. v2 is marked by a name
+/// length no v1 payload may carry (`0xFFFF`, enforced on the write side by
+/// [`encode_command_payload`] and Go's `shmevent.checkCommandNameLen` -- it
+/// used to be unreachable on its own, back when the whole value was capped
+/// far below that) followed by explicitly length-prefixed fields. Go's
 /// `shmevent.EncodeCommandPayloadWithSpec` is the writer, and it still emits
 /// v1 byte-for-byte whenever there is no spec, so a spec-less command reaching
 /// this decoder is unchanged from before the field existed.
@@ -286,6 +295,26 @@ fn decode_command_payload_v1(payload: &[u8]) -> Result<(String, &[u8]), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Mirrors `pkg/shmevent.TestSentinelLengthNameRejected`: a name of
+    /// exactly the v2 sentinel length would encode as a v1 payload whose
+    /// first two bytes are the v2 marker, and decode back as a v2 record
+    /// with an empty name and peer id.
+    #[test]
+    fn sentinel_length_name_rejected() {
+        let name = "a".repeat(COMMAND_PAYLOAD_V2_SENTINEL);
+        assert!(
+            encode_command_payload(&name, b"12D3KooWtarget").is_err(),
+            "encoded a sentinel-length name -- its payload is indistinguishable from v2"
+        );
+
+        let ok = "a".repeat(COMMAND_PAYLOAD_V2_SENTINEL - 1);
+        let payload = encode_command_payload(&ok, b"12D3KooWtarget").unwrap();
+        let (got_name, got_peer, spec) = decode_command_payload_full(&payload).unwrap();
+        assert_eq!(got_name.len(), ok.len());
+        assert_eq!(got_peer, b"12D3KooWtarget");
+        assert!(spec.is_empty());
+    }
 
     #[test]
     fn group_key_bounds_prefix_matches_group_key() {

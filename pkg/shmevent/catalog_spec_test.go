@@ -260,3 +260,41 @@ func TestStationKeyBoundsCoverOnlyStations(t *testing.T) {
 // pin. Dropped rather than adapted; see this package's migration notes and
 // event_test.go's note by TestValueTooLongRejected's removal for the same
 // reasoning.
+
+// TestSentinelLengthNameRejected pins the write-side guard the v1/v2 Command
+// payload split depends on: a name of exactly commandPayloadV2Sentinel bytes
+// would encode as a v1 payload whose first two bytes are the v2 marker, and
+// decode back as a v2 record with an empty name, an empty peer id, and the
+// entire real payload swallowed as a spec. That used to be unreachable
+// because the retired value ceilings were far below 0xFFFF; now only
+// checkCommandNameLen stops it, in both writers -- so a name is either
+// encodable in both formats or neither, never one and not the other.
+func TestSentinelLengthNameRejected(t *testing.T) {
+	name := string(make([]byte, commandPayloadV2Sentinel))
+	peerID := []byte("12D3KooWtarget")
+
+	if _, err := EncodeCommandPayload(name, peerID); err == nil {
+		t.Fatal("v1 encode accepted a sentinel-length name -- its payload is indistinguishable from v2")
+	}
+	if _, err := EncodeCommandPayloadWithSpec(name, peerID, []byte(`{"f":1}`)); err == nil {
+		t.Fatal("v2 encode accepted a sentinel-length name the v1 encoder rejects")
+	}
+
+	// One byte below the sentinel is still fine, and still reads back as v1.
+	ok := string(make([]byte, commandPayloadV2Sentinel-1))
+	payload, err := EncodeCommandPayload(ok, peerID)
+	if err != nil {
+		t.Fatalf("EncodeCommandPayload(len %d): %v", len(ok), err)
+	}
+	if CommandPutPayloadHasSpec(payload) {
+		t.Fatal("a v1 payload one byte below the sentinel was read as v2")
+	}
+	gotName, gotPeer, spec, err := DecodeCommandPayloadFull(payload)
+	if err != nil {
+		t.Fatalf("DecodeCommandPayloadFull: %v", err)
+	}
+	if len(gotName) != len(ok) || !bytes.Equal(gotPeer, peerID) || spec != nil {
+		t.Fatalf("round trip = (name %d bytes, peer %q, spec %v), want (%d bytes, %q, nil)",
+			len(gotName), gotPeer, spec, len(ok), peerID)
+	}
+}

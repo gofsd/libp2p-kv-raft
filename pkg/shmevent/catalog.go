@@ -266,8 +266,8 @@ func DecodeGroupPayload(payload []byte) (name string, public bool, err error) {
 // name, then name, then peerID verbatim (last field, no prefix needed) --
 // id is already the record's key (CommandKey).
 func EncodeCommandPayload(name string, peerID []byte) ([]byte, error) {
-	if len(name) > 0xFFFF {
-		return nil, fmt.Errorf("shmevent: command name too long: %d bytes", len(name))
+	if err := checkCommandNameLen(name); err != nil {
+		return nil, err
 	}
 	buf := make([]byte, 2+len(name)+len(peerID))
 	buf[0] = byte(len(name) >> 8)
@@ -278,12 +278,23 @@ func EncodeCommandPayload(name string, peerID []byte) ([]byte, error) {
 	return buf, nil
 }
 
-// commandPayloadV2Sentinel is an impossible v1 name length (0xFFFF) used as
-// a version marker in a Command payload's first two bytes. A v1 payload
-// starts with its name's big-endian length, and a name that long could never
-// have been stored: the whole value was capped at ValueSize (512 bytes) when
-// v1 was the only format, and is capped at KVValueSize (4KB) now. So any
-// payload beginning 0xFF 0xFF is unambiguously v2.
+// commandPayloadV2Sentinel is a name length no v1 payload may carry (0xFFFF),
+// used as a version marker in a Command payload's first two bytes: a v1
+// payload starts with its name's big-endian length, so any payload beginning
+// 0xFF 0xFF is unambiguously v2.
+//
+// checkCommandNameLen is what makes that true, and it has to be a real check.
+// This used to rest on the value ceilings instead -- a 0xFFFF-byte name could
+// not fit the 512-byte ValueSize (later 4KB KVValueSize) every Command record
+// was capped at, so the length simply could not occur. Those tiers were
+// retired for one generous MaxValueSize (see README's "Value size ceilings"),
+// which left a 65535-byte name encodable and its v1 payload
+// indistinguishable from a v2 one -- it decodes as a v2 record with an empty
+// name, an empty peer id, and the whole thing swallowed as a spec. No stored
+// record can be in that state (every one of them was written under a ceiling
+// far below 0xFFFF), so this is a write-side guard only, with nothing to
+// migrate. web-app's Rust mirror (shmevent/catalog_keys.rs) carries the same
+// check for the same reason.
 //
 // This exists because a Command record grew a third field -- Spec, the form
 // definition a client renders (see EncodeCommandPayloadWithSpec) -- and v1's
@@ -294,6 +305,19 @@ func EncodeCommandPayload(name string, peerID []byte) ([]byte, error) {
 // to what any older reader (including web-app's Rust decoder in
 // shmevent/catalog_keys.rs) already understands.
 const commandPayloadV2Sentinel = 0xFFFF
+
+// checkCommandNameLen bounds a Command record's name to one byte below
+// commandPayloadV2Sentinel -- see that constant's doc comment. Both payload
+// writers use it, so whether a name is acceptable never depends on whether a
+// spec happens to be present (only the v1 layout can actually collide, but a
+// name that encodes with a spec and fails without one would be worse than the
+// single shared limit).
+func checkCommandNameLen(name string) error {
+	if len(name) >= commandPayloadV2Sentinel {
+		return fmt.Errorf("shmevent: command name too long: %d bytes (max %d)", len(name), commandPayloadV2Sentinel-1)
+	}
+	return nil
+}
 
 // EncodeCommandPayloadWithSpec is EncodeCommandPayload plus spec, the
 // command's form definition -- what a client needs to render inputs for it,
@@ -307,8 +331,8 @@ func EncodeCommandPayloadWithSpec(name string, peerID, spec []byte) ([]byte, err
 	if len(spec) == 0 {
 		return EncodeCommandPayload(name, peerID)
 	}
-	if len(name) > 0xFFFF {
-		return nil, fmt.Errorf("shmevent: command name too long: %d bytes", len(name))
+	if err := checkCommandNameLen(name); err != nil {
+		return nil, err
 	}
 	if len(peerID) > 0xFFFF {
 		return nil, fmt.Errorf("shmevent: command peer id too long: %d bytes", len(peerID))

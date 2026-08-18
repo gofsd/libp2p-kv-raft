@@ -91,14 +91,20 @@ const (
 // (that's already the record's own AuthorPeerID) or targetPeerID
 // (redundant with peerID itself when role is target; ListExecutionsByPeer
 // looks it up via GetCommand for a role-requester entry instead). This
-// matters because commandExecIndexKind(peerID) already embeds a full
-// peer id in the pkg/logrecord key (see BuildKey), and every record here
-// shares pkg/shmevent.ValueSize's single 512-byte budget across key *and*
-// value combined -- an earlier version of this (ported from kvmobile's
-// own first draft) stored requested_by/target_peer_id directly and blew
-// that budget the moment two real peer ids (~52 bytes each) were
-// involved at once -- see mobile/kvmobile/dispatch.go's identical doc
-// comment for the full story.
+// shape was originally forced: commandExecIndexKind(peerID) already
+// embeds a full peer id in the pkg/logrecord key (see BuildKey), and back
+// when pkg/shmevent still had a 512-byte per-event ValueSize budget
+// spanning key *and* value together, an earlier version of this (ported
+// from kvmobile's own first draft) stored requested_by/target_peer_id
+// directly and blew that budget the moment two real peer ids (~52 bytes
+// each) were involved at once. That ceiling is gone -- the union rewrite
+// left a single, deliberately generous shmevent.MaxValueSize bounding the
+// value alone (see README's "Value size ceilings") -- so staying thin is
+// now a choice rather than a constraint, and still the right one: every
+// record here is replicated into every cluster member's memory and SQLite
+// file forever, so an index row that stores nothing its reader can
+// already derive is worth keeping. See mobile/kvmobile/dispatch.go's
+// identical doc comment.
 func appendCommandExecIndex(ctx context.Context, sess *shmclient.Session, peerID, instanceID, commandID, requesterPeerID, role string) error {
 	fields := map[string]string{
 		"command_id": commandID,
@@ -167,14 +173,18 @@ func recordToCommandRequest(h revisionHistory) CommandRequest {
 // (isPermittedForCommand: some group both commandID is linked to via
 // CreateGroupCommand and the caller is a member of via AddPeerToGroup) --
 // this is the group-based ACL catalog's real enforcement point (see
-// catalog.go's doc comment); unlike the group participation check this
-// replaces, PutGroup/PutCommand/PutGroupCommand/PutPeerGroup themselves
-// are pkg/daemon-enforced (voter-gated), but this specific check --
-// "is the submitting peer currently entitled to this command" -- is still
-// evaluated here in kvctl, not independently inside pkg/daemon's generic
-// EventLogAppend handling, so it's only as strong as every caller
-// actually going through SubmitCommand rather than writing a
-// commandRequestLogKind record directly.
+// catalog.go's doc comment), alongside PutGroup/PutCommand/
+// PutGroupCommand/PutPeerGroup, which pkg/daemon enforces voter-gated.
+// The check here is a fast local fail, not the only thing standing
+// behind it: the dispatch's actual write goes out as
+// kvfsm.OpAppendCommandRequest rather than a plain OpSet, and Apply
+// re-evaluates IsPermittedForCommand on every replica against the
+// submitting peer id pkg/daemon took from the call's own
+// connection-authenticated identity -- never anything the message claims
+// (see that op's doc comment and pkg/daemon's EventLogAppend handling).
+// A caller that skips SubmitCommand and writes a commandRequestLogKind
+// record directly is therefore rejected by the FSM, not silently
+// admitted.
 //
 // kvctl only dispatches and records the request; actually running
 // commandID is the target's own application logic (see AppendCommandLog
@@ -504,10 +514,10 @@ func QueryCommandLog(instanceID string, start, end time.Time, limit int) ([]logr
 // LatestCommandLog implements `mage latestcommandlog <instanceID>`:
 // returns instanceID's single most recent AppendCommandLog entry -- its
 // Fields and Narrative, i.e. the command's output as of now. Returns an
-// error if instanceID has no log entries yet. The result is always well
-// within pkg/shmevent.ValueSize (512 bytes): every AppendCommandLog
-// entry is individually bound to that same wire limit at write time
-// (LogAppend -> shmclient.LogAppend -> shmevent.Encode), so there is
+// error if instanceID has no log entries yet. The result is always
+// within pkg/shmevent.MaxValueSize: every AppendCommandLog entry is
+// individually bound to that same wire limit at write time (LogAppend ->
+// shmclient.LogAppend -> shmevent's own checkValueSize), so there is
 // nothing here that could ever exceed it -- no separate truncation
 // needed on the read side.
 //

@@ -101,16 +101,15 @@ const (
 	// OpSet, which also serves the Group/Command catalog's own Puts and
 	// so must re-validate at this layer regardless of caller.
 	//
-	// Atomicity here is still purely "one raft log entry -> one Apply
-	// call," not a real Store-level transaction: pkg/store.Store's
-	// Set/Delete each autocommit independently (see this file's own doc
-	// comment on OpCascadeDelete), so a write failing partway through
-	// this op list -- after every op already passed validation above --
-	// has no rollback, the same latent gap OpCascadeDelete's multi-write
-	// case already has. The write loop below is where a real
-	// Store-level BEGIN/COMMIT/ROLLBACK would go if that gap is ever
-	// closed; nothing about EventTxn's wire shape or this op's
-	// validate-then-write structure would need to change to add it.
+	// Atomicity is real at both layers, not just at raft's: one raft log
+	// entry -> one Apply call, and within that call every write lands in
+	// a single pkg/store.Store.WithTx SQLite transaction (see Apply's
+	// OpTxn case), committed only once the whole op list has been
+	// written. So a write failing partway through -- after every op
+	// already passed validation above -- rolls back the ops already
+	// applied in this call, instead of leaving the store half-written
+	// while raft's log already marks the entry applied. OpCascadeDelete's
+	// own multi-write case is wrapped the same way.
 	OpTxn OpType = 8
 )
 

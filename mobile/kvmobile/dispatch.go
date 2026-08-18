@@ -85,12 +85,17 @@ const (
 // (that's already the record's own AuthorPeerID) or targetPeerID
 // (redundant with peerID itself when role is target; ListExecutionsByPeer
 // looks it up via GetCommand for a role-requester entry instead). This
-// matters because commandExecIndexKind(peerID) already embeds a full peer
-// id in the pkg/logrecord key (see BuildKey), and every record here shares
-// pkg/shmevent.ValueSize's single 512-byte budget across key *and* value
-// combined -- an earlier version of this function also stored
-// requested_by/target_peer_id directly and blew that budget the moment
-// two real peer ids (~52 bytes each) were involved at once.
+// shape was originally forced: commandExecIndexKind(peerID) already
+// embeds a full peer id in the pkg/logrecord key (see BuildKey), and back
+// when pkg/shmevent still had a 512-byte per-event ValueSize budget
+// spanning key *and* value together, an earlier version of this function
+// also stored requested_by/target_peer_id directly and blew that budget
+// the moment two real peer ids (~52 bytes each) were involved at once.
+// That ceiling is gone -- the union rewrite left a single, deliberately
+// generous shmevent.MaxValueSize bounding the value alone -- so staying
+// thin is now a choice rather than a constraint, and still the right one:
+// every record here is replicated into every cluster member's memory and
+// SQLite file forever.
 func appendCommandExecIndex(ctx context.Context, sess *shmclient.Session, peerID, instanceID, commandID, requesterPeerID, role string) error {
 	fields := map[string]string{
 		"command_id": commandID,
@@ -160,14 +165,16 @@ func recordToCommandRequest(h revisionHistory) CommandRequest {
 // commandID (isPermittedForCommand: some group both commandID is linked
 // to via AddCommandToGroup and this device is a member of via
 // AddPeerToGroup) -- see catalog.go's doc comment for the full ACL model.
-// Unlike the group-participation check this replaces,
 // CreateGroup/CreateCommand/AddCommandToGroup/AddPeerToGroup themselves
-// are pkg/daemon-enforced (voter-gated), but this specific check -- "is
-// the submitting peer currently entitled to this command" -- is still
-// evaluated here in kvmobile, not independently inside pkg/daemon's
-// generic EventLogAppend handling, so it's only as strong as every caller
-// actually going through SubmitCommand rather than writing a
-// commandRequestLogKind record directly.
+// are pkg/daemon-enforced (voter-gated), and this specific check -- "is
+// the submitting peer currently entitled to this command" -- is checked
+// here only as a fast local fail: the dispatch's actual write goes out as
+// kvfsm.OpAppendCommandRequest rather than a plain OpSet, and Apply
+// re-evaluates IsPermittedForCommand on every replica against the
+// submitting peer id pkg/daemon took from the call's own
+// connection-authenticated identity. A caller that skips SubmitCommand
+// and writes a commandRequestLogKind record directly is rejected by the
+// FSM, not silently admitted.
 //
 // kvmobile only dispatches and records the request; actually running
 // commandID is the target device's own application logic (see
@@ -495,12 +502,12 @@ func QueryCommandLog(instanceID, since, until, limit string) (string, error) {
 // LatestCommandLog returns instanceID's single most recent
 // AppendCommandLog entry -- its Fields and Narrative, i.e. the command's
 // output as of now -- as a JSON pkg/logrecord.Record. Returns an error if
-// instanceID has no log entries yet. The result is always well within
-// pkg/shmevent.ValueSize (512 bytes): every AppendCommandLog entry is
-// individually bound to that same wire limit at write time (LogAppend ->
-// shmclient.LogAppend -> shmevent.Encode), so there is nothing here that
-// could ever exceed it -- no separate truncation needed on the read
-// side.
+// instanceID has no log entries yet. The result is always within
+// pkg/shmevent.MaxValueSize: every AppendCommandLog entry is individually
+// bound to that same wire limit at write time (LogAppend ->
+// shmclient.LogAppend -> shmevent's own checkValueSize), so there is
+// nothing here that could ever exceed it -- no separate truncation needed
+// on the read side.
 //
 // Like ListExecutionsByPeer, there is no reverse-scan primitive in this
 // stack, so "latest" costs a full walk of instanceID's own log range

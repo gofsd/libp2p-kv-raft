@@ -14,22 +14,24 @@ import (
 // (including the legacy, small-chunk EventChannelSend/EventChannelPoll
 // IPC path) shares.
 //
-// canonicalPayload zero-pads Value up to a fixed width per event type
-// (ValueSize, or ChannelValueSize for EventChannelSend/Poll) before
-// signing -- necessary because Msg's signed form has no length field of
-// its own for Value, so every signer/verifier needs to agree on one
-// width in advance. That's cheap for ValueSize's 512 bytes and tolerable
-// for ChannelValueSize's 16KB (a chunk moving through the legacy per-
-// round-trip IPC path anyway), but it would be actively harmful for this
-// package's real bulk-transfer path: a wire frame carrying, say, a 200-
-// byte control ping would still pay CRC32+Ed25519 cost over however many
-// hundred KB the *ceiling* is, every single frame, regardless of that
-// frame's real size -- raising ChannelValueSize to fit chandata's own
+// It signs purpose+chunk at their *real*, variable length. That is what
+// the Msg path could not do when this was written: back then Msg's signed
+// form had no length field of its own for Value, so canonicalPayload
+// zero-padded Value up to a fixed width per event type (the retired
+// ValueSize/ChannelValueSize tiers -- see README's "Value size ceilings")
+// to give every signer and verifier one width to agree on in advance.
+// Padding was cheap at ValueSize's 512 bytes and tolerable at
+// ChannelValueSize's 16KB, but it would have been actively harmful here:
+// a frame carrying a 200-byte control ping would still pay CRC32+Ed25519
+// cost over however many hundred KB the *ceiling* was, every frame,
+// regardless of the frame's real size -- raising a tier to fit chandata's
 // much larger MaxChunkSize would have made padding cost dominate real
-// transfer cost, defeating the whole point of this rewrite. This scheme
-// signs purpose+chunk at their *real*, variable length instead -- safe
-// here specifically because a chunk's length is never ambiguous the way
-// a padded Msg.Value's would be: pkg/daemon.writeFramed/readFramed
+// transfer cost, defeating the point of the rewrite. The union rewrite
+// has since retired the tiers and the padding both (every variant now
+// carries self-describing, variable-length fields), so this is no longer
+// the only variable-length signing path in the package -- but it remains
+// a separate scheme, and safe as one, because a chunk's length is never
+// ambiguous the way a padded Msg.Value's was: pkg/daemon.writeFramed/readFramed
 // already puts a 4-byte length prefix around the whole frame this
 // produces, so nothing downstream needs to guess where chunk ends.
 func channelFrameSignedPayload(purpose byte, chunk []byte, crc uint32) []byte {

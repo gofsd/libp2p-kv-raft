@@ -221,8 +221,14 @@ Earlier revisions of this section documented three per-event-type value ceilings
 kept CRC32/signature computation compatible across peers running different builds. None of that
 survived `api/shmevent.capnp`'s union rewrite: every variant now has its own self-describing,
 variable-length fields, replacing the old hand-packed flat `value :Data` design the padding trick
-existed to patch around (see that schema's own doc comment on "Design: a real union"); the only
-remaining traces of the old scheme are stale comments in `catalog.go`/`channelframe.go`.
+existed to patch around (see that schema's own doc comment on "Design: a real union"). The last
+comments still describing the old scheme as current (`catalog.go`, `channelframe.go`,
+`pkg/kvctl`/`mobile/kvmobile`'s `dispatch.go`) have since been corrected. Retiring the tiers did
+leave one real hole behind it, now closed: `shmevent.commandPayloadV2Sentinel` -- the 0xFFFF
+name length marking a v2 `Command` payload -- was only unambiguous *because* no name that long
+could fit a 512B/4KB ceiling, so once the ceiling went, a 65535-byte command name encoded a v1
+payload that read back as a v2 one. `checkCommandNameLen` (and its Rust mirror in
+`shmevent/catalog_keys.rs`) now enforces that bound directly.
 
 For a while that left every raw payload a caller can write or send — `SetKey`/`SetField`/`Set`,
 each `Txn` op's value, `LogAppend`, `Execute`/`ExecuteNotification`, `ChannelSend`,
