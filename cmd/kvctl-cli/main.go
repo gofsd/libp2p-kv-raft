@@ -196,6 +196,30 @@ func main() {
 		cmdQueryCommandLog(os.Args[2:])
 	case "latestcommandlog":
 		cmdLatestCommandLog(os.Args[2:])
+	case "journalserve":
+		cmdJournalServe(os.Args[2:])
+	case "journaldefine":
+		cmdJournalDefine(os.Args[2:])
+	case "journalvocabulary":
+		cmdJournalVocabulary(os.Args[2:])
+	case "journalform":
+		cmdJournalForm(os.Args[2:])
+	case "journalappend":
+		cmdJournalAppend(os.Args[2:])
+	case "journalcorrect":
+		cmdJournalCorrect(os.Args[2:])
+	case "journalvoid":
+		cmdJournalVoid(os.Args[2:])
+	case "journalcountersign":
+		cmdJournalCountersign(os.Args[2:])
+	case "journalsignoff":
+		cmdJournalSignOff(os.Args[2:])
+	case "journalidentity":
+		cmdJournalIdentity(os.Args[2:])
+	case "journalpage":
+		cmdJournalPage(os.Args[2:])
+	case "journalverify":
+		cmdJournalVerify(os.Args[2:])
 	case "addrelaynode":
 		cmdAddRelayNode(os.Args[2:])
 	case "confirmrelaynode":
@@ -282,6 +306,18 @@ func usage() {
   kvctl-cli createjoinrequestticket
   kvctl-cli redeemjoinrequestticket <ticketB64> <voter|learner>
   kvctl-cli printjoinrequestticketdatamatrix <ticketB64> <outFile.png>
+  kvctl-cli journalserve <commandID> <log>            (runs on the node that owns the log)
+  kvctl-cli journaldefine <log> <columnsJSON>         (e.g. {"operator":"term","pieces":"number"})
+  kvctl-cli journalvocabulary <log> <column> <valuesJSON> <close: true|false>
+  kvctl-cli journalform <commandID>
+  kvctl-cli journalappend <commandID> <cellsJSON>
+  kvctl-cli journalcorrect <commandID> <line> <cellsJSON>
+  kvctl-cli journalvoid <commandID> <line> [reason]
+  kvctl-cli journalcountersign <commandID> <line>
+  kvctl-cli journalsignoff <commandID> [page]
+  kvctl-cli journalidentity <commandID>
+  kvctl-cli journalpage <commandID> [page]
+  kvctl-cli journalverify <log>
   kvctl-cli getownaddr
   kvctl-cli version
   kvctl-cli createexecinvite <commandID> <inputsJSON> [-ttl seconds]

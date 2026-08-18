@@ -30,15 +30,20 @@ import (
 // (`mage creategroup`/`createcommand`/`addcommandtogroup`/
 // `addpeertogroup`), enforced inside the raft FSM.
 
-// A caveat worth knowing before deploying this shape: a running
-// dispatcher polls the local daemon every 250ms, and that contends with
-// other processes' IPC calls to the same daemon. Measured on one node,
-// roughly one local CLI read in ten fails with "context deadline
-// exceeded" while `mage journalserve` is running, and none when it is
-// not. Nothing is lost when it happens -- the call simply has to be made
-// again -- but a script that submits in a loop should expect it, and a
-// confusing symptom to recognise is "command <id> not found", which is a
-// timed-out read of the command record rather than a missing command.
+// One operational note. Every `mage` invocation builds before it runs,
+// which makes a loop of them heavy: driving a shift's worth of entries
+// this way can starve the local daemon enough to produce "context
+// deadline exceeded" on an IPC call (pkg/ipc allocates a fresh shmring
+// segment pair per call, so it is sensitive to a machine that is short
+// on memory). Nothing is lost when that happens -- the call is simply
+// made again -- and a confusing symptom to recognise is "command <id>
+// not found", which is a timed-out read of the command record rather
+// than a missing command.
+//
+// For anything scripted, use the same commands on the kvctl-cli binary
+// instead: measured against it, 30 consecutive local reads failed 0
+// times both with a dispatcher running and without, so the dispatcher's
+// own 250ms poll is not what costs anything here.
 //
 // journalTimeout bounds how long a submitted command waits for its
 // answer. The service is poked the moment a request lands, so this is a

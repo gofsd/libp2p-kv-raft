@@ -431,11 +431,12 @@ work unchanged from a device with no write access to the log's namespace. `mage 
 `journalvocabulary` and `journalverify` are local and operator-side: the schema, and checking a record
 you were handed.
 
-One measured caveat: a running dispatcher polls the local daemon every 250ms, which contends with
-other processes' IPC calls to it. About one local CLI read in ten fails with "context deadline
-exceeded" while `journalserve` runs, and none when it does not. Nothing is lost — the call is simply
-made again — but a script that submits in a loop should expect it, and "command <id> not found" is
-usually a timed-out read rather than a missing command.
+The same commands exist on the `kvctl-cli` binary, and that is what to use for anything scripted: a
+`mage` invocation builds before it runs, so a loop of them is heavy enough to starve the local daemon
+and produce "context deadline exceeded" on an IPC call. Measured against the binary, 30 consecutive
+local reads failed 0 times both with a dispatcher running and without — the dispatcher's 250ms poll
+is not what costs anything. Nothing is lost when a call does time out; it is simply made again, and
+"command <id> not found" is usually that timeout rather than a missing command.
 
 **Who signed it.** The node running the dispatcher writes the line, so the line's signature is that
 node's. The submitter's attestation is not lost: it is the `CommandRequest` itself, authored by the
