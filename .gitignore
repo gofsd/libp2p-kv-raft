@@ -2,6 +2,10 @@ prompts
 *.log
 *.key
 
+# Claude Code's per-repo state: machine-local settings, its worktree
+# checkouts and a scheduler lock file, none of which describe this project.
+.claude/
+
 # go build ./... writes a binary per main package into the repo root/cmd
 # dirs unless -o is given; these are never meant to be committed.
 /kvnode
