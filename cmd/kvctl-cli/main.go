@@ -220,6 +220,24 @@ func main() {
 		cmdJournalPage(os.Args[2:])
 	case "journalverify":
 		cmdJournalVerify(os.Args[2:])
+	case "cronserve":
+		cmdCronServe(os.Args[2:])
+	case "cronput":
+		cmdCronPut(os.Args[2:])
+	case "cronlist":
+		cmdCronList(os.Args[2:])
+	case "cronget":
+		cmdCronGet(os.Args[2:])
+	case "crondelete":
+		cmdCronDelete(os.Args[2:])
+	case "cronenable":
+		cmdCronEnable(os.Args[2:])
+	case "crondisable":
+		cmdCronDisable(os.Args[2:])
+	case "cronfires":
+		cmdCronFires(os.Args[2:])
+	case "cronnext":
+		cmdCronNext(os.Args[2:])
 	case "addrelaynode":
 		cmdAddRelayNode(os.Args[2:])
 	case "confirmrelaynode":
@@ -318,6 +336,15 @@ func usage() {
   kvctl-cli journalidentity <commandID>
   kvctl-cli journalpage <commandID> [page]
   kvctl-cli journalverify <log>
+  kvctl-cli cronserve [interval] [catchUp]            (runs beside a daemon; safe to run on several)
+  kvctl-cli cronput <id> <spec> <commandID> [inputsJSON] [location]
+  kvctl-cli cronlist
+  kvctl-cli cronget <id>
+  kvctl-cli crondelete <id>
+  kvctl-cli cronenable <id>
+  kvctl-cli crondisable <id>
+  kvctl-cli cronfires [scheduleID] [limit]
+  kvctl-cli cronnext <spec> [count] [location]        (needs no daemon)
   kvctl-cli getownaddr
   kvctl-cli version
   kvctl-cli createexecinvite <commandID> <inputsJSON> [-ttl seconds]

@@ -3,6 +3,7 @@ package com.gofsd.kvdemo
 import android.util.Base64
 import kvmobile.ChannelCallback
 import kvmobile.CommandDispatchHandler
+import kvmobile.CronListener
 import kvmobile.ExecuteCallback
 import kvmobile.Kvmobile
 import kvmobile.LogCallback
@@ -536,6 +537,79 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     add("Journal", "SignOff", listOf("commandID", "page (0=current)")) { a ->
         Kvmobile.journalSignOff(a[0], a[1].toLongOrThrow("page")); ok()
     }
+
+    // Cron -- examples/croncmd, a schedule saying "submit command C at
+    // these times" and a scheduler that turns that into ordinary
+    // SubmitCommand dispatches (see examples/croncmd/README.md).
+    //
+    // Two things are worth knowing before running Serve on a phone.
+    //
+    // The first is that it is safe to. Every fire is claimed through a
+    // raft-committed compare-and-swap before it is submitted, so this
+    // device, a laptop and three bootstrap nodes all running schedulers
+    // produce one dispatch per fire between them -- running one here is a
+    // redundancy decision, not a duplication bug. Which in turn is why a
+    // phone is a reasonable place for one despite being the worst clock
+    // in any cluster: a fire missed while asleep is someone else's if
+    // anyone else is up, and this device's own to catch up if not, while
+    // anything older than the catch-up window is skipped rather than
+    // dispatched in a burst on waking.
+    //
+    // The second is that a timer grants nothing. The scheduler submits
+    // under *this device's* peer id, and the FSM checks it against the
+    // command's groups exactly as it would for a tap on Dispatch:
+    // SubmitCommand above.
+    //
+    // Next is what a form calls first: it answers "when would this
+    // expression actually fire" from the expression alone, needing no
+    // daemon and writing nothing -- a cron expression's usual failure is
+    // parsing cleanly and meaning something else.
+    add("Cron", "Next", listOf("spec", "count", "location (blank=UTC)")) { a ->
+        Kvmobile.cronNext(a[0], a[1].toLongOrThrow("count"), a[2])
+    }
+    add("Cron", "Put", listOf("id", "spec", "commandID", "inputsJSON (blank ok)", "location (blank=UTC)")) { a ->
+        Kvmobile.cronPut(a[0], a[1], a[2], a[3], a[4]); ok()
+    }
+    add("Cron", "List", emptyList()) { Kvmobile.cronList() }
+    add("Cron", "Get", listOf("id")) { a -> Kvmobile.cronGet(a[0]) }
+    add("Cron", "SetEnabled", listOf("id", "enabled (true|false)")) { a ->
+        Kvmobile.cronSetEnabled(a[0], a[1].toBooleanOrThrow("enabled")); ok()
+    }
+    add("Cron", "Delete", listOf("id")) { a -> Kvmobile.cronDelete(a[0]); ok() }
+    // Fires is the durable view, and shows what *any* node's scheduler
+    // dispatched rather than only this one's: it is read back out of the
+    // claim keys themselves, so it reaches back exactly as far as those
+    // are retained (a fortnight by default). A row with no instance id is
+    // a fire that was claimed but whose submission then failed.
+    add("Cron", "Fires", listOf("scheduleID (blank=all)", "limit (0=all)")) { a ->
+        Kvmobile.cronFires(a[0], a[1].toLongOrThrow("limit"))
+    }
+    // Serve deliberately outlives Stop, the way WatchExecute and
+    // WatchCommandLog above do: a torn-down daemon makes a tick fail and
+    // be reported rather than making the loop exit, and a later Start
+    // picks it straight back up. StopServe is what actually ends it.
+    add("Cron", "Serve", listOf("intervalSeconds (0=default)", "catchUpSeconds (0=default)")) { a ->
+        Kvmobile.cronServeWithListener(
+            a[0].toLongOrThrow("intervalSeconds"),
+            a[1].toLongOrThrow("catchUpSeconds"),
+            object : CronListener {
+                override fun onFire(scheduleID: String, commandID: String, fire: String, instanceID: String) {
+                    appendLog("Cron fired $scheduleID -> $commandID at $fire: $instanceID")
+                }
+
+                override fun onSkip(scheduleID: String, fire: String, reason: String) {
+                    appendLog("Cron skipped $scheduleID at $fire: $reason")
+                }
+
+                override fun onError(message: String) {
+                    appendLog("Cron: $message")
+                }
+            },
+        )
+        "Scheduling -- fires appear below as they happen"
+    }
+    add("Cron", "StopServe", emptyList()) { Kvmobile.stopCronServe(); ok() }
+    add("Cron", "Serving", emptyList()) { Kvmobile.cronServing().toString() }
 
     // Raw escape hatch -- the same one E2ETest uses, see its own doc
     // comment and README's "Follower on Android" section. Generatable and
