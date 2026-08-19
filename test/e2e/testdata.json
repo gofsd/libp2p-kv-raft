@@ -1975,10 +1975,221 @@
         "result": "no_crash"
       },
       "order": 7
+    },
+    {
+      "case_id": "cron_next_previews_the_expression",
+      "generate": {
+        "target": "run",
+        "category": "Cron",
+        "name": "Next",
+        "params": [
+          "0 3 * * *",
+          "3",
+          "UTC"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:T03:00:00Z"
+      },
+      "order": 8
+    },
+    {
+      "case_id": "cron_put_schedules_a_command",
+      "generate": {
+        "target": "run",
+        "category": "Cron",
+        "name": "Put",
+        "params": [
+          "optical-cron-sweep",
+          "* * * * *",
+          "optical-cron",
+          "{\"op\":\"sweep\",\"marker\":\"cron-fired-on-schedule\"}",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "order": 9
+    },
+    {
+      "case_id": "cron_get_reads_the_schedule_back",
+      "generate": {
+        "target": "run",
+        "category": "Cron",
+        "name": "Get",
+        "params": [
+          "optical-cron-sweep"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:\"command_id\":\"optical-cron\""
+      },
+      "order": 10
+    },
+    {
+      "case_id": "cron_list_shows_the_schedule",
+      "generate": {
+        "target": "run",
+        "category": "Cron",
+        "name": "List"
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:optical-cron-sweep"
+      },
+      "order": 11
+    },
+    {
+      "case_id": "cron_serve_starts_the_scheduler",
+      "generate": {
+        "target": "run",
+        "category": "Cron",
+        "name": "Serve",
+        "params": [
+          "5",
+          "120"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "no_crash"
+      },
+      "order": 12
+    },
+    {
+      "case_id": "cron_seed_watermark",
+      "generate": {
+        "target": "run",
+        "category": "KV",
+        "name": "Submit",
+        "params": [
+          "cron/watermark/optical-cron-sweep",
+          "2026-01-01T00:00:00Z"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "no_crash"
+      },
+      "order": 13
+    },
+    {
+      "case_id": "cron_settle_for_the_first_fire",
+      "generate": {
+        "target": "run",
+        "category": "Test",
+        "name": "SleepMillis",
+        "params": [
+          "20000"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "no_crash"
+      },
+      "order": 14
+    },
+    {
+      "case_id": "cron_stop_serve",
+      "generate": {
+        "target": "run",
+        "category": "Cron",
+        "name": "StopServe"
+      },
+      "expect": {
+        "kind": "run",
+        "result": "no_crash"
+      },
+      "order": 15
+    },
+    {
+      "case_id": "cron_serving_is_false_after_stop",
+      "generate": {
+        "target": "run",
+        "category": "Cron",
+        "name": "Serving"
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:false"
+      },
+      "order": 16
+    },
+    {
+      "case_id": "cron_fires_records_the_dispatch",
+      "generate": {
+        "target": "run",
+        "category": "Cron",
+        "name": "Fires",
+        "params": [
+          "optical-cron-sweep",
+          "0"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:instance_id",
+        "verify_on_device_a": "cron-fired-on-schedule",
+        "verify_on_device_b": "Cron fired optical-cron-sweep"
+      },
+      "order": 17
+    },
+    {
+      "case_id": "cron_disable_the_schedule",
+      "generate": {
+        "target": "run",
+        "category": "Cron",
+        "name": "SetEnabled",
+        "params": [
+          "optical-cron-sweep",
+          "false"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "order": 18
+    },
+    {
+      "case_id": "cron_get_shows_it_disabled",
+      "generate": {
+        "target": "run",
+        "category": "Cron",
+        "name": "Get",
+        "params": [
+          "optical-cron-sweep"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:\"disabled\":true"
+      },
+      "order": 19
+    },
+    {
+      "case_id": "cron_delete",
+      "generate": {
+        "target": "run",
+        "category": "Cron",
+        "name": "Delete",
+        "params": [
+          "optical-cron-sweep"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "order": 20
     }
   ],
   "android_optical_scan_result": {
-    "ran_at": "2026-08-17T19:01:06.058529085+03:00",
+    "ran_at": "2026-08-19T18:16:41.743820959+03:00",
     "status": 0,
     "cases": [
       {
@@ -2359,6 +2570,86 @@
       },
       {
         "case_id": "test_sleep_millis",
+        "pass": true
+      },
+      {
+        "case_id": "journal_form",
+        "pass": true
+      },
+      {
+        "case_id": "journal_append",
+        "pass": true
+      },
+      {
+        "case_id": "journal_append_closed_vocabulary",
+        "pass": true
+      },
+      {
+        "case_id": "journal_page",
+        "pass": true
+      },
+      {
+        "case_id": "journal_identity",
+        "pass": true
+      },
+      {
+        "case_id": "journal_verify",
+        "pass": true
+      },
+      {
+        "case_id": "journal_countersign",
+        "pass": true
+      },
+      {
+        "case_id": "cron_next_previews_the_expression",
+        "pass": true
+      },
+      {
+        "case_id": "cron_put_schedules_a_command",
+        "pass": true
+      },
+      {
+        "case_id": "cron_get_reads_the_schedule_back",
+        "pass": true
+      },
+      {
+        "case_id": "cron_list_shows_the_schedule",
+        "pass": true
+      },
+      {
+        "case_id": "cron_serve_starts_the_scheduler",
+        "pass": true
+      },
+      {
+        "case_id": "cron_seed_watermark",
+        "pass": true
+      },
+      {
+        "case_id": "cron_settle_for_the_first_fire",
+        "pass": true
+      },
+      {
+        "case_id": "cron_stop_serve",
+        "pass": true
+      },
+      {
+        "case_id": "cron_serving_is_false_after_stop",
+        "pass": true
+      },
+      {
+        "case_id": "cron_fires_records_the_dispatch",
+        "pass": true
+      },
+      {
+        "case_id": "cron_disable_the_schedule",
+        "pass": true
+      },
+      {
+        "case_id": "cron_get_shows_it_disabled",
+        "pass": true
+      },
+      {
+        "case_id": "cron_delete",
         "pass": true
       }
     ],

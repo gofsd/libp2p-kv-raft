@@ -14,11 +14,15 @@ import (
 	"github.com/gofsd/libp2p-kv-raft/pkg/e2edata"
 )
 
-// opticalDeviceAVerifyTimeoutMs is the default budget for verifyLogContains -- see
-// OpticalExpectSpec.VerifyOnDeviceA's own doc comment. Device A's own RunCommandDispatcher
-// handler runs the moment B's dial actually lands, which (unlike B's own camera-decode wait)
-// never depends on real-world lighting/focus, so this can stay much tighter than TimeoutMs.
-const opticalDeviceAVerifyTimeoutMs = 30_000
+// opticalDeviceVerifyTimeoutMs is the default budget for one verifyLogContains pass -- see
+// OpticalExpectSpec.VerifyOnDeviceA/VerifyOnDeviceB's own doc comments. Whatever these checks
+// wait on runs the moment the effect actually lands (device A's RunCommandDispatcher handler when
+// B's dial or a scheduled fire arrives, device B's own scheduler callback when it fires), which
+// unlike B's camera-decode wait never depends on real-world lighting/focus, so this can stay much
+// tighter than TimeoutMs. It is also generous in practice: both passes run after *both* devices'
+// batch invocations have finished, against an OutputLog already persisted to disk, so the entry
+// is normally sitting there before the poll even starts.
+const opticalDeviceVerifyTimeoutMs = 30_000
 
 // opticalCrashRetries is how many extra times runOpticalScanSuite re-runs the whole batch after an
 // app process on one of the two devices *crashed* mid-run -- not after a case failed, which is a
@@ -110,6 +114,19 @@ func runOpticalScanBatch(cases []e2edata.OpticalScanCase, serialA, serialB strin
 		e2edata.OpticalExpectSpec
 		CaseID    string `json:"case_id"`
 		TimeoutMs int64  `json:"timeout_ms,omitempty"`
+		// Category/Name name the command whose OutputLog entry is this case's own result,
+		// copied from Generate rather than described separately -- they are how
+		// UiCommandE2ETest's awaitOneCase picks *its* entry out of the log instead of
+		// reading whatever landed last. Device B needs them because something other than
+		// the case under test can write to that log while the case runs: a Cron: Serve
+		// case leaves a scheduler running, and its fire/skip notifications go through
+		// OutputLog.append, which records a bare INFO line with no category/name at all.
+		// Measured on the rig: a Test: SleepMillis 20000 case took the scheduler's entry
+		// as its own after 0.45s, and the sleep's real entry, arriving 20s later, was then
+		// read by whichever case happened to be waiting -- three cases downstream, which
+		// failed on a result belonging to a command it never ran.
+		Category string `json:"category,omitempty"`
+		Name     string `json:"name,omitempty"`
 	}
 	genSpecs := make([]genSpecEntry, len(cases))
 	expSpecs := make([]expSpecEntry, len(cases))
@@ -125,7 +142,7 @@ func runOpticalScanBatch(cases []e2edata.OpticalScanCase, serialA, serialB strin
 			return result, false
 		}
 		genSpecs[i] = genSpecEntry{c.Generate, c.CaseID, c.HoldMillis}
-		expSpecs[i] = expSpecEntry{c.Expect, c.CaseID, c.TimeoutMs}
+		expSpecs[i] = expSpecEntry{c.Expect, c.CaseID, c.TimeoutMs, c.Generate.Category, c.Generate.Name}
 	}
 	genArg, err := json.Marshal(map[string]any{"specs": genSpecs})
 	if err != nil {
@@ -197,8 +214,12 @@ func runOpticalScanBatch(cases []e2edata.OpticalScanCase, serialA, serialB strin
 			entry.Pass, entry.Error = false, "device B never produced a result (batch may have stopped early)"
 		case !scanResult.Pass:
 			entry.Pass, entry.Error = false, "device B: "+scanResult.Error
-		case c.Expect.VerifyOnDeviceA != "":
-			if err := verifyOnDeviceA(serialA, c, scanResult); err != nil {
+		case c.Expect.VerifyOnDeviceA != "" || c.Expect.VerifyOnDeviceB != "":
+			// A case may name both, and then both have to pass. A scheduled dispatch is the
+			// reason: it is recorded on the device whose scheduler fired *and* on the device
+			// that owns the command and ran it, and checking only one of the two would leave
+			// half the chain unmeasured.
+			if err := verifyDeviceLogs(serialA, serialB, c, scanResult); err != nil {
 				entry.Pass, entry.Error = false, err.Error()
 			}
 		}
@@ -219,31 +240,57 @@ func runOpticalScanBatch(cases []e2edata.OpticalScanCase, serialA, serialB strin
 	return result, unmeasured && result.Status != e2edata.StatusPass
 }
 
-// verifyOnDeviceA runs OpticalScanCase c's own VerifyOnDeviceA check -- a short, separate
-// verifyLogContains invocation back on serialA (device A), for a case whose scanned effect (B
-// dialing back and submitting against A's own RunCommandDispatcher) is only ever observable in
-// A's own Activity Log, never B's. Substitutes "{{instance_id}}" with the real instance id
-// scanResult.Output carries (device B's own CommandExecutor result for this case).
-func verifyOnDeviceA(serialA string, c e2edata.OpticalScanCase, scanResult *e2edata.UICaseResult) error {
+// verifyDeviceLogs runs OpticalScanCase c's own VerifyOnDeviceA/VerifyOnDeviceB checks -- short,
+// separate verifyLogContains invocations back on each named device, for a case whose scanned
+// effect is not fully described by device B's own immediate result.
+//
+// Two shapes need this, for opposite reasons. A "Dispatch: DialSubmitCommand" case is observable
+// only on A, since B dialing back and submitting against A's own RunCommandDispatcher leaves
+// nothing behind on B. A scheduled dispatch is observable on neither at the time the case that
+// started it returns: starting a scheduler looks exactly like starting one that will never fire,
+// and what distinguishes them arrives asynchronously afterwards -- on B as its own scheduler
+// callback, on A as the dispatch that callback triggered. Both are found by searching each
+// device's whole Activity Log, which is also what makes them the reliable half of a Cron case
+// (see examples/croncmd/README.md).
+//
+// Both substitute "{{instance_id}}" with the real instance id scanResult.Output carries (device
+// B's own CommandExecutor result for this case).
+func verifyDeviceLogs(serialA, serialB string, c e2edata.OpticalScanCase, scanResult *e2edata.UICaseResult) error {
 	instanceID, err := extractInstanceID(scanResult.Output)
 	if err != nil {
-		return fmt.Errorf("device B result had no instance_id to verify on device A: %w", err)
+		return fmt.Errorf("device B result had no instance_id to verify against: %w", err)
 	}
-	want := strings.ReplaceAll(c.Expect.VerifyOnDeviceA, "{{instance_id}}", instanceID)
-	verifyArg, err := json.Marshal(map[string]any{"contains": want, "timeoutMs": opticalDeviceAVerifyTimeoutMs})
+	if want := c.Expect.VerifyOnDeviceA; want != "" {
+		if err := verifyLogOnDevice(serialA, "A", want, instanceID); err != nil {
+			return err
+		}
+	}
+	if want := c.Expect.VerifyOnDeviceB; want != "" {
+		if err := verifyLogOnDevice(serialB, "B", want, instanceID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// verifyLogOnDevice polls one device's own Activity Log for want, naming it as device in whatever
+// it reports back so a failure says which of the two came up empty.
+func verifyLogOnDevice(serial, device, want, instanceID string) error {
+	want = strings.ReplaceAll(want, "{{instance_id}}", instanceID)
+	verifyArg, err := json.Marshal(map[string]any{"contains": want, "timeoutMs": opticalDeviceVerifyTimeoutMs})
 	if err != nil {
 		return fmt.Errorf("encode verify spec: %w", err)
 	}
-	vResults, _, _, vErr := runOpticalMethod(serialA, "verifyLogContains", "opticalVerify", verifyArg)
+	vResults, _, _, vErr := runOpticalMethod(serial, "verifyLogContains", "opticalVerify", verifyArg)
 	vResult := findResult(vResults, "OpticalVerify")
 	if vResult == nil {
 		if vErr != nil {
-			return fmt.Errorf("device A verify: %w", vErr)
+			return fmt.Errorf("device %s verify: %w", device, vErr)
 		}
-		return fmt.Errorf("device A verify: no result produced")
+		return fmt.Errorf("device %s verify: no result produced", device)
 	}
 	if !vResult.Pass {
-		return fmt.Errorf("device A verify: %s", vResult.Error)
+		return fmt.Errorf("device %s verify: %s", device, vResult.Error)
 	}
 	return nil
 }

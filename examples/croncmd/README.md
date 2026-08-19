@@ -278,6 +278,67 @@ daemon joined to a real leader, a real catalog grant, a real dispatch. It seeds 
 watermark in the past rather than waiting for a minute boundary — which is the same code path a
 phone that was asleep takes when it wakes, so it is worth exercising in its own right.
 
+On two real devices, thirteen `android_optical_cases` in `test/e2e/testdata.json` (`cron_next_*`
+through `cron_delete`) drive the whole loop through the app's own camera pipeline — every command
+this package exposes to the app, read and toggled as well as scheduled. **Verified live on the
+rig** (an emulator generating DataMatrix codes, a phone reading them with its real camera): the
+nine scheduling cases first at 10/10 in ~81s, then the four catalog ones (`Get` twice, `SetEnabled`,
+`Serving`) at 7/7 in ~72s, and the whole 115-case suite they belong to green in one pass.
+
+The split across the two devices is the interesting part, and is forced by what is observable
+where:
+
+* **device B** scans `Cron: Put` and then `Cron: Serve`, and both return the instant they run — a
+  scheduler that has *started* looks exactly like one that will never fire, so B's own results
+  cannot prove anything about the schedule actually working;
+* **device A** owns the command, and its dispatcher records a `Dispatching optical-cron/… (inputs:
+  …)` line when the fire arrives. So the run carries a `verify_on_device_a` looking for the marker
+  inside the schedule's own inputs — a string that could only have got into A's log as the inputs
+  of a request the scheduler submitted, which makes finding it proof of the whole chain rather
+  than of one link;
+* and a `verify_on_device_b` for `Cron fired optical-cron-sweep`, the line B's own scheduler
+  callback records when it fires. Both must pass, so the pair spans the whole chain — B scheduled
+  it and B saw it fire, A ran it — rather than either end alone.
+
+`cron_seed_watermark` writes the schedule's watermark into the past with an ordinary `KV: Submit`,
+for the same reason the Go test does: otherwise the first fire waits for a minute boundary up to a
+minute away. `cron_fires_records_the_dispatch` then reads the claim back on B, so both halves —
+the fire as the cluster recorded it, and the execution as the owning device saw it — are checked
+independently.
+
+### Why four of those cases only assert `no_crash`
+
+Worth stating plainly, because it looks like weak testing and is a deliberate consequence of what
+a scheduler *is*. A running scheduler writes its own `Cron fired …` / `Cron skipped …` entries
+into the scanning device's Activity Log at times no case controls, so that log stops being a
+transcript of the cases and becomes a transcript of two writers interleaved.
+
+The harness used to take that badly: it waited for *any* new entry after tapping Execute and read
+the **last** one. Measured on the rig, a `Test: SleepMillis 20000` case therefore "finished" in
+0.45s having read a scheduler line — and its own entry, landing 20s later, was read as the result
+of whichever case was waiting by then, three cases downstream. `awaitOneCase` now waits for the
+entry belonging to *this case's* command instead (`LogEntry.category`/`name`, which
+`CommandExecutor` sets on every command and `OutputLog.append` leaves blank on every scheduler
+callback), keyed off the monotonic entry id. That removes the misattribution, and makes a long
+case honestly block for its own duration.
+
+What it does not remove is the scheduler writing entries at unpredictable times, which still makes
+a `result` assertion on a case running alongside it a statement about timing as much as about the
+command.
+
+So the four cases that execute *while the scheduler is live* (`cron_serve_starts_the_scheduler`,
+`cron_seed_watermark`, `cron_settle_for_the_first_fire`, `cron_stop_serve`) assert only
+`no_crash`, and every strict assertion is made where the log is quiet: before the scheduler starts
+(`cron_next`/`cron_put`/`cron_get_reads_the_schedule_back`/`cron_list`) or after
+`cron_stop_serve` has stopped it (`cron_serving_is_false_after_stop`,
+`cron_fires_records_the_dispatch`, `cron_disable_the_schedule`, `cron_get_shows_it_disabled`,
+`cron_delete`). That placement is also what lets the two catalog-state checks be exact rather than
+approximate — `"command_id":"optical-cron"` read back out of `Get` after `Put`, and
+`"disabled":true` read back after `SetEnabled false`, so the toggle is measured by its effect and
+not by its own return value. The two `verify_on_device_*` checks are unaffected either way, since
+they search the whole log for a substring rather than reading any one entry — which is why the
+load-bearing assertions live there.
+
 ---
 
 # Improving this

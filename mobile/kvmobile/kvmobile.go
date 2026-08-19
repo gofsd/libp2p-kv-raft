@@ -156,6 +156,39 @@ const (
 	raftLeaderLeaseTimeout = 2500 * time.Millisecond
 )
 
+// startSeqMu serialises a whole start sequence against another one, which
+// mu -- held only for the duration of each individual step -- cannot.
+//
+// Start's own doc comment promises it is safe to call more than once, and
+// on this app two callers genuinely do, ~200ms apart on every launch: the
+// app's own automatic Kvmobile.start() from AppRoot, and the instrumented
+// harness's awaitSession retry. While the first join succeeds that costs
+// nothing, since the second caller's startOnce finds started already true.
+// It is the *failure* path that needs this: start is not one step but a
+// sequence (join -> solo bootstrap -> RequestPublicAccess -> Stop -> retry
+// the join), and two of those interleaving run two daemons against the
+// same data directory.
+//
+// Measured live on the two-device optical rig (2026-08-19, device B): the
+// relay refused a circuit with RESOURCE_LIMIT_EXCEEDED, both callers' joins
+// failed, and both entered the self-heal path. Each brought up its own solo
+// daemon over the same store; one RequestPublicAccess succeeded while the
+// other died with "ipc: open response shm: backend: dup fd 307: bad file
+// descriptor", and abortRun then reported "a daemon cancelled during
+// startup did not exit within 1m0s". From that point the store stayed
+// locked, no ready.json was ever written, and all four of the harness's
+// retries failed with "ready.json: no such file or directory" -- one
+// transient relay refusal turning into a session that could not be started
+// again for the life of the process.
+//
+// That is the same poisoning abortRun was written to prevent, arriving by
+// concurrency instead of by sequence, and it is why the lock has to span
+// the sequence rather than the steps: waiting for a cancelled daemon to
+// exit only helps if nothing else starts one meanwhile. With this held, the
+// second caller waits and then finds a session already up (or the same
+// failure, reported once) instead of racing the first for the store.
+var startSeqMu sync.Mutex
+
 var (
 	mu sync.Mutex
 	// started, peerID, curDataDir, curDataDirRoot, curClusterID, session,
@@ -247,7 +280,14 @@ func StartWithKey(dataDir, keyHex string) (string, error) {
 // which is what's returned. Once the grant lands it persists on the
 // relay's side, so every later launch's very first attempt succeeds
 // directly without ever taking this path again.
+//
+// The whole sequence is serialised behind startSeqMu rather than only its
+// individual steps behind mu -- see startSeqMu's own doc comment for the
+// run this cost.
 func start(dataDirRoot string, resolveIdentity func(dataDir string) (keyPath, peerID string, err error)) (string, error) {
+	startSeqMu.Lock()
+	defer startSeqMu.Unlock()
+
 	id, err := startOnce(dataDirRoot, resolveIdentity)
 	if err == nil {
 		return id, nil

@@ -268,6 +268,31 @@ class UiCommandE2ETest {
             """{"operator":"term","machine":"term","result":"term","pieces":"number","remarks":"text"}"""
         const val OPTICAL_JOURNAL_OPERATORS = """["Ivanova","Petrov"]"""
 
+        /**
+         * The Command device A owns and answers for in the optical rig's Cron cases -- see
+         * [ensureCronTarget]. Device B is the one that *schedules* it: B scans a "Cron: Put"
+         * RunCode naming this command id, then a "Cron: Serve", and B's scheduler submits it on
+         * the schedule's own timing, which A's dispatcher then handles.
+         *
+         * That split is the whole point of these cases. Nothing about a scheduled dispatch is
+         * observable on the device that scheduled it beyond "a fire happened": whether the
+         * command actually *ran* is only ever visible on the device that owns it, which is why
+         * the serve case carries a verify_on_device_a rather than checking its own result.
+         *
+         * These names are the contract between this setup and testdata.json's own
+         * android_optical_cases entries, which name the same command id in their params -- so
+         * they live here as constants rather than being typed twice. Two more halves of that
+         * contract are named only in testdata.json, since nothing here needs them: the schedule
+         * id "optical-cron-sweep", and the marker "cron-fired-on-schedule" carried inside the
+         * schedule's own inputs, which is what verify_on_device_a looks for in A's Activity Log.
+         * A marker rather than the command id, because it can only have got there one way -- as
+         * the inputs of a request the scheduler submitted -- so finding it proves the whole chain
+         * (schedule written, fire claimed, command submitted, dispatch handled), not merely that
+         * something addressed to this command id once happened.
+         */
+        const val OPTICAL_CRON_COMMAND_ID = "optical-cron"
+        const val OPTICAL_CRON_GROUP_ID = "optical-cron-submitters"
+
         /** How long [awaitOwnCircuitAddr] waits for this device to publish a relay circuit address, and how often it re-checks. */
         const val CIRCUIT_ADDR_TIMEOUT_MS = 90_000L
         const val CIRCUIT_ADDR_POLL_MS = 2_000L
@@ -753,6 +778,17 @@ class UiCommandE2ETest {
                     ensureJournalBook(allCommandsForLookup, opticalTag)
                 }
 
+                // Cron cases need this device to own the command a schedule
+                // names and to be answering for it, for the same reason --
+                // and here the dispatcher is not merely convenient but the
+                // only observer there is: device B's scheduler fires
+                // asynchronously, long after B's own scanned command
+                // returned, so the dispatch it triggers is visible nowhere
+                // except this device's own Activity Log.
+                if (category == "Cron") {
+                    ensureCronTarget(allCommandsForLookup, opticalTag)
+                }
+
                 // "{{selfAddr}}" is the one substitution token an optical case's own params can
                 // reference (e.g. a Dispatch: DialSubmitCommand case naming its own generating
                 // device as the dial target) -- only known live, resolved here rather than by the
@@ -866,6 +902,66 @@ class UiCommandE2ETest {
         step("Group", "CreateGroup", listOf(OPTICAL_JOURNAL_GROUP_ID, "Optical shift log writers", "true"))
         step("Links", "AddCommandToGroup", listOf(OPTICAL_JOURNAL_COMMAND_ID, OPTICAL_JOURNAL_GROUP_ID))
         step("Journal", "Serve", listOf(OPTICAL_JOURNAL_COMMAND_ID, OPTICAL_JOURNAL_LOG))
+    }
+
+    /**
+     * Makes this device the owner of the Command the optical rig's Cron cases schedule, once per
+     * instrumentation session: publishes it, puts it in a group device B may submit against, and
+     * starts a dispatcher answering for it.
+     *
+     * The dispatcher is what these cases are actually measured against. Device B scans "Cron:
+     * Put" and "Cron: Serve", and both return the moment they are executed -- a scheduler that
+     * has *started* looks exactly like one that will never fire. What distinguishes them is the
+     * "Dispatching optical-cron/... (inputs: ...)" line CommandCatalog.kt's own demo handler
+     * records here when the fire actually arrives, which is why those cases carry a
+     * verify_on_device_a polling this device's Activity Log rather than trusting device B's own
+     * result. It pairs with a verify_on_device_b for the "Cron fired ..." line B's own scheduler
+     * callback records there, so the two together span the whole chain -- B scheduled it and B
+     * saw it fire, this device ran it -- rather than either end alone. Both lines survive their
+     * process exiting, since OutputLog persists to disk (see its own doc comment -- a gap this
+     * same harness found).
+     *
+     * Both checks hang off cron_fires_records_the_dispatch, the first case after the scheduler
+     * has been stopped, rather than off the serve case: a live scheduler writes its own entries
+     * into the scanning device's Activity Log at times no case controls, so a case running
+     * alongside it is asserting about timing as much as about its command. [awaitOneCase] no
+     * longer *misreads* those entries -- it resolves a case's result by category/name rather
+     * than by taking the last new entry, after a 20s sleep case "finished" in 0.45s on a
+     * scheduler line and handed its own entry to a case three positions later -- but the two
+     * verify_on_device_* checks remain the ones that do not care at all, since they search the
+     * whole log for a substring instead of resolving one entry.
+     *
+     * The group is created **public**, the same rig-only compromise [ensureJournalBook] makes and
+     * for the same reason: this device has no way to learn device B's peer id before B has
+     * scanned anything, and what these cases check is the schedule-to-dispatch round trip, not
+     * the catalog's membership check, which pkg/kvctl and kvmobile both test directly. Note that
+     * the check is not skipped, only made permissive -- kvfsm still evaluates B's own peer id
+     * against this command's groups on every replica when B's scheduler submits, exactly as it
+     * would for a human submitter. A scheduler cannot make a command run by putting it on a
+     * timer, which is precisely the property a public group leaves intact here.
+     *
+     * Idempotent across cases and across runs, like the journal setup: every step is
+     * find-or-create, failures are logged rather than thrown, and the whole thing is skipped
+     * after the first Cron case in a session.
+     */
+    /** Whether [ensureCronTarget] has already run in this instrumentation session. */
+    private var cronTargetReady = false
+
+    private fun ensureCronTarget(allCommands: List<CommandSpec>, opticalTag: String) {
+        if (cronTargetReady) return
+        cronTargetReady = true
+
+        fun step(category: String, name: String, params: List<String>) {
+            val spec = allCommands.first { it.category == category && it.name == name }
+            val outcome = runCatching { runBlocking { CommandExecutor.execute(spec, params) } }
+            Log.i(TAG, "$opticalTag cron setup ${spec.label} -> ${outcome.getOrNull() ?: outcome.exceptionOrNull()?.message}")
+        }
+
+        val selfPeerID = runCatching { Kvmobile.peerID() }.getOrDefault("")
+        step("Command", "CreateCommand", listOf(OPTICAL_CRON_COMMAND_ID, "Optical cron target", selfPeerID))
+        step("Group", "CreateGroup", listOf(OPTICAL_CRON_GROUP_ID, "Optical cron submitters", "true"))
+        step("Links", "AddCommandToGroup", listOf(OPTICAL_CRON_COMMAND_ID, OPTICAL_CRON_GROUP_ID))
+        step("Dispatch", "RunCommandDispatcher", listOf(OPTICAL_CRON_COMMAND_ID))
     }
 
     /**
@@ -1105,15 +1201,39 @@ class UiCommandE2ETest {
                     awaitScannedTag("runConfirmExecute", timeoutMs, opticalTag)
                     val params = readTagText("runConfirmParams")
                     Log.i(TAG, "$opticalTag runConfirmExecute appeared, params=$params")
-                    val priorLogSize = OutputLog.snapshot().size
+                    // Entries are identified by their own monotonic id rather than by a count,
+                    // so a concurrent writer landing between this snapshot and the click cannot
+                    // shift what counts as "new".
+                    val priorLastID = OutputLog.snapshot().lastOrNull()?.id ?: -1L
                     composeTestRule.onNodeWithTag("runConfirmExecute").performClick()
-                    Log.i(TAG, "$opticalTag tapped Execute, waiting for a new OutputLog entry (prior size=$priorLogSize)")
-                    try {
-                        composeTestRule.waitUntil(RUN_TIMEOUT_MS) { OutputLog.snapshot().size > priorLogSize }
-                    } catch (e: ComposeTimeoutException) {
-                        throw AssertionError("no OutputLog entry appeared after tapping Execute", e)
+                    // Wait for *this case's own* entry, not merely for a new one. The two are
+                    // the same thing only while nothing else writes to the log, which a Cron:
+                    // Serve case stops being true: its scheduler keeps recording "Cron fired
+                    // ..."/"Cron skipped ..." lines through OutputLog.append at times no case
+                    // controls. Taking the last new entry then reads a scheduler line as the
+                    // case's result and, worse, leaves the case's real entry to be read by
+                    // whichever later case is waiting when it finally lands -- measured on the
+                    // rig, a Test: SleepMillis 20000 case "finished" in 0.45s and its actual
+                    // entry surfaced 20s later as a Cron: Fires case's result, three cases
+                    // downstream.
+                    //
+                    // category/name are what separate them: CommandExecutor records both on
+                    // every command it runs, while OutputLog.append (every watch/scheduler
+                    // callback) leaves them blank. An older spec carrying neither falls back to
+                    // the previous behaviour rather than waiting for something that can never
+                    // match.
+                    val wantCategory = spec.optString("category")
+                    val wantName = spec.optString("name")
+                    val matchesThisCase = { e: LogEntry ->
+                        e.id > priorLastID && (wantCategory.isEmpty() || (e.category == wantCategory && e.name == wantName))
                     }
-                    val resultBody = OutputLog.snapshot().last().body
+                    Log.i(TAG, "$opticalTag tapped Execute, waiting for this case's OutputLog entry (after id=$priorLastID, want=$wantCategory: $wantName)")
+                    try {
+                        composeTestRule.waitUntil(RUN_TIMEOUT_MS) { OutputLog.snapshot().any(matchesThisCase) }
+                    } catch (e: ComposeTimeoutException) {
+                        throw AssertionError("no OutputLog entry for $wantCategory: $wantName appeared after tapping Execute", e)
+                    }
+                    val resultBody = OutputLog.snapshot().first(matchesThisCase).body
                     Log.i(TAG, "$opticalTag OutputLog result=$resultBody")
                     settleAfterDialog("runConfirmExecute")
                     val selfPeerID = runCatching { Kvmobile.peerID() }.getOrDefault("")

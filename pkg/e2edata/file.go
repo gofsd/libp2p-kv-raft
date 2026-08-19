@@ -2270,6 +2270,22 @@ type OpticalExpectSpec struct {
 	// RunCommandDispatcher, so the actual dispatch is only ever observable on A. Empty (every
 	// other kind) means no cross-device check.
 	VerifyOnDeviceA string `json:"verify_on_device_a,omitempty"`
+	// VerifyOnDeviceB is VerifyOnDeviceA for device B's own Activity Log, with the same
+	// "{{instance_id}}" substitution -- for a case whose effect on the scanning device arrives
+	// *after* its own result did, which its Result cannot describe.
+	//
+	// The Cron cases are the reason it exists: starting a scheduler returns immediately and
+	// looks identical to starting one that will never fire, so the only thing separating the
+	// two is the entry its own fire callback records here later. Set both this and
+	// VerifyOnDeviceA on one case and the pair spans the whole chain -- B scheduled it and B
+	// saw it fire, A ran it -- rather than either end alone. Both are then required to pass.
+	//
+	// These two are also the assertions that stay reliable however a background writer on the
+	// scanning device interleaves with the case under test, since they search the whole log
+	// for a substring rather than resolving any one entry as this case's result the way
+	// Result does -- see examples/croncmd/README.md's note on why several of its cases assert
+	// only no_crash.
+	VerifyOnDeviceB string `json:"verify_on_device_b,omitempty"`
 }
 
 // OpticalScanCase is one round trip through android-app's real DataMatrix/camera pipeline:
