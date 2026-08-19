@@ -2168,6 +2168,15 @@ func hexPrefix(s string) (rest string, ok bool) {
 // (e.g. a KV: Get case checking the exact value an earlier KV: Submit case wrote, not just that
 // Get itself succeeded) -- the three canned checks above can't express that on their own. A case
 // that depends on an earlier case's own effect this way relies on OpticalScanCase.Order.
+//
+// And a fifth, "matches:<regex>" (same token substitution), for a result whose exact text the
+// case cannot know in advance but whose shape it can -- an id the command itself allocates, say.
+// Reach for it only when "contains:" genuinely can't express the check: a substring is far easier
+// to read six months later than a pattern. The case that forced it is journal_correct, whose
+// answer is the id of the line superseding the struck one, on a page that advances by one every
+// run -- see examples/relations/README.md's "Through a camera, on two devices". Matched anywhere
+// in the line, unanchored, against a body that echoes the command's own inputs before its output,
+// so a pattern meaning to check the output has to say where it starts.
 const (
 	ExpectSucceeded = "succeeded"
 	ExpectRejected  = "rejected"
@@ -2240,8 +2249,22 @@ type OpticalGenerateSpec struct {
 	// Name is the CommandSpec name within Category -- required for "run", unused by "nav_group".
 	Name string `json:"name,omitempty"`
 	// Params are typed into CommandDetailScreen's own ordered param_N fields before Generate --
-	// required (may be an empty list) for "run", unused by "nav_group". May contain the same
-	// substitution tokens Result/VerifyOnDeviceA accept -- see OpticalExpectSpec's doc comment.
+	// required (may be an empty list) for "run", unused by "nav_group".
+	//
+	// A param may be a substitution token, resolved by device A in generateAndHoldAll just
+	// before it types them. These are a separate set from the ones Result/VerifyOnDeviceA
+	// accept, and necessarily so: those are resolved on device B against what it observed,
+	// while a param has to be resolved on A, before the code carrying it exists.
+	//
+	//   "{{selfAddr}}"     -- A's own dialable address (a Dispatch: DialSubmitCommand case
+	//                         naming its generating device as the dial target).
+	//   "{{journalLine}}"  -- a journal line A writes on the spot, for a case that strikes or
+	//                         endorses one. Each resolution mints a new line, because every
+	//                         such command may be applied to a given line exactly once and the
+	//                         book outlives the run -- see UiCommandE2ETest.mintJournalLine.
+	//
+	// A token that fails to resolve is left in place rather than replaced by something empty,
+	// so the case fails on the literal token instead of passing against a blank.
 	Params []string `json:"params,omitempty"`
 }
 

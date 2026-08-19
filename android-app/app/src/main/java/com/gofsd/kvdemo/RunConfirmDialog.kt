@@ -34,7 +34,11 @@ fun RunConfirmDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("$category: $name") },
+        // Tagged because the optical harness has to tell *which* command a dialog is for: a
+        // late or duplicated decode can put a previous code's dialog up while a case is waiting
+        // for its own, and confirming that one would run the wrong command (see
+        // UiCommandE2ETest.awaitOneCase).
+        title = { Text("$category: $name", modifier = Modifier.testTag("runConfirmTitle")) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text(

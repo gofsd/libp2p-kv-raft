@@ -481,6 +481,40 @@ A sign-off signature also commits to **how many lines the page held**, and the l
 one rather than recording it as something its signer did not say: a line that landed in between
 means signing again against the count the log reports.
 
+### Through a camera, on two devices
+
+Ten `android_optical_cases` in `test/e2e/testdata.json` (`journal_*`) drive this over the app's
+real DataMatrix pipeline: one device renders a command as a code, a second reads it with its
+camera and runs it. What that adds over the Go tests is the signing story above, end to end on
+hardware — `journal_countersign` is signed on the phone with a key that never leaves it, and the
+device owning the book checks it against the key that peer id carries before recording it.
+
+Three of them (`Correct`, `Void`, `Countersign`) need a line to act on, and cannot name a fixed
+one. A book is append-only and outlives the run, so line ids climb (`01.01.03.02`, `.03`, `.04`,
+one per run), and each of these commands may be applied to a given line exactly once — `Correct`
+and `Void` meet `ErrAlreadyStruck`, `Countersign` meets `ErrAlreadyCountersigned`. So a hardcoded
+id is right on the first run against a fresh book and wrong on every run after. It was: the
+countersign case named `01.01.03.01` and asserted only "did not crash", so it reported PASS for
+months while actually failing with *this actor has already countersigned this line* from its
+second run onwards.
+
+Those cases now write `{{journalLine}}`, which the *generating* device resolves by appending a
+line on the spot and substituting its id — minted per case, so there is always an unstruck target,
+and minted on the generating device because a countersignature is only worth anything from an
+actor who did not write the line. The scanning device then asserts exactly: `Correct` returns the
+id of the line that supersedes, `Void` and `Countersign` return OK. `journal_sign_off_the_page`
+runs last, so each run leaves the book ruled off and the next one opens a fresh page — which is
+also the cheapest check that none of this depends on a page being mid-write.
+
+That last case is why `Correct`'s assertion is a pattern (`matches:->\s*01\.\d+\.03\.\d+`)
+and not a substring. Ruling a page off closes it to further lines, so the next `Append` rolls onto
+the next page — `01.01.03.*` on the first run, `01.02.03.*` on the second, and so on. The literal
+`contains:01.01.03.` this section was first written with was therefore the same hardcoded id in a
+new costume, correct once and wrong from the second run onwards; only the *shape* of a line id
+survives a run. (It also means these cases spend one page per run out of the 255 a book has, so a
+book that has been the rig's for a few hundred runs will start refusing appends — a fresh
+`commandID` is the whole fix.)
+
 ## Compatibility with `examples/genealogy`
 
 `genealogy.go` here implements the same model that example does — units, executions, `Ancestors`,

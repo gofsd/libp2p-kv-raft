@@ -103,6 +103,17 @@ class UiCommandE2ETest {
         fun assertContains(line: String, want: String) =
             Assert.assertTrue("expected result to contain \"$want\", got: $line", line.contains(want))
 
+        // Backs OpticalExpectSpec.Result's "matches:<regex>" convention -- assertContains for a
+        // result whose exact text a case cannot know in advance but whose *shape* it can. The
+        // case that forced it is journal_correct: Correct answers with the id of the line that
+        // supersedes the struck one, and that id's page component climbs by one every run
+        // (journal_sign_off_the_page closes the page, so the next Append rolls onto the next
+        // one), so no fixed substring of it survives a second run. Matched anywhere in the line,
+        // not anchored -- the result body echoes the command's own inputs before its output, so
+        // an expectation that means to check the *output* has to say so in its pattern.
+        fun assertMatches(line: String, want: String) =
+            Assert.assertTrue("expected result to match /$want/, got: $line", Regex(want).containsMatchIn(line))
+
         // Bounds how long awaitAndVerifyScan waits for CommandExecutor's background coroutine to
         // post a result after Execute is tapped -- generous enough to cover a real forwarded-write
         // round trip to the shared remote leader (and OpenChannel/RedeemExecInvite's own up-to-60s
@@ -205,6 +216,13 @@ class UiCommandE2ETest {
         // healthy case still returns on the first attempt in seconds and pays nothing for this.
         const val SCAN_ATTEMPTS = 5
 
+        // How many confirm dialogs belonging to some *other* case one case will cancel before
+        // giving up on the rig rather than on the case. One is ordinary -- a frame of the
+        // previous code, already in flight when A moved on, decoding a moment late. A run of
+        // them means A and B have genuinely lost step, which cancelling cannot repair and which
+        // should be reported as itself rather than as this case timing out.
+        const val MAX_WRONG_DIALOGS = 3
+
         // How long one look waits before [awaitScannedTag] stops waiting and re-arms, *within* an
         // attempt's own budget. The whole budget used to be spent as a single look, which made
         // every stall cost its full 50s before anything was done about it.
@@ -267,6 +285,10 @@ class UiCommandE2ETest {
         const val OPTICAL_JOURNAL_COLUMNS =
             """{"operator":"term","machine":"term","result":"term","pieces":"number","remarks":"text"}"""
         const val OPTICAL_JOURNAL_OPERATORS = """["Ivanova","Petrov"]"""
+
+        /** The line [mintJournalLine] writes for a "{{journalLine}}" token -- see its doc comment. */
+        const val OPTICAL_JOURNAL_MINTED_LINE =
+            """{"operator":"Petrov","machine":"Lathe-2","result":"OK","pieces":"1","remarks":"minted for a strike-once case"}"""
 
         /**
          * The Command device A owns and answers for in the optical rig's Cron cases -- see
@@ -789,23 +811,31 @@ class UiCommandE2ETest {
                     ensureCronTarget(allCommandsForLookup, opticalTag)
                 }
 
-                // "{{selfAddr}}" is the one substitution token an optical case's own params can
-                // reference (e.g. a Dispatch: DialSubmitCommand case naming its own generating
-                // device as the dial target) -- only known live, resolved here rather than by the
-                // Go harness since "self" naturally means "this device, i.e. whichever one is
-                // running generateAndHold(All)," not something worth threading a value back out to
-                // Go and into a second invocation's args for.
-                fun resolveField(i: Int): String {
-                    val raw = field(i)
-                    if (raw != "{{selfAddr}}") return raw
-                    return runCatching { Kvmobile.getOwnAddr() }.getOrDefault(raw)
+                // "{{selfAddr}}" and "{{journalLine}}" are the substitution tokens an optical
+                // case's own params can reference -- a Dispatch: DialSubmitCommand case naming its
+                // own generating device as the dial target, a Journal: Void case naming a line to
+                // strike. Both are resolved here rather than by the Go harness: "self" naturally
+                // means "this device, i.e. whichever one is running generateAndHold(All)", and a
+                // line has to be written by this device to be one the scanning device may act on
+                // at all (see [mintJournalLine]), neither being worth threading a value back out
+                // to Go and into a second invocation's args for.
+                //
+                // Resolved once, here, rather than on each read: "{{journalLine}}" *writes* a line
+                // to resolve to, so resolving it per read would mint one line for the log below
+                // and a second, different one for what actually gets typed in.
+                val resolvedFields = (0 until fieldCount).map { i ->
+                    when (val raw = field(i)) {
+                        "{{selfAddr}}" -> runCatching { Kvmobile.getOwnAddr() }.getOrDefault(raw)
+                        "{{journalLine}}" -> mintJournalLine(allCommandsForLookup, opticalTag).ifEmpty { raw }
+                        else -> raw
+                    }
                 }
 
-                Log.i(TAG, "$opticalTag navigating to command_detail for ${commandSpec.label}, params=${(0 until fieldCount).map { resolveField(it) }}")
+                Log.i(TAG, "$opticalTag navigating to command_detail for ${commandSpec.label}, params=$resolvedFields")
                 navigateToCommandDetailViaPicker(commandSpec.category, commandSpec.name)
                 waitForScreen("screen_command_detail")
                 for (i in 0 until fieldCount) {
-                    composeTestRule.onNodeWithTag("param_$i").performTextInput(resolveField(i))
+                    composeTestRule.onNodeWithTag("param_$i").performTextInput(resolvedFields[i])
                 }
                 composeTestRule.onNodeWithTag("generateDataMatrixButton").performClick()
                 Log.i(TAG, "$opticalTag tapped generateDataMatrixButton")
@@ -902,6 +932,42 @@ class UiCommandE2ETest {
         step("Group", "CreateGroup", listOf(OPTICAL_JOURNAL_GROUP_ID, "Optical shift log writers", "true"))
         step("Links", "AddCommandToGroup", listOf(OPTICAL_JOURNAL_COMMAND_ID, OPTICAL_JOURNAL_GROUP_ID))
         step("Journal", "Serve", listOf(OPTICAL_JOURNAL_COMMAND_ID, OPTICAL_JOURNAL_LOG))
+    }
+
+    /**
+     * Appends one line to the optical rig's book under *this* device's own actor and returns its
+     * id -- what "{{journalLine}}" resolves to, once per case that names it.
+     *
+     * Three of the Journal cases (`Correct`, `Void`, `Countersign`) act on an existing line, and
+     * none of them can be pointed at a fixed one. A book is append-only and persists across runs,
+     * so line ids grow (`01.01.03.02`, `.03`, `.04`, one per run), and every one of these three
+     * commands may be applied to a given line exactly once: relations' `checkStrikeable` refuses
+     * a second `Correct`/`Void` with `ErrAlreadyStruck`, and `Countersign` refuses a repeat from
+     * the same actor with `ErrAlreadyCountersigned`. A hardcoded id is therefore correct on the
+     * first run of a fresh book and wrong on every run after -- which is exactly what the
+     * `journal_countersign` case did for months behind an `no_crash` assertion, failing with
+     * "this actor has already countersigned this line" from its second run onwards while still
+     * reporting PASS. A line minted here per case cannot rot that way.
+     *
+     * It is minted on *this* device rather than the scanning one for two reasons. The scanned
+     * params are baked into the DataMatrix code this device generates, so a line only device B
+     * knows about could never reach them. And `Countersign` requires an endorser who is not the
+     * line's author (see CommandCatalog.kt) -- a line written here is one device B can genuinely
+     * endorse, which a line B wrote itself would not be.
+     *
+     * Written as Petrov, the other name in the closed operator vocabulary, purely so these
+     * harness-minted lines are distinguishable from the Ivanova lines the cases themselves append
+     * when reading a rendered page by eye. Returns "" on failure, leaving the token unresolved
+     * rather than substituting something that would silently pass an assertion.
+     */
+    private fun mintJournalLine(allCommands: List<CommandSpec>, opticalTag: String): String {
+        val spec = allCommands.first { it.category == "Journal" && it.name == "Append" }
+        val outcome = runCatching {
+            runBlocking { CommandExecutor.execute(spec, listOf(OPTICAL_JOURNAL_COMMAND_ID, OPTICAL_JOURNAL_MINTED_LINE)) }
+        }
+        val line = outcome.getOrNull()?.substringAfter("->\n", "")?.trim().orEmpty()
+        Log.i(TAG, "$opticalTag minted journal line \"$line\" (${outcome.exceptionOrNull()?.message ?: "ok"})")
+        return line
     }
 
     /**
@@ -1198,9 +1264,41 @@ class UiCommandE2ETest {
         return try {
             when (kind) {
                 "run" -> {
-                    awaitScannedTag("runConfirmExecute", timeoutMs, opticalTag)
+                    val wantCategory = spec.optString("category")
+                    val wantName = spec.optString("name")
+                    // Wait for a dialog that is *this case's*, cancelling any that is not.
+                    //
+                    // A decode can arrive late: a code device A has stopped showing may still be
+                    // read from a frame already in flight, or re-read after a re-arm, and the
+                    // dialog that puts up belongs to an earlier case. Confirming it would run
+                    // that command a second time -- which for most of the catalog is merely
+                    // wrong, and for a strike-once or state-changing one is destructive -- and
+                    // then leave this case's own dialog standing unconfirmed. Measured on the
+                    // rig: dispatch_dial_query_command_log confirmed the previous case's dialog
+                    // (params "optical-e2e-instance"), its own code decoded 5s later with nobody
+                    // left to tap it, and the case died on a timeout 180s after that.
+                    //
+                    // Cancel rather than confirm, since that command has already had its own
+                    // case, and then keep looking: awaitScannedTag's own budget covers the wait,
+                    // and A is still holding this case's code.
+                    var wrongDialogs = 0
+                    while (true) {
+                        awaitScannedTag("runConfirmExecute", timeoutMs, opticalTag)
+                        val shown = readTagText("runConfirmTitle")
+                        if (wantCategory.isEmpty() || shown == "$wantCategory: $wantName") break
+                        if (++wrongDialogs > MAX_WRONG_DIALOGS) {
+                            throw AssertionError(
+                                "confirm dialog was for \"$shown\", not \"$wantCategory: $wantName\", " +
+                                    "$MAX_WRONG_DIALOGS time(s) running -- device A is showing a code this case did not ask for",
+                            )
+                        }
+                        Log.w(TAG, "$opticalTag confirm dialog is for \"$shown\", not \"$wantCategory: $wantName\" -- a stale decode, cancelling it and looking again")
+                        composeTestRule.onNodeWithTag("runConfirmCancel").performClick()
+                        settleAfterDialog("runConfirmExecute")
+                        forceRescan(opticalTag, verbose = false)
+                    }
                     val params = readTagText("runConfirmParams")
-                    Log.i(TAG, "$opticalTag runConfirmExecute appeared, params=$params")
+                    Log.i(TAG, "$opticalTag runConfirmExecute appeared for $wantCategory: $wantName, params=$params")
                     // Entries are identified by their own monotonic id rather than by a count,
                     // so a concurrent writer landing between this snapshot and the click cannot
                     // shift what counts as "new".
@@ -1221,9 +1319,7 @@ class UiCommandE2ETest {
                     // every command it runs, while OutputLog.append (every watch/scheduler
                     // callback) leaves them blank. An older spec carrying neither falls back to
                     // the previous behaviour rather than waiting for something that can never
-                    // match.
-                    val wantCategory = spec.optString("category")
-                    val wantName = spec.optString("name")
+                    // match -- the same discriminator the dialog check above uses.
                     val matchesThisCase = { e: LogEntry ->
                         e.id > priorLastID && (wantCategory.isEmpty() || (e.category == wantCategory && e.name == wantName))
                     }
@@ -1582,11 +1678,12 @@ class UiCommandE2ETest {
 
     /**
      * Resolves an OpticalExpectSpec.Result string ("succeeded"/"rejected"/"no_crash"/
-     * "contains:<substring>", the same convention e2edata.ExpectSucceeded/Rejected/NoCrash
-     * describe) into an assertion against the post-Execute OutputLog body -- [awaitAndVerifyScan]'s
-     * "run" kind only. "{{selfPeerID}}" is the one substitution token an optical case's own Result
-     * can reference (e.g. a GetOwnAddr case's "contains:{{selfPeerID}}") -- only known live, the
-     * same reason the old catalog sweep's token substitution existed at all.
+     * "contains:<substring>"/"matches:<regex>", the same convention e2edata.ExpectSucceeded/
+     * Rejected/NoCrash describe) into an assertion against the post-Execute OutputLog body --
+     * [awaitAndVerifyScan]'s "run" kind only. "{{selfPeerID}}" is the one substitution token an
+     * optical case's own Result can reference (e.g. a GetOwnAddr case's
+     * "contains:{{selfPeerID}}") -- only known live, the same reason the old catalog sweep's
+     * token substitution existed at all.
      *
      * An *unresolved* token is a hard failure rather than a silent substitution. The caller reads
      * it as `runCatching { Kvmobile.peerID() }.getOrDefault("")`, so a device whose session never
@@ -1602,17 +1699,28 @@ class UiCommandE2ETest {
         name == "rejected" -> ::assertRejected
         name == "no_crash" -> ::assertNoCrash
         name.startsWith("contains:") -> { line: String ->
-            val want = name.removePrefix("contains:")
-            if (want.contains(SELF_PEER_ID_TOKEN) && selfPeerID.isEmpty()) {
-                throw AssertionError(
-                    "expectation \"$name\" references $SELF_PEER_ID_TOKEN but this device has no peer id " +
-                        "(Kvmobile.peerID() failed -- its session almost certainly never started), so the " +
-                        "check cannot be evaluated. Result line was: $line",
-                )
-            }
-            assertContains(line, want.replace(SELF_PEER_ID_TOKEN, selfPeerID))
+            assertContains(line, resolveExpectationArg(name, name.removePrefix("contains:"), selfPeerID, line))
+        }
+        name.startsWith("matches:") -> { line: String ->
+            assertMatches(line, resolveExpectationArg(name, name.removePrefix("matches:"), selfPeerID, line))
         }
         else -> ::assertSucceeded
+    }
+
+    /**
+     * Substitutes "{{selfPeerID}}" into a "contains:"/"matches:" expectation's own argument, and
+     * refuses to substitute an empty one -- see [resultExpectation]'s doc comment for why an
+     * unresolved token has to fail the case rather than quietly widen it into a wildcard.
+     */
+    private fun resolveExpectationArg(name: String, want: String, selfPeerID: String, line: String): String {
+        if (want.contains(SELF_PEER_ID_TOKEN) && selfPeerID.isEmpty()) {
+            throw AssertionError(
+                "expectation \"$name\" references $SELF_PEER_ID_TOKEN but this device has no peer id " +
+                    "(Kvmobile.peerID() failed -- its session almost certainly never started), so the " +
+                    "check cannot be evaluated. Result line was: $line",
+            )
+        }
+        return want.replace(SELF_PEER_ID_TOKEN, selfPeerID)
     }
 
     /**

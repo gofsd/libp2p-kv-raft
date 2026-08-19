@@ -1967,14 +1967,67 @@
         "name": "Countersign",
         "params": [
           "optical-journal",
-          "01.01.03.01"
+          "{{journalLine}}"
         ]
       },
       "expect": {
         "kind": "run",
-        "result": "no_crash"
+        "result": "succeeded"
       },
       "order": 7
+    },
+    {
+      "case_id": "journal_correct",
+      "generate": {
+        "target": "run",
+        "category": "Journal",
+        "name": "Correct",
+        "params": [
+          "optical-journal",
+          "{{journalLine}}",
+          "{\"operator\":\"Ivanova\",\"machine\":\"Lathe-2\",\"result\":\"OK\",\"pieces\":\"121\",\"remarks\":\"pieces recounted\"}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:-\u003e\\s*01\\.\\d+\\.03\\.\\d+"
+      },
+      "order": 8
+    },
+    {
+      "case_id": "journal_void",
+      "generate": {
+        "target": "run",
+        "category": "Journal",
+        "name": "Void",
+        "params": [
+          "optical-journal",
+          "{{journalLine}}",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "order": 9
+    },
+    {
+      "case_id": "journal_sign_off_the_page",
+      "generate": {
+        "target": "run",
+        "category": "Journal",
+        "name": "SignOff",
+        "params": [
+          "optical-journal",
+          "0"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "order": 10
     },
     {
       "case_id": "cron_next_previews_the_expression",
@@ -1992,7 +2045,7 @@
         "kind": "run",
         "result": "contains:T03:00:00Z"
       },
-      "order": 8
+      "order": 11
     },
     {
       "case_id": "cron_put_schedules_a_command",
@@ -2012,7 +2065,7 @@
         "kind": "run",
         "result": "succeeded"
       },
-      "order": 9
+      "order": 12
     },
     {
       "case_id": "cron_get_reads_the_schedule_back",
@@ -2028,7 +2081,7 @@
         "kind": "run",
         "result": "contains:\"command_id\":\"optical-cron\""
       },
-      "order": 10
+      "order": 13
     },
     {
       "case_id": "cron_list_shows_the_schedule",
@@ -2041,7 +2094,7 @@
         "kind": "run",
         "result": "contains:optical-cron-sweep"
       },
-      "order": 11
+      "order": 14
     },
     {
       "case_id": "cron_serve_starts_the_scheduler",
@@ -2058,7 +2111,7 @@
         "kind": "run",
         "result": "no_crash"
       },
-      "order": 12
+      "order": 15
     },
     {
       "case_id": "cron_seed_watermark",
@@ -2075,7 +2128,7 @@
         "kind": "run",
         "result": "no_crash"
       },
-      "order": 13
+      "order": 16
     },
     {
       "case_id": "cron_settle_for_the_first_fire",
@@ -2091,7 +2144,7 @@
         "kind": "run",
         "result": "no_crash"
       },
-      "order": 14
+      "order": 17
     },
     {
       "case_id": "cron_stop_serve",
@@ -2104,7 +2157,7 @@
         "kind": "run",
         "result": "no_crash"
       },
-      "order": 15
+      "order": 18
     },
     {
       "case_id": "cron_serving_is_false_after_stop",
@@ -2117,7 +2170,7 @@
         "kind": "run",
         "result": "contains:false"
       },
-      "order": 16
+      "order": 19
     },
     {
       "case_id": "cron_fires_records_the_dispatch",
@@ -2136,7 +2189,7 @@
         "verify_on_device_a": "cron-fired-on-schedule",
         "verify_on_device_b": "Cron fired optical-cron-sweep"
       },
-      "order": 17
+      "order": 20
     },
     {
       "case_id": "cron_disable_the_schedule",
@@ -2153,7 +2206,7 @@
         "kind": "run",
         "result": "succeeded"
       },
-      "order": 18
+      "order": 21
     },
     {
       "case_id": "cron_get_shows_it_disabled",
@@ -2169,7 +2222,7 @@
         "kind": "run",
         "result": "contains:\"disabled\":true"
       },
-      "order": 19
+      "order": 22
     },
     {
       "case_id": "cron_delete",
@@ -2185,11 +2238,11 @@
         "kind": "run",
         "result": "succeeded"
       },
-      "order": 20
+      "order": 23
     }
   ],
   "android_optical_scan_result": {
-    "ran_at": "2026-08-19T18:16:41.743820959+03:00",
+    "ran_at": "2026-08-19T21:23:46.787272595+03:00",
     "status": 0,
     "cases": [
       {
@@ -2601,6 +2654,18 @@
         "pass": true
       },
       {
+        "case_id": "journal_correct",
+        "pass": true
+      },
+      {
+        "case_id": "journal_void",
+        "pass": true
+      },
+      {
+        "case_id": "journal_sign_off_the_page",
+        "pass": true
+      },
+      {
         "case_id": "cron_next_previews_the_expression",
         "pass": true
       },
@@ -2653,7 +2718,6 @@
         "pass": true
       }
     ],
-    "attempts": 1,
-    "stalls": 1
+    "attempts": 1
   }
 }
