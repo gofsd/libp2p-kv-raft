@@ -205,6 +205,49 @@ func luaToInputs(v lua.LValue) (string, error) {
 	return string(encoded), nil
 }
 
+// jsonToLua decodes s into a Lua value, reporting false for anything that
+// is not JSON.
+//
+// Used for a *child command's* result, which means s was written by some
+// other command -- possibly one that has never heard of this convention
+// and put prose there. So a failure to parse is an ordinary answer ("no
+// structured result"), never an error: see recordToLua, which leaves the
+// record's result nil and keeps the raw string reachable in its fields.
+func jsonToLua(state *lua.LState, s string) (lua.LValue, bool) {
+	if s == "" {
+		return lua.LNil, false
+	}
+	var decoded any
+	if err := json.Unmarshal([]byte(s), &decoded); err != nil {
+		return lua.LNil, false
+	}
+	value, err := toLua(state, decoded, 0)
+	if err != nil {
+		return lua.LNil, false
+	}
+	return value, true
+}
+
+// luaToJSON encodes a Lua value as JSON -- the inverse of jsonToLua, for a
+// script returning structure of its own (see resultFromLua) or calling
+// kv.json_encode directly.
+//
+// Unlike luaToInputs this applies no size limit of its own: a returned
+// result is bounded by the run's own MaxResultBytes, which is checked
+// once over the whole result so that one error can say which part was too
+// big rather than two limits disagreeing about the same bytes.
+func luaToJSON(v lua.LValue) (string, error) {
+	decoded, err := fromLua(v, 0, map[*lua.LTable]bool{})
+	if err != nil {
+		return "", err
+	}
+	encoded, err := json.Marshal(decoded)
+	if err != nil {
+		return "", fmt.Errorf("luacmd: encode value: %w", err)
+	}
+	return string(encoded), nil
+}
+
 // luaToFields converts a Lua table into the flat string map a log entry's
 // fields are. Scalars are stringified (a number as it would print, a
 // boolean as true/false); anything nested is refused, because the log

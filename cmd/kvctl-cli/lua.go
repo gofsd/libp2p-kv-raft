@@ -215,7 +215,7 @@ func cmdLuaLogs(args []string) {
 		luaFail("lualogs", fmt.Errorf("no entries for %s", args[0]))
 	}
 	for _, entry := range entries {
-		fmt.Println(luacmd.FormatEntry(entry))
+		luaPrintEntry(entry)
 	}
 }
 
@@ -233,7 +233,18 @@ func cmdLuaLastLog(args []string) {
 	}
 	fmt.Printf("%s, most recently run as %s\n", args[0], instanceID)
 	for _, entry := range entries {
-		fmt.Println(luacmd.FormatEntry(entry))
+		luaPrintEntry(entry)
+	}
+}
+
+// luaPrintEntry writes one log entry: its one-line summary, then its
+// structured result indented underneath if it has one. Kept out of
+// FormatEntry itself so a caller rendering a list still gets a single
+// scannable line -- see FormatResult.
+func luaPrintEntry(entry luacmd.LogEntry) {
+	fmt.Println(luacmd.FormatEntry(entry))
+	if block, ok := luacmd.FormatResult(entry); ok {
+		fmt.Println(block)
 	}
 }
 

@@ -27,6 +27,9 @@ type fakeCluster struct {
 	requests map[string][]luacmd.Request
 	logs     map[string][]luacmd.LogEntry
 	next     int
+	// queryFn, when set, answers QueryLog instead of the stored entries --
+	// for a test that needs a read to fail.
+	queryFn func(context.Context, string) ([]luacmd.LogEntry, error)
 
 	// live counts runs between their script's own "begin" and "end"
 	// lines, and maxLive the high-water mark -- how the concurrency cap is
@@ -55,10 +58,11 @@ func (c *fakeCluster) ListRequests(_ context.Context, commandID string) ([]luacm
 	return append([]luacmd.Request{}, c.requests[commandID]...), nil
 }
 
-func (c *fakeCluster) QueryLog(_ context.Context, instanceID string) ([]luacmd.LogEntry, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([]luacmd.LogEntry{}, c.logs[instanceID]...), nil
+func (c *fakeCluster) QueryLog(ctx context.Context, instanceID string) ([]luacmd.LogEntry, error) {
+	if c.queryFn != nil {
+		return c.queryFn(ctx, instanceID)
+	}
+	return c.QueryLogDirect(instanceID), nil
 }
 
 func (c *fakeCluster) Progress(_ context.Context, _, instanceID string, fields map[string]string, narrative string) error {
@@ -128,6 +132,14 @@ func (c *fakeCluster) request(commandID, inputs string) string {
 		panic(err)
 	}
 	return instanceID
+}
+
+// QueryLogDirect reads the stored entries without going through queryFn --
+// what a queryFn override calls once it has decided to answer normally.
+func (c *fakeCluster) QueryLogDirect(instanceID string) []luacmd.LogEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]luacmd.LogEntry{}, c.logs[instanceID]...)
 }
 
 func (c *fakeCluster) entries(instanceID string) []luacmd.LogEntry {

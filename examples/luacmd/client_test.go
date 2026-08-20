@@ -2,6 +2,8 @@ package luacmd_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -66,6 +68,50 @@ func TestFollowReportsGivingUpRatherThanReturningAPartialAnswer(t *testing.T) {
 	}
 }
 
+// A busy daemon failing one read must not look like a lost run -- and a
+// daemon that keeps failing must still be reported rather than followed
+// until the caller's own deadline.
+func TestFollowRidesOutATransientReadFailure(t *testing.T) {
+	ctx := context.Background()
+	cluster := newFakeCluster()
+	instanceID := "inst-blip"
+	if err := cluster.Append(ctx, selfPeer, instanceID, map[string]string{"status": "ok"}, "done"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	var reads int
+	cluster.queryFn = func(ctx context.Context, id string) ([]luacmd.LogEntry, error) {
+		reads++
+		if reads == 1 {
+			return nil, errors.New("busy")
+		}
+		return cluster.QueryLogDirect(id), nil
+	}
+
+	last, err := luacmd.Follow(ctx, cluster, instanceID, time.Millisecond, nil)
+	if err != nil {
+		t.Fatalf("Follow gave up on a single failed read: %v", err)
+	}
+	if last.Narrative != "done" {
+		t.Errorf("terminal entry = %+v", last)
+	}
+}
+
+func TestFollowGivesUpOnADaemonThatKeepsFailing(t *testing.T) {
+	cluster := newFakeCluster()
+	cluster.queryFn = func(context.Context, string) ([]luacmd.LogEntry, error) {
+		return nil, errors.New("still busy")
+	}
+
+	_, err := luacmd.Follow(context.Background(), cluster, "inst-dead", time.Millisecond, nil)
+	if err == nil {
+		t.Fatal("Follow never gave up")
+	}
+	if !strings.Contains(err.Error(), "times in a row") || !strings.Contains(err.Error(), "still busy") {
+		t.Errorf("error %q should say it kept failing and carry the underlying cause", err)
+	}
+}
+
 func TestLastRunFindsTheMostRecentDispatch(t *testing.T) {
 	ctx := context.Background()
 	cluster := newFakeCluster()
@@ -99,6 +145,57 @@ func TestLastRunSaysSoWhenACommandHasNeverRun(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "never been run") {
 		t.Errorf("error = %q", err)
+	}
+}
+
+// A structured result is announced, not printed: it is often kilobytes,
+// and a log line that becomes a wall of JSON stops being scannable.
+func TestFormatEntryAnnouncesAResultRatherThanPrintingIt(t *testing.T) {
+	const payload = `{"form":{"columns":[{"heading":"operator"}]}}`
+	entry := luacmd.LogEntry{
+		Timestamp: time.Date(2026, 8, 20, 9, 30, 15, 0, time.UTC),
+		Fields: map[string]string{
+			"status":           "ok",
+			luacmd.FieldResult: payload,
+		},
+		Narrative: "form read",
+	}
+	line := luacmd.FormatEntry(entry)
+
+	if strings.Contains(line, "columns") {
+		t.Errorf("the payload was printed into the one-liner: %q", line)
+	}
+	// Derived, not hand-counted: the point is that the size is reported,
+	// and a literal here only tests my arithmetic.
+	if want := fmt.Sprintf("result=%dB", len(payload)); !strings.Contains(line, want) {
+		t.Errorf("line %q does not announce the result as %q", line, want)
+	}
+
+	block, ok := luacmd.FormatResult(entry)
+	if !ok {
+		t.Fatal("FormatResult reported nothing for an entry that has a result")
+	}
+	if !strings.Contains(block, "\"heading\": \"operator\"") {
+		t.Errorf("the block is not pretty-printed:\n%s", block)
+	}
+	if !strings.HasPrefix(block, "    ") {
+		t.Errorf("the block is not indented under its line:\n%s", block)
+	}
+}
+
+// A command that wrote something else into that field still gets its
+// answer shown rather than swallowed.
+func TestFormatResultFallsBackToTheRawStringWhenItIsNotJSON(t *testing.T) {
+	entry := luacmd.LogEntry{Fields: map[string]string{luacmd.FieldResult: "written by hand"}}
+	block, ok := luacmd.FormatResult(entry)
+	if !ok || !strings.Contains(block, "written by hand") {
+		t.Errorf("block = %q, ok = %v", block, ok)
+	}
+}
+
+func TestFormatResultReportsNothingWhenThereIsNoResult(t *testing.T) {
+	if block, ok := luacmd.FormatResult(luacmd.LogEntry{Fields: map[string]string{"status": "ok"}}); ok {
+		t.Errorf("FormatResult invented a block: %q", block)
 	}
 }
 

@@ -244,7 +244,7 @@ func LuaLogs(instanceID string) error {
 		return fmt.Errorf("lualogs: no entries for %s", instanceID)
 	}
 	for _, entry := range entries {
-		fmt.Println(luacmd.FormatEntry(entry))
+		printEntry(entry)
 	}
 	return nil
 }
@@ -262,9 +262,20 @@ func LuaLastLog(commandID string) error {
 	}
 	fmt.Printf("%s, most recently run as %s\n", commandID, instanceID)
 	for _, entry := range entries {
-		fmt.Println(luacmd.FormatEntry(entry))
+		printEntry(entry)
 	}
 	return nil
+}
+
+// printEntry writes one log entry: its one-line summary, then its
+// structured result indented underneath if it has one. Kept out of
+// FormatEntry itself so that a caller rendering a list (a log row, a UI)
+// still gets a single scannable line -- see FormatResult.
+func printEntry(entry luacmd.LogEntry) {
+	fmt.Println(luacmd.FormatEntry(entry))
+	if block, ok := luacmd.FormatResult(entry); ok {
+		fmt.Println(block)
+	}
 }
 
 // LuaServe implements `mage luaserve [interval|""] [concurrency|""]`: runs

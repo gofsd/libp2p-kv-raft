@@ -27,6 +27,20 @@ import (
 // stays free of a client dependency.
 const StatusRunning = "running"
 
+// FieldResult is the log-entry field a command's structured answer lives
+// in, JSON-encoded.
+//
+// Not invented here: examples/relations/journalcmd already writes its whole
+// Result struct into a field of this name, and adopting it rather than
+// minting a new one is what lets a script read commands that predate this
+// package entirely -- see recordToLua. A Go handler opts in with one line
+// (set this field); nothing else about it changes.
+//
+// Deliberately separate from a record's other fields, which stay flat
+// strings: those are the labels a log list renders, this is the payload.
+// See luaToFields on why nesting is refused there rather than flattened.
+const FieldResult = "result"
+
 // depthKey is the reserved inputs key carrying how many Lua runs deep a
 // dispatch is. It travels in the inputs JSON because that is the only
 // thing that reaches a child dispatch, and it is stripped before a script
@@ -321,6 +335,8 @@ func (r *run) installKV(state *lua.LState) error {
 	kv.RawSetString("run", state.NewFunction(r.luaRun))
 	kv.RawSetString("logs", state.NewFunction(r.luaLogs))
 	kv.RawSetString("sleep", state.NewFunction(r.luaSleep))
+	kv.RawSetString("json_decode", state.NewFunction(r.luaJSONDecode))
+	kv.RawSetString("json_encode", state.NewFunction(r.luaJSONEncode))
 
 	state.SetGlobal("kv", kv)
 	// print is the reflex of anyone who has written Lua before, and there
@@ -535,6 +551,42 @@ func (r *run) luaSleep(state *lua.LState) int {
 	return 0
 }
 
+// luaJSONDecode implements kv.json_decode(text) -> value, or nil plus a
+// message.
+//
+// The escape hatch for a command that answers with JSON somewhere other
+// than FieldResult -- its narrative, another field -- which is common
+// enough to need one: every mobile/kvmobile binding returns a JSON string.
+// Returns nil rather than raising, so a caller decides whether unparseable
+// input is fatal, the same choice a record's own result makes.
+func (r *run) luaJSONDecode(state *lua.LState) int {
+	text := state.CheckString(1)
+	value, ok := jsonToLua(state, text)
+	if !ok {
+		state.Push(lua.LNil)
+		state.Push(lua.LString("not JSON"))
+		return 2
+	}
+	state.Push(value)
+	return 1
+}
+
+// luaJSONEncode implements kv.json_encode(value) -> text.
+//
+// Raises rather than returning nil: unlike decoding, what is encoded is
+// the script's own value, so a failure here (a function, a table that
+// contains itself) is a mistake in the script and not an answer about
+// somebody else's data.
+func (r *run) luaJSONEncode(state *lua.LState) int {
+	encoded, err := luaToJSON(state.Get(1))
+	if err != nil {
+		state.RaiseError("%s", err.Error())
+		return 0
+	}
+	state.Push(lua.LString(encoded))
+	return 1
+}
+
 // recordToLua is the table shape every record a script sees has.
 func (r *run) recordToLua(state *lua.LState, entry LogEntry, done, timedOut bool) *lua.LTable {
 	record := state.NewTable()
@@ -542,6 +594,15 @@ func (r *run) recordToLua(state *lua.LState, entry LogEntry, done, timedOut bool
 	record.RawSetString("status", lua.LString(entry.Status()))
 	record.RawSetString("narrative", lua.LString(entry.Narrative))
 	record.RawSetString("fields", fieldsToLua(state, entry.Fields))
+	// The structured answer, if the command wrote one and it parses.
+	// Absent or unparseable leaves this nil rather than failing: the
+	// producer is somebody else's command, and a script must be able to
+	// ask `if res.result then` instead of dying because that command
+	// wrote prose where this convention expects JSON. The raw string is
+	// still reachable as res.fields.result either way.
+	if value, ok := jsonToLua(state, entry.Fields[FieldResult]); ok {
+		record.RawSetString("result", value)
+	}
 	record.RawSetString("done", lua.LBool(done))
 	record.RawSetString("timed_out", lua.LBool(timedOut))
 	if !entry.Timestamp.IsZero() {
@@ -557,10 +618,17 @@ func (r *run) checkResultSize(result Result) error {
 	for key, value := range result.Fields {
 		size += len(key) + len(value)
 	}
-	if size > r.opts.MaxResultBytes {
-		return fmt.Errorf("luacmd: result is %d bytes, over the %d byte limit", size, r.opts.MaxResultBytes)
+	if size <= r.opts.MaxResultBytes {
+		return nil
 	}
-	return nil
+	// Name the structured payload separately when there is one: it is
+	// almost always what blew the limit, and "your result is too big" is
+	// unactionable when a script cannot see which half to shrink.
+	if payload := len(result.Fields[FieldResult]); payload > 0 {
+		return fmt.Errorf("luacmd: result is %d bytes, over the %d byte limit (%d of it the returned value)",
+			size, r.opts.MaxResultBytes, payload)
+	}
+	return fmt.Errorf("luacmd: result is %d bytes, over the %d byte limit", size, r.opts.MaxResultBytes)
 }
 
 // resultFromLua turns what a script returned into a Result.
@@ -582,8 +650,9 @@ func resultFromLua(v lua.LValue) (Result, error) {
 	case *lua.LTable:
 		narrative := value.RawGetString("narrative")
 		rawFields := value.RawGetString("fields")
-		if narrative == lua.LNil && rawFields == lua.LNil {
-			return Result{}, fmt.Errorf("luacmd: a script returning a table must return {fields = {...}} or {narrative = \"...\"} (or both)")
+		rawResult := value.RawGetString("result")
+		if narrative == lua.LNil && rawFields == lua.LNil && rawResult == lua.LNil {
+			return Result{}, fmt.Errorf("luacmd: a script returning a table must return {result = ...}, {fields = {...}} or {narrative = \"...\"} (any combination)")
 		}
 		if narrative != lua.LNil && narrative.Type() != lua.LTString {
 			return Result{}, fmt.Errorf("luacmd: narrative must be a string, got %s", narrative.Type().String())
@@ -591,6 +660,22 @@ func resultFromLua(v lua.LValue) (Result, error) {
 		fields, err := luaToFields(rawFields)
 		if err != nil {
 			return Result{}, err
+		}
+		if rawResult != lua.LNil {
+			// Refused rather than picking a winner: both spellings mean
+			// "this run's structured answer", and silently dropping one
+			// would lose data the script believed it had returned.
+			if _, taken := fields[FieldResult]; taken {
+				return Result{}, fmt.Errorf("luacmd: a result was returned both as {result = ...} and as fields.%s -- use one", FieldResult)
+			}
+			encoded, err := luaToJSON(rawResult)
+			if err != nil {
+				return Result{}, err
+			}
+			if fields == nil {
+				fields = map[string]string{}
+			}
+			fields[FieldResult] = encoded
 		}
 		return Result{Fields: fields, Narrative: narrative.String()}, nil
 	default:

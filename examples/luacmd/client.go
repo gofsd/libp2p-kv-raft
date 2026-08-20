@@ -1,7 +1,9 @@
 package luacmd
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"time"
@@ -16,6 +18,13 @@ import (
 // under the runner's own scan interval, so the first line of a run shows
 // up promptly once it starts rather than a poll later.
 const DefaultFollowInterval = 500 * time.Millisecond
+
+// followMaxReadFailures is how many consecutive failed log reads Follow
+// rides out before giving up. Observed once: a whole-repo `go test ./...`
+// runs packages in parallel, several of which spawn their own daemons, and
+// under that load a single read can exceed its own IPC deadline while the
+// run itself is perfectly healthy.
+const followMaxReadFailures = 3
 
 // Follow watches instanceID's log until a terminal entry lands or ctx is
 // done, calling onEntry once for every entry as it appears -- including
@@ -33,12 +42,28 @@ func Follow(ctx context.Context, cluster Cluster, instanceID string, interval ti
 		interval = DefaultFollowInterval
 	}
 
-	seen := 0
+	seen, failures := 0, 0
 	for {
 		entries, err := cluster.QueryLog(ctx, instanceID)
 		if err != nil {
-			return LogEntry{}, err
+			// A read that fails is usually the daemon being busy, not the
+			// run being lost -- the same transient every other polling
+			// loop in this repo rides out rather than exiting on. Give up
+			// only when it keeps failing, so a genuinely broken daemon
+			// still reports rather than hanging until the caller's own
+			// deadline.
+			failures++
+			if failures >= followMaxReadFailures {
+				return LogEntry{}, fmt.Errorf("luacmd: reading %s failed %d times in a row: %w", instanceID, failures, err)
+			}
+			select {
+			case <-ctx.Done():
+				return LogEntry{}, fmt.Errorf("luacmd: stopped following %s: %w", instanceID, ctx.Err())
+			case <-time.After(interval):
+			}
+			continue
 		}
+		failures = 0
 		for ; seen < len(entries); seen++ {
 			if onEntry != nil {
 				onEntry(entries[seen])
@@ -109,7 +134,7 @@ func FormatEntry(entry LogEntry) string {
 	// unreadable in both.
 	keys := make([]string, 0, len(entry.Fields))
 	for key := range entry.Fields {
-		if key == "status" || key == "traceback" {
+		if key == "status" || key == "traceback" || key == FieldResult {
 			continue
 		}
 		keys = append(keys, key)
@@ -118,5 +143,31 @@ func FormatEntry(entry LogEntry) string {
 	for _, key := range keys {
 		line += fmt.Sprintf("  %s=%s", key, entry.Fields[key])
 	}
+	// A structured result is announced by size, not printed: it is
+	// frequently kilobytes, and a log line that becomes a wall of JSON
+	// stops being scannable, which is the only thing a one-liner is for.
+	// FormatResult renders it for a caller that wants it.
+	if payload := entry.Fields[FieldResult]; payload != "" {
+		line += fmt.Sprintf("  result=%dB", len(payload))
+	}
 	return line
+}
+
+// FormatResult renders an entry's structured result as an indented block
+// to print under its FormatEntry line, and reports whether there was one.
+//
+// Pretty-printed when it parses, verbatim when it does not: a command that
+// wrote something other than JSON into that field still has its answer
+// shown rather than swallowed, which is the same "not an error, just not
+// structured" treatment a script gets from a record's own result.
+func FormatResult(entry LogEntry) (string, bool) {
+	payload := entry.Fields[FieldResult]
+	if payload == "" {
+		return "", false
+	}
+	var indented bytes.Buffer
+	if err := json.Indent(&indented, []byte(payload), "    ", "  "); err != nil {
+		return "    " + payload, true
+	}
+	return "    " + indented.String(), true
 }

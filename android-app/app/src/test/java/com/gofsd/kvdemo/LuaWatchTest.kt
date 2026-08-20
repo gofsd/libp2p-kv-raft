@@ -57,4 +57,21 @@ class LuaWatchTest {
         val (_, status) = LuaWatch.rowFrom("outer", "", "done, somehow", "", "")
         assertEquals(LogStatus.SUCCESS, status)
     }
+
+    // A command's structured answer can be kilobytes of JSON. It travels in the record, which is
+    // what the expanded row shows -- the row's own title stays the sentence a person is scanning
+    // for. This pins that the title is built from the narrative alone, so a large result can never
+    // push it out of the list.
+    @Test
+    fun `a structured result never reaches the row title`() {
+        val (title, status) = LuaWatch.rowFrom(
+            commandID = "outer",
+            status = "ok",
+            narrative = "form read",
+            childCommand = "",
+            childInstance = "",
+        )
+        assertEquals("Lua[outer] form read", title)
+        assertEquals(LogStatus.SUCCESS, status)
+    }
 }

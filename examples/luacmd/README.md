@@ -157,14 +157,33 @@ One global table, `kv`. Everything is synchronous; the runner owns the deadline.
 | `kv.instance_id`, `kv.command_id`, `kv.requested_by`, `kv.script_id`, `kv.depth` | | This dispatch's own identity. |
 | `kv.log(text, fields?)` | — | A live line in this command's log. `print` is an alias. |
 | `kv.submit(id, inputs?)` | instance id | Dispatches another command, and records the child in this run's own log. |
-| `kv.wait(instance_id, secs?)` | record | Polls until the child records a terminal entry. |
+| `kv.wait(instance_id, secs?)` | record | Polls until the child records a terminal entry: `{done, status, narrative, fields, result}`. |
 | `kv.run(id, inputs?, secs?)` | instance id, record | Submit and wait, the common case. |
 | `kv.logs(instance_id, n?)` | array | Every line the child wrote. |
 | `kv.sleep(secs)` | — | Deadline-aware sleep. |
+| `kv.json_decode(s)` | value, or nil + why | For a command that answers with JSON somewhere other than its `result` field. |
+| `kv.json_encode(v)` | string | The inverse. Raises on a value that cannot be encoded — that is the script's own mistake. |
 
-A returned table becomes the final log entry (`{fields = {...}, narrative = "..."}`); a returned
-string becomes its narrative; an error becomes a failed terminal entry with the Lua message as the
-narrative and the traceback in a field.
+A returned table becomes the final log entry (`{result = ..., fields = {...}, narrative = "..."}`,
+any combination); a returned string becomes its narrative; an error becomes a failed terminal entry
+with the Lua message as the narrative and the traceback in a field.
+
+`result` is the structured half. It is JSON-encoded into one reserved field — the same field
+`examples/relations/journalcmd` already writes its own answer into — and a record's `result` is that
+field decoded, or `nil` when the command wrote something that is not JSON. So a script can index
+what an ordinary Go command returned, rather than parsing its sentence:
+
+```lua
+local id, res = kv.run("shift-log", {op = "form"}, 30)
+if res.result then
+  for _, column in ipairs(res.result.form.columns) do kv.log(column.name) end
+end
+```
+
+Fields stay flat strings deliberately — they are what a log list renders — and `result` is where
+structure goes. Three edges matter, because a script indexing a result depends on them: `null`
+becomes `nil` and the key disappears, an empty table encodes as `{}` and never `[]`, and numbers are
+float64, so a 64-bit id has to travel as a string or lose its low bits.
 
 **A failed child is a value, not an error.** `kv.wait` hands back the child's terminal record
 whatever its status, and the script decides. If a failing child unwound the parent instead, "the
@@ -187,6 +206,20 @@ if res.status ~= "ok" then
 end
 return {fields = {status = "ok", child_instance = id}, narrative = "hello from outer end"}
 ```
+
+### How an ordinary Go command opts in
+
+Nothing about the producing side is Lua-specific, and no interface changes: a handler already
+returns `(fields, narrative)`, so it opts in by writing one field.
+
+```go
+encoded, _ := json.Marshal(result)
+fields["result"] = string(encoded)
+```
+
+That is exactly what [`examples/relations/journalcmd`](../relations/journalcmd) has always done —
+which is why the convention is that field rather than a new one, and why a script can read
+journalcmd's answers without journalcmd knowing this package exists.
 
 ### Chain depth
 
