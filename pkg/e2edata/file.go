@@ -2354,6 +2354,19 @@ type OpticalScanCase struct {
 	// but Order documents *intent* (a case that depends on a specific earlier case's own effect,
 	// e.g. a "run" case Get-ing a value an earlier "run" case Set) versus cases that merely happen
 	// to be adjacent. Set on every case in a sequence or on none.
+	//
+	// One ordering rule is not a preference but a correctness requirement: **no two adjacent
+	// cases may have the same Generate spec.** Two identical specs produce the same DataMatrix,
+	// and the two devices then have no way to stay in step. Device B tells a stale decode from
+	// this case's own by the confirm dialog's title (see UiCommandE2ETest.kt's wrongDialogs
+	// loop), which is the *command*, not the case -- so with identical neighbours it cannot
+	// distinguish "device A is still showing the previous case's code" from "device A has
+	// advanced and this one looks the same". Seen live: the two devices drifted a case apart and
+	// the batch died on the next case that did differ, blaming a command that was working.
+	//
+	// Two cases that genuinely want to assert different things about one command's output are
+	// still fine -- separate them with any case whose code differs, which is what the Lua
+	// LastLog pair does.
 	Order int `json:"order,omitempty"`
 }
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -139,6 +140,18 @@ func runOpticalScanBatch(cases []e2edata.OpticalScanCase, serialA, serialB strin
 		if c.TimeoutMs > c.HoldMillis {
 			result.Status = e2edata.StatusFail
 			result.Error = fmt.Sprintf("case %q has timeout_ms (%d) > hold_millis (%d) -- device B would still be waiting for this case's code after device A stopped showing it", c.CaseID, c.TimeoutMs, c.HoldMillis)
+			return result, false
+		}
+		// Two adjacent cases generating the same code leave the devices no
+		// way to stay in step -- device B tells a stale decode from its own
+		// by the confirm dialog's command name, which identical neighbours
+		// make identical too. Refused here, before either device is
+		// launched, because the failure it causes lands minutes later on a
+		// different case and reads like that command being broken. See
+		// e2edata.OpticalScanCase.Order.
+		if i > 0 && sameGenerateSpec(cases[i-1].Generate, c.Generate) {
+			result.Status = e2edata.StatusFail
+			result.Error = fmt.Sprintf("cases %q and %q generate the same code -- device B cannot tell one from the other, so separate them with a case whose code differs", cases[i-1].CaseID, c.CaseID)
 			return result, false
 		}
 		genSpecs[i] = genSpecEntry{c.Generate, c.CaseID, c.HoldMillis}
@@ -293,6 +306,13 @@ func verifyLogOnDevice(serial, device, want, instanceID string) error {
 		return fmt.Errorf("device %s verify: %s", device, vResult.Error)
 	}
 	return nil
+}
+
+// sameGenerateSpec reports whether two cases would put the identical code on
+// screen -- Generate holds a slice, so it is not comparable with ==.
+func sameGenerateSpec(a, b e2edata.OpticalGenerateSpec) bool {
+	return a.Target == b.Target && a.Category == b.Category && a.Name == b.Name &&
+		slices.Equal(a.Params, b.Params)
 }
 
 func findResult(results []e2edata.UICaseResult, label string) *e2edata.UICaseResult {

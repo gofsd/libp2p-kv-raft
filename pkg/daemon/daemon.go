@@ -572,7 +572,7 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 	}
 
-	if err := n.writeReadyFile(); err != nil {
+	if err := n.writeReadyFile(hasState); err != nil {
 		return fmt.Errorf("daemon: write ready file: %w", err)
 	}
 
@@ -718,13 +718,40 @@ func (n *Node) shutdown() {
 			rf.DeregisterObserver(observer)
 			close(obsCh)
 		}
-		rf.Shutdown()
+		// Waited on, not fired and forgotten: Shutdown is asynchronous, and
+		// raft's own goroutines keep writing to the log store until it
+		// finishes. Closing that store underneath them is what makes this
+		// wait necessary at all -- see the logStore close below.
+		if err := rf.Shutdown().Error(); err != nil {
+			fmt.Fprintf(os.Stderr, "daemon: shut down raft: %v\n", err)
+		}
 	}
 	if transport != nil {
 		transport.Close()
 	}
 	if logFile != nil {
 		logFile.Close()
+	}
+	// The raft log store holds a bbolt file lock, and bbolt takes that lock
+	// with flock(2) -- per process, and with no timeout on the acquiring
+	// side. So a store left open here is not merely a leaked file handle:
+	// it makes the *next* daemon.Run against this same data directory block
+	// forever inside NewBoltStore, before it can report anything or write a
+	// ready file, for as long as this process lives.
+	//
+	// That is only reachable where one process starts a node more than
+	// once, which is exactly what the Android app does -- mobile/kvmobile
+	// runs the daemon in-process, and Stop/Start, Join, and Start's own
+	// self-heal path all restart it. It presented there as a device that
+	// worked until the first restart and then failed every launch
+	// afterwards with "ready.json: no such file or directory" (kvmobile's
+	// waitForReady timing out on a daemon stuck in flock), which reads like
+	// a missing file and is really a lock this line releases. A desktop
+	// kvnode never hit it: one process, one node, and exit frees the lock.
+	if n.logStore != nil {
+		if err := n.logStore.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "daemon: close raft log store: %v\n", err)
+		}
 	}
 	if n.store != nil {
 		n.store.Close()
@@ -791,6 +818,20 @@ func (n *Node) advertisedAddrs() []string {
 	return addrs
 }
 
+// relayAddrAwaitTimeout is how long a node waits for a relay reservation to
+// complete before it writes its own address into raft's persisted
+// configuration -- on a join (handleAdd's join branch) and on a solo
+// bootstrap alike.
+//
+// Measured, not guessed: against this project's own deploy target (well
+// under 1 Mbps to it) 15s was not consistently enough for the reservation
+// handshake itself, and the address is not revisable afterwards, so the
+// wait is sized for the slow link rather than the fast one.
+//
+// A var rather than a const only so tests can shrink it; nothing changes it
+// at runtime.
+var relayAddrAwaitTimeout = 45 * time.Second
+
 // awaitRelayAddr waits up to timeout for a /p2p-circuit address -- proof
 // one of the relayCandidates reservations configured in newHost has
 // completed -- to appear in n.host.Addrs(). A no-op that returns
@@ -823,6 +864,23 @@ func (n *Node) awaitRelayAddr(timeout time.Duration) bool {
 type ReadyInfo struct {
 	PeerID      string   `json:"peer_id"`
 	ListenAddrs []string `json:"listen_addrs"`
+
+	// Resumed reports that this node came up on raft state it already had
+	// on disk -- it was bootstrapped or joined in some earlier process and
+	// is a member of its cluster already, rather than a blank node waiting
+	// for an EventAdd to give it a role.
+	//
+	// It exists because that distinction decides whether a *failed* join is
+	// fatal. A blank node whose join is refused has nothing: it must report
+	// the failure. A resumed node's join is only a re-announcement -- Run
+	// has already called initRaft and the node is fully operational by the
+	// time this file is written -- so a refusal ("ERR: not leader", the
+	// answer from a cluster that has lost quorum until this very node
+	// rejoins it) means "nothing to re-announce right now", and tearing the
+	// node down over it removes the one participant that would have
+	// restored the quorum. See mobile/kvmobile's startAgainst, which reads
+	// this.
+	Resumed bool `json:"resumed"`
 }
 
 // ReadReadyFile reads and parses the ReadyFileName written by a node in
@@ -840,8 +898,8 @@ func ReadReadyFile(dataDir string) (ReadyInfo, error) {
 	return info, nil
 }
 
-func (n *Node) writeReadyFile() error {
-	info := ReadyInfo{PeerID: n.peerID, ListenAddrs: n.advertisedAddrs()}
+func (n *Node) writeReadyFile(resumed bool) error {
+	info := ReadyInfo{PeerID: n.peerID, ListenAddrs: n.advertisedAddrs(), Resumed: resumed}
 	data, err := json.Marshal(info)
 	if err != nil {
 		return err
@@ -1881,6 +1939,28 @@ func (n *Node) handleAdd(ctx context.Context, leaderPeerID string) (string, erro
 	}
 
 	if leaderPeerID == "" {
+		// The same wait the join branch below does, for the same reason and
+		// with the same permanence: whatever address advertisedAddrs picks
+		// here is written into raft's persisted configuration, and nothing
+		// later revises it. A node that bootstraps before its relay
+		// reservation lands therefore names itself by a NAT'd or loopback
+		// address forever, and no peer can dial it -- it can still reach
+		// out, so replication it initiates works and the cluster looks
+		// healthy, while every inbound dial (a follower forwarding a write
+		// to its leader, most visibly) fails with "all dials failed".
+		//
+		// Found on this project's two-device Android rig, where the leader
+		// is an app that solo-bootstraps seconds after launch, long before
+		// AutoRelay has reserved anything: it recorded
+		// /ip4/127.0.0.1/tcp/<port> as its own raft address and the second
+		// device's forwarded writes could only ever succeed by reusing a
+		// connection the leader itself had opened.
+		//
+		// Costs nothing where there is nothing to wait for: awaitRelayAddr
+		// returns immediately when no relay candidates are configured,
+		// which is every desktop node that isn't behind NAT.
+		n.awaitRelayAddr(relayAddrAwaitTimeout)
+
 		cfg := raft.Configuration{
 			Servers: []raft.Server{{
 				Suffrage: raft.Voter,
@@ -2002,7 +2082,7 @@ func (n *Node) join(ctx context.Context, leaderAddr string, suffrage raft.Server
 	// slow, and every subsequent read from that follower failed
 	// indefinitely as a result -- not a timing issue a retry budget on
 	// the read side could ever paper over.
-	n.awaitRelayAddr(45 * time.Second)
+	n.awaitRelayAddr(relayAddrAwaitTimeout)
 
 	maddr, err := multiaddr.NewMultiaddr(leaderAddr)
 	if err != nil {

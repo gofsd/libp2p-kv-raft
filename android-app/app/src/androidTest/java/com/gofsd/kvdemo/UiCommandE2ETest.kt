@@ -374,6 +374,21 @@ return {fields = {status = "ok", child_instance = id}, narrative = "hello from o
         const val SESSION_READY_POLL_MS = 1_000L
 
         /**
+         * How long each [ensureLuaTarget] step is retried while raft cannot commit.
+         *
+         * Generous because of what it is actually waiting for. This device's cluster has two
+         * voters -- itself and the scanning device, which joins it -- and a majority of two is
+         * two, so it can commit nothing at all until the other device is up (the one cluster
+         * size with worse availability than running alone, see README's own warning). The
+         * harness starts this device first by design, so its first write genuinely has to
+         * outwait the other device's whole start-up, relay reservation included. Once the
+         * first step lands the rest follow immediately, so this budget only ever costs
+         * wall-clock while the cluster is short of quorum.
+         */
+        const val LUA_SETUP_TIMEOUT_MS = 150_000L
+        const val LUA_SETUP_POLL_MS = 2_000L
+
+        /**
          * How many times [awaitSession] re-attempts a join before starting the batch anyway, and
          * how long it waits between them. Sized against what it is retrying: a relay that refused
          * the circuit on resource limits, which frees up on the order of minutes, not seconds --
@@ -1124,10 +1139,29 @@ return {fields = {status = "ok", child_instance = id}, narrative = "hello from o
         // cases never come first.
         awaitSessionReady(opticalTag)
 
+        // Each step is retried until it stops failing, because a session
+        // being *up* is not the same as its raft having elected a leader:
+        // awaitSessionReady polls a read, and these are writes. Seen live
+        // -- "put group: not leader and no leader known" moments after a
+        // solo bootstrap, which becomes a working leader a second or two
+        // later. Every step here is an idempotent put, so retrying one is
+        // free; giving up after the deadline still lets each case report
+        // its own real result rather than dying in the preamble.
         fun step(category: String, name: String, params: List<String>) {
             val spec = allCommands.first { it.category == category && it.name == name }
-            val outcome = runCatching { runBlocking { CommandExecutor.execute(spec, params) } }
-            Log.i(TAG, "$opticalTag lua setup ${spec.label} -> ${outcome.getOrNull() ?: outcome.exceptionOrNull()?.message}")
+            val deadline = System.currentTimeMillis() + LUA_SETUP_TIMEOUT_MS
+            var last: String? = null
+            while (System.currentTimeMillis() < deadline) {
+                val outcome = runCatching { runBlocking { CommandExecutor.execute(spec, params) } }
+                val text = outcome.getOrNull() ?: outcome.exceptionOrNull()?.message.orEmpty()
+                if (!text.contains("FAILED") && outcome.isSuccess) {
+                    Log.i(TAG, "$opticalTag lua setup ${spec.label} -> ok")
+                    return
+                }
+                last = text
+                Thread.sleep(LUA_SETUP_POLL_MS)
+            }
+            Log.w(TAG, "$opticalTag lua setup ${spec.label} never succeeded: $last")
         }
 
         step("Group", "CreateGroup", listOf(OPTICAL_LUA_GROUP_ID, "Optical lua runners", "true"))

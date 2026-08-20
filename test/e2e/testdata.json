@@ -2307,6 +2307,26 @@
       "order": 27
     },
     {
+      "case_id": "lua_put_stores_a_script",
+      "generate": {
+        "target": "run",
+        "category": "Lua",
+        "name": "Put",
+        "params": [
+          "optical-lua-tiny",
+          "Tiny",
+          "kv.log(\"hello from tiny\")\nreturn \"tiny ok\""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 30000,
+      "timeout_ms": 25000,
+      "order": 28
+    },
+    {
       "case_id": "lua_lastlog_names_the_child_run",
       "generate": {
         "target": "run",
@@ -2320,7 +2340,7 @@
         "kind": "run",
         "result": "contains:child_instance"
       },
-      "order": 28
+      "order": 29
     },
     {
       "case_id": "lua_run_outer_fails",
@@ -2339,7 +2359,7 @@
         "verify_on_device_a": "hello from outer failed",
         "verify_on_device_b": "Lua[optical-lua-outer] hello from outer failed"
       },
-      "order": 29
+      "order": 30
     },
     {
       "case_id": "lua_settle_after_failure",
@@ -2357,7 +2377,7 @@
       },
       "hold_millis": 25000,
       "timeout_ms": 22000,
-      "order": 30
+      "order": 31
     },
     {
       "case_id": "lua_lastlog_has_the_inner_error",
@@ -2373,31 +2393,11 @@
         "kind": "run",
         "result": "contains:inner refused: e2e-fail"
       },
-      "order": 31
-    },
-    {
-      "case_id": "lua_put_stores_a_script",
-      "generate": {
-        "target": "run",
-        "category": "Lua",
-        "name": "Put",
-        "params": [
-          "optical-lua-tiny",
-          "Tiny",
-          "kv.log(\"hello from tiny\")\nreturn \"tiny ok\""
-        ]
-      },
-      "expect": {
-        "kind": "run",
-        "result": "succeeded"
-      },
-      "hold_millis": 30000,
-      "timeout_ms": 25000,
       "order": 32
     }
   ],
   "android_optical_scan_result": {
-    "ran_at": "2026-08-19T21:23:46.787272595+03:00",
+    "ran_at": "2026-08-20T18:20:25.375053554+03:00",
     "status": 0,
     "cases": [
       {
@@ -2871,8 +2871,45 @@
       {
         "case_id": "cron_delete",
         "pass": true
+      },
+      {
+        "case_id": "lua_list_shows_the_seeded_scripts",
+        "pass": true
+      },
+      {
+        "case_id": "lua_run_outer_succeeds",
+        "pass": true
+      },
+      {
+        "case_id": "lua_settle_after_success",
+        "pass": true
+      },
+      {
+        "case_id": "lua_lastlog_has_the_inner_line",
+        "pass": true
+      },
+      {
+        "case_id": "lua_put_stores_a_script",
+        "pass": true
+      },
+      {
+        "case_id": "lua_lastlog_names_the_child_run",
+        "pass": true
+      },
+      {
+        "case_id": "lua_run_outer_fails",
+        "pass": true
+      },
+      {
+        "case_id": "lua_settle_after_failure",
+        "pass": true
+      },
+      {
+        "case_id": "lua_lastlog_has_the_inner_error",
+        "pass": true
       }
     ],
-    "attempts": 1
+    "attempts": 2,
+    "stalls": 18
   }
 }

@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -298,7 +299,10 @@ func start(dataDirRoot string, resolveIdentity func(dataDir string) (keyPath, pe
 		return "", err
 	}
 	log.Printf("kvmobile: SELFHEAL: starting solo bootstrap to request public access")
-	if _, soloErr := StartSolo(dataDirRoot); soloErr != nil {
+	// startSolo, not StartSolo: this path already holds startSeqMu, and
+	// the exported wrapper takes it (see solo.go).
+	soloID, soloErr := startSolo(dataDirRoot, 0, ensureIdentity)
+	if soloErr != nil {
 		log.Printf("kvmobile: SELFHEAL: StartSolo failed: %v", soloErr)
 		return "", err
 	}
@@ -308,6 +312,20 @@ func start(dataDirRoot string, resolveIdentity func(dataDir string) (keyPath, pe
 		log.Printf("kvmobile: SELFHEAL: RequestPublicAccess failed: %v", paErr)
 	} else {
 		log.Printf("kvmobile: SELFHEAL: RequestPublicAccess succeeded")
+	}
+	// A device whose baked leader is itself has nothing to join: the
+	// solo bootstrap just done *is* the terminal state, and tearing it
+	// down to retry the same self-join only fails again -- leaving the
+	// app with no session at all, and (when a daemon cancelled during
+	// startup does not exit promptly) a locked store that poisons every
+	// later attempt for the life of the process.
+	//
+	// This is the optical rig's device A exactly: its AAR names its own
+	// peer id as the leader, so `Start` failed with "dial to self
+	// attempted" on every launch and thrashed through this path.
+	if soloID != "" && soloID == leaderPeerID() {
+		log.Printf("kvmobile: SELFHEAL: the configured leader is this device -- staying solo")
+		return soloID, nil
 	}
 	_ = Stop()
 	if paErr != nil {
@@ -321,6 +339,20 @@ func start(dataDirRoot string, resolveIdentity func(dataDir string) (keyPath, pe
 		log.Printf("kvmobile: SELFHEAL: retry failed: %v", err2)
 	}
 	return "", err
+}
+
+// leaderPeerID is the peer id baked into leaderMultiaddr, or "" if there
+// is none. The id is whatever follows the last "/p2p/" -- last, not first,
+// because a relayed leader address carries two of them
+// (/…/p2p/<relay>/p2p-circuit/p2p/<leader>) and it is the far end that
+// names the leader.
+func leaderPeerID() string {
+	const marker = "/p2p/"
+	idx := strings.LastIndex(leaderMultiaddr, marker)
+	if idx < 0 {
+		return ""
+	}
+	return leaderMultiaddr[idx+len(marker):]
 }
 
 // startOnce is start's single-attempt body -- see start's doc comment for
@@ -419,6 +451,15 @@ func startAgainst(dataDirRoot, leaderAddr, suffrage string, resolveIdentity func
 		return "", fmt.Errorf("kvmobile: start follower: %w", err)
 	}
 
+	// Whether this node already belonged to the cluster before this
+	// process started -- see startSolo's isAlreadyBootstrappedErr for the
+	// same idea on the bootstrap side. Read best-effort: a ready file that
+	// will not parse says nothing about membership, and the strictest
+	// reading ("not resumed") is also the old behaviour, so nothing gets
+	// quietly more permissive because a file was unreadable.
+	ready, readyErr := daemon.ReadReadyFile(clusterDir)
+	resumed := readyErr == nil && ready.Resumed
+
 	// Best-effort: register id -> clusterDir in the local registry so
 	// pkg/ipc.Call/CallRaw's tokenForPeer (pkg/ipc/token.go) can resolve
 	// this node's local-IPC token when the desktop transport (ipc.go)
@@ -447,8 +488,28 @@ func startAgainst(dataDirRoot, leaderAddr, suffrage string, resolveIdentity func
 		addValue += " learner"
 	}
 	if _, err := sess.Add(addCtx, addValue); err != nil {
-		abortRun(cancel, errC)
-		return "", fmt.Errorf("kvmobile: join cluster: %w", err)
+		// A node that resumed is already a member: daemon.Run called
+		// initRaft on its persisted state before it ever wrote the ready
+		// file this read, so it is operational right now and this Add was
+		// only re-announcing it. Refusing that is not a reason to destroy
+		// it -- and on this project's own optical rig it was the whole
+		// failure. Two devices, A led and B joined; B is a voter, so A
+		// alone is one of two and can elect nobody, and answers B's join
+		// with "ERR: not leader". B then tore down the very node whose
+		// return would have restored the quorum, on every launch,
+		// permanently: the pair could never come back up together once
+		// both had been down at once. Staying up instead lets raft do what
+		// it already knows how to do -- the two reconnect, elect, and the
+		// cluster is live again with no join at all.
+		//
+		// A node with nothing on disk still fails here, because for it the
+		// join is not a re-announcement but the only thing that would give
+		// it a role at all.
+		if !resumed {
+			abortRun(cancel, errC)
+			return "", fmt.Errorf("kvmobile: join cluster: %w", err)
+		}
+		log.Printf("kvmobile: re-announcing to %s was refused (%v) -- staying up, this node already belongs to the cluster", remotePID, err)
 	}
 
 	session = sess
@@ -1102,6 +1163,9 @@ var (
 	watchMu     sync.Mutex
 	watchCancel context.CancelFunc
 	watchDone   chan struct{}
+	// watchInCallback is true while the watch loop is inside
+	// cb.OnNotification -- see stopWatchExecuteLocked.
+	watchInCallback atomic.Bool
 )
 
 // WatchExecute starts a background loop that drains this device's
@@ -1135,7 +1199,9 @@ func WatchExecute(cb ExecuteCallback) error {
 
 // StopWatchExecute stops a running WatchExecute loop, if any, and waits
 // for it to actually exit before returning. Safe to call when nothing is
-// running (a no-op).
+// running (a no-op), and safe to call from inside OnNotification -- see
+// StopWatchCommandLog, whose doc comment explains the same re-entrant case
+// in full.
 func StopWatchExecute() {
 	watchMu.Lock()
 	defer watchMu.Unlock()
@@ -1148,7 +1214,12 @@ func stopWatchExecuteLocked() {
 		return
 	}
 	watchCancel()
-	<-watchDone
+	// Skipped when the loop's own goroutine is what is asking to stop:
+	// waiting for it would be waiting on the caller. Same hazard, and same
+	// reasoning, as stopCommandLogWatchLocked's -- see there.
+	if !watchInCallback.Load() {
+		<-watchDone
+	}
 	watchCancel = nil
 	watchDone = nil
 }
@@ -1195,7 +1266,9 @@ func runExecuteWatch(ctx context.Context, done chan struct{}, cb ExecuteCallback
 			continue
 		}
 
+		watchInCallback.Store(true)
 		cb.OnNotification(sender, string(payload))
+		watchInCallback.Store(false)
 		// Loop again immediately (no wait) to drain any backlog quickly.
 	}
 }

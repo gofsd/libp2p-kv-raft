@@ -36,6 +36,8 @@ func isAlreadyBootstrappedErr(err error) bool {
 // Like Start, calling this again once already running (solo or otherwise)
 // is a no-op returning the existing peer id.
 func StartSolo(dataDir string) (string, error) {
+	startSeqMu.Lock()
+	defer startSeqMu.Unlock()
 	return startSolo(dataDir, 0, ensureIdentity)
 }
 
@@ -43,6 +45,8 @@ func StartSolo(dataDir string) (string, error) {
 // (see StartWithKey) instead of always falling back to ensureIdentity's
 // persisted-or-generated-or-build-seeded key.
 func StartSoloWithKey(dataDir, keyHex string) (string, error) {
+	startSeqMu.Lock()
+	defer startSeqMu.Unlock()
 	return startSolo(dataDir, 0, func(dataDir string) (keyPath, peerID string, err error) {
 		return importIdentity(dataDir, keyHex)
 	})
@@ -62,11 +66,28 @@ func StartSoloWithKey(dataDir, keyHex string) (string, error) {
 // a new, different value on each such resume, silently invalidating any
 // address captured before it, hence this dedicated port-pinning variant.
 func StartSoloWithKeyAndPort(dataDir, keyHex string, port int) (string, error) {
+	startSeqMu.Lock()
+	defer startSeqMu.Unlock()
 	return startSolo(dataDir, port, func(dataDir string) (keyPath, peerID string, err error) {
 		return importIdentity(dataDir, keyHex)
 	})
 }
 
+// The exported StartSolo* wrappers above take startSeqMu; startSolo itself
+// does not, so that start()'s own self-heal path -- which already holds it
+// -- can call this directly without deadlocking.
+//
+// That lock is not decoration here. It was added for Start's sequence
+// (see startSeqMu's doc comment) and solo bootstrap was left outside it,
+// which left one door into the same sequence unguarded: an app calling
+// Start while a harness calls StartSolo ~200ms later runs two startup
+// sequences over one data directory. Found on the optical rig, where the
+// app's own AppRoot start and the instrumented preamble do exactly that:
+// one daemon was cancelled, did not exit within its minute, and every
+// retry then failed with "ready.json: no such file or directory" for the
+// life of the process -- the same poisoning, arriving through the one
+// entry point that did not take the lock.
+//
 // startSolo is startAgainst's solo-bootstrap counterpart: same in-process
 // daemon.Run/waitForReady/shmclient.Open dance, but calls sess.Add with an
 // empty leaderPeerID -- pkg/daemon's handleAdd treats that as "bootstrap a

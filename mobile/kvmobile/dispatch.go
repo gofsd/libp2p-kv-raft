@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/logrecord"
@@ -589,11 +590,16 @@ const watchCommandLogPollInterval = 1500 * time.Millisecond
 type commandLogWatch struct {
 	cancel context.CancelFunc
 	done   chan struct{}
+	// inCallback is true while this watch's own goroutine is inside
+	// cb.OnRecords -- see stopCommandLogWatchLocked, which must not wait
+	// for a goroutine that is currently running the code doing the
+	// waiting.
+	inCallback atomic.Bool
 }
 
 var (
 	commandLogWatchMu sync.Mutex
-	commandLogWatches = map[string]commandLogWatch{}
+	commandLogWatches = map[string]*commandLogWatch{}
 )
 
 // WatchCommandLog polls QueryCommandLog(instanceID, ...) on a timer and
@@ -626,16 +632,22 @@ func WatchCommandLog(instanceID string, cb LogCallback) error {
 	stopCommandLogWatchLocked(instanceID)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	commandLogWatches[instanceID] = commandLogWatch{cancel: cancel, done: done}
+	w := &commandLogWatch{cancel: cancel, done: make(chan struct{})}
+	commandLogWatches[instanceID] = w
 
-	go runCommandLogWatch(ctx, done, instanceID, cb)
+	go runCommandLogWatch(ctx, w, instanceID, cb)
 	return nil
 }
 
 // StopWatchCommandLog stops instanceID's watcher, if any, and waits for
 // it to actually exit before returning. Safe to call when nothing is
 // running for it (a no-op).
+//
+// Also safe to call from inside OnRecords, which is the natural place to
+// call it from: the callback is what sees the record saying the run is
+// over. That case cannot wait for the loop to exit -- the loop is the
+// caller -- so it only asks it to stop and returns; the loop then finishes
+// the callback and exits on its own. See stopCommandLogWatchLocked.
 func StopWatchCommandLog(instanceID string) {
 	commandLogWatchMu.Lock()
 	defer commandLogWatchMu.Unlock()
@@ -649,13 +661,31 @@ func stopCommandLogWatchLocked(instanceID string) {
 		return
 	}
 	w.cancel()
-	<-w.done
+	// Waiting here is a deadlock whenever the goroutine that would close
+	// done is the one asking to stop -- a callback calling
+	// StopWatchCommandLog, which is exactly how a watcher for a *finite*
+	// run ends. It cost this project its whole Android Lua path: the
+	// second `Lua: Run` in an app session hung forever, because the first
+	// run's watcher had stopped itself from inside its callback and left
+	// that thread parked on its own done channel, still holding both this
+	// mutex and the app-side lock its callback was called under.
+	//
+	// The wait is worth keeping for every other caller (it is what makes
+	// "stopped" mean "no more callbacks"), so only the re-entrant case
+	// skips it. A concurrent stop from a *different* thread while a
+	// callback happens to be running also skips it and so may return
+	// while one last callback finishes -- accepted deliberately: a late
+	// callback is a much smaller problem than a hang, and a caller that
+	// needs the strict guarantee is not one calling from the callback.
+	if !w.inCallback.Load() {
+		<-w.done
+	}
 	delete(commandLogWatches, instanceID)
 }
 
 // runCommandLogWatch is WatchCommandLog's background loop body.
-func runCommandLogWatch(ctx context.Context, done chan struct{}, instanceID string, cb LogCallback) {
-	defer close(done)
+func runCommandLogWatch(ctx context.Context, w *commandLogWatch, instanceID string, cb LogCallback) {
+	defer close(w.done)
 
 	// since tracks the timestamp just past the newest record already
 	// delivered to cb, so each round only asks for what's new.
@@ -680,7 +710,9 @@ func runCommandLogWatch(ctx context.Context, done chan struct{}, instanceID stri
 			continue
 		}
 
+		w.inCallback.Store(true)
 		cb.OnRecords(out)
+		w.inCallback.Store(false)
 		since = records[len(records)-1].Timestamp.Add(time.Nanosecond)
 	}
 }
