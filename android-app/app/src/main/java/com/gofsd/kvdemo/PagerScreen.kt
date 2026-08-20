@@ -80,6 +80,8 @@ fun CommandsPagerScreen(
     onCommandClick: (name: String) -> Unit,
     onOpenCommandsPicker: () -> Unit,
     onOpenGroupsPicker: () -> Unit,
+    onOpenLuaEditor: () -> Unit,
+    onOpenLuaRun: (commandID: String) -> Unit,
     onRepeat: (LogEntry) -> Unit,
 ) {
     val pagerState = rememberPagerState(initialPage = currentPage) { 2 }
@@ -121,6 +123,8 @@ fun CommandsPagerScreen(
                     onCommandClick = onCommandClick,
                     onOpenCommandsPicker = onOpenCommandsPicker,
                     onOpenGroupsPicker = onOpenGroupsPicker,
+                    onOpenLuaEditor = onOpenLuaEditor,
+                    onOpenLuaRun = onOpenLuaRun,
                 )
                 1 -> LogScreen(
                     focusedLogId = focusedLogId,

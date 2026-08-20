@@ -238,6 +238,24 @@ func main() {
 		cmdCronFires(os.Args[2:])
 	case "cronnext":
 		cmdCronNext(os.Args[2:])
+	case "luaput":
+		cmdLuaPut(os.Args[2:])
+	case "luaget":
+		cmdLuaGet(os.Args[2:])
+	case "lualist":
+		cmdLuaList(os.Args[2:])
+	case "luahistory":
+		cmdLuaHistory(os.Args[2:])
+	case "luadelete":
+		cmdLuaDelete(os.Args[2:])
+	case "luarun":
+		cmdLuaRun(os.Args[2:])
+	case "lualogs":
+		cmdLuaLogs(os.Args[2:])
+	case "lualastlog":
+		cmdLuaLastLog(os.Args[2:])
+	case "luaserve":
+		cmdLuaServe(os.Args[2:])
 	case "addrelaynode":
 		cmdAddRelayNode(os.Args[2:])
 	case "confirmrelaynode":
@@ -345,6 +363,15 @@ func usage() {
   kvctl-cli crondisable <id>
   kvctl-cli cronfires [scheduleID] [limit]
   kvctl-cli cronnext <spec> [count] [location]        (needs no daemon)
+  kvctl-cli luaput <id> <name> <groupID|""> <file.lua>  (registering is voter-gated)
+  kvctl-cli luaget <id>
+  kvctl-cli lualist
+  kvctl-cli luahistory <id>
+  kvctl-cli luadelete <id>
+  kvctl-cli luarun <commandID> [inputsJSON]           (submits, then follows the log)
+  kvctl-cli lualogs <instanceID>
+  kvctl-cli lualastlog <commandID>
+  kvctl-cli luaserve [interval] [concurrency]         (runs on the device the commands target)
   kvctl-cli getownaddr
   kvctl-cli version
   kvctl-cli createexecinvite <commandID> <inputsJSON> [-ttl seconds]

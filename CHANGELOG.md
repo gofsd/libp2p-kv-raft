@@ -9,6 +9,19 @@ tracks *changes*, not a full feature description).
 ## [Unreleased]
 
 ### Added
+- **`examples/luacmd`**, a worked example letting a command's body be a Lua script
+  ([gopher-lua](https://github.com/yuin/gopher-lua)) instead of Go: the source is a
+  `pkg/logrecord` append, the command is an ordinary catalog `Command` whose spec names the script
+  and pins its SHA-256, and a run is an ordinary `SubmitCommand` dispatch. Adds no wire byte, no
+  `kvfsm` change and no new permission concept — a Lua command is permissioned by the group it is
+  linked to, exactly like every other command. Driven by `mage luaput`/`luaget`/`lualist`/
+  `luahistory`/`luadelete`/`luarun`/`lualogs`/`lualastlog`/`luaserve`, the identical `kvctl-cli
+  lua*` subcommands, and `mobile/kvmobile`'s `Lua*` bindings; `android-app` gains a Lua editor
+  screen and streams a run's lines into its Activity Log as they happen. See
+  `examples/luacmd/README.md` for the design, the sandbox's real limits (no memory cap, no
+  instruction count), and why the package needs its own dispatch loop rather than
+  `RunCommandDispatcher` — a script that dispatches a command its own device serves deadlocks a
+  synchronous dispatcher, which the shared one is.
 - **`mage backup <peerID> <destArchive>` / `mage restore <archive> <destDir>`**, a `tar.gz` of a
   stopped node's entire data directory (identity key, sqlite store, raft log/snapshots) and its
   exact inverse (`pkg/kvctl/backup.go`). `restore` never touches the registry — extracting into the

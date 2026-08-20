@@ -436,26 +436,9 @@ func ListCommands() (string, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
-	lo, hi := shmevent.CommandKeyBounds()
-	commands := []Command{}
-	for {
-		key, value, ok, err := sess.ListRange(ctx, lo, hi)
-		if err != nil {
-			return "", fmt.Errorf("kvmobile: list commands: %w", err)
-		}
-		if !ok {
-			break
-		}
-		if len(key) < systemKeyIDOffset {
-			return "", fmt.Errorf("kvmobile: malformed command key %x", key)
-		}
-		id := string(key[systemKeyIDOffset:])
-		name, targetPeerID, spec, err := shmevent.DecodeCommandPayloadFull(value)
-		if err != nil {
-			return "", fmt.Errorf("kvmobile: list commands: decode %s: %w", id, err)
-		}
-		commands = append(commands, Command{ID: id, Name: name, TargetPeerID: string(targetPeerID), Spec: string(spec)})
-		lo = append(append([]byte{}, key...), 0x00)
+	commands, err := listCommands(ctx, sess)
+	if err != nil {
+		return "", err
 	}
 
 	out, err := json.Marshal(commands)
@@ -463,6 +446,33 @@ func ListCommands() (string, error) {
 		return "", fmt.Errorf("kvmobile: encode commands: %w", err)
 	}
 	return string(out), nil
+}
+
+// listCommands is ListCommands' scan, typed -- for an in-process caller
+// (lua.go's runner adapter) that wants the records themselves rather than
+// the JSON a gomobile binding has to hand back.
+func listCommands(ctx context.Context, sess *shmclient.Session) ([]Command, error) {
+	lo, hi := shmevent.CommandKeyBounds()
+	commands := []Command{}
+	for {
+		key, value, ok, err := sess.ListRange(ctx, lo, hi)
+		if err != nil {
+			return nil, fmt.Errorf("kvmobile: list commands: %w", err)
+		}
+		if !ok {
+			return commands, nil
+		}
+		if len(key) < systemKeyIDOffset {
+			return nil, fmt.Errorf("kvmobile: malformed command key %x", key)
+		}
+		id := string(key[systemKeyIDOffset:])
+		name, targetPeerID, spec, err := shmevent.DecodeCommandPayloadFull(value)
+		if err != nil {
+			return nil, fmt.Errorf("kvmobile: list commands: decode %s: %w", id, err)
+		}
+		commands = append(commands, Command{ID: id, Name: name, TargetPeerID: string(targetPeerID), Spec: string(spec)})
+		lo = append(append([]byte{}, key...), 0x00)
+	}
 }
 
 // AddCommandToGroup links commandID to groupID -- peers added to groupID

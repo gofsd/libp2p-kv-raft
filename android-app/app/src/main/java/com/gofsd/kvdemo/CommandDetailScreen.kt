@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -130,12 +131,25 @@ fun CommandDetailScreen(
 
         Column(modifier = Modifier.testTag("paramsContainer")) {
             spec.params.forEachIndexed { index, hint ->
+                // A multiline param (Lua source, in practice -- see
+                // CommandSpec.multilineParams) gets a tall monospace field: typing a
+                // script into a one-line field that scrolls sideways is unusable, and
+                // Enter has to insert a newline rather than move to the next field.
+                val multiline = spec.isMultiline(index)
                 OutlinedTextField(
                     value = paramValues[index],
                     onValueChange = { paramValues[index] = it },
                     label = { Text(hint) },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                    singleLine = !multiline,
+                    minLines = if (multiline) 8 else 1,
+                    textStyle = if (multiline) {
+                        LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace)
+                    } else {
+                        LocalTextStyle.current
+                    },
+                    keyboardOptions = KeyboardOptions(
+                        imeAction = if (multiline) ImeAction.Default else ImeAction.Next,
+                    ),
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(vertical = 4.dp)

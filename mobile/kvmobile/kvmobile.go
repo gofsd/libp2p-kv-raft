@@ -972,22 +972,9 @@ func LogQuery(kind, unitID, since, until, limit string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
 
-	lo, hi := logrecord.ScanBounds(kind, unitID, start, end)
-	records := []logrecord.Record{}
-	for n <= 0 || len(records) < n {
-		key, value, ok, err := sess.ListRange(ctx, lo, hi)
-		if err != nil {
-			return "", fmt.Errorf("kvmobile: log query: %w", err)
-		}
-		if !ok {
-			break
-		}
-		rec, err := logrecord.Decode(value)
-		if err != nil {
-			return "", fmt.Errorf("kvmobile: log query: decode record: %w", err)
-		}
-		records = append(records, rec)
-		lo = append(append([]byte{}, key...), 0x00)
+	records, err := logQuery(ctx, sess, kind, unitID, start, end, n)
+	if err != nil {
+		return "", err
 	}
 
 	out, err := json.Marshal(records)
@@ -995,6 +982,30 @@ func LogQuery(kind, unitID, since, until, limit string) (string, error) {
 		return "", fmt.Errorf("kvmobile: encode log query result: %w", err)
 	}
 	return string(out), nil
+}
+
+// logQuery is LogQuery's scan, typed -- for an in-process caller (lua.go's
+// runner adapter) that wants the records themselves rather than the JSON a
+// gomobile binding has to hand back. limit <= 0 means every record.
+func logQuery(ctx context.Context, sess *shmclient.Session, kind, unitID string, start, end time.Time, limit int) ([]logrecord.Record, error) {
+	lo, hi := logrecord.ScanBounds(kind, unitID, start, end)
+	records := []logrecord.Record{}
+	for limit <= 0 || len(records) < limit {
+		key, value, ok, err := sess.ListRange(ctx, lo, hi)
+		if err != nil {
+			return nil, fmt.Errorf("kvmobile: log query: %w", err)
+		}
+		if !ok {
+			break
+		}
+		rec, err := logrecord.Decode(value)
+		if err != nil {
+			return nil, fmt.Errorf("kvmobile: log query: decode record: %w", err)
+		}
+		records = append(records, rec)
+		lo = append(append([]byte{}, key...), 0x00)
+	}
+	return records, nil
 }
 
 // Execute sends value as a direct peer-to-peer EventExecute notification

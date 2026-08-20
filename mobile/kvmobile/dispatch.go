@@ -282,21 +282,9 @@ func ListCommandRequests(commandID string) (string, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
-	ids, err := listUnitIDs(ctx, sess, commandRequestLogKind(commandID))
+	requests, err := listCommandRequests(ctx, sess, commandID)
 	if err != nil {
-		return "", fmt.Errorf("kvmobile: list command requests: %w", err)
-	}
-
-	requests := []CommandRequest{}
-	for _, id := range ids {
-		h, err := scanRevisions(ctx, sess, commandRequestLogKind(commandID), id)
-		if err != nil {
-			return "", fmt.Errorf("kvmobile: list command requests: %w", err)
-		}
-		if !h.found {
-			continue
-		}
-		requests = append(requests, recordToCommandRequest(h))
+		return "", err
 	}
 
 	out, err := json.Marshal(requests)
@@ -304,6 +292,29 @@ func ListCommandRequests(commandID string) (string, error) {
 		return "", fmt.Errorf("kvmobile: encode command requests: %w", err)
 	}
 	return string(out), nil
+}
+
+// listCommandRequests is ListCommandRequests' scan, typed -- for an
+// in-process caller (lua.go's runner adapter) that wants the records
+// themselves rather than the JSON a gomobile binding has to hand back.
+func listCommandRequests(ctx context.Context, sess *shmclient.Session, commandID string) ([]CommandRequest, error) {
+	ids, err := listUnitIDs(ctx, sess, commandRequestLogKind(commandID))
+	if err != nil {
+		return nil, fmt.Errorf("kvmobile: list command requests: %w", err)
+	}
+
+	requests := []CommandRequest{}
+	for _, id := range ids {
+		h, err := scanRevisions(ctx, sess, commandRequestLogKind(commandID), id)
+		if err != nil {
+			return nil, fmt.Errorf("kvmobile: list command requests: %w", err)
+		}
+		if !h.found {
+			continue
+		}
+		requests = append(requests, recordToCommandRequest(h))
+	}
+	return requests, nil
 }
 
 // maxExecutionsByPeer bounds ListExecutionsByPeer's result to the 200

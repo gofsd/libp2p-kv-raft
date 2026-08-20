@@ -2239,6 +2239,161 @@
         "result": "succeeded"
       },
       "order": 23
+    },
+    {
+      "case_id": "lua_list_shows_the_seeded_scripts",
+      "generate": {
+        "target": "run",
+        "category": "Lua",
+        "name": "List"
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:optical-lua-outer"
+      },
+      "order": 24
+    },
+    {
+      "case_id": "lua_run_outer_succeeds",
+      "generate": {
+        "target": "run",
+        "category": "Lua",
+        "name": "Run",
+        "params": [
+          "optical-lua-outer",
+          "{\"who\":\"e2e-ok\",\"mode\":\"ok\"}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded",
+        "verify_on_device_a": "hello from outer end",
+        "verify_on_device_b": "Lua[optical-lua-outer] hello from outer end"
+      },
+      "order": 25
+    },
+    {
+      "case_id": "lua_settle_after_success",
+      "generate": {
+        "target": "run",
+        "category": "Test",
+        "name": "SleepMillis",
+        "params": [
+          "12000"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 25000,
+      "timeout_ms": 22000,
+      "order": 26
+    },
+    {
+      "case_id": "lua_lastlog_has_the_inner_line",
+      "generate": {
+        "target": "run",
+        "category": "Lua",
+        "name": "LastLog",
+        "params": [
+          "optical-lua-outer"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:hello from inner: e2e-ok"
+      },
+      "order": 27
+    },
+    {
+      "case_id": "lua_lastlog_names_the_child_run",
+      "generate": {
+        "target": "run",
+        "category": "Lua",
+        "name": "LastLog",
+        "params": [
+          "optical-lua-outer"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:child_instance"
+      },
+      "order": 28
+    },
+    {
+      "case_id": "lua_run_outer_fails",
+      "generate": {
+        "target": "run",
+        "category": "Lua",
+        "name": "Run",
+        "params": [
+          "optical-lua-outer",
+          "{\"who\":\"e2e-fail\",\"mode\":\"fail\"}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded",
+        "verify_on_device_a": "hello from outer failed",
+        "verify_on_device_b": "Lua[optical-lua-outer] hello from outer failed"
+      },
+      "order": 29
+    },
+    {
+      "case_id": "lua_settle_after_failure",
+      "generate": {
+        "target": "run",
+        "category": "Test",
+        "name": "SleepMillis",
+        "params": [
+          "12000"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 25000,
+      "timeout_ms": 22000,
+      "order": 30
+    },
+    {
+      "case_id": "lua_lastlog_has_the_inner_error",
+      "generate": {
+        "target": "run",
+        "category": "Lua",
+        "name": "LastLog",
+        "params": [
+          "optical-lua-outer"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:inner refused: e2e-fail"
+      },
+      "order": 31
+    },
+    {
+      "case_id": "lua_put_stores_a_script",
+      "generate": {
+        "target": "run",
+        "category": "Lua",
+        "name": "Put",
+        "params": [
+          "optical-lua-tiny",
+          "Tiny",
+          "kv.log(\"hello from tiny\")\nreturn \"tiny ok\""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "succeeded"
+      },
+      "hold_millis": 30000,
+      "timeout_ms": 25000,
+      "order": 32
     }
   ],
   "android_optical_scan_result": {

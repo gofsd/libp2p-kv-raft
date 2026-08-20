@@ -16,15 +16,37 @@ import org.json.JSONArray
 sealed class NavCode {
     data class Group(val category: String) : NavCode()
 
+    /**
+     * [Screen] points at one named screen that is not a category list -- currently only
+     * [LUA_EDITOR], since writing a script is the one thing in this app that cannot be
+     * carried in a code and so has to be reached rather than scanned (see [LuaEditorScreen]).
+     * Like [Group] it grants nothing and executes nothing: it moves the scanning device to a
+     * screen, and a person still does the work there.
+     */
+    data class Screen(val route: String) : NavCode()
+
     companion object {
         private const val GROUP_TAG = "com.gofsd.kvdemo.nav.group:"
+        private const val SCREEN_TAG = "com.gofsd.kvdemo.nav.screen:"
+
+        /** The one route [Screen] may name. Not an arbitrary string: a scanned code must not be
+         *  able to send a device to any route it likes. */
+        const val LUA_EDITOR = "luaEditor"
 
         fun encodeGroup(category: String): String = "$GROUP_TAG$category"
+
+        fun encodeScreen(route: String): String = "$SCREEN_TAG$route"
 
         fun decode(text: String): NavCode? = when {
             text.startsWith(GROUP_TAG) -> {
                 val category = text.removePrefix(GROUP_TAG)
                 if (category.isBlank()) null else Group(category)
+            }
+            text.startsWith(SCREEN_TAG) -> {
+                when (val route = text.removePrefix(SCREEN_TAG)) {
+                    LUA_EDITOR -> Screen(route)
+                    else -> null
+                }
             }
             else -> null
         }

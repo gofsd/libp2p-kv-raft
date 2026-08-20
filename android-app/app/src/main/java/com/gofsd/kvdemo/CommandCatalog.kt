@@ -7,6 +7,7 @@ import kvmobile.CronListener
 import kvmobile.ExecuteCallback
 import kvmobile.Kvmobile
 import kvmobile.LogCallback
+import kvmobile.LuaListener
 
 /**
  * One kvmobile call exposed in the command-runner UI (see
@@ -46,8 +47,13 @@ class CommandSpec(
     val run: (List<String>) -> String,
     val generateFromResultBase64: Boolean = false,
     val awaitAdmissionAfterGenerate: Boolean = false,
+    val multilineParams: Set<Int> = emptySet(),
 ) {
     val label: String get() = "$category: $name"
+
+    /** Whether param [index] holds something with newlines in it -- Lua source, in practice --
+     *  and so wants a tall field rather than [CommandDetailScreen]'s usual single line. */
+    fun isMultiline(index: Int): Boolean = index in multilineParams
 }
 
 private fun ok() = "OK"
@@ -79,9 +85,13 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
         params: List<String>,
         generateFromResultBase64: Boolean = false,
         awaitAdmissionAfterGenerate: Boolean = false,
+        multilineParams: Set<Int> = emptySet(),
         run: (List<String>) -> String,
     ) {
-        commands += CommandSpec(category, name, params, run, generateFromResultBase64, awaitAdmissionAfterGenerate)
+        commands += CommandSpec(
+            category, name, params, run,
+            generateFromResultBase64, awaitAdmissionAfterGenerate, multilineParams,
+        )
     }
 
     // Cluster lifecycle -- see README's "Follower on Android" section for
@@ -610,6 +620,87 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     }
     add("Cron", "StopServe", emptyList()) { Kvmobile.stopCronServe(); ok() }
     add("Cron", "Serving", emptyList()) { Kvmobile.cronServing().toString() }
+
+    // Lua -- examples/luacmd, a command whose body is a Lua script stored
+    // in the journal and registered in the catalog like any other command
+    // (see examples/luacmd's package doc).
+    //
+    // Three things are worth knowing before writing one.
+    //
+    // The first is that a script grants nothing. It runs on whichever
+    // device the command targets and submits under *that* device's peer
+    // id, and the FSM checks that peer against the command's groups
+    // exactly as it would for a tap on Dispatch: SubmitCommand. A command
+    // written in Lua is permissioned like every other command: by the
+    // group it is linked to -- public group, anybody; private group, its
+    // members.
+    //
+    // The second is that a Command pins the hash of the script it was
+    // registered with. Put alone stores a new revision but does not change
+    // what an existing command runs; that takes CreateCommand again, which
+    // only a raft voter may do. Which is the point: the journal is
+    // writable by anything local, the catalog is not.
+    //
+    // The third is Serve. A Lua command names one target device, and only
+    // that device should run a runner for it -- unlike Cron: Serve above,
+    // where more schedulers mean more redundancy, two runners for one
+    // command can both decide a request is unhandled. Serve is what makes
+    // this device actually execute the commands that name it; without one
+    // running somewhere, a submitted command simply stays pending.
+    add("Lua", "CreateCommand", listOf("id", "name", "groupID (blank ok)", "code"), multilineParams = setOf(3)) { a ->
+        Kvmobile.luaCreateCommand(a[0], a[1], a[2], a[3]); ok()
+    }
+    add("Lua", "Put", listOf("id", "name", "code"), multilineParams = setOf(2)) { a ->
+        Kvmobile.luaPut(a[0], a[1], a[2]); ok()
+    }
+    add("Lua", "Get", listOf("id")) { a -> Kvmobile.luaGet(a[0]) }
+    add("Lua", "List", emptyList()) { Kvmobile.luaList() }
+    add("Lua", "History", listOf("id")) { a -> Kvmobile.luaHistory(a[0]) }
+    add("Lua", "Delete", listOf("id")) { a -> Kvmobile.luaDelete(a[0]); ok() }
+    // Run submits and returns the instance id immediately: the script's own
+    // lines arrive afterwards, written to the replicated command log by
+    // whichever device is running it. So this also starts watching that
+    // instance (LuaWatch, an ordinary Dispatch: WatchCommandLog under the
+    // hood) -- which is what makes a Lua command read in the log list the
+    // way every other command does, lines appearing as they happen instead
+    // of one "submitted" row and then silence. The watch stops itself when
+    // the run records a terminal entry.
+    add("Lua", "Run", listOf("commandID", "inputsJSON (blank ok)")) { a ->
+        val instanceID = Kvmobile.luaRun(a[0], a[1])
+        LuaWatch.start(a[0], instanceID)
+        instanceID
+    }
+    add("Lua", "Logs", listOf("instanceID")) { a -> Kvmobile.luaLogs(a[0]) }
+    // LastLog answers "what did the most recent run of this command do",
+    // for when the instance id went to whoever submitted it and not to
+    // you -- which is every dispatch that came from another device.
+    add("Lua", "LastLog", listOf("commandID")) { a -> Kvmobile.luaLastLog(a[0]) }
+    add("Lua", "Serve", listOf("intervalSeconds (0=default)", "concurrency (0=default)")) { a ->
+        Kvmobile.luaServeWithListener(
+            a[0].toLongOrThrow("intervalSeconds"),
+            a[1].toLongOrThrow("concurrency"),
+            object : LuaListener {
+                override fun onStart(commandID: String, instanceID: String) {
+                    appendLog("Lua started $commandID/$instanceID")
+                }
+
+                override fun onLog(commandID: String, instanceID: String, narrative: String) {
+                    appendLog("Lua[$commandID] $narrative")
+                }
+
+                override fun onFinish(commandID: String, instanceID: String, status: String, narrative: String) {
+                    appendLog("Lua $status $commandID/$instanceID: $narrative")
+                }
+
+                override fun onError(message: String) {
+                    appendLog("Lua: $message")
+                }
+            },
+        )
+        "Serving -- runs of this device's Lua commands appear below as they happen"
+    }
+    add("Lua", "StopServe", emptyList()) { Kvmobile.stopLuaServe(); ok() }
+    add("Lua", "Serving", emptyList()) { Kvmobile.luaServing().toString() }
 
     // Raw escape hatch -- the same one E2ETest uses, see its own doc
     // comment and README's "Follower on Android" section. Generatable and

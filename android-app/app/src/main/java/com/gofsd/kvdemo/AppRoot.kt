@@ -213,6 +213,12 @@ fun AppRoot() {
                     delay(16)
                 }
                 when (navCode) {
+                    is NavCode.Screen -> {
+                        // A plain route push, unlike Group's state change below: the editor
+                        // is a screen, not a category.
+                        navController.navigate(navCode.route)
+                    }
+
                     is NavCode.Group -> {
                         // Entering a group is a plain state change (see PagerScreen.kt's
                         // currentGroup), not a nav-route push -- so the same "collapse back to
@@ -290,8 +296,25 @@ fun AppRoot() {
                             },
                             onOpenCommandsPicker = { navController.navigate("commandPicker") },
                             onOpenGroupsPicker = { navController.navigate("groupPicker") },
+                            onOpenLuaEditor = { navController.navigate(NavCode.LUA_EDITOR) },
+                            // A form with the command id already filled in, not an execution:
+                            // running still means generating a code and scanning it elsewhere.
+                            onOpenLuaRun = { commandID ->
+                                navController.navigate(commandDetailRoute("Lua", "Run", listOf(commandID, "")))
+                            },
                             onRepeat = { entry ->
                                 navController.navigate(commandDetailRoute(entry.category, entry.name, entry.args))
+                            },
+                        )
+                    }
+                    composable(NavCode.LUA_EDITOR) {
+                        LuaEditorScreen(
+                            onCreated = {
+                                focusedLogId = OutputLog.snapshot().lastOrNull()?.id
+                                navController.navigate("pager") {
+                                    popUpTo("pager")
+                                    launchSingleTop = true
+                                }
                             },
                         )
                     }

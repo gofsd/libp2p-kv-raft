@@ -315,9 +315,63 @@ class UiCommandE2ETest {
         const val OPTICAL_CRON_COMMAND_ID = "optical-cron"
         const val OPTICAL_CRON_GROUP_ID = "optical-cron-submitters"
 
+        /**
+         * The two Lua commands device A owns and answers for in the optical rig's Lua cases --
+         * see [ensureLuaTarget]. Device B is the one that *runs* them: B scans a "Lua: Run"
+         * RunCode naming "outer", and A's runner does the work.
+         *
+         * The split is the same one the Cron cases draw, for the same reason, and it buys one
+         * more thing here: "outer" dispatches "inner", which A also owns, so serving it exercises
+         * the case examples/luacmd exists for -- a script waiting on a command its own device
+         * serves. A synchronous dispatcher deadlocks on exactly that.
+         *
+         * Both ends are observable, which is why the run cases carry a verify_on_device_a *and* a
+         * verify_on_device_b: A's Lua listener records what it ran (CommandCatalog.kt's "Lua:
+         * Serve" spec), and B's own LuaWatch records the same run's lines as they replicate back,
+         * which is the live log a person watching B actually sees.
+         *
+         * The scripts are seeded here rather than scanned because a DataMatrix a camera reads
+         * across a desk holds a few hundred bytes and these do not fit -- lua_put_stores_a_script
+         * is the case that proves the optical authoring path, with a script small enough to ride
+         * in a code.
+         */
+        const val OPTICAL_LUA_OUTER_ID = "optical-lua-outer"
+        const val OPTICAL_LUA_INNER_ID = "optical-lua-inner"
+        const val OPTICAL_LUA_GROUP_ID = "optical-lua-runners"
+
+        /** The two scripts [ensureLuaTarget] registers. Kept here, not in testdata.json: a case
+         *  names the *command*, never its source. */
+        const val OPTICAL_LUA_INNER_SCRIPT = """
+local who = kv.inputs.who or "nobody"
+kv.log("hello from inner: " .. who)
+if kv.inputs.mode == "fail" then
+  error("inner refused: " .. who)
+end
+return {fields = {status = "ok"}, narrative = "hello from inner: " .. who}
+"""
+
+        const val OPTICAL_LUA_OUTER_SCRIPT = """
+kv.log("hello from outer begin")
+
+local id, res = kv.run("optical-lua-inner", kv.inputs, 60)
+for _, r in ipairs(kv.logs(id)) do
+  kv.log("inner[" .. id .. "] " .. (r.narrative or ""), {child_instance = id})
+end
+
+if res.status ~= "ok" then
+  return {fields = {status = "error", child_instance = id},
+          narrative = "hello from outer failed: " .. (res.narrative or "")}
+end
+return {fields = {status = "ok", child_instance = id}, narrative = "hello from outer end"}
+"""
+
         /** How long [awaitOwnCircuitAddr] waits for this device to publish a relay circuit address, and how often it re-checks. */
         const val CIRCUIT_ADDR_TIMEOUT_MS = 90_000L
         const val CIRCUIT_ADDR_POLL_MS = 2_000L
+
+        /** How long [awaitSessionReady] waits for this device's daemon to finish starting. */
+        const val SESSION_READY_TIMEOUT_MS = 60_000L
+        const val SESSION_READY_POLL_MS = 1_000L
 
         /**
          * How many times [awaitSession] re-attempts a join before starting the batch anyway, and
@@ -811,6 +865,15 @@ class UiCommandE2ETest {
                     ensureCronTarget(allCommandsForLookup, opticalTag)
                 }
 
+                // Lua cases need this device to own the two commands and to
+                // be running a runner for them -- same reasoning again, plus
+                // one specific to this feature: "outer" dispatches "inner",
+                // which this device also owns, so the runner has to be the
+                // one serving both for that chain to complete at all.
+                if (category == "Lua") {
+                    ensureLuaTarget(allCommandsForLookup, opticalTag)
+                }
+
                 // "{{selfAddr}}" and "{{journalLine}}" are the substitution tokens an optical
                 // case's own params can reference -- a Dispatch: DialSubmitCommand case naming its
                 // own generating device as the dial target, a Journal: Void case naming a line to
@@ -1028,6 +1091,72 @@ class UiCommandE2ETest {
         step("Group", "CreateGroup", listOf(OPTICAL_CRON_GROUP_ID, "Optical cron submitters", "true"))
         step("Links", "AddCommandToGroup", listOf(OPTICAL_CRON_COMMAND_ID, OPTICAL_CRON_GROUP_ID))
         step("Dispatch", "RunCommandDispatcher", listOf(OPTICAL_CRON_COMMAND_ID))
+    }
+
+    /** Whether [ensureLuaTarget] has already run in this instrumentation session. */
+    private var luaTargetReady = false
+
+    /**
+     * Makes this device the owner of the two Lua commands the optical rig's Lua cases run, once
+     * per instrumentation session: stores both scripts, registers them as commands targeting this
+     * device, links them to a group device B may submit against, and starts the runner.
+     *
+     * The runner is what these cases are actually measured against. Device B scans "Lua: Run",
+     * which returns an instance id the moment it is executed -- a command that will run and one
+     * that will sit pending forever look identical at that moment. What distinguishes them is the
+     * "Lua ok optical-lua-outer/...: hello from outer end" line CommandCatalog.kt's "Lua: Serve"
+     * listener records here when the run actually finishes.
+     *
+     * The group is created **public**, the same rig-only compromise [ensureJournalBook] and
+     * [ensureCronTarget] make: device B needs standing to submit, and a public group is one call
+     * here instead of a peer-id round trip between two devices.
+     */
+    private fun ensureLuaTarget(allCommands: List<CommandSpec>, opticalTag: String) {
+        if (luaTargetReady) return
+        luaTargetReady = true
+
+        // Every step below needs a live session, and this fixture can run as the very first
+        // thing a batch does -- a mini-batch of one Lua case, which is how a rig-level change is
+        // normally checked. Found the hard way: on a cold-booted device the whole fixture failed
+        // with "kvmobile: Start has not completed successfully yet" and the run then measured
+        // nothing but the absence of what it had failed to create. [ensureCronTarget] and
+        // [ensureJournalBook] have the same dependency and get away with it only because their
+        // cases never come first.
+        awaitSessionReady(opticalTag)
+
+        fun step(category: String, name: String, params: List<String>) {
+            val spec = allCommands.first { it.category == category && it.name == name }
+            val outcome = runCatching { runBlocking { CommandExecutor.execute(spec, params) } }
+            Log.i(TAG, "$opticalTag lua setup ${spec.label} -> ${outcome.getOrNull() ?: outcome.exceptionOrNull()?.message}")
+        }
+
+        step("Group", "CreateGroup", listOf(OPTICAL_LUA_GROUP_ID, "Optical lua runners", "true"))
+        step("Lua", "CreateCommand", listOf(OPTICAL_LUA_INNER_ID, "Optical lua inner", OPTICAL_LUA_GROUP_ID, OPTICAL_LUA_INNER_SCRIPT))
+        step("Lua", "CreateCommand", listOf(OPTICAL_LUA_OUTER_ID, "Optical lua outer", OPTICAL_LUA_GROUP_ID, OPTICAL_LUA_OUTER_SCRIPT))
+        // 1s poll rather than the 1.5s default: every Lua case's wall clock is two runner passes
+        // (outer, then inner) plus the chain itself, and the rig has a per-case budget.
+        step("Lua", "Serve", listOf("1", "2"))
+    }
+
+    /**
+     * Blocks until this device's kvmobile session is actually usable, or the deadline passes.
+     *
+     * "Usable" is checked by making a call that needs one rather than by reading a flag: ListGroups
+     * is cheap, read-only, and fails with the same "Start has not completed successfully yet" a
+     * setup step would. Non-fatal on timeout, the same choice [awaitOwnCircuitAddr] makes -- a
+     * device whose session never comes up should report that per-case, not die in a preamble.
+     */
+    private fun awaitSessionReady(opticalTag: String) {
+        val deadline = System.currentTimeMillis() + SESSION_READY_TIMEOUT_MS
+        while (System.currentTimeMillis() < deadline) {
+            val ready = runCatching { Kvmobile.listGroups() }.isSuccess
+            if (ready) {
+                Log.i(TAG, "$opticalTag session is ready")
+                return
+            }
+            Thread.sleep(SESSION_READY_POLL_MS)
+        }
+        Log.w(TAG, "$opticalTag session still not ready after ${SESSION_READY_TIMEOUT_MS}ms -- continuing so each case reports its own real result")
     }
 
     /**
