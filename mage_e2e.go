@@ -21,6 +21,14 @@ import (
 // identities, test rows) and pkg/e2erun for what actually deploying and
 // running a row means per platform.
 //
+// Which Android app the android rows and the optical suite drive is selectable
+// with the E2E_ANDROID_TARGET environment variable -- "kvdemo" (the default,
+// this repo's android-app) or "mes" (the sibling object-history-app checkout,
+// which the whole android-app feature set was ported into). The test plan in
+// test/e2e/testdata.json is shared: both apps carry the same instrumented test
+// classes and the same command catalog, so only where to send adb and Gradle
+// differs. See pkg/e2erun/android_target.go for the per-field overrides.
+//
 // This replaced a stub `E2e()` target that ran `go test -tags=e2e ./...`
 // against a build tag no file in this repo ever used -- i.e. it always
 // silently did nothing. mg.Namespace also can't coexist with a same-named

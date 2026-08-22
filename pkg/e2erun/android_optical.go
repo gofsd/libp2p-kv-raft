@@ -385,14 +385,15 @@ const opticalStallMarker = "not shown on look"
 // Best-effort throughout: a device that reports no pid, or an adb that fails, just means there is
 // nothing to wait for, and the invocation that follows reports any real problem itself.
 func stopAppProcesses(serial string) {
-	for _, pkg := range []string{androidTestAppID, androidAppID} {
+	target := mustResolveAndroidTarget()
+	for _, pkg := range []string{target.testAppID(), target.AppID} {
 		stop := exec.Command("adb", "shell", "am", "force-stop", pkg)
 		withSerial(stop, serial)
 		_ = stop.Run()
 	}
 	deadline := time.Now().Add(appStopTimeout)
 	for time.Now().Before(deadline) {
-		pidof := exec.Command("adb", "shell", "pidof", androidAppID)
+		pidof := exec.Command("adb", "shell", "pidof", target.AppID)
 		withSerial(pidof, serial)
 		out, _ := pidof.Output()
 		if strings.TrimSpace(string(out)) == "" {
@@ -413,7 +414,8 @@ func stopAppProcesses(serial string) {
 func runOpticalMethod(serial, method, argName string, argJSON []byte) ([]e2edata.UICaseResult, string, bool, error) {
 	stopAppProcesses(serial)
 
-	deviceResultsPath := fmt.Sprintf("/sdcard/Android/data/%s/files/ui_e2e_results.json", androidAppID)
+	target := mustResolveAndroidTarget()
+	deviceResultsPath := target.deviceResultsPath("ui_e2e_results.json")
 	rm := exec.Command("adb", "shell", "rm", "-f", deviceResultsPath)
 	withSerial(rm, serial)
 	_ = rm.Run()
@@ -429,13 +431,13 @@ func runOpticalMethod(serial, method, argName string, argJSON []byte) ([]e2edata
 	withSerial(clearLogcat, serial)
 	_ = clearLogcat.Run()
 
-	fmt.Fprintf(os.Stderr, "e2erun: optical: %s#%s starting on %s\n", androidUITestClass, method, serial)
+	fmt.Fprintf(os.Stderr, "e2erun: optical: %s#%s starting on %s\n", target.uiTestClass(), method, serial)
 
 	encodedArg := base64.StdEncoding.EncodeToString(argJSON)
 	cmd := exec.Command("adb", "shell", "am", "instrument", "-w",
-		"-e", "class", androidUITestClass+"#"+method,
+		"-e", "class", target.uiTestClass()+"#"+method,
 		"-e", argName, encodedArg,
-		androidTestRunner,
+		target.runner(),
 	)
 	withSerial(cmd, serial)
 	var out bytes.Buffer
@@ -447,7 +449,7 @@ func runOpticalMethod(serial, method, argName string, argJSON []byte) ([]e2edata
 	if logErr != nil {
 		deviceLog = fmt.Sprintf("(failed to capture device logcat: %v)", logErr)
 	}
-	fmt.Fprintf(os.Stderr, "e2erun: optical: %s#%s on %s finished (instrument err: %v)\n--- device KVDemo logcat ---\n%s\n--- end device logcat ---\n", androidUITestClass, method, serial, instrumentErr, deviceLog)
+	fmt.Fprintf(os.Stderr, "e2erun: optical: %s#%s on %s finished (instrument err: %v)\n--- device KVDemo logcat ---\n%s\n--- end device logcat ---\n", target.uiTestClass(), method, serial, instrumentErr, deviceLog)
 
 	localResultsPath := filepath.Join(os.TempDir(), fmt.Sprintf("kvraft-e2e-optical-%s-%s.json", method, strings.ReplaceAll(serial, ":", "_")))
 	defer os.Remove(localResultsPath)

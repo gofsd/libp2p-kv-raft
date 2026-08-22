@@ -179,6 +179,18 @@ mage e2e:gc <keepVersions> yes    # actually prune them (never touches the share
 mage githooks:install   # points core.hooksPath at scripts/git-hooks/pre-push (runs e2e:current)
 ```
 
+The android rows and the real-camera optical suite can drive **either** of the two apps built on
+`mobile/kvmobile`, selected with `E2E_ANDROID_TARGET`: `kvdemo` (the default -- this repo's
+`android-app`) or `mes` (the sibling `object-history-app` checkout, which android-app's whole
+feature set -- the 135-spec command catalog, the scan-to-run pipeline, and
+`E2ETest`/`ChannelFileTransferTest`/`UiCommandE2ETest` -- was ported into). `test/e2e/testdata.json`
+stays the single source of truth for both: same rows, same `android_optical_cases`, same command
+names. Only where to send `adb` and Gradle differs, plus two things that are not derivable from an
+application id -- the package the test classes live in (`com.object_history.mes.e2e` there, the
+application package here) and the path each app's Gradle build reads a gomobile-built
+`kvmobile.aar` from. See `pkg/e2erun/android_target.go` for the presets and the per-field
+`E2E_ANDROID_*` overrides.
+
 `mage lint` runs golangci-lint v2 (`.golangci.yml`; needs `golangci-lint` on PATH -- see `Lint`'s
 own doc comment in magefile.go for the pinned install command) alongside `go vet`/`gofmt`, and CI
 runs the identical `golangci-lint run ./...` on every push/PR.
@@ -233,6 +245,20 @@ protocol — not new task types.
   -X` var (a mobile app has no operator to type a peer ID at runtime). Every `submit` forwards from
   this never-leader follower to whichever peer is currently leader over
   `pkg/daemon.ForwardProtocolID`.
+- `android-app/` **has a downstream fork.** Its whole feature set -- `CommandCatalog.kt`'s 135
+  specs, the RunCode/NavCode/LogRefCode scan pipeline, the group pager, the Lua editor, the
+  hardened `MainScannerWidget`, and `E2ETest`/`ChannelFileTransferTest`/`UiCommandE2ETest` -- was
+  copied into the sibling `object-history-app` repo on 2026-08-22, as a one-time fork rather than
+  a shared module, so that app keeps building and publishing to Play on its own. Two consequences
+  when changing anything under `android-app/app/src`:
+  - Those files are kept **byte-identical over there apart from the `package` line**, with a
+    short, documented list of deliberate differences (see that repo's CLAUDE.md, "Re-syncing with
+    android-app"). Gratuitous reformatting here makes the next re-sync needlessly expensive; a
+    real change is fine and is what the procedure is for.
+  - The scanned-code tag strings (`com.gofsd.kvdemo.run:`, `.nav.group:`, `.nav.screen:`) are
+    **wire format shared between the two apps** -- the literal bytes inside a printed Data Matrix,
+    which each app must be able to read from the other. Changing one is a breaking change for
+    both, and for `test/e2e/testdata.json`'s optical cases.
 - `web-app/` — a browser client, Rust compiled to `wasm32-unknown-unknown` over `rust-libp2p`.
   Unlike every other client, it can never be a raft *voter* (a browser sandbox can't accept a raw
   inbound connection), but it holds a circuit-relay v2 reservation and joins as a real raft

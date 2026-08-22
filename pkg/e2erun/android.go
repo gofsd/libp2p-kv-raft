@@ -19,21 +19,10 @@ import (
 // gomobile bind needs to bake an identity/leader into the AAR.
 const androidGoPackage = "github.com/gofsd/libp2p-kv-raft/mobile/kvmobile"
 
-// androidAppID/androidTestRunner match android-app/app/build.gradle.kts's
-// applicationId and testInstrumentationRunner -- AGP's default test APK id
-// is "<applicationId>.test" (no testApplicationId override is set there).
-//
-// androidUITestClass names UiCommandE2ETest -- no longer driven from this automated pipeline (see
-// runAndroidRows' doc comment), but still the class pkg/e2erun/android_optical.go's
-// runOpticalMethod invokes one @Test method of at a time, from the separate, manual/
-// hardware-gated TestManualOpticalScan.
-const (
-	androidAppID       = "com.gofsd.kvdemo"
-	androidTestAppID   = androidAppID + ".test"
-	androidTestClass   = androidAppID + ".E2ETest"
-	androidUITestClass = androidAppID + ".UiCommandE2ETest"
-	androidTestRunner  = androidTestAppID + "/androidx.test.runner.AndroidJUnitRunner"
-)
+// Which app these Android paths install, instrument and pull results from is
+// no longer a constant -- see androidTarget in android_target.go, and
+// E2E_ANDROID_TARGET for selecting one. It defaults to this repo's android-app,
+// so nothing about an existing invocation changes.
 
 // androidUnavailable checks that gomobile, adb, and a connected
 // device/emulator are all present, returning a human-readable reason if
@@ -255,7 +244,11 @@ func runAndroidNode(repoRoot string, node e2edata.Node, bootstrapMultiaddr strin
 // (a consistent signature makes it obvious at each call site whether that
 // step is device-specific).
 func buildAndroidAAR(repoRoot string, node e2edata.Node, bootstrapMultiaddr string, serial string) error {
-	aarPath := filepath.Join(repoRoot, "android-app", "app", "libs", "kvmobile.aar")
+	target, err := resolveAndroidTarget(repoRoot)
+	if err != nil {
+		return err
+	}
+	aarPath := target.aarFile()
 	if err := os.MkdirAll(filepath.Dir(aarPath), 0o755); err != nil {
 		return err
 	}
@@ -282,10 +275,13 @@ func buildAndroidAAR(repoRoot string, node e2edata.Node, bootstrapMultiaddr stri
 // test APK onto whatever adb device/emulator is connected, or -- if
 // serial is non-empty -- specifically that device (see withSerial).
 func gradleInstall(repoRoot string, serial string) error {
-	androidDir := filepath.Join(repoRoot, "android-app")
-	gradlew := filepath.Join(androidDir, "gradlew")
-	cmd := exec.Command(gradlew, "installDebug", "installDebugAndroidTest")
-	cmd.Dir = androidDir
+	target, err := resolveAndroidTarget(repoRoot)
+	if err != nil {
+		return err
+	}
+	args := append([]string{"installDebug", "installDebugAndroidTest"}, target.GradleArgs...)
+	cmd := exec.Command(target.gradlew(), args...)
+	cmd.Dir = target.Dir
 	withSerial(cmd, serial)
 	return runCaptured(cmd, "gradlew installDebug")
 }
@@ -362,10 +358,11 @@ func summarizeFailure(out string) string {
 // and E2ETest fails parsing it with a JSONException naming a stray
 // fragment rather than anything about size.
 func runInstrumentedTest(rowsArgJSON string, serial string) ([]byte, error) {
+	target := mustResolveAndroidTarget()
 	cmd := exec.Command("adb", "shell", "am", "instrument", "-w",
-		"-e", "class", androidTestClass,
+		"-e", "class", target.rowTestClass(),
 		"-e", "rows", base64.StdEncoding.EncodeToString([]byte(rowsArgJSON)),
-		androidTestRunner,
+		target.runner(),
 	)
 	withSerial(cmd, serial)
 	var out bytes.Buffer
@@ -373,7 +370,7 @@ func runInstrumentedTest(rowsArgJSON string, serial string) ([]byte, error) {
 	cmd.Stderr = &out
 	_ = cmd.Run()
 
-	deviceResultsPath := fmt.Sprintf("/sdcard/Android/data/%s/files/e2e_results.json", androidAppID)
+	deviceResultsPath := target.deviceResultsPath("e2e_results.json")
 	localResultsPath := filepath.Join(os.TempDir(), "kvraft-e2e-android-results.json")
 	defer os.Remove(localResultsPath)
 	pull := exec.Command("adb", "pull", deviceResultsPath, localResultsPath)

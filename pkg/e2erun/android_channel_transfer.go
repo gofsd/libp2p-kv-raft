@@ -56,7 +56,7 @@ const channelTransferInstrumentTimeout = 20 * time.Minute
 // writes its result -- same external-files-dir convention (no run-as
 // needed to adb pull) every other instrumented test in this package uses.
 func channelTransferAndroidResultsPath() string {
-	return fmt.Sprintf("/sdcard/Android/data/%s/files/channel_transfer_result.json", androidAppID)
+	return mustResolveAndroidTarget().deviceResultsPath("channel_transfer_result.json")
 }
 
 // channelTransferResult mirrors ChannelFileTransferTest.kt's own written
@@ -360,11 +360,12 @@ func sendFileOverChannel(ctx context.Context, sess *shmclient.Session, channelID
 // comments), just with this test's own instrumentation args instead of
 // "rows"/"cases".
 func runChannelTransferInstrumentedTest(serial string, instrumentationArgs map[string]string) ([]byte, error) {
-	args := []string{"shell", "am", "instrument", "-w", "-e", "class", androidAppID + ".ChannelFileTransferTest"}
+	target := mustResolveAndroidTarget()
+	args := []string{"shell", "am", "instrument", "-w", "-e", "class", target.channelTestClass()}
 	for k, v := range instrumentationArgs {
 		args = append(args, "-e", k, v)
 	}
-	args = append(args, androidTestRunner)
+	args = append(args, target.runner())
 	cmd := exec.Command("adb", args...)
 	withSerial(cmd, serial)
 	if err := runCaptured(cmd, "am instrument ChannelFileTransferTest"); err != nil {
