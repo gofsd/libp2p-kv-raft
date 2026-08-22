@@ -280,10 +280,34 @@ func gradleInstall(repoRoot string, serial string) error {
 		return err
 	}
 	args := append([]string{"installDebug", "installDebugAndroidTest"}, target.GradleArgs...)
+	if target.PerDeviceAbi {
+		abi, err := deviceAbi(serial)
+		if err != nil {
+			return err
+		}
+		args = append(args, "-Pabi="+abi)
+	}
 	cmd := exec.Command(target.gradlew(), args...)
 	cmd.Dir = target.Dir
 	withSerial(cmd, serial)
 	return runCaptured(cmd, "gradlew installDebug")
+}
+
+// deviceAbi reads the primary ABI of the device this run addresses, for
+// androidTarget.PerDeviceAbi. An empty serial means "whatever single device is
+// connected", the same fallback withSerial applies everywhere else.
+func deviceAbi(serial string) (string, error) {
+	cmd := exec.Command("adb", "shell", "getprop", "ro.product.cpu.abi")
+	withSerial(cmd, serial)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("e2erun: read device ABI (serial %q): %w", serial, err)
+	}
+	abi := strings.TrimSpace(string(out))
+	if abi == "" {
+		return "", fmt.Errorf("e2erun: device %q reported no ro.product.cpu.abi", serial)
+	}
+	return abi, nil
 }
 
 // capturedOutputLimit bounds how much of a failing command's combined

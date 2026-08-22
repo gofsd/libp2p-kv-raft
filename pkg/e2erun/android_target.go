@@ -51,9 +51,29 @@ type androidTarget struct {
 	AarPath string
 
 	// GradleArgs are extra flags every Gradle invocation for this target gets.
-	// object-history-app needs -Pabi=<abi> on a device whose storage cannot
-	// take its four-ABI debug APK (~146 MB); android-app needs nothing.
 	GradleArgs []string
+
+	// Serial pins which connected device the Android paths address, from
+	// E2E_ANDROID_SERIAL. Empty means "decide per scenario", which is what a
+	// single-device machine always wanted. A rig with both an emulator and a
+	// phone attached needs to say, because the two are not interchangeable:
+	// see RunChannelFileTransferScenario, which can only run against an
+	// emulator.
+	Serial string
+
+	// PerDeviceAbi makes gradleInstall pass -Pabi=<the target device's own ABI>,
+	// read off that device at install time.
+	//
+	// object-history-app's debug APK carries four ABIs and runs ~146 MB, which an
+	// emulator with a default-sized data partition cannot install at all
+	// (INSTALL_FAILED_INSUFFICIENT_STORAGE). Narrowing it to one ABI fixes that --
+	// but the ABI cannot be a constant in this preset, because which device a run
+	// addresses is decided at run time and the rig has both an x86_64 emulator and
+	// an arm64 phone. Hardcoding one produced the confusing failure this exists to
+	// prevent: Gradle silently *skipped* the device ("Could not find build of
+	// variant which supports ... arm64-v8a") and then reported only "Failed to
+	// install on any devices", naming neither the ABI nor the device.
+	PerDeviceAbi bool
 }
 
 // androidTargetPresets are the named targets E2E_ANDROID_TARGET selects
@@ -67,11 +87,11 @@ var androidTargetPresets = map[string]androidTarget{
 		AarPath: filepath.Join("app", "libs", "kvmobile.aar"),
 	},
 	"mes": {
-		AppID:      "com.object_history.mes",
-		Dir:        filepath.Join("..", "object-history-app"),
-		TestPkg:    "com.object_history.mes.e2e",
-		AarPath:    filepath.Join("app", "build", "kvmobile", "kvmobile.aar"),
-		GradleArgs: []string{"-Pabi=x86_64"},
+		AppID:        "com.object_history.mes",
+		Dir:          filepath.Join("..", "object-history-app"),
+		TestPkg:      "com.object_history.mes.e2e",
+		AarPath:      filepath.Join("app", "build", "kvmobile", "kvmobile.aar"),
+		PerDeviceAbi: true,
 	},
 }
 
@@ -86,6 +106,7 @@ const defaultAndroidTarget = "kvdemo"
 //	E2E_ANDROID_TEST_PKG    override TestPkg
 //	E2E_ANDROID_AAR         override AarPath (relative to Dir)
 //	E2E_ANDROID_GRADLE_ARGS override GradleArgs (space-separated; "-" for none)
+//	E2E_ANDROID_SERIAL      pin which connected device to address
 //
 // Environment rather than a flag threaded through every call site because the
 // Android paths are reached from three different entry points -- mage e2e:*,
@@ -117,6 +138,9 @@ func resolveAndroidTarget(repoRoot string) (androidTarget, error) {
 	}
 	if v := strings.TrimSpace(os.Getenv("E2E_ANDROID_AAR")); v != "" {
 		t.AarPath = v
+	}
+	if v := strings.TrimSpace(os.Getenv("E2E_ANDROID_SERIAL")); v != "" {
+		t.Serial = v
 	}
 	// "-" and not "" for the empty case: an unset variable has to mean "keep
 	// the preset's args", so there has to be some other way to say "none".

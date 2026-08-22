@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gofsd/libp2p-kv-raft/pkg/e2edata"
@@ -118,6 +119,25 @@ type channelTransferResult struct {
 //     section), this one is purely a throwaway fixture for this one
 //     scenario, not a node an operator might want to keep poking at
 //     afterward.
+//
+// pickAndroidSerial chooses which connected device to address: an explicit
+// pinned serial if one was given (E2E_ANDROID_SERIAL), otherwise the first
+// emulator when preferEmulator is set and one is attached, otherwise the first
+// serial adb listed.
+func pickAndroidSerial(serials []string, pinned string, preferEmulator bool) string {
+	if pinned != "" {
+		return pinned
+	}
+	if preferEmulator {
+		for _, s := range serials {
+			if strings.HasPrefix(s, "emulator-") {
+				return s
+			}
+		}
+	}
+	return serials[0]
+}
+
 func RunChannelFileTransferScenario(repoRoot string, sizeBytes int64) error {
 	if reason := androidUnavailable(); reason != "" {
 		return fmt.Errorf("e2erun: channel file transfer: skipped: %s", reason)
@@ -129,7 +149,13 @@ func RunChannelFileTransferScenario(repoRoot string, sizeBytes int64) error {
 	if len(serials) == 0 {
 		return fmt.Errorf("e2erun: channel file transfer: no connected android device/emulator")
 	}
-	serial := serials[0]
+	// This scenario can only run against an emulator: it hands the device the
+	// desktop node's address rewritten to 10.0.2.2, the alias that reaches the
+	// host through an emulator's user-mode NAT and means nothing on a phone
+	// (a phone dials it and times out, reporting only "all dials failed").
+	// So prefer an emulator when the rig has one attached, rather than taking
+	// whatever adb happens to list first.
+	serial := pickAndroidSerial(serials, mustResolveAndroidTarget().Serial, true)
 
 	e2eHome, err := os.MkdirTemp("", "kvraft-e2e-channel-transfer-registry-")
 	if err != nil {
