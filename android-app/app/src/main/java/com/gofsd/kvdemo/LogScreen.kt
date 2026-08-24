@@ -1,6 +1,7 @@
 package com.gofsd.kvdemo
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -19,7 +20,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -92,13 +92,15 @@ fun LogScreen(
         onFocusedLogConsumed()
     }
 
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp).testTag("screen_log")) {
-        Text(
-            "Activity Log",
-            style = MaterialTheme.typography.titleLarge,
-            modifier = Modifier.padding(bottom = 12.dp),
-        )
-        LazyColumn(state = listState, modifier = Modifier.fillMaxSize().testTag("logList")) {
+    // No heading and no outer padding: this is one of two pages in a pager with no tab bar, and a
+    // title row would cost a log row's worth of height on every screenful to say what swiping here
+    // already said. Each card carries its own inset instead (see [LogRow]).
+    Column(modifier = Modifier.fillMaxSize().testTag("screen_log")) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize().testTag("logList"),
+            contentPadding = PaddingValues(vertical = 4.dp),
+        ) {
             items(entries, key = { it.id }) { entry ->
                 LogRow(
                     entry = entry,
@@ -125,7 +127,7 @@ private fun LogRow(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp)
+            .padding(horizontal = 8.dp, vertical = 4.dp)
             .testTag("log_item_${entry.id}"),
         colors = CardDefaults.cardColors(containerColor = statusColor(entry.status)),
         onClick = { expanded = !expanded },

@@ -1,18 +1,25 @@
 package com.gofsd.kvdemo
 
 import android.util.Log
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -33,8 +40,12 @@ import org.json.JSONObject
  * picker-form (select + submit, the same mechanic a real command's own params use) instead of any
  * command of its own: [CommandPickerScreen] (pick any command in the whole catalog, jump to its
  * form) and [GroupPickerScreen] (pick a category, enter it). Any other group is a real category:
- * its own commands, tap one -> CommandDetailScreen -- the same rendering CommandListScreen had
- * before this pager rewrite, tags preserved on purpose.
+ * its own commands, tap one -> CommandDetailScreen.
+ *
+ * Both lists fill the page: no heading, no outer padding, rows drawn by [CommandListItem] and
+ * spaced by their own cards. The category's name is not repeated here -- it is on the pager's own
+ * group context bar, one row above (see [CommandsPagerScreen]), which is also where the
+ * `categoryTitle` tag the e2e harness reads now lives.
  */
 @Composable
 fun GroupPageScreen(
@@ -54,46 +65,51 @@ fun GroupPageScreen(
 
 @Composable
 private fun DefaultGroupList(onOpenCommandsPicker: () -> Unit, onOpenGroupsPicker: () -> Unit) {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(16.dp).testTag("screen_default_group"),
-    ) {
-        Text(
-            DEFAULT_GROUP,
-            style = MaterialTheme.typography.titleLarge,
-            modifier = Modifier.padding(bottom = 12.dp),
-        )
-
-        LazyColumn(modifier = Modifier.fillMaxSize().testTag("mainItemList")) {
+    // Two nested nodes, not one, purely so both tags survive: Modifier.testTag() sets a single
+    // semantics property, so chaining two of them on one node silently keeps only the last.
+    Column(modifier = Modifier.fillMaxSize().testTag("screen_default_group")) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().testTag("mainItemList"),
+            contentPadding = PaddingValues(vertical = 4.dp),
+        ) {
             item {
-                Text(
-                    "Commands",
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            Log.i("KVDemo", "USER_TAP: Commands opened")
-                            onOpenCommandsPicker()
-                        }
-                        .padding(vertical = 16.dp)
-                        .testTag("mainListItem_commands"),
+                CommandListItem(
+                    title = "Commands",
+                    subtitle = "open any command in the catalog",
+                    icon = Icons.AutoMirrored.Filled.List,
+                    testTag = "mainListItem_commands",
+                    onClick = {
+                        Log.i("KVDemo", "USER_TAP: Commands opened")
+                        onOpenCommandsPicker()
+                    },
                 )
             }
             item {
-                Text(
-                    "Groups",
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            Log.i("KVDemo", "USER_TAP: Groups opened")
-                            onOpenGroupsPicker()
-                        }
-                        .padding(vertical = 16.dp)
-                        .testTag("mainListItem_groups"),
+                CommandListItem(
+                    title = "Groups",
+                    subtitle = "enter one of the catalog's categories",
+                    icon = Icons.Filled.Folder,
+                    testTag = "mainListItem_groups",
+                    onClick = {
+                        Log.i("KVDemo", "USER_TAP: Groups opened")
+                        onOpenGroupsPicker()
+                    },
                 )
             }
         }
     }
 }
 
+/**
+ * One category's commands.
+ *
+ * [refreshKey] is what pull-to-refresh moves. It re-keys both the local spec list and, for the Lua
+ * category, [LuaClusterCommands]' own cluster read -- the one list in this app fed by a live
+ * `Kvmobile.listCommands()` call, which until now could only be re-run by leaving the group and
+ * coming back. Rebuilding the local specs alongside it is nearly free and keeps "pull down to get
+ * the current state of this screen" true of the whole screen rather than half of it.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CategoryCommandList(
     category: String,
@@ -102,59 +118,68 @@ private fun CategoryCommandList(
     onOpenLuaRun: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
-    val names = remember(category) {
-        buildCommands(context.filesDir.absolutePath, OutputLog::append)
-            .filter { it.category == category }
-            .map { it.name }
+    var refreshKey by remember(category) { mutableIntStateOf(0) }
+    // Only ever true for Lua: that is the one category whose refresh does real asynchronous work
+    // (LuaClusterCommands' cluster read) and so has something for a spinner to wait on.
+    // Everywhere else the rebuild below is synchronous and complete by the time this recomposes,
+    // so arming the spinner at all would only ever draw one that is already stale.
+    var refreshing by remember(category) { mutableStateOf(false) }
+
+    val specs = remember(category, refreshKey) {
+        buildCommands(context.filesDir.absolutePath, OutputLog::append).filter { it.category == category }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
-            .testTag("screen_commands"),
+    PullToRefreshBox(
+        isRefreshing = refreshing,
+        onRefresh = {
+            Log.i("KVDemo", "USER_TAP: pull-to-refresh on group $category")
+            refreshing = category == "Lua"
+            refreshKey++
+        },
+        modifier = Modifier.fillMaxSize().testTag("screen_commands"),
     ) {
-        Text(
-            category,
-            style = MaterialTheme.typography.titleLarge,
-            modifier = Modifier.padding(bottom = 12.dp).testTag("categoryTitle"),
-        )
-
-        LazyColumn(modifier = Modifier.fillMaxSize().testTag("itemList")) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().testTag("itemList"),
+            contentPadding = PaddingValues(vertical = 4.dp),
+        ) {
             // The Lua group leads with the one thing in this app that cannot be reached by
             // scanning a code: writing a script (see LuaEditorScreen's doc comment on why
             // authoring is the exception to scan-only execution). Everything below it is an
             // ordinary spec, opened and generated like any other.
             if (category == "Lua") {
                 item {
-                    Text(
-                        "New Lua command...",
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                Log.i("KVDemo", "USER_TAP: Lua editor opened")
-                                onOpenLuaEditor()
-                            }
-                            .padding(vertical = 12.dp)
-                            .testTag("listItem_newLuaCommand"),
+                    CommandListItem(
+                        title = "New Lua command...",
+                        subtitle = "write a script on this device",
+                        icon = Icons.Filled.Add,
+                        testTag = "listItem_newLuaCommand",
+                        onClick = {
+                            Log.i("KVDemo", "USER_TAP: Lua editor opened")
+                            onOpenLuaEditor()
+                        },
                     )
                 }
             }
-            items(names) { name ->
-                Text(
-                    name,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            Log.i("KVDemo", "USER_TAP: command $category: $name opened")
-                            onCommandClick(name)
-                        }
-                        .padding(vertical = 12.dp)
-                        .testTag("listItem_$name"),
+            items(specs, key = { it.name }) { spec ->
+                CommandListItem(
+                    title = spec.name,
+                    subtitle = commandSubtitle(spec),
+                    icon = iconForCategory(spec.category),
+                    testTag = "listItem_${spec.name}",
+                    onClick = {
+                        Log.i("KVDemo", "USER_TAP: command $category: ${spec.name} opened")
+                        onCommandClick(spec.name)
+                    },
                 )
             }
             if (category == "Lua") {
-                item { LuaClusterCommands(onOpenLuaRun) }
+                item {
+                    LuaClusterCommands(
+                        refreshKey = refreshKey,
+                        onLoaded = { refreshing = false },
+                        onOpenLuaRun = onOpenLuaRun,
+                    )
+                }
             }
         }
     }
@@ -174,13 +199,20 @@ private fun CategoryCommandList(
  * execution. Running still means generating a code here and scanning it on another device, the
  * same as every other command in this app (see LuaEditorScreen's doc comment on why authoring is
  * the single exception to that).
+ *
+ * [refreshKey] re-runs the read; [onLoaded] tells [CategoryCommandList]'s pull-to-refresh spinner
+ * that the read it triggered has finished, success or failure.
  */
 @Composable
-private fun LuaClusterCommands(onOpenLuaRun: (String) -> Unit) {
+private fun LuaClusterCommands(
+    refreshKey: Int,
+    onLoaded: () -> Unit,
+    onOpenLuaRun: (String) -> Unit,
+) {
     var commands by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
     var note by remember { mutableStateOf("") }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(refreshKey) {
         runCatching {
             val raw = withContext(Dispatchers.IO) { Kvmobile.listCommands() }
             val arr = JSONArray(raw)
@@ -201,28 +233,32 @@ private fun LuaClusterCommands(onOpenLuaRun: (String) -> Unit) {
             Log.w("KVDemo", "RESULT: listing this cluster's Lua commands failed: ${it.message}")
             note = "could not read this cluster's commands: ${it.message}"
         }
+        onLoaded()
     }
 
     Column(modifier = Modifier.fillMaxWidth().padding(top = 24.dp).testTag("luaClusterCommands")) {
         Text(
             "On this cluster",
             style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.padding(bottom = 4.dp),
+            modifier = Modifier.padding(start = 16.dp, bottom = 4.dp),
         )
         if (note.isNotEmpty()) {
-            Text(note, style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("luaClusterNote"))
+            Text(
+                note,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(horizontal = 16.dp).testTag("luaClusterNote"),
+            )
         }
         commands.forEach { (id, targetPeerID) ->
-            Text(
-                "$id  ->  ${targetPeerID.takeLast(8)}",
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable {
-                        Log.i("KVDemo", "USER_TAP: Lua command $id opened for a run")
-                        onOpenLuaRun(id)
-                    }
-                    .padding(vertical = 12.dp)
-                    .testTag("luaCommand_$id"),
+            CommandListItem(
+                title = id,
+                subtitle = "runs on ...${targetPeerID.takeLast(8)}",
+                icon = iconForCategory("Lua"),
+                testTag = "luaCommand_$id",
+                onClick = {
+                    Log.i("KVDemo", "USER_TAP: Lua command $id opened for a run")
+                    onOpenLuaRun(id)
+                },
             )
         }
     }

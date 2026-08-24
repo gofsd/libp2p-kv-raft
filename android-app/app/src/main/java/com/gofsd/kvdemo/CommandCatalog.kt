@@ -39,6 +39,17 @@ import kvmobile.LuaListener
  * and, once it does, auto-closes the popup and navigates to the activity
  * log, since a recruited device has nothing further to do with the code
  * once someone else has scanned it.
+ *
+ * [logIdParam], where set, names the one param that holds a log record's
+ * id -- the field a scanned log reference fills in ([LogRefCode],
+ * api/logref.capnp). A spec that has one is a command it makes sense to
+ * run *against the thing in front of you*: enter a group by scanning a
+ * label and [CommandDetailScreen] seeds that field for you, and scanning
+ * the next label with the form still open rewrites it in place. A spec
+ * without one simply ignores whatever reference is in force, which is
+ * most of this catalog -- a log reference names an object, and most
+ * commands here are about the cluster rather than about anything an
+ * object could be.
  */
 class CommandSpec(
     val category: String,
@@ -48,6 +59,7 @@ class CommandSpec(
     val generateFromResultBase64: Boolean = false,
     val awaitAdmissionAfterGenerate: Boolean = false,
     val multilineParams: Set<Int> = emptySet(),
+    val logIdParam: Int? = null,
 ) {
     val label: String get() = "$category: $name"
 
@@ -86,11 +98,12 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
         generateFromResultBase64: Boolean = false,
         awaitAdmissionAfterGenerate: Boolean = false,
         multilineParams: Set<Int> = emptySet(),
+        logIdParam: Int? = null,
         run: (List<String>) -> String,
     ) {
         commands += CommandSpec(
             category, name, params, run,
-            generateFromResultBase64, awaitAdmissionAfterGenerate, multilineParams,
+            generateFromResultBase64, awaitAdmissionAfterGenerate, multilineParams, logIdParam,
         )
     }
 
@@ -335,14 +348,59 @@ fun buildCommands(dataDir: String, appendLog: (String) -> Unit): List<CommandSpe
     add("Channel", "CloseChannel", listOf("channelID")) { a -> Kvmobile.closeChannel(a[0]); ok() }
     add("Channel", "StopChannel", listOf("channelID")) { a -> Kvmobile.stopChannel(a[0]); ok() }
 
-    // pkg/logrecord read/write.
-    add("Log records", "LogAppend", listOf("kind", "unitID", "fieldsJSON", "narrative")) { a ->
+    // pkg/logrecord read/write. unitID is param 1 on both, and it is
+    // also what a scanned log reference names (see [LogRefCode] and
+    // pkg/logref's addressing convention) -- hence logIdParam: enter a
+    // group by scanning a label and the id is already in the field.
+    add("Log records", "LogAppend", listOf("kind", "unitID", "fieldsJSON", "narrative"), logIdParam = 1) { a ->
         Kvmobile.logAppend(a[0], a[1], a[2], a[3]); ok()
     }
     add(
         "Log records", "LogQuery",
         listOf("kind", "unitID", "since (RFC3339 or blank)", "until (RFC3339 or blank)", "limit (blank=unlimited)"),
+        logIdParam = 1,
     ) { a -> Kvmobile.logQuery(a[0], a[1], a[2], a[3], a[4]) }
+
+    // Log references -- api/logref.capnp's Data Matrix code, the one this
+    // app scans to say *what it is looking at* rather than what to do
+    // (see [LogRefCode]). A reference is an ordinary log record under a
+    // fixed kind/unitID convention (pkg/logref), so LogQuery above reads
+    // and LogAppend above could write one; these three exist because the
+    // convention is easy to get subtly wrong by hand and unresolvable
+    // when you do.
+    //
+    // PutLogRef registers which group an id belongs to -- append-only,
+    // so registering an id again re-points every label already printed
+    // with it rather than failing. GetLogRef reads the registration
+    // back.
+    add("Log records", "PutLogRef", listOf("logId", "group", "fieldsJSON (blank ok)", "narrative (blank ok)"), logIdParam = 0) { a ->
+        Kvmobile.putLogRef(a[0].toLongOrThrow("logId"), a[1], a[2], a[3]); ok()
+    }
+    add("Log records", "GetLogRef", listOf("logId"), logIdParam = 0) { a ->
+        Kvmobile.getLogRef(a[0].toLongOrThrow("logId"))
+    }
+    // GenerateLogRef is the generate-a-DataMatrix flow for a log
+    // reference: it renders the code itself, not a RunCode naming this
+    // command, which is what generateFromResultBase64 selects (the same
+    // mechanism CreateJoinRequestTicket uses -- see CommandSpec's own
+    // doc comment). Registering the id first, when a group is given, is
+    // deliberate rather than a convenience: a code whose id resolves to
+    // nothing is a label nobody can scan, and minting one without
+    // registering it is the single easiest way to produce one.
+    //
+    // Leaving group blank skips the registration and encodes the id
+    // alone -- for re-printing a label whose id is already registered,
+    // or for one registered from another device.
+    add(
+        "Log records", "GenerateLogRef",
+        listOf("logId", "group (blank = already registered)"),
+        generateFromResultBase64 = true,
+        logIdParam = 0,
+    ) { a ->
+        val logID = a[0].toLongOrThrow("logId")
+        if (a[1].isNotBlank()) Kvmobile.putLogRef(logID, a[1], "", "")
+        Base64.encodeToString(Kvmobile.encodeLogRef(logID), Base64.NO_WRAP)
+    }
 
     // Group/Command ACL catalog -- daemon-enforced records, see README's
     // "Group/command ACL" section for the model this mirrors exactly.

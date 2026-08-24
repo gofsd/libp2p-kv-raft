@@ -63,6 +63,12 @@ import androidx.compose.ui.unit.dp
  * non-null right when a fresh mount *should* jump to the log page (it's set immediately before
  * navigating back to "pager"), never as a leftover from an unrelated remount.
  *
+ * Neither page draws a heading of its own -- both are full-bleed card lists (see [GroupPageScreen]
+ * and [LogScreen]), the same shape as object-history-app's CommandListScreen/CommandLogScreen. The
+ * group's name lives in [GroupContextBar] instead, one row above the pager, which is consequently
+ * where the `categoryTitle` test tag now sits; see that composable for what the e2e harness expects
+ * of it.
+ *
  * `testTag("screen_main")` is kept on this composable's root (not renamed to e.g. "screen_pager")
  * deliberately -- it's what the existing android_optical_cases e2e harness waits on to know the
  * app has launched, and keeping the identifier stable shrinks that harness's own migration diff
@@ -147,7 +153,17 @@ private fun GroupContextBar(group: String, onLeave: () -> Unit) {
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("Group: $group", modifier = Modifier.weight(1f).testTag("groupContextLabel"))
+            // Tagged `categoryTitle`, and holding the bare group name with nothing prepended,
+            // because this bar is now the *only* place a group names itself: GroupPageScreen's own
+            // in-page heading is gone so its list can fill the page. The e2e harness reads this tag's
+            // text and compares it to the group name exactly (UiCommandE2ETest's readTagText), and
+            // finds it by a global onNodeWithTag, so it does not care that the node now sits outside
+            // `screen_commands` -- but it would care about a "Group: " prefix.
+            Text(
+                group,
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f).testTag("categoryTitle"),
+            )
             IconButton(onClick = onLeave, modifier = Modifier.testTag("groupContextLeave")) {
                 Icon(Icons.Filled.Close, contentDescription = "Leave group")
             }

@@ -1534,6 +1534,164 @@ return {fields = {status = "ok", child_instance = id}, narrative = "hello from o
                         }
                     }
                 }
+                "log_ref" -> {
+                    // A scanned log reference (api/logref.capnp): device A generated one with
+                    // "Log records: GenerateLogRef", which also registered which group the id
+                    // belongs to, and device B is expected to resolve it and react -- silently,
+                    // like nav_group and unlike run/ticket, since a code naming the object in
+                    // front of the camera has nothing to confirm.
+                    //
+                    // Three shapes, selected by what this case asks for:
+                    //
+                    //   no preopen                     -- B enters the id's group (category_title),
+                    //                                     and with open_command set also taps a
+                    //                                     command there and checks the id reached
+                    //                                     its form (expect_param).
+                    //   preopen, same group as scan    -- B must NOT navigate: the form stays put
+                    //                                     and only its log-id field changes. This
+                    //                                     is the case the whole feature exists for.
+                    //   preopen, different group       -- B must abandon that form and enter the
+                    //                                     scanned id's group instead.
+                    //
+                    // The preopened form is set up here, on B, rather than by device A, because it
+                    // is a property of what B is already looking at when the code arrives -- there
+                    // is nothing A could put in a DataMatrix to produce it.
+                    val preopenCategory = spec.optString("preopen_category")
+                    val preopenCommand = spec.optString("preopen_command")
+                    val wantTitle = spec.getString("category_title")
+                    val expectParam = spec.optString("expect_param")
+                    var openedForm = false
+                    try {
+                        if (preopenCommand.isNotEmpty()) {
+                            Log.i(TAG, "$opticalTag pre-opening $preopenCategory: $preopenCommand before waiting for the scan")
+                            // Collapse the scanner first. awaitOneCase expands it for every case
+                            // before this switch, which is harmless for every other kind because
+                            // they only *wait* -- this is the one path that drives the UI before
+                            // the scan arrives, and an expanded scanner is a fullscreen Box drawn
+                            // above the NavHost, so the injected tap lands on the preview instead
+                            // of the item underneath. Measured on the rig: the tap on
+                            // "mainListItem_groups" reported success, logged no USER_TAP, and the
+                            // case died on "screen 'screen_group_picker' not shown after 10000ms".
+                            composeTestRule.runOnUiThread { ScannerCoordinator.expanded = false }
+                            composeTestRule.waitForIdle()
+                            // Via the Groups picker rather than navigateToCommandDetailViaPicker:
+                            // that helper's first-use branch drives the Commands picker's
+                            // *searchable* dropdown, whose known hazard is a label far enough down
+                            // the ~104-entry list being found in the semantics tree but sitting
+                            // outside the popup's visible window, so the click lands on nothing
+                            // (see its own doc comment). Device B never uses that helper otherwise,
+                            // so a "log_ref" case would always be taking exactly that first-use
+                            // branch, with a label sitting well down the list.
+                            navigateToCommandDetailViaGroup(preopenCategory, preopenCommand)
+                            waitForScreen("screen_command_detail")
+                            openedForm = true
+                            val preopenParams = spec.optJSONArray("preopen_params")
+                            for (i in 0 until (preopenParams?.length() ?: 0)) {
+                                composeTestRule.onNodeWithTag("param_$i").performTextInput(preopenParams!!.getString(i))
+                            }
+                            // Device A is already holding this case's code by the time B gets
+                            // here (A advances the instant B signals the previous case), and B's
+                            // scanner is live throughout the navigation above -- so the app can
+                            // and does act on this case's code *while* this setup is still
+                            // running. Measured on the rig: the re-fill landed first, the
+                            // performTextInput below then inserted its placeholder at the cursor
+                            // (position 0, after a programmatic value change) and the field read
+                            // "00004419" rather than "4419", with the app having no reason to
+                            // re-fire since the reference had not changed.
+                            //
+                            // Dropping the reference here makes the *next* decode new again, and
+                            // the app replaces the whole field when it acts on it -- so whatever
+                            // this setup left in that field, this case still measures exactly one
+                            // thing: what a scan arriving at an already-open form does to it.
+                            composeTestRule.runOnUiThread {
+                                ScannedLogRef.current = null
+                                ScannerCoordinator.expanded = true
+                            }
+                            forceRescan(opticalTag, verbose = false)
+                        }
+
+                        val staysOnForm = preopenCommand.isNotEmpty() && preopenCategory == wantTitle
+                        if (staysOnForm) {
+                            val (index, want) = parseExpectParam(expectParam)
+                            // Waiting on the *field*, not on any node appearing: the screen this
+                            // case asserts about is already on screen before the scan, so there is
+                            // nothing new to wait for -- see awaitScannedEffect.
+                            awaitScannedFieldValue(index, want, timeoutMs, opticalTag)
+                            Log.i(TAG, "$opticalTag param_$index re-filled with \"$want\" without leaving the form")
+                            // And it really must not have navigated: a re-fill that quietly threw
+                            // the form away and rebuilt it would satisfy the field check while
+                            // losing every other field the person had typed, which is precisely
+                            // the outcome LogRefTarget.RefillOpenForm exists to prevent.
+                            if (!nodeExists("screen_command_detail")) {
+                                throw AssertionError("the form was left behind -- a same-group log reference must re-fill it in place")
+                            }
+                            if (readTagText("commandTitle") != "$preopenCategory: $preopenCommand") {
+                                throw AssertionError("a different form is showing (\"${readTagText("commandTitle")}\") -- the scan should not have navigated at all")
+                            }
+                            // ... and that it changed *only* that field. This is the half of the
+                            // promise a field check alone cannot make: a re-fill that quietly
+                            // rebuilt the form would satisfy the check above while silently
+                            // discarding everything else the person had typed, which for a form
+                            // being filled one scan at a time is the failure that matters.
+                            val preopened = spec.optJSONArray("preopen_params")
+                            for (i in 0 until (preopened?.length() ?: 0)) {
+                                if (i == index) continue
+                                val stillThere = readFieldText("param_$i")
+                                val typed = preopened!!.getString(i)
+                                if (stillThere != typed) {
+                                    throw AssertionError("param_$i now reads ${stillThere?.let { "\"$it\"" } ?: "absent"} but was typed as \"$typed\" -- a re-fill must touch only the log-id field")
+                                }
+                            }
+                        } else {
+                            awaitScannedTag("screen_commands", timeoutMs, opticalTag)
+                            settleAfterNavigation()
+                            val title = readTagText("categoryTitle")
+                            Log.i(TAG, "$opticalTag categoryTitle=\"$title\" want=\"$wantTitle\"")
+                            if (title != wantTitle) throw AssertionError("categoryTitle=\"$title\", want \"$wantTitle\"")
+                            openedForm = false
+                            val openCommand = spec.optString("open_command")
+                            if (openCommand.isNotEmpty()) {
+                                Log.i(TAG, "$opticalTag opening $wantTitle: $openCommand to check the id reached its form")
+                                // performScrollToIndex, not performScrollTo: a LazyColumn does not
+                                // compose an item that is off screen, so there is no node to scroll
+                                // *to* until the list has been scrolled by index first. Same two
+                                // steps navigateToCommandDetailViaGroup uses.
+                                val namesInGroup = buildCommands(
+                                    InstrumentationRegistry.getInstrumentation().targetContext.filesDir.absolutePath,
+                                    OutputLog::append,
+                                ).filter { it.category == wantTitle }.map { it.name }
+                                composeTestRule.onNodeWithTag("itemList")
+                                    .performScrollToIndex(namesInGroup.indexOf(openCommand).coerceAtLeast(0))
+                                composeTestRule.onNodeWithTag("listItem_$openCommand").performClick()
+                                waitForScreen("screen_command_detail")
+                                openedForm = true
+                            }
+                            if (expectParam.isNotEmpty()) {
+                                val (index, want) = parseExpectParam(expectParam)
+                                // A plain read, not a re-arm loop: the scan has already been
+                                // observed (the group was entered), so the id is in force before
+                                // this form was ever opened -- there is nothing left to wait for
+                                // beyond the composition itself.
+                                composeTestRule.waitUntil(NAV_TIMEOUT_MS) { readFieldText("param_$index") == want }
+                                Log.i(TAG, "$opticalTag param_$index arrived pre-filled with \"$want\"")
+                            }
+                        }
+                        pass()
+                    } finally {
+                        // Same reasoning as nav_group's own finally: this kind enters a real group
+                        // and may leave a form standing, and the next case in the batch has to
+                        // start from the Default group with nothing on top of the pager.
+                        if (openedForm) {
+                            pressBack()
+                            waitForScreen("screen_main")
+                        }
+                        if (composeTestRule.onAllNodesWithTag("groupContextLeave").fetchSemanticsNodes(atLeastOneRootRequired = false).isNotEmpty()) {
+                            composeTestRule.onNodeWithTag("groupContextLeave").performClick()
+                            waitForScreen("screen_default_group")
+                            Log.i(TAG, "$opticalTag left group, back to Default, returning")
+                        }
+                    }
+                }
                 "ticket" -> {
                     awaitScannedTag("recruitConfirmApprove", timeoutMs, opticalTag)
                     Log.i(TAG, "$opticalTag recruitConfirmApprove appeared")
@@ -1600,20 +1758,36 @@ return {fields = {status = "ok", child_instance = id}, narrative = "hello from o
      * separate runs. Worth knowing before reaching for it again -- reading the real window
      * hierarchy is not available to this harness as things stand.
      */
-    private fun awaitScannedTag(tag: String, timeoutMs: Long, opticalTag: String) {
+    private fun awaitScannedTag(tag: String, timeoutMs: Long, opticalTag: String) =
+        awaitScannedEffect("'$tag'", timeoutMs, opticalTag) { slice -> waitForTagWithTimeout(tag, slice) }
+
+    /**
+     * [awaitScannedTag] for an effect that is not a node appearing.
+     *
+     * The re-arm machinery below is about the *scan*, not about what the scan produces, so it
+     * applies unchanged to any expected outcome -- and one outcome is deliberately not a new node
+     * at all: a log reference scanned while its own group's form is open changes one field of a
+     * screen that was already there (LogRefTarget.RefillOpenForm, see LogRefCode.kt). Waiting for
+     * that with [waitForTagWithTimeout] would succeed instantly and prove nothing, since the tag
+     * it would wait for is showing before the scan as well as after.
+     *
+     * [look] is one attempt within [sliceMs], throwing IllegalStateException if the effect has not
+     * happened yet -- the same contract [waitForTagWithTimeout] already had.
+     */
+    private fun awaitScannedEffect(what: String, timeoutMs: Long, opticalTag: String, look: (sliceMs: Long) -> Unit) {
         val budgetMs = timeoutMs.coerceAtLeast(1L) * SCAN_ATTEMPTS
         val deadline = System.currentTimeMillis() + budgetMs
         var lastError: Throwable? = null
-        var look = 0
+        var looks = 0
         while (System.currentTimeMillis() < deadline) {
             val slice = minOf(SCAN_LOOK_MS, deadline - System.currentTimeMillis()).coerceAtLeast(1L)
             try {
-                waitForTagWithTimeout(tag, slice)
+                look(slice)
                 return
             } catch (e: IllegalStateException) {
                 lastError = e
-                look++
-                Log.w(TAG, "$opticalTag '$tag' not shown on look $look after ${slice}ms (${(deadline - System.currentTimeMillis()) / 1000}s of budget left): ${e.message}")
+                looks++
+                Log.w(TAG, "$opticalTag $what not observed on look $looks after ${slice}ms (${(deadline - System.currentTimeMillis()) / 1000}s of budget left): ${e.message}")
                 // The one state where looking again is provably pointless, so say so immediately
                 // rather than spending the rest of the budget on it. AppRoot dispatches every scan
                 // from a single collect; with no collector, a decoded frame reaches nothing, and
@@ -1637,10 +1811,10 @@ return {fields = {status = "ok", child_instance = id}, narrative = "hello from o
                 // dialog there and the lookup blind, or was it genuinely never composed?", which is
                 // a property of the stall, not of each individual retry -- and at one dump per look
                 // a stubborn case would bury its own log in repeats of the same answer.
-                forceRescan(opticalTag, verbose = look == 1)
+                forceRescan(opticalTag, verbose = looks == 1)
             }
         }
-        throw lastError ?: IllegalStateException("'$tag' not shown after ${budgetMs}ms across $look look(s)")
+        throw lastError ?: IllegalStateException("$what not observed after ${budgetMs}ms across $looks look(s)")
     }
 
     /**
@@ -2206,5 +2380,47 @@ return {fields = {status = "ok", child_instance = id}, narrative = "hello from o
     private fun readTagText(tag: String): String {
         val node = composeTestRule.onNodeWithTag(tag).fetchSemanticsNode()
         return node.config.getOrNull(SemanticsProperties.Text)?.joinToString("") { it.text } ?: ""
+    }
+
+    /**
+     * Reads a *text field's* current value by [tag] (CommandDetailScreen's param_N).
+     *
+     * Not [readTagText]: an OutlinedTextField publishes its typed content as EditableText and its
+     * label as Text, so reading Text here returns the param's hint ("unitID") on every poll and
+     * never the value -- which for a check that a scanned id landed in the field would pass or
+     * fail for entirely the wrong reason. Missing rather than empty when the node has no editable
+     * content at all, so a mistyped tag reads as null instead of as an empty field.
+     */
+    private fun readFieldText(tag: String): String? {
+        val node = composeTestRule.onAllNodesWithTag(tag)
+            .fetchSemanticsNodes(atLeastOneRootRequired = false)
+            .firstOrNull() ?: return null
+        return node.config.getOrNull(SemanticsProperties.EditableText)?.text
+    }
+
+    /**
+     * Waits for CommandDetailScreen's param_[index] to hold [want], re-arming the scanner between
+     * looks exactly as [awaitScannedTag] does -- the wait a "log_ref" case makes when the scan it
+     * is waiting for changes a screen that was already showing (see [awaitScannedEffect]).
+     */
+    private fun awaitScannedFieldValue(index: Int, want: String, timeoutMs: Long, opticalTag: String) =
+        awaitScannedEffect("param_$index == \"$want\"", timeoutMs, opticalTag) { slice ->
+            try {
+                composeTestRule.waitUntil(slice) { readFieldText("param_$index") == want }
+            } catch (e: ComposeTimeoutException) {
+                throw IllegalStateException("param_$index is ${readFieldText("param_$index")?.let { "\"$it\"" } ?: "absent"}, want \"$want\"", e)
+            }
+        }
+
+    /**
+     * Splits an OpticalExpectSpec.ExpectParam ("<index>=<value>") into its two halves. The value
+     * may itself contain "=", so only the first one separates.
+     */
+    private fun parseExpectParam(spec: String): Pair<Int, String> {
+        val at = spec.indexOf('=')
+        require(at > 0) { "expect_param must be \"<index>=<value>\", got \"$spec\"" }
+        val index = spec.substring(0, at).toIntOrNull()
+            ?: throw IllegalArgumentException("expect_param index is not a number: \"$spec\"")
+        return index to spec.substring(at + 1)
     }
 }

@@ -79,7 +79,14 @@ import org.json.JSONObject
  * the pager's log page focused on the new entry once it finishes; a
  * [NavCode.Group] shortcut sets [currentGroup] and collapses the back
  * stack to a single `"pager"` instance showing that group -- no dialog,
- * since it's pure navigation and grants/executes nothing; a
+ * since it's pure navigation and grants/executes nothing; a [LogRefCode]
+ * (api/logref.capnp, some device's "Log records: GenerateLogRef") names
+ * the *object* in front of the camera rather than an action, so it is
+ * resolved to that object's group and either enters it or, when a form
+ * for that same group is already open, leaves the screen alone and
+ * simply re-fills its log-id field -- see [logRefTarget], and note that
+ * this is the one branch here with no confirming tap and no navigation
+ * at all in its common case, which is the entire point of it; a
  * `join_request_ticket` event (decoded via [kvmobile.Kvmobile.decodeEvent]
  * -- some other device's CreateJoinRequestTicket code, see
  * CommandDetailScreen's awaitAdmissionAfterGenerate handling) routes to
@@ -180,6 +187,30 @@ fun AppRoot() {
             Log.i(TAG, "AUTO: scan received (${bytes.size} bytes), decoding")
             val text = DataMatrixCodec.bytesToText(bytes)
 
+            // A form field armed for a scan wins over every dispatch below it, and has to: the
+            // person tapped a specific field's scan button and is now holding the camera over a
+            // label, so running whatever that label happens to encode is the one thing they did
+            // not ask for. Ported from object-history-app's CommandsViewModel.awaitFieldScan,
+            // which occupies the same position in its own scan handling.
+            //
+            // The diversion lasts exactly one scan (armedIndex is cleared here as it is consumed),
+            // and CommandDetailScreen disarms on dispose -- between them there is no way to leave
+            // the app in a state where scan-to-run has quietly stopped working.
+            val armedIndex = PendingFieldScan.armedIndex
+            if (armedIndex != null) {
+                // A log reference is the one binary code here that already means "an id" (see
+                // [LogRefCode]), so unwrap it to the bare number rather than dropping its capnp
+                // bytes into a text field as mojibake. Everything else goes in as the text the
+                // code literally carries.
+                val logRefID = runCatching { Kvmobile.decodeLogRef(bytes) }.getOrNull()
+                val value = logRefID?.toString() ?: text
+                Log.i(TAG, "RESULT: scan filled the open form's param_$armedIndex with \"$value\"")
+                PendingFieldScan.armedIndex = null
+                PendingFieldScan.scanned = armedIndex to value
+                ScannerCoordinator.expanded = false
+                return@onEach
+            }
+
             val runCode = RunCode.decode(text)
             if (runCode != null) {
                 Log.i(TAG, "RESULT: run-code scan decoded: $runCode")
@@ -243,6 +274,96 @@ fun AppRoot() {
                 return@onEach
             }
 
+            // A log reference -- the code that says what this device is *looking at* rather
+            // than what to do with it (see [LogRefCode], api/logref.capnp). Tried after RunCode/
+            // NavCode and before a generic event because it is the only binary payload here that
+            // is not an Event: decodeLogRef checks the schema's own constant tag, so a foreign
+            // barcode falls through rather than being resolved as some object's id.
+            //
+            // Resolving the id to a group is a real cluster read (kvmobile.LogRefGroup, which
+            // retries briefly while a just-registered id replicates), hence Dispatchers.IO --
+            // and hence a failure worth telling the person about: a label whose id nobody
+            // registered is exactly the case where doing nothing silently would leave them
+            // scanning it again forever.
+            val logRefID = runCatching { Kvmobile.decodeLogRef(bytes) }.getOrNull()
+            if (logRefID != null) {
+                Log.i(TAG, "RESULT: log-reference scan decoded: logId=$logRefID")
+                val group = runCatching {
+                    withContext(Dispatchers.IO) { Kvmobile.logRefGroup(logRefID) }
+                }.getOrElse { e ->
+                    Log.w(TAG, "RESULT: log reference $logRefID did not resolve to a group: ${e.message}")
+                    pendingUnrecognized = "log reference $logRefID: ${e.message}"
+                    ScannerCoordinator.expanded = false
+                    return@onEach
+                }
+                val code = LogRefCode(logRefID, group)
+                // Back to the main thread before touching the NavController, and it is this
+                // branch specifically that needs saying so: it is the only one that navigates
+                // *after* a withContext(Dispatchers.IO), and a coroutine resuming from one does
+                // not reliably land back on the dispatcher it left. Everything below reads or
+                // mutates NavController state, which androidx.navigation asserts is main-thread
+                // only.
+                //
+                // Found on the two-device rig, and worth knowing how well it hides: entering a
+                // group from the pager only *assigns Compose state* (thread-safe from anywhere),
+                // so the navigate() is skipped and the bug is invisible. It fires only when a
+                // form is open -- the one case that has a back stack entry to pop -- where it
+                // threw "Method setCurrentState must be called on the main thread" out of
+                // popEntryFromBackStack, left the controller inconsistent, and surfaced as a
+                // later, unrelated-looking "Cannot transition entry that is not in the back
+                // stack".
+                withContext(Dispatchers.Main) {
+                    // The same launch race the NavCode branch above documents: a code already in front
+                    // of the camera when this Activity starts can be decoded and acted on before
+                    // NavHost has attached its graph, and navigating then leaves a NavBackStackEntry
+                    // stuck at INITIALIZED and crashes the process on the next teardown. Gated on the
+                    // controller not being ready rather than paid unconditionally, because this is the
+                    // one branch a person triggers over and over in a row -- a fixed second per label
+                    // would undo the very thing the feature is for -- and because it also protects the
+                    // back-stack read just below, which would otherwise report "no form open" simply
+                    // because the graph was not up yet.
+                    if (navController.currentDestination == null) {
+                        delay(1000)
+                        while (navController.currentDestination == null) {
+                            delay(16)
+                        }
+                    }
+                    // Which form, if any, is open right now -- the whole of the state this decision
+                    // turns on. Read from the back stack rather than tracked separately so it cannot
+                    // disagree with what is actually on screen; the category is URL-encoded in the
+                    // route, the same as commandDetailRoute wrote it.
+                    val openFormCategory = navController.currentBackStackEntry
+                        ?.takeIf { it.destination.route?.startsWith("commandDetail/") == true }
+                        ?.arguments?.getString("category")
+                        ?.let { runCatching { decodeSegment(it) }.getOrNull() }
+                    // Set before acting on the target, not after: RefillOpenForm's whole effect *is*
+                    // this assignment (CommandDetailScreen is already composed and observing it), and
+                    // EnterGroup needs it in place before the group's own commands can be tapped.
+                    ScannedLogRef.current = code
+                    when (val target = logRefTarget(code, openFormCategory)) {
+                        is LogRefTarget.RefillOpenForm -> {
+                            Log.i(TAG, "RESULT: log reference $logRefID re-fills the open $openFormCategory form, staying put")
+                        }
+
+                        is LogRefTarget.EnterGroup -> {
+                            Log.i(TAG, "RESULT: log reference $logRefID belongs to group \"${target.group}\", entering it")
+                            currentGroup = target.group
+                            currentPage = 0
+                            // Same popUpTo("pager")/launchSingleTop, and the same reason not to use
+                            // inclusive=true, as the NavCode.Group branch above -- see its comment.
+                            if (navController.currentDestination?.route != "pager") {
+                                navController.navigate("pager") {
+                                    popUpTo("pager")
+                                    launchSingleTop = true
+                                }
+                            }
+                        }
+                    }
+                }
+                ScannerCoordinator.expanded = false
+                return@onEach
+            }
+
             val decodedJson = withContext(Dispatchers.IO) {
                 runCatching { Kvmobile.decodeEvent(bytes) }.getOrNull()
             }
@@ -286,7 +407,7 @@ fun AppRoot() {
                         CommandsPagerScreen(
                             statusText = statusText,
                             currentGroup = currentGroup,
-                            onGroupChange = { currentGroup = it; currentPage = 0 },
+                            onGroupChange = { currentGroup = it; currentPage = 0; ScannedLogRef.clearUnless(it) },
                             currentPage = currentPage,
                             onPageChange = { currentPage = it },
                             focusedLogId = focusedLogId,
@@ -330,6 +451,7 @@ fun AppRoot() {
                             onSubmit = { category ->
                                 currentGroup = category
                                 currentPage = 0
+                                ScannedLogRef.clearUnless(category)
                                 navController.popBackStack()
                             },
                         )
