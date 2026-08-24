@@ -191,6 +191,16 @@ application package here) and the path each app's Gradle build reads a gomobile-
 `kvmobile.aar` from. See `pkg/e2erun/android_target.go` for the presets and the per-field
 `E2E_ANDROID_*` overrides.
 
+One block of `android_optical_cases` is not shared between the two targets in practice: the 73
+`mes_*` cases run every command of the sibling `signal-cli` service's dispatch catalog by dialing a
+running instance of it, which `android-app` has no client for. They name their dial target as a
+`{{mesBackendAddr}}` param, resolved here rather than on a device (`pkg/e2erun`'s
+`resolveMesCases`) because it belongs to a third process neither device runs -- from
+`MES_OPTICAL_BACKEND_ADDR`, or from `~/.libp2p-kv-raft/mes-optical-backend.addr`, which signal-cli's
+own `TestServeOpticalBackend` writes. **With neither set they are skipped, loudly, not failed**: a
+rig with no such backend is still a good rig for the other 131 cases. See `object-history-app`'s
+CLAUDE.md, "The mes backend's optical cases".
+
 `mage lint` runs golangci-lint v2 (`.golangci.yml`; needs `golangci-lint` on PATH -- see `Lint`'s
 own doc comment in magefile.go for the pinned install command) alongside `go vet`/`gofmt`, and CI
 runs the identical `golangci-lint run ./...` on every push/PR.
@@ -223,6 +233,13 @@ generically over just four existing primitives (`EventGet`, `EventLogAppend`, `E
 constants for genuinely new wire-level primitives — a new relational shape, a new stream/session
 protocol — not new task types.
 
+A third option exists for a payload that no node ever receives: `api/logref.capnp`/`pkg/logref` is
+its worked example. A log-reference Data Matrix code is read by the *scanning device's own UI*,
+which turns it into a local lookup over primitives that already exist, so it is neither a wire
+variant nor a Command — just its own small schema, with a constant `tag` field standing in for the
+magic number capnp does not have. If a new thing is only ever produced and consumed on the client
+side, that is the shape to reach for before either of the two above.
+
 - `pkg/daemon` (`cmd/kvnode`) — the long-running node process: libp2p host, raft instance backed by
   `pkg/kvfsm`/`pkg/store`, and a `pkg/ipc` server for local control. A node has no leader/follower
   role until it gets an `EventAdd`: bootstrap as sole leader, or join an existing one.
@@ -237,6 +254,20 @@ protocol — not new task types.
   desktop/Android platform split as `pkg/ipc`. See README's "Data plane: pkg/chandata" section for
   why request/response IPC doesn't scale for bulk data and the chunk-framing format this replaces
   it with.
+  One rule in that design is worth knowing before touching it: a channel's **download ring outlives
+  its read pump**. The pump ends the ring for writing when the remote peer stops sending
+  (`channelSession.closeDownWrite`), but only `channelTable.evict` -- the single path every session
+  teardown goes through -- releases its storage, because until the session is gone the channel can
+  still be claimed by a local caller who has not opened the ring yet and can only find it by name.
+  Releasing it in the pump is what made a channel claimed after its sender finished impossible to
+  attach to, about half the time (fixed 2026-08-21; `TestChannelClaimedAfterSenderFinishedStillDelivers`).
+- `pkg/logref` (`api/logref.capnp`) — the payload of a *log-reference* Data Matrix code: a
+  compact, self-checking name for one `pkg/logrecord.Record`, scanned by `android-app` to say what
+  the person is *looking at* rather than what to run. Deliberately its own tiny schema rather than
+  an `Event` union variant (it asks a node for nothing; see below and README's "Log references"
+  section), and deliberately larger than its 12 bytes of data: the constant `tag` is what lets the
+  scanner reject a foreign barcode capnp would otherwise parse as a valid-looking id, and what
+  lands the symbol above the ~40-byte floor `DataMatrixCodecTest` measured for a reliable decode.
 - `pkg/kvctl` / `cmd/kvctl-cli` — client logic for spawning/bootstrapping nodes and issuing
   set/get. `kvctl-cli` needs no Go toolchain, meant to run next to an already-built `kvnode` on a
   remote deployment target reached over SSH.

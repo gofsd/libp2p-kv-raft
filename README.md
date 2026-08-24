@@ -515,7 +515,7 @@ hides the declaration and fails with a confusing `could not determine what
 C.ASharedMemory_create refers to` linker error rather than a clear availability error.
 
 The app's UI browses the full `Kvmobile` command surface rather than exposing just a few calls, and
-**every one of those 104 `CommandCatalog.kt` entries executes exactly one way: generate a DataMatrix
+**every one of those 135 `CommandCatalog.kt` entries executes exactly one way: generate a DataMatrix
 code on one device, scan it with a real camera on another, confirm, then it runs** — there is no
 in-app "Run" button anywhere, on any screen, for any command. This is deliberate, not a missing
 feature: it means the UI surface a human operates is, by construction, identical to the surface a
@@ -525,7 +525,7 @@ reachable by scan. It's a single Activity (`MainActivity`) hosting a Jetpack Com
 `PagerScreen.kt`): a 2-page swipeable `HorizontalPager` — no tab bar, the swipe is the control —
 page 0 is the current *group*'s own command list (`GroupPageScreen.kt`), page 1 is the persisted
 Activity Log (`LogScreen.kt`). Every `CommandCatalog.kt` category (Cluster, KV, Permits, Execute,
-Log records, Group, Command, Links, Dispatch, ExecInvite, Raw, RelayNode, Station — its ~104-entry
+Log records, Group, Command, Links, Dispatch, ExecInvite, Raw, RelayNode, Station — its ~135-entry
 `CommandSpec` table) is a "group," held as plain hoisted state (`currentGroup`) in `AppRoot`, not a
 nav-route argument — entering or leaving one just swaps page 0's content and re-scrolls to it,
 no `NavController` push. `"Default"`, the app's starting group, isn't a real category: its own
@@ -533,8 +533,15 @@ page 0 shows exactly two pseudo-items, "Commands" and "Groups," each a generic s
 picker-form (`CommandPickerScreen.kt`/`GroupPickerScreen.kt`) reusing the identical mechanic a real
 command's own params use — "Commands" jumps straight to any single command's `CommandDetailScreen`;
 "Groups" *enters* the picked category (a plain `currentGroup` assignment, nothing generated). A
-small header chip (`GroupContextBar`, visible whenever `currentGroup != "Default"`) is the way back
-out. Brings the daemon up once via `Start` (joining the build-time-baked-in leader). Every call goes
+small header chip (`GroupContextBar`, visible whenever `currentGroup != "Default"`) names the group
+and is the way back out. Neither page carries a heading of its own — the group's name is on that
+chip, so both lists run edge to edge and full height, and each row is a card with a per-category
+icon, the command's name, and its **parameter list** as the subtitle (`CommandListItem.kt`). The
+subtitle is the params rather than a hand-written description on purpose: every spec is a thin
+wrapper over one `Kvmobile` call whose name already says what it does, and what the name doesn't
+say is what the command is about to ask you for. Pull down on a category to refresh it — which for
+the Lua group re-runs the live `Kvmobile.ListCommands()` read behind its "On this cluster" section,
+the one list here whose contents come from the cluster rather than from `CommandCatalog.kt`. Brings the daemon up once via `Start` (joining the build-time-baked-in leader). Every call goes
 through the daemon's IPC exactly like the desktop CLI, just over the Android shared-memory transport
 instead of named shared memory, off the UI thread; `submit`/dispatch calls are forwarded from this
 (never-leader) follower to whichever peer is currently leader, over `pkg/daemon.ForwardProtocolID`.
@@ -552,7 +559,19 @@ that row's category — the only place left in the app that can generate one, no
 straight into that row's group, the same effect as picking it via the Groups picker-form but a
 one-tap shortcut, no scan or extra screen needed.
 
-`CommandDetailScreen` renders one labeled input field per parameter and two actions: **Generate
+`CommandDetailScreen` renders one labeled input row per parameter and two actions. Each row is a
+text field plus whichever affordances that parameter's own label earns it — derived from the label
+rather than declared per spec, since the 135 one-line entries in `CommandCatalog.kt` already say
+`targetPeerID` and `chunk (base64)` because that is what those arguments are: a **scan button** on
+every non-multiline param, which arms that field so the next scan fills it instead of running
+anything (`FieldScan.kt`; the armed field is checked ahead of every other branch of `AppRoot`'s scan
+dispatch, lasts exactly one scan, and is disarmed on leaving the form, so scan-to-run can never be
+left silently switched off); **peer chips** on any param naming a peer id, listing this cluster's
+live members from `ListClusterMembers` so a 52-character id is one tap rather than 52 keystrokes;
+and a **Choose file...** button on any param wanting base64 (today just `Channel: SendChannelData`'s
+chunk), which reads a file through the system document picker and base64s it in, refusing anything
+over `pkg/chandata.MaxChunkSize` — the exact ceiling `WriteChunk` enforces on the far side, so an
+oversized pick fails here rather than later and further away. The two actions are: **Generate
 DataMatrix**, always enabled for every spec (unlike an earlier version of this app, which could only
 generate a code for the ~21 commands with a direct capnp-event mapping — see `RunCode`'s own doc
 comment in `NavCode.kt` for why a plain-string, signing-key-free encoding of
@@ -675,6 +694,16 @@ value, unlike `pkg/kvctl.PollExecute`'s 4-value Go signature. `LogAppend(kind, u
 narrative)`/`LogQuery(kind, unitID, since, until, limit)` are the `pkg/logrecord` read/write
 counterparts (`mage logappend`/`logquery`) — `LogQuery` likewise returns a single JSON array string
 (`"[]"` when nothing matches, never `null`) instead of `pkg/kvctl.LogQuery`'s `[]logrecord.Record`.
+`PutLogRef(logID, group, fieldsJSON, narrative)`/`GetLogRef(logID)`/`LogRefGroup(logID)` register
+and resolve a **log reference** — the Data Matrix code that names an object rather than an action,
+see [Log references](#log-references-a-code-that-names-an-object-not-an-action) — while
+`EncodeLogRef(logID)`/`DecodeLogRef(data)` are its codec, and are the only two bindings in this
+package that need no session at all: the scanning device tries `DecodeLogRef` on every code it
+sees, including before its own daemon has finished starting. These have no desktop `mage`
+counterpart, since a log reference exists to be scanned and only the phone has a camera. Log ids
+cross the binding as `int64` rather than `pkg/logref`'s own `uint64` — gomobile does not bind
+`uint64` — so ids above `math.MaxInt64` are unreachable from a phone and refused explicitly
+rather than silently wrapping.
 
 `WatchExecute(cb ExecuteCallback)`/`StopWatchExecute()` push `EventExecute` notifications to the
 caller instead of requiring a `PollExecute` timer: `ExecuteCallback` is a Go interface Kotlin
@@ -1171,6 +1200,60 @@ which left roughly 400-470 for `Fields`+`Narrative` combined — enough for "sta
 and far too little for an execution result carrying a dozen measured values, which is exactly what
 this journal is for once anything real is built on it.
 
+### Log references: a code that names an object, not an action
+
+`api/logref.capnp`/`pkg/logref` is a second, much smaller Data Matrix payload the Android app
+scans, and the only one that asks a node for nothing at all. Every other code the app reads tells
+the device to *do* something — run a command (`RunCode`), open a screen (`NavCode`), redeem a
+ticket (a signed `shmevent`). A log reference tells it what it is **looking at**: one
+`pkg/logrecord.Record`, named by a number on a label.
+
+```
+struct LogRef {
+  tag        @0 :Text;    # "gofsd.libp2p-kv-raft/logref/v1", a constant discriminant
+  logId      @1 :UInt64;  # the uint64 representation of the record's own unitID field
+  fieldCrc32 @2 :UInt32;  # CRC-32 (IEEE) over UnitID(logId)'s bytes
+}
+```
+
+It is deliberately **not** a new `Event` union variant. A log reference is read by the scanning
+device's own UI and resolved through primitives that already exist, so it costs no new wire byte,
+no `pkg/daemon` dispatch arm, and no entry in the Rust mirror — see `api/shmevent.capnp`'s own note
+on what does and does not belong in that union.
+
+Two fields carry one number for a reason worth knowing before shrinking either. A camera decode
+either succeeds or returns nothing; ZXing has no "probably right". Every other payload here is
+checked downstream — a signed `Event` by its Ed25519 signature, a `RunCode` by its base64+JSON
+framing — so a decode that survives the symbol's own error correction but is still wrong fails
+loudly. A bare `uint64` has no such downstream: all 2^64 values are valid log ids, so a misdecode
+would silently name a *different object*, and the person scanning never typed the number and so
+cannot notice. `fieldCrc32` is what turns that into a rejected scan. `tag` closes the other gap —
+capnp has no magic number, so a foreign barcode's bytes parse as a `LogRef` with junk values about
+as often as they fail, and the app's scan dispatch has to be able to say "not mine". It also lands
+the message at 72 bytes, above the ~40-byte floor `android-app`'s own `DataMatrixCodecTest`
+measured for reliably decoding a generated symbol, and in the same range as the `RunCode`s the
+optical rig is already tuned for.
+
+**How an id resolves to a record.** The code carries a number, not a key. It resolves because the
+record is written under a fixed convention rather than an arbitrary one — `kind` is `"objcode"`,
+`unitID` is the id's decimal ASCII form — which makes "every registration of this id, newest last"
+the ordinary bounded range scan `logrecord.ScanBounds` already builds. No index, no new event, no
+daemon change. The group lives in the record's own `Fields["group"]`, so an id's group is a
+replicated, rewritable fact: registering an id again re-points every label already printed with it,
+rather than failing.
+
+**What it is for**, on a phone (`Log records: PutLogRef`/`GetLogRef`/`GenerateLogRef`, and
+`kvmobile`'s `PutLogRef`/`GetLogRef`/`LogRefGroup`/`EncodeLogRef`/`DecodeLogRef`): scanning a label
+enters the group its record declares, so the commands that apply to that kind of thing are what the
+pager shows. Tapping one opens its form with the id already filled in — the param a spec marks with
+`CommandSpec.logIdParam`. Scanning the *next* label with that form still open re-fills that one
+field **in place**: no navigation, no dialog, every other field left as typed. A different group's
+label does leave the form, because the person is now looking at a different kind of thing. A run of
+twenty objects therefore costs twenty scans and one tap instead of twenty scans and sixty taps,
+which is the whole reason the feature exists. `android-app`'s `LogRefCode.kt` holds that decision
+as a pure function (`logRefTarget`) so it is unit-testable without a camera; the four
+`logref_*` rows in `test/e2e/testdata.json`'s `android_optical_cases` exercise it on real hardware.
+
 ### Log access control
 
 A current raft cluster member (voter or learner) may `logappend`/`logquery` records of *any*
@@ -1575,10 +1658,26 @@ never crosses the same-machine trust boundary `pkg/shmevent`'s own doc comment d
 
 Wiring a channel's rings up is `shmevent.EventChannelDataReady`: sent once by
 `pkg/shmclient.Session.OpenChannel`/`ListenChannel` immediately after each obtains a channelID,
-*after* that session has already created its own upload ring and opened the daemon's download ring
-(both by then guaranteed to exist — the daemon always creates the download ring synchronously,
-before `EventChannelOpen`/`Listen`'s own response ever reaches a caller with a channelID to open it
-by, so there is nothing to race there). The daemon's own handler
+*after* that session has already created its own upload ring and opened the daemon's download ring.
+
+**The download ring's lifetime is the session's, not the read pump's** — and getting that wrong is
+what made a whole class of transfers fail at random until 2026-08-21. Creating it synchronously,
+before any caller can hold a channelID to open it by, is only half of what a caller needs; the
+other half is that it must still be *there* when the caller looks. An incoming channel sits in the
+pending queue until a local caller claims it (`EventChannelListen`), so a sender that opens a
+channel, pushes a payload and half-closes can finish before anyone claims it — the normal shape of a
+one-shot upload to a service that only starts listening once its own request arrives.
+`pumpChannelReads` used to release the ring's *storage* when it returned, which is exactly then: the
+pending entry stayed claimable, `EventChannelListen` went on handing out a channelID whose ring had
+been unlinked, and the claiming caller sat in `chandata.Open` retrying a name that could never
+resolve until its context expired (`chandata: waiting for down ring kvchan-…-down: context deadline
+exceeded`). Against two local nodes it lost that race about half the time. The pump now ends the
+ring for *writing* only (`channelSession.closeDownWrite` → `ChunkWriter.Close`, which leaves
+everything already written drainable and yields `io.EOF` once drained); the storage is released by
+`channelTable.evict`, the single path every session teardown goes through — explicit close, pending
+timeout, idle timeout, pending-queue overflow — i.e. exactly when the channel stops being claimable
+at all. `pkg/daemon`'s `TestChannelClaimedAfterSenderFinishedStillDelivers` pins the delivery and
+`TestChannelRingStorageIsReleasedWithTheSession` pins that the segment still goes away. The daemon's own handler
 (`(*Node).dispatchChannelDataReady`) opens that same upload ring as a reader and starts
 `pumpChannelUpload`, a goroutine that drains it and forwards each chunk over the wire through the
 exact same signed-frame path (`channelSession.write`) `EventChannelSend`'s legacy per-chunk path
@@ -1610,7 +1709,15 @@ capacity and `pumpChannelReads` blocks (briefly, `downRingWriteTimeout`) writing
 caller that stops draining `PollChannel` for a sustained period now applies genuine backpressure
 all the way back through libp2p's own flow control to the sending peer, rather than the old
 design's silent oldest-entry eviction once its in-memory inbox filled up — a slow receiver now
-slows the sender down instead of silently losing data. `EventChannelCloseWrite`'s guarantee is
+slows the sender down instead of silently losing data. That briefness is deliberate and is for the
+legacy `EventChannelPoll`-only caller, which never opens the ring at all and must not be able to
+wedge the pump by not draining something it was never going to read; its chunks are in the in-memory
+inbox regardless, so for *it* a dropped mirror write costs nothing. For a `pkg/chandata` caller it
+would cost a hole in the middle of its stream, so a dropped write is recorded on the session and
+`EventChannelDataReady` refuses to attach such a caller at all — an error naming what was lost,
+rather than a stream that quietly skips it and then ends cleanly
+(`TestChannelRefusesToAttachAfterDroppingData`). A caller that claims its channel promptly never
+meets either case: 1MiB is far more than one `downRingWriteTimeout` window's worth of traffic. `EventChannelCloseWrite`'s guarantee is
 preserved across this rewrite too, just relocated: `Session.CloseChannelWrite` closes the local
 upload ring writer (visible to the daemon's `pumpChannelUpload` across the shared memory
 immediately) and only *then* sends `EventChannelCloseWrite`, whose handler now deliberately blocks
@@ -1806,9 +1913,9 @@ and otherwise just confirms it's reachable.
 ### The real-camera optical harness
 
 Android command coverage lives entirely outside `e2e:current`/`e2e:all`, in a separate, manual-only
-gate: `test/e2e/testdata.json`'s `android_optical_cases` (90 cases -- some `CommandCatalog.kt`
-specs need more than one, e.g. a CAS case needs its own priming `Set` first -- covering 88 of the
-catalog's 104 commands; the remaining 16 are initial bootstrap/join calls like
+gate: `test/e2e/testdata.json`'s `android_optical_cases` (131 cases -- some `CommandCatalog.kt`
+specs need more than one, e.g. a CAS case needs its own priming `Set` first -- covering 112 of the
+catalog's 135 commands; the excluded ones are led by the initial bootstrap/join calls like
 `StartSolo`/`Join`/`RecruitPeer` that would tear down or reconfigure the very rig running the test,
 legitimately excluded rather than an oversight) and `pkg/e2erun/android_optical.go`'s
 `runOpticalScanSuite`, run against a real two-device rig -- one device's screen a real camera on a
@@ -1860,8 +1967,26 @@ as a wall of timeouts, which is what an earlier, always-signal-regardless-of-out
 mechanism did in practice. A run that hits a genuine problem now fails within a couple of minutes
 with one clear root-cause error, not by silently burning through the rest of a 90-case run.
 
+Most cases are one of three outcomes -- a `run` (confirm dialog, Execute tapped), a `nav_group`
+(silent navigation), or a `ticket` (recruit dialog, Approve tapped). The fourth, `log_ref`, is the
+only one whose expected effect is sometimes **no navigation at all**: a scanned log reference
+([Log references](#log-references-a-code-that-names-an-object-not-an-action)) landing while a form
+for its own group is open must re-fill that form's log-id field in place and leave everything else
+alone. There is nothing new on screen to wait for in that case, so `awaitScannedEffect` waits on
+the field's *value* instead of on a node appearing, re-arming the scanner between looks exactly as
+every other kind does. Such a case also sets its own starting state (`preopen_category`/
+`preopen_command`/`preopen_params`) on the scanning device, since "a form is already open" is a
+property of device B that no code device A generates could produce.
+
 Live-verified end to end against a real two-device rig (an emulator generating, a real phone
-scanning): all 90 cases passing in one batched run apiece, ~3 minutes total. Getting there surfaced
+scanning): all 90 cases passing in one batched run apiece, ~3 minutes total (measured when the
+suite was 90 cases; it has grown since). The four `log_ref` rows were verified separately as a
+five-case mini-batch on 2026-08-21 -- 5/5, `attempts: 1`, 78s -- and finding a bug that only a
+real rig could: entering a group from the pager merely assigns Compose state, so the scan
+dispatch's `navigate()` is skipped and its off-main-thread execution is invisible; with a form
+open there is a back stack entry to pop, and `androidx.navigation` threw `Method setCurrentState
+must be called on the main thread`. That case, `logref_from_another_group_leaves_the_form`, is
+the only one of the four that exercises it. Getting there surfaced
 a real, previously-undetected bug in `pkg/daemon/forward.go` along the way, not just Android-side
 issues -- `handleForwardSetStream` (the leader-side handler any non-leader node's writes get
 forwarded through) accepted `OpSet`/`OpAppendCommandRequest` but never `OpTxn`, so every `Cas`/`Txn`
