@@ -2383,11 +2383,1630 @@
         "result": "contains:inner refused: e2e-fail"
       },
       "order": 32
+    },
+    {
+      "case_id": "logref_enters_the_ids_group",
+      "generate": {
+        "target": "run",
+        "category": "Log records",
+        "name": "GenerateLogRef",
+        "params": [
+          "4417",
+          "Log records"
+        ]
+      },
+      "expect": {
+        "kind": "log_ref",
+        "category_title": "Log records"
+      },
+      "order": 33
+    },
+    {
+      "case_id": "logref_prefills_the_form",
+      "generate": {
+        "target": "run",
+        "category": "Log records",
+        "name": "GenerateLogRef",
+        "params": [
+          "4418",
+          "Log records"
+        ]
+      },
+      "expect": {
+        "kind": "log_ref",
+        "category_title": "Log records",
+        "open_command": "LogAppend",
+        "expect_param": "1=4418"
+      },
+      "order": 34
+    },
+    {
+      "case_id": "logref_refills_an_open_form",
+      "generate": {
+        "target": "run",
+        "category": "Log records",
+        "name": "GenerateLogRef",
+        "params": [
+          "4419",
+          "Log records"
+        ]
+      },
+      "expect": {
+        "kind": "log_ref",
+        "category_title": "Log records",
+        "preopen_category": "Log records",
+        "preopen_command": "LogAppend",
+        "preopen_params": [
+          "objcode-run",
+          "0000"
+        ],
+        "expect_param": "1=4419"
+      },
+      "order": 35
+    },
+    {
+      "case_id": "logref_from_another_group_leaves_the_form",
+      "generate": {
+        "target": "run",
+        "category": "Log records",
+        "name": "GenerateLogRef",
+        "params": [
+          "9002",
+          "KV"
+        ]
+      },
+      "expect": {
+        "kind": "log_ref",
+        "category_title": "KV",
+        "preopen_category": "Log records",
+        "preopen_command": "LogAppend",
+        "preopen_params": [
+          "objcode-run",
+          "4419"
+        ]
+      },
+      "order": 36
+    },
+    {
+      "case_id": "mes_register_person_alice",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterPerson",
+        "params": [
+          "{{mesBackendAddr}}",
+          "life-alice",
+          "Alice",
+          "",
+          "true"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 37
+    },
+    {
+      "case_id": "mes_register_location_shelf",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterLocation",
+        "params": [
+          "{{mesBackendAddr}}",
+          "life-alice",
+          "life-shelf",
+          "Shelf 1",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 38
+    },
+    {
+      "case_id": "mes_register_person_bob",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterPerson",
+        "params": [
+          "{{mesBackendAddr}}",
+          "life-bob",
+          "Bob",
+          "",
+          "true"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 39
+    },
+    {
+      "case_id": "mes_register_thing_drill",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterThing",
+        "params": [
+          "{{mesBackendAddr}}",
+          "life-alice",
+          "life-drill",
+          "Drill",
+          "power tools",
+          "life-shelf"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:line=[0-9][0-9.]*"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 40
+    },
+    {
+      "case_id": "mes_take_drill",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryTake",
+        "params": [
+          "{{mesBackendAddr}}",
+          "life-alice",
+          "life-drill",
+          "for the shelf job"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:holder=life-alice"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 41
+    },
+    {
+      "case_id": "mes_lookup_drill_held_by_alice",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryLookup",
+        "params": [
+          "{{mesBackendAddr}}",
+          "life-alice",
+          "life-drill"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:holder=life-alice"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 42
+    },
+    {
+      "case_id": "mes_give_drill_to_bob",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryGive",
+        "params": [
+          "{{mesBackendAddr}}",
+          "life-alice",
+          "life-drill",
+          "life-bob",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 43
+    },
+    {
+      "case_id": "mes_lookup_drill_held_by_bob",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryLookup",
+        "params": [
+          "{{mesBackendAddr}}",
+          "life-alice",
+          "life-drill"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:holder=life-bob"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 44
+    },
+    {
+      "case_id": "mes_put_drill_on_shelf",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryPut",
+        "params": [
+          "{{mesBackendAddr}}",
+          "life-bob",
+          "life-drill",
+          "life-shelf",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 45
+    },
+    {
+      "case_id": "mes_lookup_drill_in_stock_on_the_shelf",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryLookup",
+        "params": [
+          "{{mesBackendAddr}}",
+          "life-alice",
+          "life-drill"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:location=life-shelf"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 46
+    },
+    {
+      "case_id": "mes_list_mine_after_putting_it_down",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryListMine",
+        "params": [
+          "{{mesBackendAddr}}",
+          "life-bob"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:count=0"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 47
+    },
+    {
+      "case_id": "mes_list_by_location_shelf",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryListByLocation",
+        "params": [
+          "{{mesBackendAddr}}",
+          "life-alice",
+          "life-shelf"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:count=1"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 48
+    },
+    {
+      "case_id": "mes_history_of_the_drill",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryHistory",
+        "params": [
+          "{{mesBackendAddr}}",
+          "life-alice",
+          "life-drill",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:count=4"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 49
+    },
+    {
+      "case_id": "mes_register_person_refuse_alice",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterPerson",
+        "params": [
+          "{{mesBackendAddr}}",
+          "refuse-alice",
+          "Alice",
+          "",
+          "true"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 50
+    },
+    {
+      "case_id": "mes_register_location_refuse_shelf",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterLocation",
+        "params": [
+          "{{mesBackendAddr}}",
+          "refuse-alice",
+          "refuse-shelf",
+          "Shelf",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 51
+    },
+    {
+      "case_id": "mes_register_person_refuse_bob",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterPerson",
+        "params": [
+          "{{mesBackendAddr}}",
+          "refuse-bob",
+          "Bob",
+          "",
+          "true"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 52
+    },
+    {
+      "case_id": "mes_register_thing_refuse_drill",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterThing",
+        "params": [
+          "{{mesBackendAddr}}",
+          "refuse-alice",
+          "refuse-drill",
+          "Drill",
+          "",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 53
+    },
+    {
+      "case_id": "mes_take_refused_for_an_unknown_actor",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryTake",
+        "params": [
+          "{{mesBackendAddr}}",
+          "refuse-nobody",
+          "refuse-drill",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=error[\\s\\S]*unknown actor"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 54
+    },
+    {
+      "case_id": "mes_register_person_whose_standing_was_withdrawn",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterPerson",
+        "params": [
+          "{{mesBackendAddr}}",
+          "refuse-gone",
+          "Gone",
+          "",
+          "false"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 55
+    },
+    {
+      "case_id": "mes_take_refused_for_a_withdrawn_actor",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryTake",
+        "params": [
+          "{{mesBackendAddr}}",
+          "refuse-gone",
+          "refuse-drill",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=error[\\s\\S]*not an active group member"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 56
+    },
+    {
+      "case_id": "mes_put_refused_for_an_unknown_location",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryPut",
+        "params": [
+          "{{mesBackendAddr}}",
+          "refuse-alice",
+          "refuse-drill",
+          "refuse-nowhere",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=error[\\s\\S]*unknown location"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 57
+    },
+    {
+      "case_id": "mes_take_refused_for_an_unknown_thing",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryTake",
+        "params": [
+          "{{mesBackendAddr}}",
+          "refuse-alice",
+          "refuse-ghost",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=error[\\s\\S]*unknown thing"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 58
+    },
+    {
+      "case_id": "mes_register_thing_refused_when_already_registered",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterThing",
+        "params": [
+          "{{mesBackendAddr}}",
+          "refuse-alice",
+          "refuse-drill",
+          "Another drill",
+          "",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=error[\\s\\S]*already registered"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 59
+    },
+    {
+      "case_id": "mes_register_location_refused_when_already_registered",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterLocation",
+        "params": [
+          "{{mesBackendAddr}}",
+          "refuse-alice",
+          "refuse-shelf",
+          "Another shelf",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=error[\\s\\S]*already registered"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 60
+    },
+    {
+      "case_id": "mes_take_drill_as_bob",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryTake",
+        "params": [
+          "{{mesBackendAddr}}",
+          "refuse-bob",
+          "refuse-drill",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:holder=refuse-bob"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 61
+    },
+    {
+      "case_id": "mes_lookup_refuse_drill_held_by_bob",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryLookup",
+        "params": [
+          "{{mesBackendAddr}}",
+          "refuse-alice",
+          "refuse-drill"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:holder=refuse-bob"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 62
+    },
+    {
+      "case_id": "mes_take_refused_when_already_held",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryTake",
+        "params": [
+          "{{mesBackendAddr}}",
+          "refuse-alice",
+          "refuse-drill",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=error[\\s\\S]*already held by refuse-bob"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 63
+    },
+    {
+      "case_id": "mes_give_refused_when_not_the_holder",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryGive",
+        "params": [
+          "{{mesBackendAddr}}",
+          "refuse-alice",
+          "refuse-drill",
+          "refuse-bob",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=error[\\s\\S]*not currently held by refuse-alice"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 64
+    },
+    {
+      "case_id": "mes_lookup_refuse_drill_unmoved_by_a_refusal",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryLookup",
+        "params": [
+          "{{mesBackendAddr}}",
+          "refuse-alice",
+          "refuse-drill"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:holder=refuse-bob"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 65
+    },
+    {
+      "case_id": "mes_give_refused_to_a_recipient_without_standing",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryGive",
+        "params": [
+          "{{mesBackendAddr}}",
+          "refuse-bob",
+          "refuse-drill",
+          "refuse-gone",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=error[\\s\\S]*recipient"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 66
+    },
+    {
+      "case_id": "mes_history_unchanged_by_refusals",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryHistory",
+        "params": [
+          "{{mesBackendAddr}}",
+          "refuse-alice",
+          "refuse-drill",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:count=2"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 67
+    },
+    {
+      "case_id": "mes_register_person_lost_alice",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterPerson",
+        "params": [
+          "{{mesBackendAddr}}",
+          "lost-alice",
+          "Alice",
+          "",
+          "true"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 68
+    },
+    {
+      "case_id": "mes_register_location_van",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterLocation",
+        "params": [
+          "{{mesBackendAddr}}",
+          "lost-alice",
+          "lost-van",
+          "The van",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 69
+    },
+    {
+      "case_id": "mes_register_thing_saw",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterThing",
+        "params": [
+          "{{mesBackendAddr}}",
+          "lost-alice",
+          "lost-saw",
+          "Saw",
+          "",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 70
+    },
+    {
+      "case_id": "mes_report_found_refused_when_not_reported_lost",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryReportFound",
+        "params": [
+          "{{mesBackendAddr}}",
+          "lost-alice",
+          "lost-saw",
+          "lost-van",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=error[\\s\\S]*not reported lost"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 71
+    },
+    {
+      "case_id": "mes_report_lost_saw",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryReportLost",
+        "params": [
+          "{{mesBackendAddr}}",
+          "lost-alice",
+          "lost-saw",
+          "left it on site"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 72
+    },
+    {
+      "case_id": "mes_lookup_saw_lost",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryLookup",
+        "params": [
+          "{{mesBackendAddr}}",
+          "lost-alice",
+          "lost-saw"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:thingStatus=lost"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 73
+    },
+    {
+      "case_id": "mes_report_found_saw",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryReportFound",
+        "params": [
+          "{{mesBackendAddr}}",
+          "lost-alice",
+          "lost-saw",
+          "lost-van",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 74
+    },
+    {
+      "case_id": "mes_lookup_saw_back_in_the_van",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryLookup",
+        "params": [
+          "{{mesBackendAddr}}",
+          "lost-alice",
+          "lost-saw"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:location=lost-van"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 75
+    },
+    {
+      "case_id": "mes_register_person_retire_alice",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterPerson",
+        "params": [
+          "{{mesBackendAddr}}",
+          "retire-alice",
+          "Alice",
+          "",
+          "true"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 76
+    },
+    {
+      "case_id": "mes_register_thing_grinder",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterThing",
+        "params": [
+          "{{mesBackendAddr}}",
+          "retire-alice",
+          "retire-grinder",
+          "Grinder",
+          "",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 77
+    },
+    {
+      "case_id": "mes_deactivate_grinder",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryDeactivateThing",
+        "params": [
+          "{{mesBackendAddr}}",
+          "retire-alice",
+          "retire-grinder",
+          "burnt out"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 78
+    },
+    {
+      "case_id": "mes_take_refused_for_a_retired_thing",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryTake",
+        "params": [
+          "{{mesBackendAddr}}",
+          "retire-alice",
+          "retire-grinder",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=error[\\s\\S]*retired"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 79
+    },
+    {
+      "case_id": "mes_lookup_grinder_retired",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryLookup",
+        "params": [
+          "{{mesBackendAddr}}",
+          "retire-alice",
+          "retire-grinder"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:thingStatus=retired"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 80
+    },
+    {
+      "case_id": "mes_register_person_void_alice",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterPerson",
+        "params": [
+          "{{mesBackendAddr}}",
+          "void-alice",
+          "Alice",
+          "",
+          "true"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 81
+    },
+    {
+      "case_id": "mes_register_location_void_shelf",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterLocation",
+        "params": [
+          "{{mesBackendAddr}}",
+          "void-alice",
+          "void-shelf",
+          "Shelf",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 82
+    },
+    {
+      "case_id": "mes_register_thing_level",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterThing",
+        "params": [
+          "{{mesBackendAddr}}",
+          "void-alice",
+          "void-level",
+          "Level",
+          "",
+          "void-shelf"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 83
+    },
+    {
+      "case_id": "mes_void_line_refused_for_an_unknown_line",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryVoidLine",
+        "params": [
+          "{{mesBackendAddr}}",
+          "void-alice",
+          "02.09.03.99",
+          "nothing there"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=error[\\s\\S]*unknown line"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 84
+    },
+    {
+      "case_id": "mes_verify_the_book",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryVerify",
+        "params": [
+          "{{mesBackendAddr}}",
+          "void-alice"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:events=[1-9][0-9]*"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 85
+    },
+    {
+      "case_id": "mes_void_line",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryVoidLine",
+        "params": [
+          "{{mesBackendAddr}}",
+          "void-alice",
+          "{{mesLine}}",
+          "wrong tag scanned"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 86
+    },
+    {
+      "case_id": "mes_lookup_level_back_on_the_shelf",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryLookup",
+        "params": [
+          "{{mesBackendAddr}}",
+          "void-alice",
+          "void-level"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:location=void-shelf"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 87
+    },
+    {
+      "case_id": "mes_void_line_refused_when_already_struck",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryVoidLine",
+        "params": [
+          "{{mesBackendAddr}}",
+          "void-alice",
+          "{{mesLastMintedLine}}",
+          "again"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=error[\\s\\S]*already been superseded or voided"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 88
+    },
+    {
+      "case_id": "mes_history_keeps_the_struck_line",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryHistory",
+        "params": [
+          "{{mesBackendAddr}}",
+          "void-alice",
+          "void-level",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:count=2[\\s\\S]*voided: wrong tag scanned"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 89
+    },
+    {
+      "case_id": "mes_signal_send_message",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "SignalSendMessage",
+        "params": [
+          "{{mesBackendAddr}}",
+          "e2e-inventory-group",
+          "",
+          "hello from the e2e suite"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:timestamp=[0-9]+"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 90
+    },
+    {
+      "case_id": "mes_signal_delete_message",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "SignalDeleteMessage",
+        "params": [
+          "{{mesBackendAddr}}",
+          "e2e-inventory-group",
+          "",
+          "{{mesTimestamp}}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 91
+    },
+    {
+      "case_id": "mes_signal_send_refused_without_a_destination",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "SignalSendMessage",
+        "params": [
+          "{{mesBackendAddr}}",
+          "",
+          "",
+          "to nobody in particular"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=error[\\s\\S]*required"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 92
+    },
+    {
+      "case_id": "mes_signal_send_qr_code",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "SignalSendQRCode",
+        "params": [
+          "{{mesBackendAddr}}",
+          "e2e-inventory-group",
+          "",
+          "scan me",
+          "https://example.invalid/e2e"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:timestamp=[0-9]+"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 93
+    },
+    {
+      "case_id": "mes_signal_send_refused_for_two_destinations",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "SignalSendMessage",
+        "params": [
+          "{{mesBackendAddr}}",
+          "e2e-inventory-group",
+          "+15550000",
+          "to both at once"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=error[\\s\\S]*mutually exclusive"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 94
+    },
+    {
+      "case_id": "mes_save_to_google_sheets",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "SaveToGoogleSheets",
+        "params": [
+          "{{mesBackendAddr}}",
+          "{\"spreadsheetId\":\"\",\"tabs\":[{\"name\":\"Report\",\"rows\":[{\"row\":1,\"values\":[\"when\",\"what\"]},{\"row\":2,\"values\":[\"today\",\"an e2e run\"]}]}]}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:spreadsheetId=[^;|\\s]+"
+      },
+      "hold_millis": 150000,
+      "timeout_ms": 140000,
+      "order": 95
+    },
+    {
+      "case_id": "mes_delete_file",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "DeleteFile",
+        "params": [
+          "{{mesBackendAddr}}",
+          "file-to-delete"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 96
+    },
+    {
+      "case_id": "mes_save_file_refuses_malformed_inputs",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "SaveFile",
+        "params": [
+          "{{mesBackendAddr}}",
+          "not-json"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=error[\\s\\S]*invalid inputs"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 97
+    },
+    {
+      "case_id": "mes_sync_sheets_creates_the_mirror",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventorySyncSheets",
+        "params": [
+          "{{mesBackendAddr}}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:spreadsheetId=[^;|\\s]+"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 98
+    },
+    {
+      "case_id": "mes_lookup_drill_before_a_quiet_sync",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryLookup",
+        "params": [
+          "{{mesBackendAddr}}",
+          "life-alice",
+          "life-drill"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:location=life-shelf"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 99
+    },
+    {
+      "case_id": "mes_sync_sheets_is_quiet_when_nothing_is_new",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventorySyncSheets",
+        "params": [
+          "{{mesBackendAddr}}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:ledgerSynced=0"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 100
+    },
+    {
+      "case_id": "mes_register_thing_chisel",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterThing",
+        "params": [
+          "{{mesBackendAddr}}",
+          "life-alice",
+          "cursor-chisel",
+          "Chisel",
+          "",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 101
+    },
+    {
+      "case_id": "mes_sync_sheets_mirrors_one_new_line",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventorySyncSheets",
+        "params": [
+          "{{mesBackendAddr}}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:ledgerSynced=1"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 102
+    },
+    {
+      "case_id": "mes_register_thing_ladder",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterThing",
+        "params": [
+          "{{mesBackendAddr}}",
+          "life-alice",
+          "dm-ladder",
+          "Ladder",
+          "",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 103
+    },
+    {
+      "case_id": "mes_send_data_matrix_for_the_ladder",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventorySendDataMatrix",
+        "params": [
+          "{{mesBackendAddr}}",
+          "e2e-inventory-group",
+          "",
+          "tag for the ladder",
+          "thing",
+          "dm-ladder"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:refId=dm-ladder"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 104
+    },
+    {
+      "case_id": "mes_lookup_ladder",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryLookup",
+        "params": [
+          "{{mesBackendAddr}}",
+          "life-alice",
+          "dm-ladder"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 105
+    },
+    {
+      "case_id": "mes_send_data_matrix_refused_for_an_unknown_thing",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventorySendDataMatrix",
+        "params": [
+          "{{mesBackendAddr}}",
+          "e2e-inventory-group",
+          "",
+          "",
+          "thing",
+          "dm-ghost"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=error[\\s\\S]*unknown thing"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 106
+    },
+    {
+      "case_id": "mes_group_sync_follows_signal_membership",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryGroupSync",
+        "params": [
+          "{{mesBackendAddr}}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:synced=2"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 107
+    },
+    {
+      "case_id": "mes_list_mine_refused_after_leaving_the_group",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryListMine",
+        "params": [
+          "{{mesBackendAddr}}",
+          "life-alice"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=error[\\s\\S]*not an active group member"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 108
+    },
+    {
+      "case_id": "mes_group_sync_is_quiet_when_nothing_changed",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryGroupSync",
+        "params": [
+          "{{mesBackendAddr}}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:deactivated=0"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 109
     }
   ],
   "android_optical_scan_result": {
-    "ran_at": "2026-08-20T18:20:25.375053554+03:00",
-    "status": 0,
+    "ran_at": "2026-08-23T22:06:33.750887122+03:00",
+    "status": 1,
+    "error": "111 of 131 optical scan case(s) failed:\nrelaynode_add: device B: 'runConfirmExecute' not shown after 9303ms -- the semantics lookup ran cleanly and simply never found it\nrelaynode_confirm: device A never produced a result (batch may have stopped early)\nrelaynode_remove: device A never produced a result (batch may have stopped early)\nrelaynode_get: device A never produced a result (batch may have stopped early)\nrelaynode_list: device A never produced a result (batch may have stopped early)\nstation_put: device A never produced a result (batch may have stopped early)\nstation_delete: device A never produced a result (batch may have stopped early)\nstation_get: device A never produced a result (batch may have stopped early)\nstation_list: device A never produced a result (batch may have stopped early)\nkv_get: device A never produced a result (batch may have stopped early)\nkv_range_scan: device A never produced a result (batch may have stopped early)\nkv_cas_absent: device A never produced a result (batch may have stopped early)\nkv_cas_prime: device A never produced a result (batch may have stopped early)\nkv_cas: device A never produced a result (batch may have stopped early)\nkv_txn: device A never produced a result (batch may have stopped early)\nkv_range_scan_seed: device A never produced a result (batch may have stopped early)\nkv_range_scan_skip_limit_asc: device A never produced a result (batch may have stopped early)\nkv_range_scan_skip_limit_desc: device A never produced a result (batch may have stopped early)\nkv_range_scan_order_desc: device A never produced a result (batch may have stopped early)\nkv_range_scan_skip_past_end: device A never produced a result (batch may have stopped early)\npermits_request: device A never produced a result (batch may have stopped early)\npermits_confirm: device A never produced a result (batch may have stopped early)\npermits_revoke: device A never produced a result (batch may have stopped early)\nexecute_execute: device A never produced a result (batch may have stopped early)\nexecute_poll: device A never produced a result (batch may have stopped early)\nexecute_watch: device A never produced a result (batch may have stopped early)\nexecute_stop_watch: device A never produced a result (batch may have stopped early)\nchannel_open: device A never produced a result (batch may have stopped early)\nchannel_stop_listen: device A never produced a result (batch may have stopped early)\nchannel_send_data: device A never produced a result (batch may have stopped early)\nchannel_close_write: device A never produced a result (batch may have stopped early)\nchannel_close: device A never produced a result (batch may have stopped early)\nchannel_stop: device A never produced a result (batch may have stopped early)\nlogrecords_append: device A never produced a result (batch may have stopped early)\nlogrecords_query: device A never produced a result (batch may have stopped early)\ngroup_create: device A never produced a result (batch may have stopped early)\ngroup_update: device A never produced a result (batch may have stopped early)\ngroup_delete: device A never produced a result (batch may have stopped early)\ngroup_get: device A never produced a result (batch may have stopped early)\ngroup_list: device A never produced a result (batch may have stopped early)\ncommand_create: device A never produced a result (batch may have stopped early)\ncommand_update: device A never produced a result (batch may have stopped early)\ncommand_delete: device A never produced a result (batch may have stopped early)\ncommand_get: device A never produced a result (batch may have stopped early)\ncommand_list: device A never produced a result (batch may have stopped early)\ncommand_create_with_spec: device A never produced a result (batch may have stopped early)\ncommand_update_with_spec: device A never produced a result (batch may have stopped early)\nlinks_add_command_to_group: device A never produced a result (batch may have stopped early)\nlinks_remove_command_from_group: device A never produced a result (batch may have stopped early)\nlinks_list_groups_for_command: device A never produced a result (batch may have stopped early)\nlinks_add_peer_to_group: device A never produced a result (batch may have stopped early)\nlinks_remove_peer_from_group: device A never produced a result (batch may have stopped early)\nlinks_list_groups_for_peer: device A never produced a result (batch may have stopped early)\ndispatch_submit_command: device A never produced a result (batch may have stopped early)\ndispatch_get_command_request: device A never produced a result (batch may have stopped early)\ndispatch_list_command_requests: device A never produced a result (batch may have stopped early)\ndispatch_list_executions_by_peer: device A never produced a result (batch may have stopped early)\ndispatch_append_command_log: device A never produced a result (batch may have stopped early)\ndispatch_report_progress: device A never produced a result (batch may have stopped early)\ndispatch_query_command_log: device A never produced a result (batch may have stopped early)\ndispatch_latest_command_log: device A never produced a result (batch may have stopped early)\ndispatch_watch_command_log: device A never produced a result (batch may have stopped early)\ndispatch_stop_watch_command_log: device A never produced a result (batch may have stopped early)\ndispatch_dial_query_command_log: device A never produced a result (batch may have stopped early)\ndispatch_dial_watch_command_log: device A never produced a result (batch may have stopped early)\ndispatch_stop_dial_watch_command_log: device A never produced a result (batch may have stopped early)\ndispatch_run_command_dispatcher: device A never produced a result (batch may have stopped early)\ndispatch_stop_command_dispatcher: device A never produced a result (batch may have stopped early)\nexecinvite_create: device A never produced a result (batch may have stopped early)\nexecinvite_revoke: device A never produced a result (batch may have stopped early)\nexecinvite_redeem: device A never produced a result (batch may have stopped early)\nexecinvite_create_ticket: device A never produced a result (batch may have stopped early)\nexecinvite_redeem_ticket: device A never produced a result (batch may have stopped early)\nraw_send_event: device A never produced a result (batch may have stopped early)\ntest_sleep_millis: device A never produced a result (batch may have stopped early)\njournal_form: device A never produced a result (batch may have stopped early)\njournal_append: device A never produced a result (batch may have stopped early)\njournal_append_closed_vocabulary: device A never produced a result (batch may have stopped early)\njournal_page: device A never produced a result (batch may have stopped early)\njournal_identity: device A never produced a result (batch may have stopped early)\njournal_verify: device A never produced a result (batch may have stopped early)\njournal_countersign: device A never produced a result (batch may have stopped early)\njournal_correct: device A never produced a result (batch may have stopped early)\njournal_void: device A never produced a result (batch may have stopped early)\njournal_sign_off_the_page: device A never produced a result (batch may have stopped early)\ncron_next_previews_the_expression: device A never produced a result (batch may have stopped early)\ncron_put_schedules_a_command: device A never produced a result (batch may have stopped early)\ncron_get_reads_the_schedule_back: device A never produced a result (batch may have stopped early)\ncron_list_shows_the_schedule: device A never produced a result (batch may have stopped early)\ncron_serve_starts_the_scheduler: device A never produced a result (batch may have stopped early)\ncron_seed_watermark: device A never produced a result (batch may have stopped early)\ncron_settle_for_the_first_fire: device A never produced a result (batch may have stopped early)\ncron_stop_serve: device A never produced a result (batch may have stopped early)\ncron_serving_is_false_after_stop: device A never produced a result (batch may have stopped early)\ncron_fires_records_the_dispatch: device A never produced a result (batch may have stopped early)\ncron_disable_the_schedule: device A never produced a result (batch may have stopped early)\ncron_get_shows_it_disabled: device A never produced a result (batch may have stopped early)\ncron_delete: device A never produced a result (batch may have stopped early)\nlua_list_shows_the_seeded_scripts: device A never produced a result (batch may have stopped early)\nlua_run_outer_succeeds: device A never produced a result (batch may have stopped early)\nlua_settle_after_success: device A never produced a result (batch may have stopped early)\nlua_lastlog_has_the_inner_line: device A never produced a result (batch may have stopped early)\nlua_put_stores_a_script: device A never produced a result (batch may have stopped early)\nlua_lastlog_names_the_child_run: device A never produced a result (batch may have stopped early)\nlua_run_outer_fails: device A never produced a result (batch may have stopped early)\nlua_settle_after_failure: device A never produced a result (batch may have stopped early)\nlua_lastlog_has_the_inner_error: device A never produced a result (batch may have stopped early)\nlogref_enters_the_ids_group: device A never produced a result (batch may have stopped early)\nlogref_prefills_the_form: device A never produced a result (batch may have stopped early)\nlogref_refills_an_open_form: device A never produced a result (batch may have stopped early)\nlogref_from_another_group_leaves_the_form: device A never produced a result (batch may have stopped early)",
     "cases": [
       {
         "case_id": "get_own_addr",
@@ -2471,434 +4090,560 @@
       },
       {
         "case_id": "relaynode_add",
-        "pass": true
+        "pass": false,
+        "error": "device B: 'runConfirmExecute' not shown after 9303ms -- the semantics lookup ran cleanly and simply never found it"
       },
       {
         "case_id": "relaynode_confirm",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "relaynode_remove",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "relaynode_get",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "relaynode_list",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "station_put",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "station_delete",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "station_get",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "station_list",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "kv_get",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "kv_range_scan",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "kv_cas_absent",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "kv_cas_prime",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "kv_cas",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "kv_txn",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "kv_range_scan_seed",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "kv_range_scan_skip_limit_asc",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "kv_range_scan_skip_limit_desc",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "kv_range_scan_order_desc",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "kv_range_scan_skip_past_end",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "permits_request",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "permits_confirm",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "permits_revoke",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "execute_execute",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "execute_poll",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "execute_watch",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "execute_stop_watch",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "channel_open",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "channel_stop_listen",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "channel_send_data",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "channel_close_write",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "channel_close",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "channel_stop",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "logrecords_append",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "logrecords_query",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "group_create",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "group_update",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "group_delete",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "group_get",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "group_list",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "command_create",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "command_update",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "command_delete",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "command_get",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "command_list",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "command_create_with_spec",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "command_update_with_spec",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "links_add_command_to_group",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "links_remove_command_from_group",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "links_list_groups_for_command",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "links_add_peer_to_group",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "links_remove_peer_from_group",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "links_list_groups_for_peer",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "dispatch_submit_command",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "dispatch_get_command_request",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "dispatch_list_command_requests",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "dispatch_list_executions_by_peer",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "dispatch_append_command_log",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "dispatch_report_progress",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "dispatch_query_command_log",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "dispatch_latest_command_log",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "dispatch_watch_command_log",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "dispatch_stop_watch_command_log",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "dispatch_dial_query_command_log",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "dispatch_dial_watch_command_log",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "dispatch_stop_dial_watch_command_log",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "dispatch_run_command_dispatcher",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "dispatch_stop_command_dispatcher",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "execinvite_create",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "execinvite_revoke",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "execinvite_redeem",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "execinvite_create_ticket",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "execinvite_redeem_ticket",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "raw_send_event",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "test_sleep_millis",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "journal_form",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "journal_append",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "journal_append_closed_vocabulary",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "journal_page",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "journal_identity",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "journal_verify",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "journal_countersign",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "journal_correct",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "journal_void",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "journal_sign_off_the_page",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "cron_next_previews_the_expression",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "cron_put_schedules_a_command",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "cron_get_reads_the_schedule_back",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "cron_list_shows_the_schedule",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "cron_serve_starts_the_scheduler",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "cron_seed_watermark",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "cron_settle_for_the_first_fire",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "cron_stop_serve",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "cron_serving_is_false_after_stop",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "cron_fires_records_the_dispatch",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "cron_disable_the_schedule",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "cron_get_shows_it_disabled",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "cron_delete",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "lua_list_shows_the_seeded_scripts",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "lua_run_outer_succeeds",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "lua_settle_after_success",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "lua_lastlog_has_the_inner_line",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "lua_put_stores_a_script",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "lua_lastlog_names_the_child_run",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "lua_run_outer_fails",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "lua_settle_after_failure",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "lua_lastlog_has_the_inner_error",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
+      },
+      {
+        "case_id": "logref_enters_the_ids_group",
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
+      },
+      {
+        "case_id": "logref_prefills_the_form",
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
+      },
+      {
+        "case_id": "logref_refills_an_open_form",
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
+      },
+      {
+        "case_id": "logref_from_another_group_leaves_the_form",
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       }
     ],
-    "attempts": 2,
-    "stalls": 18
+    "attempts": 1
   }
 }

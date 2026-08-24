@@ -48,6 +48,10 @@ const (
 )
 
 func runOpticalScanSuite(cases []e2edata.OpticalScanCase, serialA, serialB string) *e2edata.OpticalScanResult {
+	// Resolved once, before the retry loop: a crash retry re-runs the same batch, and re-reading
+	// the backend's address between attempts could silently move half a run onto a different
+	// backend than the half before it.
+	cases = resolveMesCases(cases)
 	for attempt := 0; ; attempt++ {
 		result, crashed := runOpticalScanBatch(cases, serialA, serialB)
 		// Attempts counts batches spent, not batches retried, so a clean run records 1 rather than

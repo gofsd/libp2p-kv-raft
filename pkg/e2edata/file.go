@@ -2262,6 +2262,22 @@ type OpticalGenerateSpec struct {
 	//                         endorses one. Each resolution mints a new line, because every
 	//                         such command may be applied to a given line exactly once and the
 	//                         book outlives the run -- see UiCommandE2ETest.mintJournalLine.
+	//   "{{mesLine}}"      -- the same thing in the mes/signal-cli backend's own log book, for a
+	//                         "Mes: InventoryVoidLine" case. A fresh person and thing are
+	//                         registered per resolution, since registering either twice is
+	//                         itself refused -- see UiCommandE2ETest.mintMesLine.
+	//   "{{mesTimestamp}}" -- the timestamp of a Signal message A really sends, for a
+	//                         "Mes: SignalDeleteMessage" case. Signal has no message id other
+	//                         than the send's timestamp, so the two commands only work as a
+	//                         pair -- see UiCommandE2ETest.mintMesTimestamp.
+	//
+	// One token is resolved on the *host* instead, before either device is launched:
+	//
+	//   "{{mesBackendAddr}}" -- the mes/signal-cli backend's dialable multiaddr. Unlike the four
+	//                         above it describes a third process neither device runs, stood up
+	//                         fresh per rig session, so only the host can know it. A case naming
+	//                         it is skipped outright when no backend is configured, rather than
+	//                         failed -- see pkg/e2erun's resolveMesCases.
 	//
 	// A token that fails to resolve is left in place rather than replaced by something empty,
 	// so the case fails on the literal token instead of passing against a blank.
@@ -2273,12 +2289,46 @@ type OpticalGenerateSpec struct {
 type OpticalExpectSpec struct {
 	// Kind selects the expected outcome: "run" (RunConfirmDialog, Execute tapped -- covers every
 	// command now, including what used to be a separate "event" outcome before RunCode unified
-	// them), "nav_group" (silent NavCode.Group navigation, no dialog), or "ticket"
-	// (RecruitConfirmDialog, Approve tapped).
+	// them), "nav_group" (silent NavCode.Group navigation, no dialog), "ticket"
+	// (RecruitConfirmDialog, Approve tapped), or "log_ref" (a scanned log reference, see
+	// api/logref.capnp -- also silent, and see PreopenCommand/OpenCommand/ExpectParam below for
+	// the two things worth checking about one).
 	Kind string `json:"kind"`
-	// CategoryTitle is CommandListScreen's own categoryTitle text to expect after a "nav_group"
-	// scan.
+	// CategoryTitle is the group's own categoryTitle text (GroupPageScreen) to expect after a
+	// "nav_group" or "log_ref" scan. For "log_ref" it is the group the scanned id's record
+	// declares -- which is the assertion, since resolving an id to a group is the whole of what
+	// that scan does before anyone taps anything.
 	CategoryTitle string `json:"category_title,omitempty"`
+	// PreopenCategory/PreopenCommand/PreopenParams, for a "log_ref" case, name a
+	// CommandDetailScreen device B opens and fills in *before* it waits for the scan.
+	//
+	// This is what separates the two cases that matter for this feature from the plain one. A
+	// scan landing with no form open enters the id's group, which CategoryTitle alone covers.
+	// A scan landing while a form for that same group is open must instead leave the screen
+	// exactly where it is and re-fill only the log-id field (LogRefTarget.RefillOpenForm) --
+	// there is no way to set that situation up from device A, since it is a property of what
+	// device B is already looking at.
+	//
+	// Preopening also makes the negative case reachable: a form open for one group and a scan
+	// belonging to another must abandon that form, which is asserted by CategoryTitle naming
+	// the *other* group.
+	PreopenCategory string   `json:"preopen_category,omitempty"`
+	PreopenCommand  string   `json:"preopen_command,omitempty"`
+	PreopenParams   []string `json:"preopen_params,omitempty"`
+	// OpenCommand, for a "log_ref" case that lands on a group page, names a command in that
+	// group for device B to tap once it gets there -- so a case can check the id actually
+	// reached the form, not merely that the group was entered. Mutually exclusive with
+	// PreopenCommand, which describes a form that was already open.
+	OpenCommand string `json:"open_command,omitempty"`
+	// ExpectParam, for a "log_ref" case, asserts one of the open form's own param fields, as
+	// "<index>=<value>" (e.g. "1=4418" -- CommandDetailScreen's param_1 holds "4418"). Written
+	// as one string rather than an index/value pair because 0 is a perfectly ordinary index and
+	// an omitted int field is indistinguishable from it.
+	//
+	// This is the assertion the feature exists for: the id arrived in the field without anyone
+	// typing it, and on a re-fill it replaced whatever was there before while every other field
+	// kept what PreopenParams put in it.
+	ExpectParam string `json:"expect_param,omitempty"`
 	// Result is required for "run" -- the same succeeded/rejected/no_crash/"contains:<substring>"
 	// convention ExpectSucceeded/ExpectRejected/ExpectNoCrash describe, checked against the
 	// post-Execute OutputLog entry CommandExecutor.execute records on device B. Tokens
