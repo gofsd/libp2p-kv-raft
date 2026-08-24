@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,6 +13,10 @@ import (
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmclient"
 	"github.com/gofsd/libp2p-kv-raft/pkg/shmevent"
 )
+
+// testRegistryMu serializes registry writes across parallel tests -- see
+// startChannelDataplaneTestNode.
+var testRegistryMu sync.Mutex
 
 // startChannelDataplaneTestNode is startExecuteTestNode plus a real
 // pkg/ipc.Serve loop -- unlike callLocal (every other test in this
@@ -32,7 +37,17 @@ func startChannelDataplaneTestNode(t *testing.T, dir string) *Node {
 	if err != nil {
 		t.Fatalf("registry.Open: %v", err)
 	}
-	if err := reg.Put(registry.NodeInfo{PeerID: n.peerID, DataDir: dir}); err != nil {
+	// pkg/registry writes registry.json by rename-over-a-temp-file and
+	// documents itself as being for one operator driving commands
+	// sequentially, not for concurrent writers: two parallel tests
+	// registering a node at the same moment race on that temp file and
+	// one of them fails its rename with ENOENT. Serializing the writes
+	// here costs nothing and keeps that out of every test that starts a
+	// node.
+	testRegistryMu.Lock()
+	err = reg.Put(registry.NodeInfo{PeerID: n.peerID, DataDir: dir})
+	testRegistryMu.Unlock()
+	if err != nil {
 		t.Fatalf("registry.Put: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())

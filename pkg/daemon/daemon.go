@@ -707,6 +707,13 @@ func (n *Node) shutdown() {
 	logFile := n.raftLogFile
 	n.mu.Unlock()
 
+	// Before anything else: every live channel session owns a
+	// shared-memory ring, and closing their streams is also what
+	// unblocks the goroutines pumping them (see channelTable.closeAll).
+	if n.channels != nil {
+		n.channels.closeAll()
+	}
+
 	if rf != nil {
 		if observer != nil {
 			// Deregister before closing: RegisterObserver/DeregisterObserver

@@ -157,14 +157,34 @@ type channelSession struct {
 	// channelID is ever handed back to any caller (dispatchChannelOpen/
 	// handleChannelStream), so it always exists by the time a local
 	// caller could possibly go looking for it. Written to only by
-	// pumpChannelReads (a single goroutine), which also owns closing it.
+	// pumpChannelReads, a single goroutine.
+	//
+	// Its teardown has two halves, and they belong to different owners.
+	// pumpChannelReads ends the *writing* when the remote peer stops
+	// sending (closeDownWrite); the ring's *storage* is released only
+	// when the session itself is evicted (releaseDown), because until
+	// then this channel can still be claimed by a local caller who has
+	// not opened the ring yet and can only find it by name.
 	down *chandata.ChunkWriter
+	// downWriteClosed/downStorageFreed make those two halves idempotent
+	// and independent of each other, since either can be reached from
+	// more than one path (the pump exiting, an explicit close, the
+	// reaper).
+	downWriteClosed  sync.Once
+	downStorageFreed sync.Once
 
 	mu           sync.Mutex
 	inbox        []channelChunk
 	closed       bool
 	closeReason  string
 	lastActivity time.Time
+	// downLost counts chunks that arrived off the wire but could not be
+	// mirrored into down because nothing was draining it (see
+	// downRingWriteTimeout). They are still in inbox for the legacy poll
+	// path, but a pkg/chandata caller attaching afterwards would read a
+	// stream with a hole in it and no way to know -- so
+	// dispatchChannelDataReady refuses instead (see downWasLost).
+	downLost int
 
 	// up is the local caller's own outgoing ring, opened lazily by
 	// dispatchChannelDataReady once its handshake
@@ -213,6 +233,52 @@ func (s *channelSession) setUploadRing(r *chandata.ChunkReader) {
 	s.mu.Lock()
 	s.up = r
 	s.mu.Unlock()
+}
+
+// closeDownWrite ends this node's own writing to the down ring. What has
+// already been written stays in it for a local reader to drain, and only
+// once drained does that reader observe io.EOF -- see
+// chandata.ChunkWriter.Close.
+//
+// Deliberately not CloseStorage. The ring's name has to stay resolvable
+// for as long as this channel can still be claimed: a caller that has
+// not opened the ring yet can only find it by name, and unlinking it the
+// moment the remote peer stopped sending made a channel claimed after
+// its sender finished impossible to attach to at all -- the caller got a
+// channel id from EventChannelListen and then waited out its whole
+// timeout on a ring that no longer existed.
+func (s *channelSession) closeDownWrite() {
+	s.downWriteClosed.Do(func() { _ = s.down.Close() })
+}
+
+// releaseDown ends the ring for good, unlinking its storage -- called
+// only from channelTable.evict, i.e. exactly when this session stops
+// being claimable or readable at all.
+//
+// Safe after closeDownWrite (CloseStorage marks the ring closed first,
+// and shmring's own Close is idempotent), and safe for a reader that
+// already opened the ring: that mapping stays valid: see
+// chandata.ChunkWriter.CloseStorage. Which is why the storage's lifetime
+// is bounded by the session's rather than by any reader's.
+func (s *channelSession) releaseDown() {
+	s.closeDownWrite()
+	s.downStorageFreed.Do(func() { _ = s.down.CloseStorage() })
+}
+
+// markDownLost records that one received chunk could not be mirrored
+// into the down ring.
+func (s *channelSession) markDownLost() {
+	s.mu.Lock()
+	s.downLost++
+	s.mu.Unlock()
+}
+
+// downWasLost reports how many received chunks never made it into the
+// down ring -- see the downLost field.
+func (s *channelSession) downWasLost() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.downLost
 }
 
 func (s *channelSession) touch() {
@@ -344,20 +410,38 @@ func (t *channelTable) get(channelID string) (*channelSession, bool) {
 	return s, ok
 }
 
-// remove deletes channelID's session (if any) from both the live table
-// and the pending queue -- CloseChannel's implementation, and the
-// reaper's. Does not itself close the underlying stream; callers that
-// need that do it before calling remove.
+// remove ends channelID's session (if any) and drops it from both the
+// live table and the pending queue -- CloseChannel's implementation.
 func (t *channelTable) remove(channelID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	delete(t.sessions, channelID)
+	if s, ok := t.sessions[channelID]; ok {
+		t.evict(channelID, s)
+	}
 	for i, p := range t.pending {
 		if p.channelID == channelID {
 			t.pending = append(t.pending[:i], t.pending[i+1:]...)
 			break
 		}
 	}
+}
+
+// evict ends one session completely: its stream, the context bounding
+// its ring calls, and its down ring's storage -- then forgets it.
+//
+// Every path that stops a session goes through here, which is what makes
+// "the down ring outlives the read pump" safe to say: the pump no longer
+// releases that storage (see channelSession.closeDownWrite), so exactly
+// one thing must, and it is this -- the moment the session stops being
+// claimable or readable. A path that dropped a session without calling
+// this would leak a shared-memory segment until the process exited.
+//
+// Callers hold t.mu.
+func (t *channelTable) evict(channelID string, s *channelSession) {
+	s.stream.Close()
+	s.closeCancel()
+	s.releaseDown()
+	delete(t.sessions, channelID)
 }
 
 // pushPending enqueues channelID for a future EventChannelListen to
@@ -370,8 +454,7 @@ func (t *channelTable) pushPending(channelID string) {
 		stale := t.pending[0]
 		t.pending = t.pending[1:]
 		if s, ok := t.sessions[stale.channelID]; ok {
-			s.stream.Close()
-			delete(t.sessions, stale.channelID)
+			t.evict(stale.channelID, s)
 		}
 	}
 	t.pending = append(t.pending, pendingChannel{channelID: channelID, addedAt: time.Now()})
@@ -390,6 +473,24 @@ func (t *channelTable) popPending() (string, bool) {
 	return id, true
 }
 
+// closeAll ends every session this node holds -- the node itself is
+// going away (see (*Node).shutdown).
+//
+// It exists because each session owns a shared-memory ring
+// (channelTable.evict), and a segment nothing releases outlives the
+// process that made it. That matters for the same reason the raft log
+// store's own close in shutdown does: one process can start a node more
+// than once (mobile/kvmobile's Stop/Start), so what a node fails to
+// release on shutdown it fails to release again on every restart.
+func (t *channelTable) closeAll() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for id, s := range t.sessions {
+		t.evict(id, s)
+	}
+	t.pending = nil
+}
+
 // reap closes and evicts sessions idle past channelIdleTimeout, and
 // unclaimed pending entries older than channelPendingTimeout -- see
 // channelIdleTimeout's own doc comment for why this runs opportunistically
@@ -404,9 +505,7 @@ func (t *channelTable) reap() {
 	for _, p := range t.pending {
 		if now.Sub(p.addedAt) > channelPendingTimeout {
 			if s, ok := t.sessions[p.channelID]; ok {
-				s.stream.Close()
-				s.closeCancel()
-				delete(t.sessions, p.channelID)
+				t.evict(p.channelID, s)
 			}
 			continue
 		}
@@ -416,9 +515,7 @@ func (t *channelTable) reap() {
 
 	for id, s := range t.sessions {
 		if s.idleFor(now) > channelIdleTimeout {
-			s.stream.Close()
-			s.closeCancel()
-			delete(t.sessions, id)
+			t.evict(id, s)
 		}
 	}
 }
@@ -726,9 +823,16 @@ func (n *Node) handleChannelStream(s network.Stream) {
 // this ring at all (the legacy EventChannelPoll-only path, which has no
 // reason to ever call shmevent.EventChannelDataReady) can't wedge this
 // pump's read loop forever once the ring fills up -- sess.inbox above
-// already has this chunk buffered for that path regardless, so a dropped
-// mirror write here costs nothing but the ring's own throughput advantage
-// for a caller that was never going to use it in the first place.
+// already has this chunk buffered for that path regardless.
+//
+// For that legacy caller a dropped mirror write really does cost
+// nothing. For a pkg/chandata caller it would cost a hole in the middle
+// of its stream, so the drop is recorded (channelSession.markDownLost)
+// and dispatchChannelDataReady refuses to attach such a caller at all
+// rather than let it read a silently incomplete stream. A caller that
+// claims its channel promptly never reaches either case: the ring holds
+// chandata.Capacity, far more than one timeout window's worth of
+// traffic.
 const downRingWriteTimeout = 250 * time.Millisecond
 
 // pumpChannelReads is sess's background read pump: reads one signed
@@ -745,13 +849,13 @@ const downRingWriteTimeout = 250 * time.Millisecond
 // anything after that point either), or this node's own
 // EventChannelClose/the reaper closes the stream first -- any of which
 // marks the session closed rather than removing it outright, so chunks
-// already buffered are still readable via a final poll, and releases
-// sess.down's storage (pumpChannelReads is that ring's sole writer for its
-// whole lifetime -- see ChunkWriter.CloseStorage's doc comment on why
-// that's the right owner to release it, regardless of whether every byte
-// has actually been drained yet).
+// already buffered are still readable via a final poll, and closes
+// sess.down for *writing* (pumpChannelReads is that ring's sole writer
+// for its whole lifetime, so it is the right thing to end the stream --
+// but not to unlink it, which is the session's own end: see
+// channelSession.closeDownWrite).
 func (n *Node) pumpChannelReads(sess *channelSession) {
-	defer sess.down.CloseStorage()
+	defer sess.closeDownWrite()
 	for {
 		buf, err := readFramed(sess.stream)
 		if err != nil {
@@ -782,8 +886,16 @@ func (n *Node) pumpChannelReads(sess *channelSession) {
 		sess.pushChunk(purpose, chunk)
 
 		writeCtx, writeCancel := context.WithTimeout(sess.closeCtx, downRingWriteTimeout)
-		_ = sess.down.WriteChunk(writeCtx, purpose, chunk)
+		err = sess.down.WriteChunk(writeCtx, purpose, chunk)
 		writeCancel()
+		if err != nil {
+			// Nothing is draining the ring (see downRingWriteTimeout).
+			// The chunk is still in inbox for the legacy poll path, but
+			// a pkg/chandata caller attaching later would silently read
+			// a stream with a hole in it -- so record the loss and let
+			// dispatchChannelDataReady refuse that caller outright.
+			sess.markDownLost()
+		}
 	}
 }
 
@@ -878,6 +990,11 @@ func (n *Node) dispatchChannelPoll(channelID string) (status, purpose byte, chun
 // pending (accepted-but-unclaimed) incoming channel, if any. Empty
 // channelID means none pending yet -- a local caller polls this in a
 // loop, exactly pollExecute's documented convention.
+// A channel whose sender has already finished and closed is still
+// claimable here, and claiming it still works: the read pump ends the
+// down ring for writing but leaves it mapped and named for exactly this
+// case (see channelSession.closeDownWrite), so the caller attaches to it
+// and drains what arrived, then sees the close.
 func (n *Node) dispatchChannelListen() (channelID, remotePeerID string, err error) {
 	n.channels.reap()
 	channelID, ok := n.channels.popPending()
@@ -893,18 +1010,14 @@ func (n *Node) dispatchChannelListen() (channelID, remotePeerID string, err erro
 	return channelID, sess.remotePeerID, nil
 }
 
-// dispatchChannelClose implements EventChannelClose: closes channelID's
-// stream (unblocking pumpChannelReads' blocking Read, same idiom as
-// every other stream's defer s.Close() in this file) and forgets the
-// session. Idempotent -- closing an already-gone or never-existed
-// channelID is not an error.
+// dispatchChannelClose implements EventChannelClose: ends channelID's
+// session -- its stream (unblocking pumpChannelReads' blocking Read,
+// same idiom as every other stream's defer s.Close() in this file), the
+// context bounding its ring calls, and its down ring's storage -- and
+// forgets it. All of that is channelTable.evict, reached through remove.
+// Idempotent -- closing an already-gone or never-existed channelID is
+// not an error.
 func (n *Node) dispatchChannelClose(channelID string) error {
-	sess, ok := n.channels.get(channelID)
-	if !ok {
-		return nil
-	}
-	sess.stream.Close()
-	sess.closeCancel()
 	n.channels.remove(channelID)
 	return nil
 }
@@ -926,6 +1039,14 @@ func (n *Node) dispatchChannelDataReady(ctx context.Context, channelID string) e
 	sess, ok := n.channels.get(channelID)
 	if !ok {
 		return fmt.Errorf("channel: no such channel %q", channelID)
+	}
+	// Refused rather than served: chunks that arrived before this caller
+	// attached, and did not fit the ring while nothing was draining it,
+	// are not in the ring and never will be. Attaching now would hand
+	// back a stream that ends cleanly at io.EOF having quietly skipped
+	// them, which is worse than an error -- see the downLost field.
+	if lost := sess.downWasLost(); lost > 0 {
+		return fmt.Errorf("channel: %q dropped %d incoming chunk(s) before this caller attached its data-plane ring; claim a channel before its sender outruns the ring (%d bytes) or have the sender resend", channelID, lost, chandata.Capacity)
 	}
 	openCtx, cancel := context.WithTimeout(context.Background(), n.streamRequestTimeout())
 	defer cancel()
