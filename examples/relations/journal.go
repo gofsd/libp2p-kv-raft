@@ -755,9 +755,27 @@ func (j *Journal) Append(ctx context.Context, cells ...Cell) (Entity, error) {
 	return j.appendLine(ctx, cells, nil)
 }
 
+// AppendWith is Append with more ops written in the line's own
+// transaction: extra is handed the entry being allocated and returns
+// whatever else belongs with it, so the line and those ops either both
+// land or neither does.
+//
+// It is the seam for a layer that keeps its own relations alongside the
+// book -- Genealogy.RecordOps' derived-from edges, say, written with the
+// line that records that execution. An error from extra abandons the
+// whole line.
+//
+// Note what "atomic" covers: the entry, its cells and extra's ops share
+// one Apply, but any term either of them interned was written before it
+// (see Append), and stays interned whether the line lands or not.
+func (j *Journal) AppendWith(ctx context.Context, extra func(Entity) ([]Op, error), cells ...Cell) (Entity, error) {
+	return j.appendLine(ctx, cells, extra)
+}
+
 // appendLine is Append with room for more ops in the same transaction --
-// what Correct adds its supersedes link and status marker through, so a
-// correction and the line it corrects can never half-exist.
+// what Correct adds its supersedes link and status marker through, and
+// what AppendWith exposes, so a correction and the line it corrects (or
+// a line and the edges it describes) can never half-exist.
 func (j *Journal) appendLine(ctx context.Context, cells []Cell, extra func(Entity) ([]Op, error)) (Entity, error) {
 	if len(cells) == 0 {
 		return Zero, fmt.Errorf("relations: append: an entry needs at least one cell")

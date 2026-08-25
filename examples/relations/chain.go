@@ -73,6 +73,14 @@ const (
 	// are digested differently from everything else; see mutableEvent.
 	eventDeclare    byte = 5
 	eventFieldState byte = 6
+	// A derived-from edge (see genealogy.go) written in a line's own
+	// transaction, which is how a log that records transformations keeps
+	// the claim "this was made from that" inside the same signed chain as
+	// the line recording it. Genealogy.Record's standalone Apply writes
+	// the same edges outside any transaction and so outside the chain --
+	// unchained, not invalid, the same standing every relation in this
+	// package had before the chain existed.
+	eventDerive byte = 7
 )
 
 // mutableEvent reports whether an event is about a record that can be
@@ -329,6 +337,8 @@ func eventTagFor(kind byte) (byte, bool) {
 		return eventCountersign, true
 	case KindPageSignoff:
 		return eventSignoff, true
+	case KindDerivedFrom:
+		return eventDerive, true
 	default:
 		return 0, false
 	}
@@ -442,6 +452,8 @@ func (e Event) Kind() string {
 		return "rename"
 	case eventFieldState:
 		return "vocabulary"
+	case eventDerive:
+		return "derivation"
 	default:
 		return fmt.Sprintf("event(%d)", e.Tag)
 	}

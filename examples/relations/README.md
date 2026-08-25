@@ -299,8 +299,9 @@ existed. Tearing a page out is the classic way a paper log gets falsified, and p
 does nothing about it.
 
 So every change to the book goes into **one numbered event stream**, and each event's digest covers
-the one before it. There are four kinds of change: a line being written, a line being struck, a line
-being countersigned, and a page being signed off.
+the one before it. There are five kinds of change: a line being written, a line being struck, a line
+being countersigned, a page being signed off, and a derived-from edge written in a line's own
+transaction (see the genealogy section below).
 
 ```
 line event:   SHA-256( previous | seq | tag=1 | declaration key | the line's content records )
@@ -535,6 +536,49 @@ The differences are the point of the exercise:
 
 Both are client-asserted at the same trust level: a signature says which declared actor wrote a
 record, not that the claim in it is true.
+
+### Genealogy in a column the log already has
+
+`NewGenealogy` declares its own `unit` and `instance` columns, which is right for a store that is
+*only* a genealogy. A log that already records the same objects wants `NewGenealogyIn`, naming the
+column it already uses:
+
+```go
+g, err := relations.NewGenealogyIn(ctx, j, "thing", "instance")
+```
+
+Terms are interned **per column**, so this is not cosmetic. A genealogy on its own `unit` column and
+a log whose lines name the same ids in a `thing` column hold two different entities for one object,
+and neither the edges nor the id's own history is reachable from the other. Naming the shared column
+is what keeps one object one entity — a trace then reaches both the derivation graph and the line
+history of every id it returns. `TestGenealogyInSharesAnExistingColumnsTerms` pins both halves,
+including that the default constructor's column really is a separate space. Both columns are
+*declared*, so pointing a genealogy at a column already holding free text is reported as the schema
+conflict it is instead of quietly interning into it.
+
+### Recording a transformation with the line that describes it
+
+`Record` writes its edges in an `Apply` of its own, outside any line and outside the chain.
+`RecordOps` returns the same edges without applying them, for a caller that has a line to write
+anyway:
+
+```go
+entry, err := j.AppendWith(ctx, func(relations.Entity) ([]relations.Op, error) {
+    return g.RecordOps(ctx, workOrder, inputs, []string{output})
+}, relations.TermCell(thing, output))
+```
+
+`AppendWith` is `Append` with the seam `Correct` already used internally: `extra` is handed the entry
+being allocated and returns whatever else belongs with it, and the line and those ops either both
+land or neither does. An error from `extra` abandons the whole line.
+
+Two things follow, and the second is the reason to prefer this over calling `Record` beside the
+append. The line and its edges are **atomic** — no line describing a transformation whose edges are
+missing. And the edges are **chained**: a derived-from edge written this way is an event of the book
+(`eventDerive`, rendered `"derivation"`), so an edge added or removed afterwards is as visible as a
+tampered line. Edges from a standalone `Record` are unchained — not invalid, just outside the chain,
+the standing every relation here had before the chain existed. `TestAppendWithChainsTheEdgesItWrites`
+pins both cases.
 
 ## Running it
 

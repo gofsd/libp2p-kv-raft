@@ -2,6 +2,7 @@ package relations_test
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"testing"
 
@@ -208,4 +209,228 @@ func sameSet(got, want []string) bool {
 		}
 	}
 	return true
+}
+
+// TestGenealogyInSharesAnExistingColumnsTerms is why NewGenealogyIn
+// exists. Terms are interned per column, so a genealogy that declares
+// its own "unit" column holds a *different* entity for id "T-1" than a
+// log whose lines name "T-1" in a "thing" column -- one object, two
+// entities, and neither the edges nor the id's own history reachable
+// from the other. Naming the column the log already uses is what keeps
+// one object one entity.
+func TestGenealogyInSharesAnExistingColumnsTerms(t *testing.T) {
+	ctx := context.Background()
+	st, _, _ := newStore(t)
+	j := relations.NewJournal(st)
+
+	// The log's own schema, declared before any genealogy exists.
+	thing, err := j.DefineField(ctx, "thing", relations.InputTerm)
+	if err != nil {
+		t.Fatalf("DefineField(thing): %v", err)
+	}
+	if _, err := j.Append(ctx, relations.TermCell(thing, "T-1")); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	logTerm, err := j.Term(ctx, thing, "T-1")
+	if err != nil {
+		t.Fatalf("Term(thing, T-1): %v", err)
+	}
+
+	shared, err := relations.NewGenealogyIn(ctx, j, "thing", "instance")
+	if err != nil {
+		t.Fatalf("NewGenealogyIn: %v", err)
+	}
+	unit, err := shared.Unit(ctx, "T-1")
+	if err != nil {
+		t.Fatalf("Unit: %v", err)
+	}
+	if unit != logTerm {
+		t.Fatalf("genealogy unit for T-1 is %s, but the log's own cell is %s -- they must be the same entity", unit, logTerm)
+	}
+
+	// The hazard this guards against, stated as a test: the default
+	// constructor's own "unit" column is a separate term space, and the
+	// same id in it is a different entity.
+	separate, err := relations.NewGenealogy(ctx, j)
+	if err != nil {
+		t.Fatalf("NewGenealogy: %v", err)
+	}
+	other, err := separate.Unit(ctx, "T-1")
+	if err != nil {
+		t.Fatalf("Unit: %v", err)
+	}
+	if other == logTerm {
+		t.Fatalf("a genealogy on its own %q column returned the log's %q term for T-1; terms are supposed to be per column",
+			relations.UnitFieldName, "thing")
+	}
+
+	// Pointing a genealogy at a column that holds something other than
+	// terms is a schema conflict, not a column to quietly intern into.
+	if _, err := j.DefineField(ctx, "note", relations.InputText); err != nil {
+		t.Fatalf("DefineField(note): %v", err)
+	}
+	if _, err := relations.NewGenealogyIn(ctx, j, "note", "instance"); err == nil {
+		t.Fatal("NewGenealogyIn on a free-text column succeeded, want a schema conflict")
+	}
+}
+
+// TestAppendWithWritesEdgesInTheLinesTransaction pins the seam a log
+// keeping its own relations alongside its lines depends on: the line and
+// the ops that describe it either both land or neither does.
+func TestAppendWithWritesEdgesInTheLinesTransaction(t *testing.T) {
+	ctx := context.Background()
+	st, _, _ := newStore(t)
+	j := relations.NewJournal(st)
+
+	thing, err := j.DefineField(ctx, "thing", relations.InputTerm)
+	if err != nil {
+		t.Fatalf("DefineField(thing): %v", err)
+	}
+	g, err := relations.NewGenealogyIn(ctx, j, "thing", "instance")
+	if err != nil {
+		t.Fatalf("NewGenealogyIn: %v", err)
+	}
+
+	// A failing extra abandons the line with it.
+	before := len(scanAll(t, st))
+	wantErr := errors.New("no")
+	if _, err := j.AppendWith(ctx, func(relations.Entity) ([]relations.Op, error) {
+		return nil, wantErr
+	}, relations.TermCell(thing, "T-out")); !errors.Is(err, wantErr) {
+		t.Fatalf("AppendWith with a failing extra: err = %v, want %v", err, wantErr)
+	}
+	// Terms interned along the way survive -- see AppendWith's own doc
+	// comment -- so what must be absent is the line's cells and the
+	// edges, not every trace of the attempt.
+	if n := countRecordsOfKind(t, st, relations.KindCell); n != 0 {
+		t.Fatalf("%d cell record(s) written after a failing extra, want none", n)
+	}
+	if n := countRecordsOfKind(t, st, relations.KindDerivedFrom); n != 0 {
+		t.Fatalf("%d edge record(s) written after a failing extra, want none", n)
+	}
+	if len(scanAll(t, st)) < before {
+		t.Fatal("the store shrank")
+	}
+
+	// The success path: one line, and its edges, in one transaction.
+	entry, err := j.AppendWith(ctx, func(relations.Entity) ([]relations.Op, error) {
+		return g.RecordOps(ctx, "wo-1", []string{"T-in-a", "T-in-b"}, []string{"T-out"})
+	}, relations.TermCell(thing, "T-out"))
+	if err != nil {
+		t.Fatalf("AppendWith: %v", err)
+	}
+	if entry == relations.Zero {
+		t.Fatal("AppendWith returned the zero entry")
+	}
+	row, err := j.Row(ctx, entry)
+	if err != nil {
+		t.Fatalf("Row: %v", err)
+	}
+	if len(row) != 1 || row[0].Field != thing || row[0].Text != "T-out" {
+		t.Fatalf("the line reads back as %+v, want one thing cell holding T-out", row)
+	}
+
+	ancestors, err := g.Ancestors(ctx, "T-out", 0)
+	if err != nil {
+		t.Fatalf("Ancestors: %v", err)
+	}
+	if want := []string{"T-in-a", "T-in-b"}; !sameSet(ancestors, want) {
+		t.Fatalf("Ancestors(T-out) = %v, want %v", ancestors, want)
+	}
+
+	// The edges hang off the same entity the line's own cell names, which
+	// is the whole point of sharing the column.
+	edges, err := g.Edges(ctx, "T-out")
+	if err != nil {
+		t.Fatalf("Edges: %v", err)
+	}
+	if len(edges) != 2 {
+		t.Fatalf("Edges(T-out) = %d, want 2", len(edges))
+	}
+	for _, e := range edges {
+		if e.Instance != "wo-1" {
+			t.Fatalf("edge instance = %q, want %q", e.Instance, "wo-1")
+		}
+	}
+}
+
+// countRecordsOfKind reports how many records in the whole store are of
+// the given kind, mirrors included.
+func countRecordsOfKind(t *testing.T, st *relations.Store, kind byte) int {
+	t.Helper()
+	n := 0
+	for _, p := range scanAll(t, st) {
+		rec, _, err := relations.DecodeRecord(p.Value)
+		if err != nil {
+			t.Fatalf("DecodeRecord: %v", err)
+		}
+		if rec.Kind == kind {
+			n++
+		}
+	}
+	return n
+}
+
+// TestAppendWithChainsTheEdgesItWrites is the reason folding edges into
+// a line's transaction is worth more than writing them beside it: the
+// derivation claims land inside the book's own signed chain, so an edge
+// added or removed afterwards is as visible as a tampered line. An edge
+// written by Genealogy.Record's standalone Apply is not chained (nothing
+// in the package chains a transaction it does not open), which is the
+// standing every relation here had before the chain existed.
+func TestAppendWithChainsTheEdgesItWrites(t *testing.T) {
+	ctx := context.Background()
+	st, _, _ := newStore(t)
+	j := relations.NewJournal(st)
+
+	thing, err := j.DefineField(ctx, "thing", relations.InputTerm)
+	if err != nil {
+		t.Fatalf("DefineField(thing): %v", err)
+	}
+	g, err := relations.NewGenealogyIn(ctx, j, "thing", "instance")
+	if err != nil {
+		t.Fatalf("NewGenealogyIn: %v", err)
+	}
+
+	if _, err := j.AppendWith(ctx, func(relations.Entity) ([]relations.Op, error) {
+		return g.RecordOps(ctx, "wo-1", []string{"T-in-a", "T-in-b"}, []string{"T-out"})
+	}, relations.TermCell(thing, "T-out")); err != nil {
+		t.Fatalf("AppendWith: %v", err)
+	}
+
+	// One line and one event per edge.
+	checked, err := j.VerifyChain(ctx)
+	if err != nil {
+		t.Fatalf("VerifyChain: %v", err)
+	}
+	if checked != 3 {
+		t.Fatalf("verified %d events, want 3 (the line, and one derivation per input)", checked)
+	}
+
+	events, err := j.Events(ctx, relations.Range{})
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	derivations := 0
+	for _, e := range events {
+		if e.Kind() == "derivation" {
+			derivations++
+		}
+	}
+	if derivations != 2 {
+		t.Fatalf("%d derivation events chained, want 2", derivations)
+	}
+
+	// Edges written the standalone way are outside the chain, and the
+	// book still verifies -- they are unchained, not invalid.
+	if err := g.Record(ctx, "wo-2", []string{"T-out"}, []string{"T-final"}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	after, err := j.VerifyChain(ctx)
+	if err != nil {
+		t.Fatalf("VerifyChain after a standalone Record: %v", err)
+	}
+	if after != checked {
+		t.Fatalf("verified %d events after a standalone Record, want the same %d", after, checked)
+	}
 }

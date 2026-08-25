@@ -55,22 +55,44 @@ type Genealogy struct {
 	instanceField Entity
 }
 
-// NewGenealogy prepares (declaring them if needed) the unit and instance
-// fields inside j, and returns a Genealogy writing through it. Because
-// it is the same journal, genealogy edges and ordinary log entries
-// coexist in one store and can reference the same terms -- the operator
-// who signed a line and the unit that line was about are entities in the
-// same space.
+// NewGenealogy prepares (declaring them if needed) the UnitFieldName and
+// InstanceFieldName columns inside j, and returns a Genealogy writing
+// through it. Because it is the same journal, genealogy edges and
+// ordinary log entries coexist in one store and can reference the same
+// terms -- the operator who signed a line and the unit that line was
+// about are entities in the same space.
+//
+// Use NewGenealogyIn instead when the units being traced are already a
+// column of j under some other name.
 func NewGenealogy(ctx context.Context, j *Journal) (*Genealogy, error) {
-	unitField, err := j.Field(ctx, UnitFieldName)
+	return NewGenealogyIn(ctx, j, UnitFieldName, InstanceFieldName)
+}
+
+// NewGenealogyIn is NewGenealogy with the two column names given, for a
+// journal whose units are already a column of its own schema.
+//
+// This matters because terms are interned *per column*: Unit resolves an
+// id through unitField, so a genealogy on a "unit" column and a log whose
+// lines name the same ids in a "thing" column would hold two different
+// entities for one object, and neither edges nor an id's own history
+// would be reachable from the other. Naming the column the log already
+// uses is what keeps one object one entity -- a trace then reaches both
+// the derivation graph and the custody history of every id it returns.
+//
+// Both columns are declared rather than merely resolved, so pointing a
+// genealogy at a column that already exists holding something other than
+// terms (free text, say) is reported as the schema conflict it is instead
+// of quietly interning into it.
+func NewGenealogyIn(ctx context.Context, j *Journal, unitField, instanceField string) (*Genealogy, error) {
+	unit, err := j.DefineField(ctx, unitField, InputTerm)
 	if err != nil {
 		return nil, err
 	}
-	instanceField, err := j.Field(ctx, InstanceFieldName)
+	instance, err := j.DefineField(ctx, instanceField, InputTerm)
 	if err != nil {
 		return nil, err
 	}
-	return &Genealogy{j: j, unitField: unitField, instanceField: instanceField}, nil
+	return &Genealogy{j: j, unitField: unit, instanceField: instance}, nil
 }
 
 // Unit returns the entity standing for unit id, interning it on first
@@ -96,45 +118,63 @@ func (g *Genealogy) Unit(ctx context.Context, id string) (Entity, error) {
 // outputs there are no edges to write, and the units named are still
 // interned so later executions can reference them.
 func (g *Genealogy) Record(ctx context.Context, instanceID string, inputs, outputs []string) error {
+	ops, err := g.RecordOps(ctx, instanceID, inputs, outputs)
+	if err != nil {
+		return err
+	}
+	if len(ops) == 0 {
+		return nil
+	}
+	return g.j.Store().Backend().Apply(ctx, ops)
+}
+
+// RecordOps is Record's edges without applying them, for a caller with
+// its own transaction to fold them into -- typically a log whose line
+// records the same execution, appended through Journal.AppendWith so the
+// line and the edges it describes can never half-exist.
+//
+// Every id it names is still interned as it goes, since the dictionary
+// outlives any one line (see Append's own doc comment): a caller that
+// builds ops and then abandons them leaves the terms behind, which is
+// the same thing an abandoned Append does and is harmless -- a term is a
+// name, not a claim.
+func (g *Genealogy) RecordOps(ctx context.Context, instanceID string, inputs, outputs []string) ([]Op, error) {
 	if instanceID == "" {
-		return fmt.Errorf("relations: genealogy: instance id must not be empty")
+		return nil, fmt.Errorf("relations: genealogy: instance id must not be empty")
 	}
 	if len(inputs) == 0 && len(outputs) == 0 {
-		return fmt.Errorf("relations: genealogy: record needs at least one input or output unit")
+		return nil, fmt.Errorf("relations: genealogy: record needs at least one input or output unit")
 	}
 
 	instance, err := g.j.Term(ctx, g.instanceField, instanceID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	instanceRef := instance.Bytes()
 
 	inputEntities, err := g.units(ctx, inputs)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	outputEntities, err := g.units(ctx, outputs)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	var ops []Op
 	for _, out := range outputEntities {
 		for _, in := range inputEntities {
 			if out == in {
-				return fmt.Errorf("relations: genealogy: unit %s is both an input and an output of %s", in, instanceID)
+				return nil, fmt.Errorf("relations: genealogy: unit %s is both an input and an output of %s", in, instanceID)
 			}
 			edge, err := g.j.Store().LinkOps(out, in, KindDerivedFrom, instanceRef[:])
 			if err != nil {
-				return err
+				return nil, err
 			}
 			ops = append(ops, edge...)
 		}
 	}
-	if len(ops) == 0 {
-		return nil
-	}
-	return g.j.Store().Backend().Apply(ctx, ops)
+	return ops, nil
 }
 
 // units interns every id in ids, preserving order.
