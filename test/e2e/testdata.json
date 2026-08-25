@@ -3948,6 +3948,425 @@
       "order": 106
     },
     {
+      "case_id": "mes_register_person_gen_alice",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterPerson",
+        "params": [
+          "{{mesBackendAddr}}",
+          "gen-alice",
+          "Alice",
+          "",
+          "true"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 107
+    },
+    {
+      "case_id": "mes_register_location_gen_bench",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterLocation",
+        "params": [
+          "{{mesBackendAddr}}",
+          "gen-alice",
+          "gen-bench",
+          "Assembly bench",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 108
+    },
+    {
+      "case_id": "mes_register_thing_gen_steel",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterThing",
+        "params": [
+          "{{mesBackendAddr}}",
+          "gen-alice",
+          "gen-steel",
+          "Steel",
+          "",
+          "gen-bench"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 109
+    },
+    {
+      "case_id": "mes_edges_before_any_assembly",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryEdges",
+        "params": [
+          "{{mesBackendAddr}}",
+          "gen-alice",
+          "gen-steel"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=ok[\\s\\S]*count=0"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 110
+    },
+    {
+      "case_id": "mes_register_thing_gen_bolt",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterThing",
+        "params": [
+          "{{mesBackendAddr}}",
+          "gen-alice",
+          "gen-bolt",
+          "Bolt",
+          "",
+          "gen-bench"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 111
+    },
+    {
+      "case_id": "mes_trace_refused_for_an_unknown_thing",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryTrace",
+        "params": [
+          "{{mesBackendAddr}}",
+          "gen-alice",
+          "gen-ghost",
+          "ancestors",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=error[\\s\\S]*unknown thing"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 112
+    },
+    {
+      "case_id": "mes_register_thing_gen_bracket",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterThing",
+        "params": [
+          "{{mesBackendAddr}}",
+          "gen-alice",
+          "gen-bracket",
+          "Bracket",
+          "",
+          "gen-bench"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 113
+    },
+    {
+      "case_id": "mes_assemble_refused_without_inputs",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryAssemble",
+        "params": [
+          "{{mesBackendAddr}}",
+          "gen-alice",
+          "gen-wo-0",
+          "gen-bracket",
+          "",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=error[\\s\\S]*inputThingIds is required"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 114
+    },
+    {
+      "case_id": "mes_register_thing_gen_frame",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterThing",
+        "params": [
+          "{{mesBackendAddr}}",
+          "gen-alice",
+          "gen-frame",
+          "Frame",
+          "",
+          "gen-bench"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 115
+    },
+    {
+      "case_id": "mes_assemble_the_bracket",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryAssemble",
+        "params": [
+          "{{mesBackendAddr}}",
+          "gen-alice",
+          "gen-wo-1",
+          "gen-bracket",
+          "gen-steel,gen-bolt",
+          "first bracket"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=ok[\\s\\S]*inputs=2"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 116
+    },
+    {
+      "case_id": "mes_register_thing_gen_chassis",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryRegisterThing",
+        "params": [
+          "{{mesBackendAddr}}",
+          "gen-alice",
+          "gen-chassis",
+          "Chassis",
+          "",
+          "gen-bench"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 117
+    },
+    {
+      "case_id": "mes_edges_show_what_the_bracket_was_made_of",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryEdges",
+        "params": [
+          "{{mesBackendAddr}}",
+          "gen-alice",
+          "gen-bracket"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=ok[\\s\\S]*count=2"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 118
+    },
+    {
+      "case_id": "mes_assemble_the_chassis",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryAssemble",
+        "params": [
+          "{{mesBackendAddr}}",
+          "gen-alice",
+          "gen-wo-2",
+          "gen-chassis",
+          "gen-bracket,gen-frame",
+          "onto the chassis"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=ok[\\s\\S]*inputs=2"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 119
+    },
+    {
+      "case_id": "mes_trace_recalls_what_the_steel_ended_up_in",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryTrace",
+        "params": [
+          "{{mesBackendAddr}}",
+          "gen-alice",
+          "gen-steel",
+          "descendants",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=ok[\\s\\S]*count=2"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 120
+    },
+    {
+      "case_id": "mes_edges_show_the_bracket_was_consumed",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryEdges",
+        "params": [
+          "{{mesBackendAddr}}",
+          "gen-alice",
+          "gen-bracket"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=ok[\\s\\S]*count=3"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 121
+    },
+    {
+      "case_id": "mes_trace_defaults_to_what_it_was_made_from",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryTrace",
+        "params": [
+          "{{mesBackendAddr}}",
+          "gen-alice",
+          "gen-chassis",
+          "",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=ok[\\s\\S]*count=4[\\s\\S]*direction=ancestors"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 122
+    },
+    {
+      "case_id": "mes_assemble_refused_for_a_thing_made_of_itself",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryAssemble",
+        "params": [
+          "{{mesBackendAddr}}",
+          "gen-alice",
+          "gen-wo-3",
+          "gen-chassis",
+          "gen-chassis",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=error[\\s\\S]*both an input and the output"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 123
+    },
+    {
+      "case_id": "mes_trace_refused_for_a_direction_that_means_nothing",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryTrace",
+        "params": [
+          "{{mesBackendAddr}}",
+          "gen-alice",
+          "gen-chassis",
+          "sideways",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=error[\\s\\S]*direction must be"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 124
+    },
+    {
+      "case_id": "mes_lookup_shows_the_assembler_holds_the_chassis",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "InventoryLookup",
+        "params": [
+          "{{mesBackendAddr}}",
+          "gen-alice",
+          "gen-chassis"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=ok[\\s\\S]*holder=gen-alice"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 125
+    },
+    {
       "case_id": "mes_group_sync_follows_signal_membership",
       "generate": {
         "target": "run",
@@ -3963,7 +4382,7 @@
       },
       "hold_millis": 90000,
       "timeout_ms": 80000,
-      "order": 107
+      "order": 126
     },
     {
       "case_id": "mes_list_mine_refused_after_leaving_the_group",
@@ -3982,7 +4401,7 @@
       },
       "hold_millis": 90000,
       "timeout_ms": 80000,
-      "order": 108
+      "order": 127
     },
     {
       "case_id": "mes_group_sync_is_quiet_when_nothing_changed",
@@ -4000,7 +4419,7 @@
       },
       "hold_millis": 90000,
       "timeout_ms": 80000,
-      "order": 109
+      "order": 128
     }
   ],
   "android_optical_scan_result": {

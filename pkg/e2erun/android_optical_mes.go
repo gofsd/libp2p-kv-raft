@@ -44,11 +44,11 @@ const mesBackendAddrFile = "mes-optical-backend.addr"
 // on a third process being up: a rig with no signal-cli backend running is still a perfectly
 // good rig for the other 131 cases, and failing the whole batch over an absent optional
 // dependency would make the common run report a problem it does not have. Dropping rather than
-// failing them individually, too -- a case that never ran is not a case that failed, and 25
+// failing them individually, too -- a case that never ran is not a case that failed, and 92
 // automatic failures would drown the real result.
 //
 // It is loud about it either way. A dropped case is a hole in the coverage a run reports, and a
-// run that quietly measured 131 of 156 while printing "131 of 131" is worse than one that
+// run that quietly measured 131 of 223 while printing "131 of 131" is worse than one that
 // measured nothing.
 func resolveMesCases(cases []e2edata.OpticalScanCase) []e2edata.OpticalScanCase {
 	addr := mesBackendAddr()
