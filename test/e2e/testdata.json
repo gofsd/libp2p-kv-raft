@@ -4423,8 +4423,9 @@
     }
   ],
   "android_optical_scan_result": {
-    "ran_at": "2026-08-24T22:39:01.87863144+03:00",
-    "status": 0,
+    "ran_at": "2026-08-26T15:52:46.351553143+03:00",
+    "status": 1,
+    "error": "1 of 223 optical scan case(s) failed:\njoin_request_ticket: device A: screen 'generatedDataMatrixImage' not shown after 10000ms",
     "cases": [
       {
         "case_id": "get_own_addr",
@@ -4440,7 +4441,8 @@
       },
       {
         "case_id": "join_request_ticket",
-        "pass": true
+        "pass": false,
+        "error": "device A: screen 'generatedDataMatrixImage' not shown after 10000ms"
       },
       {
         "case_id": "dial_submit_command_ping",
@@ -5228,6 +5230,82 @@
       },
       {
         "case_id": "mes_send_data_matrix_refused_for_an_unknown_thing",
+        "pass": true
+      },
+      {
+        "case_id": "mes_register_person_gen_alice",
+        "pass": true
+      },
+      {
+        "case_id": "mes_register_location_gen_bench",
+        "pass": true
+      },
+      {
+        "case_id": "mes_register_thing_gen_steel",
+        "pass": true
+      },
+      {
+        "case_id": "mes_edges_before_any_assembly",
+        "pass": true
+      },
+      {
+        "case_id": "mes_register_thing_gen_bolt",
+        "pass": true
+      },
+      {
+        "case_id": "mes_trace_refused_for_an_unknown_thing",
+        "pass": true
+      },
+      {
+        "case_id": "mes_register_thing_gen_bracket",
+        "pass": true
+      },
+      {
+        "case_id": "mes_assemble_refused_without_inputs",
+        "pass": true
+      },
+      {
+        "case_id": "mes_register_thing_gen_frame",
+        "pass": true
+      },
+      {
+        "case_id": "mes_assemble_the_bracket",
+        "pass": true
+      },
+      {
+        "case_id": "mes_register_thing_gen_chassis",
+        "pass": true
+      },
+      {
+        "case_id": "mes_edges_show_what_the_bracket_was_made_of",
+        "pass": true
+      },
+      {
+        "case_id": "mes_assemble_the_chassis",
+        "pass": true
+      },
+      {
+        "case_id": "mes_trace_recalls_what_the_steel_ended_up_in",
+        "pass": true
+      },
+      {
+        "case_id": "mes_edges_show_the_bracket_was_consumed",
+        "pass": true
+      },
+      {
+        "case_id": "mes_trace_defaults_to_what_it_was_made_from",
+        "pass": true
+      },
+      {
+        "case_id": "mes_assemble_refused_for_a_thing_made_of_itself",
+        "pass": true
+      },
+      {
+        "case_id": "mes_trace_refused_for_a_direction_that_means_nothing",
+        "pass": true
+      },
+      {
+        "case_id": "mes_lookup_shows_the_assembler_holds_the_chassis",
         "pass": true
       },
       {
