@@ -4607,7 +4607,7 @@
       },
       "expect": {
         "kind": "run",
-        "result": "matches:status=ok[\\s\\S]*count=3"
+        "result": "matches:status=ok[\\s\\S]*addressable=3[\\s\\S]*count=4"
       },
       "hold_millis": 90000,
       "timeout_ms": 80000,
