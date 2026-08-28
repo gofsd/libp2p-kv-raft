@@ -191,15 +191,33 @@ application package here) and the path each app's Gradle build reads a gomobile-
 `kvmobile.aar` from. See `pkg/e2erun/android_target.go` for the presets and the per-field
 `E2E_ANDROID_*` overrides.
 
-One block of `android_optical_cases` is not shared between the two targets in practice: the 73
+One block of `android_optical_cases` is not shared between the two targets in practice: the
 `mes_*` cases run every command of the sibling `signal-cli` service's dispatch catalog by dialing a
 running instance of it, which `android-app` has no client for. They name their dial target as a
 `{{mesBackendAddr}}` param, resolved here rather than on a device (`pkg/e2erun`'s
 `resolveMesCases`) because it belongs to a third process neither device runs -- from
 `MES_OPTICAL_BACKEND_ADDR`, or from `~/.libp2p-kv-raft/mes-optical-backend.addr`, which signal-cli's
 own `TestServeOpticalBackend` writes. **With neither set they are skipped, loudly, not failed**: a
-rig with no such backend is still a good rig for the other 131 cases. See `object-history-app`'s
+rig with no such backend is still a good rig for the other 137 cases. See `object-history-app`'s
 CLAUDE.md, "The mes backend's optical cases".
+
+A second gate works the same way and for the same reason. **A case marked `needs_human` is skipped
+unless `MES_OPTICAL_HUMAN=1`** (`resolveHumanCases`), because it cannot pass unattended: somebody
+has to do something physical while it runs that no device in the rig can do. There is one today --
+`mes_link_account_real_link_on_three_devices`, where the app puts a *real* Signal device-link QR on
+the scanning phone's screen and a third phone running Signal has to read it inside Signal's own
+~60s window. A case nobody was standing next to did not fail, it was never runnable, and a
+permanent red mark meaning "nobody was there" is worse than not measuring it. See
+`object-history-app`'s CLAUDE.md, "The three-device device-link run".
+
+Two `OpticalScanCase` fields exist for that case and are worth knowing before writing another:
+**`run_timeout_ms`** bounds how long the scanning device waits for a command's *answer*, where
+`timeout_ms` bounds waiting for the code to be *read* -- unrelated things, and only the second is
+a decode problem. `hold_millis` must exceed their sum, since the generating device stops showing
+the code when its hold expires while the scanner is still waiting; `runOpticalScanBatch` refuses a
+case that gets that wrong before either device is launched. **`expect_params`** is what an opened
+form's fields must read before its Run button is pressed -- the assertion a `run` case cannot make,
+since its params live inside a dialog it immediately confirms.
 
 `mage lint` runs golangci-lint v2 (`.golangci.yml`; needs `golangci-lint` on PATH -- see `Lint`'s
 own doc comment in magefile.go for the pinned install command) alongside `go vet`/`gofmt`, and CI

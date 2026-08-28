@@ -42,13 +42,13 @@ const mesBackendAddrFile = "mes-optical-backend.addr"
 //
 // Dropping rather than failing, because the mes cases are the only ones in the plan that depend
 // on a third process being up: a rig with no signal-cli backend running is still a perfectly
-// good rig for the other 131 cases, and failing the whole batch over an absent optional
+// good rig for the other 137 cases, and failing the whole batch over an absent optional
 // dependency would make the common run report a problem it does not have. Dropping rather than
-// failing them individually, too -- a case that never ran is not a case that failed, and 92
+// failing them individually, too -- a case that never ran is not a case that failed, and 93
 // automatic failures would drown the real result.
 //
 // It is loud about it either way. A dropped case is a hole in the coverage a run reports, and a
-// run that quietly measured 131 of 223 while printing "131 of 131" is worse than one that
+// run that quietly measured 137 of 230 while printing "137 of 137" is worse than one that
 // measured nothing.
 func resolveMesCases(cases []e2edata.OpticalScanCase) []e2edata.OpticalScanCase {
 	addr := mesBackendAddr()
@@ -69,6 +69,17 @@ func resolveMesCases(cases []e2edata.OpticalScanCase) []e2edata.OpticalScanCase 
 			params[i] = strings.ReplaceAll(p, mesBackendAddrToken, addr)
 		}
 		c.Generate.Params = params
+		// The expectation side needs the same substitution, not just the generate side: a "form"
+		// case asserts that the values device A typed arrived in device B's form, so it names the
+		// very same address. Left unsubstituted it compares a real multiaddr against the literal
+		// "{{mesBackendAddr}}" and fails with a mismatch that looks like a dropped param.
+		if len(c.Expect.ExpectParams) > 0 {
+			want := make([]string, len(c.Expect.ExpectParams))
+			for i, p := range c.Expect.ExpectParams {
+				want[i] = strings.ReplaceAll(p, mesBackendAddrToken, addr)
+			}
+			c.Expect.ExpectParams = want
+		}
 		out = append(out, c)
 	}
 
@@ -117,4 +128,44 @@ func mesBackendAddrPath() string {
 		return mesBackendAddrFile
 	}
 	return filepath.Join(home, ".libp2p-kv-raft", mesBackendAddrFile)
+}
+
+// humanCasesEnvVar opts a batch into the cases that need a person standing next to the rig.
+//
+// Off by default and never inferred: an unattended run that includes one does not fail because
+// anything is broken, it fails because nobody was there -- and a permanent red mark that means
+// "nobody was there" is worse than not measuring the case at all. It is the same bargain
+// resolveMesCases makes for a rig with no signal-cli running.
+const humanCasesEnvVar = "MES_OPTICAL_HUMAN"
+
+// resolveHumanCases drops every case marked NeedsHuman unless humanCasesEnvVar asks for them,
+// and says which it dropped.
+//
+// Loud on both paths, deliberately. Dropping silently would let a run report "all cases passed"
+// for a plan whose most expensive case was skipped; including them silently would strand a runner
+// who does not know a phone is about to be needed, in front of a case that waits minutes and then
+// fails.
+func resolveHumanCases(cases []e2edata.OpticalScanCase) []e2edata.OpticalScanCase {
+	want := os.Getenv(humanCasesEnvVar) != ""
+
+	out := make([]e2edata.OpticalScanCase, 0, len(cases))
+	var dropped []string
+	for _, c := range cases {
+		if c.NeedsHuman && !want {
+			dropped = append(dropped, c.CaseID)
+			continue
+		}
+		out = append(out, c)
+	}
+
+	if len(dropped) > 0 {
+		fmt.Fprintf(os.Stderr,
+			"e2erun: optical: skipping %d case(s) that need somebody at the rig (set %s=1 to run them): %s\n",
+			len(dropped), humanCasesEnvVar, strings.Join(dropped, ", "))
+	} else if want {
+		fmt.Fprintf(os.Stderr,
+			"e2erun: optical: %s is set -- this batch includes cases that WAIT FOR A PERSON. Be at the rig.\n",
+			humanCasesEnvVar)
+	}
+	return out
 }

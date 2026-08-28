@@ -51,7 +51,7 @@ func runOpticalScanSuite(cases []e2edata.OpticalScanCase, serialA, serialB strin
 	// Resolved once, before the retry loop: a crash retry re-runs the same batch, and re-reading
 	// the backend's address between attempts could silently move half a run onto a different
 	// backend than the half before it.
-	cases = resolveMesCases(cases)
+	cases = resolveHumanCases(resolveMesCases(cases))
 	for attempt := 0; ; attempt++ {
 		result, crashed := runOpticalScanBatch(cases, serialA, serialB)
 		// Attempts counts batches spent, not batches retried, so a clean run records 1 rather than
@@ -117,8 +117,9 @@ func runOpticalScanBatch(cases []e2edata.OpticalScanCase, serialA, serialB strin
 	}
 	type expSpecEntry struct {
 		e2edata.OpticalExpectSpec
-		CaseID    string `json:"case_id"`
-		TimeoutMs int64  `json:"timeout_ms,omitempty"`
+		CaseID       string `json:"case_id"`
+		TimeoutMs    int64  `json:"timeout_ms,omitempty"`
+		RunTimeoutMs int64  `json:"run_timeout_ms,omitempty"`
 		// Category/Name name the command whose OutputLog entry is this case's own result,
 		// copied from Generate rather than described separately -- they are how
 		// UiCommandE2ETest's awaitOneCase picks *its* entry out of the log instead of
@@ -146,6 +147,15 @@ func runOpticalScanBatch(cases []e2edata.OpticalScanCase, serialA, serialB strin
 			result.Error = fmt.Sprintf("case %q has timeout_ms (%d) > hold_millis (%d) -- device B would still be waiting for this case's code after device A stopped showing it", c.CaseID, c.TimeoutMs, c.HoldMillis)
 			return result, false
 		}
+		// The scan and the run are consecutive, not concurrent: B waits for the code, then starts
+		// the command, then waits for its answer, and A has to hold its own code for all of it.
+		// Only checked when the case sets a run budget -- the default one is covered by
+		// BATCH_HOLD_MILLIS being sized for it already.
+		if c.RunTimeoutMs > 0 && c.TimeoutMs+c.RunTimeoutMs > c.HoldMillis {
+			result.Status = e2edata.StatusFail
+			result.Error = fmt.Sprintf("case %q has timeout_ms + run_timeout_ms (%d + %d) > hold_millis (%d) -- device A stops showing this case's code while device B is still waiting for the command to answer", c.CaseID, c.TimeoutMs, c.RunTimeoutMs, c.HoldMillis)
+			return result, false
+		}
 		// Two adjacent cases generating the same code leave the devices no
 		// way to stay in step -- device B tells a stale decode from its own
 		// by the confirm dialog's command name, which identical neighbours
@@ -159,7 +169,7 @@ func runOpticalScanBatch(cases []e2edata.OpticalScanCase, serialA, serialB strin
 			return result, false
 		}
 		genSpecs[i] = genSpecEntry{c.Generate, c.CaseID, c.HoldMillis}
-		expSpecs[i] = expSpecEntry{c.Expect, c.CaseID, c.TimeoutMs, c.Generate.Category, c.Generate.Name}
+		expSpecs[i] = expSpecEntry{c.Expect, c.CaseID, c.TimeoutMs, c.RunTimeoutMs, c.Generate.Category, c.Generate.Name}
 	}
 	genArg, err := json.Marshal(map[string]any{"specs": genSpecs})
 	if err != nil {

@@ -4420,6 +4420,242 @@
       "hold_millis": 90000,
       "timeout_ms": 80000,
       "order": 128
+    },
+    {
+      "case_id": "mes_show_link_qr_refuses_a_payload_that_is_not_a_link",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "ShowLinkQr",
+        "params": [
+          "https://example.com/not-a-link"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:Not a device-link URI"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 129
+    },
+    {
+      "case_id": "mes_link_account_shows_the_code_on_this_device",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "LinkAccount",
+        "params": [
+          "{{mesBackendAddr}}",
+          "optical rig",
+          "",
+          "false"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=ok[\\s\\S]*device=shown"
+      },
+      "hold_millis": 120000,
+      "timeout_ms": 110000,
+      "order": 130
+    },
+    {
+      "case_id": "mes_show_link_qr_puts_a_real_code_on_screen",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "ShowLinkQr",
+        "params": [
+          "sgnl://linkdevice?uuid=optical-shown&pub_key=BQ5PSd7LLHalUWhUdxPlXl1AT7loI5vlXjvUFpo95qRP"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:showing link QR"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 131
+    },
+    {
+      "case_id": "mes_hide_link_qr_takes_down_the_code_the_last_case_left",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "HideLinkQr",
+        "params": []
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:link QR taken down"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 132
+    },
+    {
+      "case_id": "mes_show_code_puts_a_datamatrix_on_screen",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "ShowCode",
+        "params": [
+          "OPTICAL-CODE-1",
+          "datamatrix",
+          "Optical rig",
+          "Any command can put this here",
+          "optical-code"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:showing code"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 133
+    },
+    {
+      "case_id": "mes_hide_link_qr_leaves_another_flow_s_code_alone",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "HideLinkQr",
+        "params": []
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:a different code is showing"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 134
+    },
+    {
+      "case_id": "mes_hide_code_takes_down_the_code_by_its_tag",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "HideCode",
+        "params": [
+          "optical-code"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:code taken down"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 135
+    },
+    {
+      "case_id": "form_code_opens_the_command_form",
+      "generate": {
+        "target": "nav_form",
+        "category": "Cluster",
+        "name": "GetOwnAddr"
+      },
+      "expect": {
+        "kind": "form",
+        "result": "contains:{{selfPeerID}}"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 136
+    },
+    {
+      "case_id": "mes_link_account_real_link_on_three_devices",
+      "needs_human": true,
+      "generate": {
+        "target": "nav_form",
+        "category": "Mes",
+        "name": "LinkAccount",
+        "params": [
+          "{{mesBackendAddr}}",
+          "optical rig",
+          "",
+          "false"
+        ]
+      },
+      "expect": {
+        "kind": "form",
+        "expect_params": [
+          "{{mesBackendAddr}}",
+          "optical rig",
+          "",
+          "false"
+        ],
+        "result": "matches:status=ok[\\s\\S]*account=\\+[0-9]{5,}"
+      },
+      "hold_millis": 420000,
+      "timeout_ms": 80000,
+      "run_timeout_ms": 330000,
+      "order": 137
+    },
+    {
+      "case_id": "mes_signal_list_contacts",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "SignalListContacts",
+        "params": [
+          "{{mesBackendAddr}}",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=ok[\\s\\S]*count=3"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 138
+    },
+    {
+      "case_id": "mes_signal_send_attachment",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "SignalSendAttachment",
+        "params": [
+          "{{mesBackendAddr}}",
+          "e2e-inventory-group",
+          "",
+          "here is a file from the optical rig",
+          "optical-attachment.txt"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=ok[\\s\\S]*timestamp=[0-9]+"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 139
+    },
+    {
+      "case_id": "mes_signal_send_attachment_refused_outside_the_allowed_dir",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "SignalSendAttachment",
+        "params": [
+          "{{mesBackendAddr}}",
+          "e2e-inventory-group",
+          "",
+          "",
+          "/etc/passwd"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:outside the allowed attachment directory"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 140
     }
   ],
   "android_optical_scan_result": {

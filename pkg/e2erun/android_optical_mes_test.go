@@ -83,3 +83,47 @@ func TestMesBackendAddrPrefersTheEnvironment(t *testing.T) {
 		t.Errorf("want the file read and trimmed when the environment is silent, got %q", got)
 	}
 }
+
+// TestResolveMesCasesSubstitutesTheExpectationSideToo pins the half that is easy to forget: a
+// "form" case names the backend address twice -- once as a param device A types, once as the
+// value device B must find in the field -- and substituting only the first makes a correct run
+// fail with a mismatch that reads like a dropped param.
+func TestResolveMesCasesSubstitutesTheExpectationSideToo(t *testing.T) {
+	t.Setenv(mesBackendAddrEnvVar, "/ip4/127.0.0.1/tcp/46217/p2p/12D3KooWFake")
+
+	got := resolveMesCases([]e2edata.OpticalScanCase{{
+		CaseID:   "form_case",
+		Generate: e2edata.OpticalGenerateSpec{Target: "nav_form", Category: "Mes", Name: "LinkAccount", Params: []string{mesBackendAddrToken, "optical rig"}},
+		Expect:   e2edata.OpticalExpectSpec{Kind: "form", ExpectParams: []string{mesBackendAddrToken, "optical rig"}},
+	}})
+
+	if len(got) != 1 {
+		t.Fatalf("resolved %d cases, want 1", len(got))
+	}
+	if got[0].Generate.Params[0] != "/ip4/127.0.0.1/tcp/46217/p2p/12D3KooWFake" {
+		t.Errorf("generate param = %q, want the real address", got[0].Generate.Params[0])
+	}
+	if got[0].Expect.ExpectParams[0] != "/ip4/127.0.0.1/tcp/46217/p2p/12D3KooWFake" {
+		t.Errorf("expect param = %q, want the real address", got[0].Expect.ExpectParams[0])
+	}
+}
+
+// TestResolveHumanCasesKeepsThemOutOfAnUnattendedRun: a case nobody is standing next to did not
+// fail, it was never runnable, and a permanent red mark meaning "nobody was there" is worse than
+// not measuring it.
+func TestResolveHumanCasesKeepsThemOutOfAnUnattendedRun(t *testing.T) {
+	cases := []e2edata.OpticalScanCase{
+		{CaseID: "ordinary"},
+		{CaseID: "needs_a_person", NeedsHuman: true},
+	}
+
+	got := resolveHumanCases(cases)
+	if len(got) != 1 || got[0].CaseID != "ordinary" {
+		t.Fatalf("resolved %v, want just the ordinary case", got)
+	}
+
+	t.Setenv(humanCasesEnvVar, "1")
+	if got := resolveHumanCases(cases); len(got) != 2 {
+		t.Fatalf("resolved %d cases with %s set, want both", len(got), humanCasesEnvVar)
+	}
+}

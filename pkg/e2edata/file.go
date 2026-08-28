@@ -2329,6 +2329,16 @@ type OpticalExpectSpec struct {
 	// typing it, and on a re-fill it replaced whatever was there before while every other field
 	// kept what PreopenParams put in it.
 	ExpectParam string `json:"expect_param,omitempty"`
+	// ExpectParams, for a "form" case, is what every one of the opened form's fields must read
+	// before its Run button is pressed -- index by index, the values the generating device typed.
+	//
+	// Plural and positional where ExpectParam above is a single "<index>=<value>", because the
+	// two check opposite things. A log reference lands in one field and must leave the rest
+	// alone; a form code carries *all* of them, and the failure worth catching is a form that
+	// arrives partly filled. That one hides well: Run is still pressed, the command still runs,
+	// and it simply does the wrong thing -- a LinkAccount with a blank backend address dials
+	// nowhere and reports a timeout that reads like a dead network rather than a dropped param.
+	ExpectParams []string `json:"expect_params,omitempty"`
 	// Result is required for "run" -- the same succeeded/rejected/no_crash/"contains:<substring>"
 	// convention ExpectSucceeded/ExpectRejected/ExpectNoCrash describe, checked against the
 	// post-Execute OutputLog entry CommandExecutor.execute records on device B. Tokens
@@ -2399,6 +2409,30 @@ type OpticalScanCase struct {
 	// device B's own one-time join/relay setup already extends (see FIRST_CASE_HOLD_MILLIS).
 	HoldMillis int64 `json:"hold_millis,omitempty"`
 	TimeoutMs  int64 `json:"timeout_ms,omitempty"`
+	// RunTimeoutMs bounds how long device B waits for a command's *answer* after it has started
+	// it, where TimeoutMs above bounds waiting for the code to be read in the first place. Two
+	// budgets because they measure unrelated things: a scan that has not landed in 80s is a
+	// decode problem, while a command that has not answered in 80s may be perfectly healthy and
+	// still working.
+	//
+	// Zero falls back to UiCommandE2ETest.kt's RUN_TIMEOUT_MS, which is right for anything a
+	// machine answers. Setting it is for a command a *person* is in the middle of: a real
+	// device-link waits on somebody finding "Linked devices" in Signal and holding a camera up,
+	// which no fixed 180s built for a raft round trip should be asked to cover.
+	//
+	// HoldMillis has to exceed TimeoutMs + RunTimeoutMs, not just TimeoutMs: device A stops
+	// showing the code when its hold expires, and B is still working until its command answers.
+	RunTimeoutMs int64 `json:"run_timeout_ms,omitempty"`
+	// NeedsHuman marks a case that cannot pass unattended -- somebody has to do something
+	// physical while it runs that no device in the rig can do. Currently one shape: a real
+	// `signal-cli link`, where a third phone running Signal has to scan a QR code off device B's
+	// screen inside Signal's own one-minute window.
+	//
+	// Dropped from a batch unless the runner opts in (see pkg/e2erun's resolveHumanCases), for
+	// the same reason the mes cases are dropped without a backend: a case nobody is standing next
+	// to does not fail, it was never runnable, and letting it fail would put a permanent red mark
+	// on every unattended run.
+	NeedsHuman bool `json:"needs_human,omitempty"`
 	// Order, when non-zero, is this case's 1-based position in a sequence the caller needs run in
 	// exactly that order -- this is a list, not a map, so file order already reads top to bottom,
 	// but Order documents *intent* (a case that depends on a specific earlier case's own effect,
