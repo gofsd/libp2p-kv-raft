@@ -4602,12 +4602,13 @@
         "name": "SignalListContacts",
         "params": [
           "{{mesBackendAddr}}",
+          "",
           ""
         ]
       },
       "expect": {
         "kind": "run",
-        "result": "matches:status=ok[\\s\\S]*addressable=3[\\s\\S]*count=4"
+        "result": "matches:status=ok[\\s\\S]*addressable=5[\\s\\S]*count=6"
       },
       "hold_millis": 90000,
       "timeout_ms": 80000,
@@ -4655,6 +4656,26 @@
       "order": 140
     },
     {
+      "case_id": "mes_signal_list_contacts_in_a_group",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "SignalListContacts",
+        "params": [
+          "{{mesBackendAddr}}",
+          "",
+          "e2e-inventory-group"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=ok[\\s\\S]*count=2[\\s\\S]*members=2"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 141
+    },
+    {
       "case_id": "mes_signal_send_attachment_refused_outside_the_allowed_dir",
       "generate": {
         "target": "run",
@@ -4674,7 +4695,7 @@
       },
       "hold_millis": 90000,
       "timeout_ms": 80000,
-      "order": 141
+      "order": 142
     }
   ],
   "android_optical_scan_result": {
