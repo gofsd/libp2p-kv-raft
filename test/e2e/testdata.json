@@ -4676,6 +4676,82 @@
       "order": 141
     },
     {
+      "case_id": "mes_sheets_create",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "SheetsCreate",
+        "params": [
+          "{{mesBackendAddr}}",
+          "optical ledger"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=ok[\\s\\S]*spreadsheetId=.+"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 143
+    },
+    {
+      "case_id": "mes_sheets_delete_refused_for_a_file_that_is_not_a_spreadsheet",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "SheetsDelete",
+        "params": [
+          "{{mesBackendAddr}}",
+          "some-uploaded-file"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:not a spreadsheet"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 144
+    },
+    {
+      "case_id": "mes_sheets_list",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "SheetsList",
+        "params": [
+          "{{mesBackendAddr}}",
+          "optical ledger"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=ok[\\s\\S]*count=1"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 145
+    },
+    {
+      "case_id": "mes_sheets_delete",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "SheetsDelete",
+        "params": [
+          "{{mesBackendAddr}}",
+          "{{mesSpreadsheetId}}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=ok"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 146
+    },
+    {
       "case_id": "mes_signal_send_attachment_refused_outside_the_allowed_dir",
       "generate": {
         "target": "run",
