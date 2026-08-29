@@ -4636,6 +4636,25 @@
       "order": 139
     },
     {
+      "case_id": "mes_signal_list_groups",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "SignalListGroups",
+        "params": [
+          "{{mesBackendAddr}}",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=ok[\\s\\S]*count=3[\\s\\S]*sendable=2"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 140
+    },
+    {
       "case_id": "mes_signal_send_attachment_refused_outside_the_allowed_dir",
       "generate": {
         "target": "run",
@@ -4655,7 +4674,7 @@
       },
       "hold_millis": 90000,
       "timeout_ms": 80000,
-      "order": 140
+      "order": 141
     }
   ],
   "android_optical_scan_result": {
