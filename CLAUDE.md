@@ -198,7 +198,7 @@ running instance of it, which `android-app` has no client for. They name their d
 `resolveMesCases`) because it belongs to a third process neither device runs -- from
 `MES_OPTICAL_BACKEND_ADDR`, or from `~/.libp2p-kv-raft/mes-optical-backend.addr`, which signal-cli's
 own `TestServeOpticalBackend` writes. **With neither set they are skipped, loudly, not failed**: a
-rig with no such backend is still a good rig for the other 137 cases. See `object-history-app`'s
+rig with no such backend is still a good rig for the other 138 cases. See `object-history-app`'s
 CLAUDE.md, "The mes backend's optical cases".
 
 A second gate works the same way and for the same reason. **A case marked `needs_human` is skipped

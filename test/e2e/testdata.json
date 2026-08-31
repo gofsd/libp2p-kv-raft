@@ -4772,6 +4772,104 @@
       "hold_millis": 90000,
       "timeout_ms": 80000,
       "order": 142
+    },
+    {
+      "case_id": "mes_catalog_commands_lists_the_whole_catalog",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "CatalogCommands",
+        "params": [
+          "{{mesBackendAddr}}",
+          "",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=ok[\\s\\S]*cmd-inventoryEdges[\\s\\S]*peer=12D3Koo"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 147
+    },
+    {
+      "case_id": "mes_catalog_groups_says_why_a_command_is_runnable",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "CatalogGroups",
+        "params": [
+          "{{mesBackendAddr}}",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=ok[\\s\\S]*grp-signal-cli-public \\(public\\)[\\s\\S]*peer=12D3Koo"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 148
+    },
+    {
+      "case_id": "mes_catalog_commands_refuses_an_unknown_scope",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "CatalogCommands",
+        "params": [
+          "{{mesBackendAddr}}",
+          "",
+          "sideways"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:scope must be \"mine\" or \"all\""
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 149
+    },
+    {
+      "case_id": "mes_catalog_groups_narrowed_by_match",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "CatalogGroups",
+        "params": [
+          "{{mesBackendAddr}}",
+          "signal-cli-public"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=ok[\\s\\S]*count=1"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 150
+    },
+    {
+      "case_id": "mes_catalog_commands_narrowed_by_match",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "CatalogCommands",
+        "params": [
+          "{{mesBackendAddr}}",
+          "catalog",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=ok[\\s\\S]*count=2[\\s\\S]*runnable=2"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 151
     }
   ],
   "android_optical_scan_result": {
