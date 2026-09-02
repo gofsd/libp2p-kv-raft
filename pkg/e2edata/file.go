@@ -2433,6 +2433,30 @@ type OpticalScanCase struct {
 	// to does not fail, it was never runnable, and letting it fail would put a permanent red mark
 	// on every unattended run.
 	NeedsHuman bool `json:"needs_human,omitempty"`
+	// Setup marks a case that establishes state the rest of the plan can then assume, and that
+	// must not be repeated once it has succeeded -- not because repeating is slow, but because it
+	// is either irreversible or costs a person. The one shape today: the real `signal-cli link`,
+	// which adds a *permanent* device to a live Signal account and needs somebody holding a third
+	// phone inside Signal's one-minute window. Running that on every batch would accumulate linked
+	// devices on a real account and require a person every time.
+	//
+	// A Setup case that has already succeeded is dropped from later batches, remembered on the
+	// host rather than in this file (see pkg/e2erun's resolveSetupCases and the ledger it keeps
+	// beside mes-optical-backend.addr). Deliberately *not* recorded here: this file is committed,
+	// and "this rig already did its setup" is a fact about one machine, not about the plan. Two
+	// checkouts of this repo describe the same suite; two rigs do not share a Signal account.
+	//
+	// **The memory is once-per-host and nothing invalidates it automatically.** That is a chosen
+	// trade-off with a known failure mode: a setup whose state is wiped -- restarting
+	// TestServeOpticalBackend discards signal-cli's account data with its temp home -- is still
+	// remembered as done, so the case is skipped and whatever depended on it fails instead,
+	// pointing somewhere else entirely. The skip is therefore printed loudly with the date it ran,
+	// and there are two ways back: name the case in MANUAL_OPTICAL_SCAN_CASES, which always
+	// overrides the ledger, or delete the ledger entry.
+	//
+	// Composes with NeedsHuman rather than replacing it: the link case is both, and the human gate
+	// is applied first, so an unattended batch never reaches the setup question at all.
+	Setup bool `json:"setup,omitempty"`
 	// Order, when non-zero, is this case's 1-based position in a sequence the caller needs run in
 	// exactly that order -- this is a list, not a map, so file order already reads top to bottom,
 	// but Order documents *intent* (a case that depends on a specific earlier case's own effect,

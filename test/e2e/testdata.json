@@ -4568,6 +4568,7 @@
     {
       "case_id": "mes_link_account_real_link_on_three_devices",
       "needs_human": true,
+      "setup": true,
       "generate": {
         "target": "nav_form",
         "category": "Mes",

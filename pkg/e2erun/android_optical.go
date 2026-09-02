@@ -51,7 +51,11 @@ func runOpticalScanSuite(cases []e2edata.OpticalScanCase, serialA, serialB strin
 	// Resolved once, before the retry loop: a crash retry re-runs the same batch, and re-reading
 	// the backend's address between attempts could silently move half a run onto a different
 	// backend than the half before it.
-	cases = resolveHumanCases(resolveMesCases(cases))
+	//
+	// resolveSetupCases runs last, so a setup case an unattended batch was never going to reach
+	// (the link case is NeedsHuman too) is reported once, by the human gate, rather than twice by
+	// two filters disagreeing about which of them dropped it.
+	cases = resolveSetupCases(resolveHumanCases(resolveMesCases(cases)))
 	for attempt := 0; ; attempt++ {
 		result, crashed := runOpticalScanBatch(cases, serialA, serialB)
 		// Attempts counts batches spent, not batches retried, so a clean run records 1 rather than
@@ -59,6 +63,9 @@ func runOpticalScanSuite(cases []e2edata.OpticalScanCase, serialA, serialB strin
 		// first-try pass must not persist identically.
 		result.Attempts = attempt + 1
 		if !crashed || attempt >= opticalCrashRetries {
+			// After the retry loop, not inside it: a batch that crashed measured nothing, and
+			// recording a setup case off it would skip the very run that establishes the state.
+			recordSetupCases(cases, result)
 			return result
 		}
 		fmt.Fprintf(os.Stderr, "e2erun: optical: an app process crashed mid-batch, so this run measured nothing -- re-running the whole batch (attempt %d of %d)\n", attempt+2, opticalCrashRetries+1)
