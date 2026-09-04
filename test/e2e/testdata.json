@@ -4467,7 +4467,7 @@
         "category": "Mes",
         "name": "ShowLinkQr",
         "params": [
-          "sgnl://linkdevice?uuid=optical-shown&pub_key=BQ5PSd7LLHalUWhUdxPlXl1AT7loI5vlXjvUFpo95qRP"
+          "sgnl://linkdevice?uuid=optical-shown\u0026pub_key=BQ5PSd7LLHalUWhUdxPlXl1AT7loI5vlXjvUFpo95qRP"
         ]
       },
       "expect": {
@@ -4483,8 +4483,7 @@
       "generate": {
         "target": "run",
         "category": "Mes",
-        "name": "HideLinkQr",
-        "params": []
+        "name": "HideLinkQr"
       },
       "expect": {
         "kind": "run",
@@ -4521,8 +4520,7 @@
       "generate": {
         "target": "run",
         "category": "Mes",
-        "name": "HideLinkQr",
-        "params": []
+        "name": "HideLinkQr"
       },
       "expect": {
         "kind": "run",
@@ -4567,8 +4565,6 @@
     },
     {
       "case_id": "mes_link_account_real_link_on_three_devices",
-      "needs_human": true,
-      "setup": true,
       "generate": {
         "target": "nav_form",
         "category": "Mes",
@@ -4593,6 +4589,8 @@
       "hold_millis": 420000,
       "timeout_ms": 80000,
       "run_timeout_ms": 330000,
+      "needs_human": true,
+      "setup": true,
       "order": 137
     },
     {
@@ -4871,12 +4869,188 @@
       "hold_millis": 90000,
       "timeout_ms": 80000,
       "order": 151
+    },
+    {
+      "case_id": "mes_admin_list_refused_before_enrolling",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "AdminList",
+        "params": [
+          "{{mesBackendAddr}}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "contains:not permitted"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 152
+    },
+    {
+      "case_id": "mes_enroll_refused_for_an_unknown_token",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "Enroll",
+        "params": [
+          "{{mesBackendAddr}}",
+          "ZZZZZZZZZZZZZZZZ",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=error[\\s\\S]*unknown or expired enrolment token"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 153
+    },
+    {
+      "case_id": "mes_catalog_commands_says_the_admin_commands_are_not_runnable",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "CatalogCommands",
+        "params": [
+          "{{mesBackendAddr}}",
+          "admin",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=ok[\\s\\S]*count=3[\\s\\S]*runnable=0"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 154
+    },
+    {
+      "case_id": "mes_enroll_grants_this_device_admin_standing",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "Enroll",
+        "params": [
+          "{{mesBackendAddr}}",
+          "{{mesEnrolToken}}",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=ok[\\s\\S]*devices=1[\\s\\S]*group=grp-mes-admin[\\s\\S]*scope=admin"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 155
+    },
+    {
+      "case_id": "mes_admin_list_now_names_this_device",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "AdminList",
+        "params": [
+          "{{mesBackendAddr}}"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=ok[\\s\\S]*count=1[\\s\\S]*drift=0[\\s\\S]*optical rig phone=12D3Koo"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 156
+    },
+    {
+      "case_id": "mes_catalog_commands_says_the_admin_commands_are_runnable_now",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "CatalogCommands",
+        "params": [
+          "{{mesBackendAddr}}",
+          "admin",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=ok[\\s\\S]*count=3[\\s\\S]*runnable=3"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 157
+    },
+    {
+      "case_id": "mes_catalog_groups_says_this_device_is_in_the_admin_group",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "CatalogGroups",
+        "params": [
+          "{{mesBackendAddr}}",
+          "mes-admin"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=ok[\\s\\S]*grp-mes-admin \\(member\\)[\\s\\S]*mine=1"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 158
+    },
+    {
+      "case_id": "mes_enroll_again_confirms_rather_than_refuses",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "Enroll",
+        "params": [
+          "{{mesBackendAddr}}",
+          "{{mesEnrolToken}}",
+          ""
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=ok[\\s\\S]*repeat=true"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 159
+    },
+    {
+      "case_id": "mes_admin_invite_mints_the_next_devices_code",
+      "generate": {
+        "target": "run",
+        "category": "Mes",
+        "name": "AdminInvite",
+        "params": [
+          "{{mesBackendAddr}}",
+          "second phone",
+          "",
+          "600",
+          "run"
+        ]
+      },
+      "expect": {
+        "kind": "run",
+        "result": "matches:status=ok[\\s\\S]*scope=admin[\\s\\S]*timestamp=[0-9]+[\\s\\S]*token=[A-Z2-7]{4}…"
+      },
+      "hold_millis": 90000,
+      "timeout_ms": 80000,
+      "order": 160
     }
   ],
   "android_optical_scan_result": {
-    "ran_at": "2026-08-26T15:52:46.351553143+03:00",
-    "status": 1,
-    "error": "1 of 223 optical scan case(s) failed:\njoin_request_ticket: device A: screen 'generatedDataMatrixImage' not shown after 10000ms",
+    "ran_at": "2026-09-02T17:15:30.703005734+03:00",
+    "status": 0,
     "cases": [
       {
         "case_id": "get_own_addr",
@@ -4892,8 +5066,7 @@
       },
       {
         "case_id": "join_request_ticket",
-        "pass": false,
-        "error": "device A: screen 'generatedDataMatrixImage' not shown after 10000ms"
+        "pass": true
       },
       {
         "case_id": "dial_submit_command_ping",
@@ -5770,8 +5943,96 @@
       {
         "case_id": "mes_group_sync_is_quiet_when_nothing_changed",
         "pass": true
+      },
+      {
+        "case_id": "mes_show_link_qr_refuses_a_payload_that_is_not_a_link",
+        "pass": true
+      },
+      {
+        "case_id": "mes_link_account_shows_the_code_on_this_device",
+        "pass": true
+      },
+      {
+        "case_id": "mes_show_link_qr_puts_a_real_code_on_screen",
+        "pass": true
+      },
+      {
+        "case_id": "mes_hide_link_qr_takes_down_the_code_the_last_case_left",
+        "pass": true
+      },
+      {
+        "case_id": "mes_show_code_puts_a_datamatrix_on_screen",
+        "pass": true
+      },
+      {
+        "case_id": "mes_hide_link_qr_leaves_another_flow_s_code_alone",
+        "pass": true
+      },
+      {
+        "case_id": "mes_hide_code_takes_down_the_code_by_its_tag",
+        "pass": true
+      },
+      {
+        "case_id": "form_code_opens_the_command_form",
+        "pass": true
+      },
+      {
+        "case_id": "mes_signal_list_contacts",
+        "pass": true
+      },
+      {
+        "case_id": "mes_signal_send_attachment",
+        "pass": true
+      },
+      {
+        "case_id": "mes_signal_list_groups",
+        "pass": true
+      },
+      {
+        "case_id": "mes_signal_list_contacts_in_a_group",
+        "pass": true
+      },
+      {
+        "case_id": "mes_sheets_create",
+        "pass": true
+      },
+      {
+        "case_id": "mes_sheets_delete_refused_for_a_file_that_is_not_a_spreadsheet",
+        "pass": true
+      },
+      {
+        "case_id": "mes_sheets_list",
+        "pass": true
+      },
+      {
+        "case_id": "mes_sheets_delete",
+        "pass": true
+      },
+      {
+        "case_id": "mes_signal_send_attachment_refused_outside_the_allowed_dir",
+        "pass": true
+      },
+      {
+        "case_id": "mes_catalog_commands_lists_the_whole_catalog",
+        "pass": true
+      },
+      {
+        "case_id": "mes_catalog_groups_says_why_a_command_is_runnable",
+        "pass": true
+      },
+      {
+        "case_id": "mes_catalog_commands_refuses_an_unknown_scope",
+        "pass": true
+      },
+      {
+        "case_id": "mes_catalog_groups_narrowed_by_match",
+        "pass": true
+      },
+      {
+        "case_id": "mes_catalog_commands_narrowed_by_match",
+        "pass": true
       }
     ],
-    "attempts": 1
+    "attempts": 2
   }
 }

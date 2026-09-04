@@ -108,6 +108,79 @@ func TestResolveMesCasesSubstitutesTheExpectationSideToo(t *testing.T) {
 	}
 }
 
+// TestResolveMesCasesSubstitutesTheEnrolmentToken: the enrolment cases are the only ones that
+// need a second host-resolved value, and a case naming both must get both -- substituting one and
+// leaving the other typed into a form as a literal "{{...}}" is a failure that names the wrong
+// half.
+func TestResolveMesCasesSubstitutesTheEnrolmentToken(t *testing.T) {
+	const addr = "/ip4/192.0.2.7/tcp/4001/p2p/12D3KooWTest"
+	const token = "MFRGGZDFMZTWQ2LK"
+	t.Setenv(mesBackendAddrEnvVar, addr)
+	t.Setenv(mesEnrolTokenEnvVar, token)
+
+	got := resolveMesCases([]e2edata.OpticalScanCase{
+		mesCase("enrol", mesBackendAddrToken, mesEnrolTokenToken, ""),
+	})
+	if len(got) != 1 {
+		t.Fatalf("want the case kept, got %d", len(got))
+	}
+	if got[0].Generate.Params[0] != addr || got[0].Generate.Params[1] != token {
+		t.Errorf("want both tokens substituted, got %q", got[0].Generate.Params)
+	}
+}
+
+// TestResolveMesCasesDropsEnrolmentCasesWithNoToken: a rig running a signal-cli old enough not to
+// mint one is still a good rig for every other mes case, so only the cases naming the token may be
+// dropped -- and the message has to name *which* value was missing, since a batch that silently
+// dropped nine cases for one reason and called it the other is how an operator ends up restarting
+// the wrong process.
+func TestResolveMesCasesDropsEnrolmentCasesWithNoToken(t *testing.T) {
+	t.Setenv(mesBackendAddrEnvVar, "/ip4/192.0.2.7/tcp/4001/p2p/12D3KooWTest")
+	t.Setenv(mesEnrolTokenEnvVar, "")
+	// The file fallback is the operator's real home, where a rig session may well have left a
+	// token -- point HOME somewhere empty so this test measures the absent case it means to.
+	t.Setenv("HOME", t.TempDir())
+
+	got := resolveMesCases([]e2edata.OpticalScanCase{
+		mesCase("ordinary_mes", mesBackendAddrToken, "verify-alice"),
+		mesCase("enrol", mesBackendAddrToken, mesEnrolTokenToken, ""),
+		mesCase("no_backend_needed"),
+	})
+	if len(got) != 2 {
+		t.Fatalf("want the two cases that need no token kept, got %d: %+v", len(got), got)
+	}
+	for _, c := range got {
+		if c.CaseID == "enrol" {
+			t.Fatal("a case naming the enrolment token should not survive with no token to substitute")
+		}
+	}
+}
+
+// TestMesEnrolTokenPrefersTheEnvironment pins the same precedence the address has, and for the
+// same reason: an operator naming a token by hand must not be silently overridden by whatever a
+// previous serve session left in the rendezvous file -- which for a *token* is worse than for an
+// address, since a spent one fails the case rather than failing to connect.
+func TestMesEnrolTokenPrefersTheEnvironment(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(home+"/.libp2p-kv-raft", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mesEnrolTokenPath(), []byte("  FROMTHEFILE1234  \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv(mesEnrolTokenEnvVar, "FROMTHEENVIRONMEN")
+	if got := mesEnrolToken(); got != "FROMTHEENVIRONMEN" {
+		t.Errorf("want the environment to win, got %q", got)
+	}
+
+	t.Setenv(mesEnrolTokenEnvVar, "")
+	if got := mesEnrolToken(); got != "FROMTHEFILE1234" {
+		t.Errorf("want the file read and trimmed when the environment is silent, got %q", got)
+	}
+}
+
 // TestResolveHumanCasesKeepsThemOutOfAnUnattendedRun: a case nobody is standing next to did not
 // fail, it was never runnable, and a permanent red mark meaning "nobody was there" is worse than
 // not measuring it.

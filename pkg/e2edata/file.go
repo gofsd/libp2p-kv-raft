@@ -2271,13 +2271,18 @@ type OpticalGenerateSpec struct {
 	//                         than the send's timestamp, so the two commands only work as a
 	//                         pair -- see UiCommandE2ETest.mintMesTimestamp.
 	//
-	// One token is resolved on the *host* instead, before either device is launched:
+	// Two tokens are resolved on the *host* instead, before either device is launched. Both
+	// describe a third process neither device runs, stood up fresh per rig session, so only the
+	// host can know them; a case naming either is skipped outright when the rig cannot supply it,
+	// rather than failed -- see pkg/e2erun's resolveMesCases.
 	//
-	//   "{{mesBackendAddr}}" -- the mes/signal-cli backend's dialable multiaddr. Unlike the four
-	//                         above it describes a third process neither device runs, stood up
-	//                         fresh per rig session, so only the host can know it. A case naming
-	//                         it is skipped outright when no backend is configured, rather than
-	//                         failed -- see pkg/e2erun's resolveMesCases.
+	//   "{{mesBackendAddr}}" -- the mes/signal-cli backend's dialable multiaddr.
+	//   "{{mesEnrolToken}}"  -- a live one-time enrolment token that backend minted for this
+	//                         session, for the cases that turn the scanning device into one it
+	//                         takes admin orders from. Not merely unknowable at authoring time
+	//                         but unreachable by any other route: the product delivers such a
+	//                         code through Signal, which is faked on this rig, so the plan mints
+	//                         the RunCode the backend would have sent.
 	//
 	// A token that fails to resolve is left in place rather than replaced by something empty,
 	// so the case fails on the literal token instead of passing against a blank.

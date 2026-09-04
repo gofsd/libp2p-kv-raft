@@ -37,8 +37,48 @@ const mesBackendAddrEnvVar = "MES_OPTICAL_BACKEND_ADDR"
 // there would be deleted with it before this harness ever looked.
 const mesBackendAddrFile = "mes-optical-backend.addr"
 
-// resolveMesCases substitutes mesBackendAddrToken into every case that names it, and drops the
-// cases that name it when no backend address can be found.
+// mesEnrolTokenToken is where an optical case puts a live enrolment token: the one-time secret
+// that turns the phone into a device the mes backend takes admin orders from.
+//
+// Host-resolved for the same reason mesBackendAddrToken is, and then one reason more. A token is
+// minted per rig session, so no committed plan can name one -- but the deeper point is that
+// enrolment's real door does not pass this way at all. The backend sends a code *into Signal*,
+// and every Signal edge on the optical rig is a fake, so no code the product would send ever
+// reaches a camera. The rig therefore mints one and says where it is (signal-cli's
+// test/e2e/serve_test.go, publishOpticalEnrolmentToken), and the plan generates the same RunCode
+// the backend would have sent. What that costs is honest to state: the enrolment cases exercise
+// the redeeming half for real -- the arity of the code, the scan, the grant, what the grant then
+// permits -- and not the delivery half, which only a real Signal account can show.
+const mesEnrolTokenToken = "{{mesEnrolToken}}"
+
+// mesEnrolTokenEnvVar names the token directly, and wins over mesEnrolTokenFile.
+const mesEnrolTokenEnvVar = "MES_OPTICAL_ENROL_TOKEN"
+
+// mesEnrolTokenFile is where signal-cli's optical rig writes the token it minted, beside the
+// address file and read the same way.
+const mesEnrolTokenFile = "mes-optical-enrol.token"
+
+// mesSubstitution is one host-resolved token: what to look for, what to put there, and what to
+// tell an operator whose rig cannot supply it.
+//
+// A list rather than two hand-written passes because the two behave identically -- substitute
+// where present, drop the case where absent, say so once at the end -- and because a case may
+// name both, in which case it needs *both* before it can run and the reason it was dropped has
+// to name the one that was missing.
+type mesSubstitution struct {
+	token string
+	value string
+	hint  string
+}
+
+// resolveMesCases substitutes every host-resolved token into the cases that name it, and drops
+// the cases naming one this rig cannot supply.
+//
+// Two tokens today, and they fail independently: a rig may have a backend and no enrolment token
+// (an older signal-cli, or one killed and restarted without republishing), in which case the nine
+// enrolment cases go and the other ninety-odd mes cases stay. Which is why the report below names
+// the missing *value* rather than counting cases -- an operator told that cases were skipped for
+// want of "a mes backend" restarts a process that is already running.
 //
 // Dropping rather than failing, because the mes cases are the only ones in the plan that depend
 // on a third process being up: a rig with no signal-cli backend running is still a perfectly
@@ -51,58 +91,90 @@ const mesBackendAddrFile = "mes-optical-backend.addr"
 // run that quietly measured 137 of 230 while printing "137 of 137" is worse than one that
 // measured nothing.
 func resolveMesCases(cases []e2edata.OpticalScanCase) []e2edata.OpticalScanCase {
-	addr := mesBackendAddr()
+	subs := []mesSubstitution{{
+		token: mesBackendAddrToken,
+		value: mesBackendAddr(),
+		hint: fmt.Sprintf("no mes backend address (set %s, or start signal-cli's own TestServeOpticalBackend, which writes %s)",
+			mesBackendAddrEnvVar, mesBackendAddrPath()),
+	}, {
+		token: mesEnrolTokenToken,
+		value: mesEnrolToken(),
+		hint: fmt.Sprintf("no enrolment token (set %s, or run a signal-cli rig new enough to write %s)",
+			mesEnrolTokenEnvVar, mesEnrolTokenPath()),
+	}}
 
 	out := make([]e2edata.OpticalScanCase, 0, len(cases))
-	var dropped []string
+	dropped := map[string][]string{}
 	for _, c := range cases {
-		if !caseNeedsMesBackend(c) {
-			out = append(out, c)
-			continue
-		}
-		if addr == "" {
-			dropped = append(dropped, c.CaseID)
-			continue
-		}
-		params := make([]string, len(c.Generate.Params))
-		for i, p := range c.Generate.Params {
-			params[i] = strings.ReplaceAll(p, mesBackendAddrToken, addr)
-		}
-		c.Generate.Params = params
-		// The expectation side needs the same substitution, not just the generate side: a "form"
-		// case asserts that the values device A typed arrived in device B's form, so it names the
-		// very same address. Left unsubstituted it compares a real multiaddr against the literal
-		// "{{mesBackendAddr}}" and fails with a mismatch that looks like a dropped param.
-		if len(c.Expect.ExpectParams) > 0 {
-			want := make([]string, len(c.Expect.ExpectParams))
-			for i, p := range c.Expect.ExpectParams {
-				want[i] = strings.ReplaceAll(p, mesBackendAddrToken, addr)
+		missing := ""
+		for _, sub := range subs {
+			if sub.value == "" && caseNeedsToken(c, sub.token) {
+				missing = sub.hint
+				break
 			}
-			c.Expect.ExpectParams = want
+		}
+		if missing != "" {
+			dropped[missing] = append(dropped[missing], c.CaseID)
+			continue
+		}
+		for _, sub := range subs {
+			if sub.value == "" {
+				continue
+			}
+			c = substituteToken(c, sub.token, sub.value)
 		}
 		out = append(out, c)
 	}
 
-	if len(dropped) > 0 {
-		fmt.Fprintf(os.Stderr,
-			"e2erun: optical: no mes backend address (set %s, or start signal-cli's own "+
-				"TestServeOpticalBackend, which writes %s) -- skipping %d of %d case(s), so this "+
-				"run measures the other %d only: %s\n",
-			mesBackendAddrEnvVar, mesBackendAddrPath(), len(dropped), len(cases), len(out),
-			strings.Join(dropped, ", "))
-	} else if addr != "" {
+	if addr := subs[0].value; addr != "" {
 		fmt.Fprintf(os.Stderr, "e2erun: optical: mes backend at %s\n", addr)
+	}
+	for _, sub := range subs {
+		ids := dropped[sub.hint]
+		if len(ids) == 0 {
+			continue
+		}
+		fmt.Fprintf(os.Stderr,
+			"e2erun: optical: %s -- skipping %d of %d case(s), so this run measures the other %d only: %s\n",
+			sub.hint, len(ids), len(cases), len(out), strings.Join(ids, ", "))
 	}
 	return out
 }
 
-// caseNeedsMesBackend reports whether c cannot run without a backend to dial. Decided by the
-// token actually appearing in the case's params rather than by its category being "Mes", so a
-// case that reaches the backend some other way (a Dispatch: DialSubmitCommand aimed at it, say)
-// is covered by the same rule without needing to be listed anywhere.
-func caseNeedsMesBackend(c e2edata.OpticalScanCase) bool {
+// substituteToken replaces one token everywhere a case can name it.
+//
+// The expectation side needs the same substitution, not just the generate side: a "form" case
+// asserts that the values device A typed arrived in device B's form, so it names the very same
+// address. Left unsubstituted it compares a real multiaddr against the literal
+// "{{mesBackendAddr}}" and fails with a mismatch that looks like a dropped param.
+func substituteToken(c e2edata.OpticalScanCase, token, value string) e2edata.OpticalScanCase {
+	params := make([]string, len(c.Generate.Params))
+	for i, p := range c.Generate.Params {
+		params[i] = strings.ReplaceAll(p, token, value)
+	}
+	c.Generate.Params = params
+	if len(c.Expect.ExpectParams) > 0 {
+		want := make([]string, len(c.Expect.ExpectParams))
+		for i, p := range c.Expect.ExpectParams {
+			want[i] = strings.ReplaceAll(p, token, value)
+		}
+		c.Expect.ExpectParams = want
+	}
+	return c
+}
+
+// caseNeedsToken reports whether c cannot run without a value for token. Decided by the token
+// actually appearing in the case rather than by its category being "Mes", so a case that reaches
+// the backend some other way (a Dispatch: DialSubmitCommand aimed at it, say) is covered by the
+// same rule without needing to be listed anywhere.
+func caseNeedsToken(c e2edata.OpticalScanCase, token string) bool {
 	for _, p := range c.Generate.Params {
-		if strings.Contains(p, mesBackendAddrToken) {
+		if strings.Contains(p, token) {
+			return true
+		}
+	}
+	for _, p := range c.Expect.ExpectParams {
+		if strings.Contains(p, token) {
 			return true
 		}
 	}
@@ -128,6 +200,27 @@ func mesBackendAddrPath() string {
 		return mesBackendAddrFile
 	}
 	return filepath.Join(home, ".libp2p-kv-raft", mesBackendAddrFile)
+}
+
+// mesEnrolToken reads the enrolment token from the environment, then from the file the rig
+// writes. Returns "" when neither names one.
+func mesEnrolToken() string {
+	if token := strings.TrimSpace(os.Getenv(mesEnrolTokenEnvVar)); token != "" {
+		return token
+	}
+	body, err := os.ReadFile(mesEnrolTokenPath())
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(body))
+}
+
+func mesEnrolTokenPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return mesEnrolTokenFile
+	}
+	return filepath.Join(home, ".libp2p-kv-raft", mesEnrolTokenFile)
 }
 
 // humanCasesEnvVar opts a batch into the cases that need a person standing next to the rig.
