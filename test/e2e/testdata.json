@@ -1979,7 +1979,7 @@
       },
       "expect": {
         "kind": "run",
-        "result": "matches:-\u003e\\s*01\\.\\d+\\.03\\.\\d+"
+        "result": "matches:-\u003e\\s*01\\.[0-9a-f]+\\.03\\.[0-9a-f]+"
       },
       "order": 8
     },
@@ -5049,8 +5049,9 @@
     }
   ],
   "android_optical_scan_result": {
-    "ran_at": "2026-09-02T17:15:30.703005734+03:00",
-    "status": 0,
+    "ran_at": "2026-09-04T18:37:42.373480853+03:00",
+    "status": 1,
+    "error": "141 of 254 optical scan case(s) failed:\ncron_serving_is_false_after_stop: device B: 'runConfirmExecute' not shown after 9698ms -- the semantics lookup ran cleanly and simply never found it\ncron_fires_records_the_dispatch: device A never produced a result (batch may have stopped early)\ncron_disable_the_schedule: device A never produced a result (batch may have stopped early)\ncron_get_shows_it_disabled: device A never produced a result (batch may have stopped early)\ncron_delete: device A never produced a result (batch may have stopped early)\nlua_list_shows_the_seeded_scripts: device A never produced a result (batch may have stopped early)\nlua_run_outer_succeeds: device A never produced a result (batch may have stopped early)\nlua_settle_after_success: device A never produced a result (batch may have stopped early)\nlua_lastlog_has_the_inner_line: device A never produced a result (batch may have stopped early)\nlua_put_stores_a_script: device A never produced a result (batch may have stopped early)\nlua_lastlog_names_the_child_run: device A never produced a result (batch may have stopped early)\nlua_run_outer_fails: device A never produced a result (batch may have stopped early)\nlua_settle_after_failure: device A never produced a result (batch may have stopped early)\nlua_lastlog_has_the_inner_error: device A never produced a result (batch may have stopped early)\nlogref_enters_the_ids_group: device A never produced a result (batch may have stopped early)\nlogref_prefills_the_form: device A never produced a result (batch may have stopped early)\nlogref_refills_an_open_form: device A never produced a result (batch may have stopped early)\nlogref_from_another_group_leaves_the_form: device A never produced a result (batch may have stopped early)\nmes_register_person_alice: device A never produced a result (batch may have stopped early)\nmes_register_location_shelf: device A never produced a result (batch may have stopped early)\nmes_register_person_bob: device A never produced a result (batch may have stopped early)\nmes_register_thing_drill: device A never produced a result (batch may have stopped early)\nmes_take_drill: device A never produced a result (batch may have stopped early)\nmes_lookup_drill_held_by_alice: device A never produced a result (batch may have stopped early)\nmes_give_drill_to_bob: device A never produced a result (batch may have stopped early)\nmes_lookup_drill_held_by_bob: device A never produced a result (batch may have stopped early)\nmes_put_drill_on_shelf: device A never produced a result (batch may have stopped early)\nmes_lookup_drill_in_stock_on_the_shelf: device A never produced a result (batch may have stopped early)\nmes_list_mine_after_putting_it_down: device A never produced a result (batch may have stopped early)\nmes_list_by_location_shelf: device A never produced a result (batch may have stopped early)\nmes_history_of_the_drill: device A never produced a result (batch may have stopped early)\nmes_register_person_refuse_alice: device A never produced a result (batch may have stopped early)\nmes_register_location_refuse_shelf: device A never produced a result (batch may have stopped early)\nmes_register_person_refuse_bob: device A never produced a result (batch may have stopped early)\nmes_register_thing_refuse_drill: device A never produced a result (batch may have stopped early)\nmes_take_refused_for_an_unknown_actor: device A never produced a result (batch may have stopped early)\nmes_register_person_whose_standing_was_withdrawn: device A never produced a result (batch may have stopped early)\nmes_take_refused_for_a_withdrawn_actor: device A never produced a result (batch may have stopped early)\nmes_put_refused_for_an_unknown_location: device A never produced a result (batch may have stopped early)\nmes_take_refused_for_an_unknown_thing: device A never produced a result (batch may have stopped early)\nmes_register_thing_refused_when_already_registered: device A never produced a result (batch may have stopped early)\nmes_register_location_refused_when_already_registered: device A never produced a result (batch may have stopped early)\nmes_take_drill_as_bob: device A never produced a result (batch may have stopped early)\nmes_lookup_refuse_drill_held_by_bob: device A never produced a result (batch may have stopped early)\nmes_take_refused_when_already_held: device A never produced a result (batch may have stopped early)\nmes_give_refused_when_not_the_holder: device A never produced a result (batch may have stopped early)\nmes_lookup_refuse_drill_unmoved_by_a_refusal: device A never produced a result (batch may have stopped early)\nmes_give_refused_to_a_recipient_without_standing: device A never produced a result (batch may have stopped early)\nmes_history_unchanged_by_refusals: device A never produced a result (batch may have stopped early)\nmes_register_person_lost_alice: device A never produced a result (batch may have stopped early)\nmes_register_location_van: device A never produced a result (batch may have stopped early)\nmes_register_thing_saw: device A never produced a result (batch may have stopped early)\nmes_report_found_refused_when_not_reported_lost: device A never produced a result (batch may have stopped early)\nmes_report_lost_saw: device A never produced a result (batch may have stopped early)\nmes_lookup_saw_lost: device A never produced a result (batch may have stopped early)\nmes_report_found_saw: device A never produced a result (batch may have stopped early)\nmes_lookup_saw_back_in_the_van: device A never produced a result (batch may have stopped early)\nmes_register_person_retire_alice: device A never produced a result (batch may have stopped early)\nmes_register_thing_grinder: device A never produced a result (batch may have stopped early)\nmes_deactivate_grinder: device A never produced a result (batch may have stopped early)\nmes_take_refused_for_a_retired_thing: device A never produced a result (batch may have stopped early)\nmes_lookup_grinder_retired: device A never produced a result (batch may have stopped early)\nmes_register_person_void_alice: device A never produced a result (batch may have stopped early)\nmes_register_location_void_shelf: device A never produced a result (batch may have stopped early)\nmes_register_thing_level: device A never produced a result (batch may have stopped early)\nmes_void_line_refused_for_an_unknown_line: device A never produced a result (batch may have stopped early)\nmes_verify_the_book: device A never produced a result (batch may have stopped early)\nmes_void_line: device A never produced a result (batch may have stopped early)\nmes_lookup_level_back_on_the_shelf: device A never produced a result (batch may have stopped early)\nmes_void_line_refused_when_already_struck: device A never produced a result (batch may have stopped early)\nmes_history_keeps_the_struck_line: device A never produced a result (batch may have stopped early)\nmes_signal_send_message: device A never produced a result (batch may have stopped early)\nmes_signal_delete_message: device A never produced a result (batch may have stopped early)\nmes_signal_send_refused_without_a_destination: device A never produced a result (batch may have stopped early)\nmes_signal_send_qr_code: device A never produced a result (batch may have stopped early)\nmes_signal_send_refused_for_two_destinations: device A never produced a result (batch may have stopped early)\nmes_save_to_google_sheets: device A never produced a result (batch may have stopped early)\nmes_delete_file: device A never produced a result (batch may have stopped early)\nmes_save_file_refuses_malformed_inputs: device A never produced a result (batch may have stopped early)\nmes_sync_sheets_creates_the_mirror: device A never produced a result (batch may have stopped early)\nmes_lookup_drill_before_a_quiet_sync: device A never produced a result (batch may have stopped early)\nmes_sync_sheets_is_quiet_when_nothing_is_new: device A never produced a result (batch may have stopped early)\nmes_register_thing_chisel: device A never produced a result (batch may have stopped early)\nmes_sync_sheets_mirrors_one_new_line: device A never produced a result (batch may have stopped early)\nmes_register_thing_ladder: device A never produced a result (batch may have stopped early)\nmes_send_data_matrix_for_the_ladder: device A never produced a result (batch may have stopped early)\nmes_lookup_ladder: device A never produced a result (batch may have stopped early)\nmes_send_data_matrix_refused_for_an_unknown_thing: device A never produced a result (batch may have stopped early)\nmes_register_person_gen_alice: device A never produced a result (batch may have stopped early)\nmes_register_location_gen_bench: device A never produced a result (batch may have stopped early)\nmes_register_thing_gen_steel: device A never produced a result (batch may have stopped early)\nmes_edges_before_any_assembly: device A never produced a result (batch may have stopped early)\nmes_register_thing_gen_bolt: device A never produced a result (batch may have stopped early)\nmes_trace_refused_for_an_unknown_thing: device A never produced a result (batch may have stopped early)\nmes_register_thing_gen_bracket: device A never produced a result (batch may have stopped early)\nmes_assemble_refused_without_inputs: device A never produced a result (batch may have stopped early)\nmes_register_thing_gen_frame: device A never produced a result (batch may have stopped early)\nmes_assemble_the_bracket: device A never produced a result (batch may have stopped early)\nmes_register_thing_gen_chassis: device A never produced a result (batch may have stopped early)\nmes_edges_show_what_the_bracket_was_made_of: device A never produced a result (batch may have stopped early)\nmes_assemble_the_chassis: device A never produced a result (batch may have stopped early)\nmes_trace_recalls_what_the_steel_ended_up_in: device A never produced a result (batch may have stopped early)\nmes_edges_show_the_bracket_was_consumed: device A never produced a result (batch may have stopped early)\nmes_trace_defaults_to_what_it_was_made_from: device A never produced a result (batch may have stopped early)\nmes_assemble_refused_for_a_thing_made_of_itself: device A never produced a result (batch may have stopped early)\nmes_trace_refused_for_a_direction_that_means_nothing: device A never produced a result (batch may have stopped early)\nmes_lookup_shows_the_assembler_holds_the_chassis: device A never produced a result (batch may have stopped early)\nmes_group_sync_follows_signal_membership: device A never produced a result (batch may have stopped early)\nmes_list_mine_refused_after_leaving_the_group: device A never produced a result (batch may have stopped early)\nmes_group_sync_is_quiet_when_nothing_changed: device A never produced a result (batch may have stopped early)\nmes_show_link_qr_refuses_a_payload_that_is_not_a_link: device A never produced a result (batch may have stopped early)\nmes_link_account_shows_the_code_on_this_device: device A never produced a result (batch may have stopped early)\nmes_show_link_qr_puts_a_real_code_on_screen: device A never produced a result (batch may have stopped early)\nmes_hide_link_qr_takes_down_the_code_the_last_case_left: device A never produced a result (batch may have stopped early)\nmes_show_code_puts_a_datamatrix_on_screen: device A never produced a result (batch may have stopped early)\nmes_hide_link_qr_leaves_another_flow_s_code_alone: device A never produced a result (batch may have stopped early)\nmes_hide_code_takes_down_the_code_by_its_tag: device A never produced a result (batch may have stopped early)\nform_code_opens_the_command_form: device A never produced a result (batch may have stopped early)\nmes_signal_list_contacts: device A never produced a result (batch may have stopped early)\nmes_signal_send_attachment: device A never produced a result (batch may have stopped early)\nmes_signal_list_groups: device A never produced a result (batch may have stopped early)\nmes_signal_list_contacts_in_a_group: device A never produced a result (batch may have stopped early)\nmes_sheets_create: device A never produced a result (batch may have stopped early)\nmes_sheets_delete_refused_for_a_file_that_is_not_a_spreadsheet: device A never produced a result (batch may have stopped early)\nmes_sheets_list: device A never produced a result (batch may have stopped early)\nmes_sheets_delete: device A never produced a result (batch may have stopped early)\nmes_signal_send_attachment_refused_outside_the_allowed_dir: device A never produced a result (batch may have stopped early)\nmes_catalog_commands_lists_the_whole_catalog: device A never produced a result (batch may have stopped early)\nmes_catalog_groups_says_why_a_command_is_runnable: device A never produced a result (batch may have stopped early)\nmes_catalog_commands_refuses_an_unknown_scope: device A never produced a result (batch may have stopped early)\nmes_catalog_groups_narrowed_by_match: device A never produced a result (batch may have stopped early)\nmes_catalog_commands_narrowed_by_match: device A never produced a result (batch may have stopped early)\nmes_admin_list_refused_before_enrolling: device A never produced a result (batch may have stopped early)\nmes_enroll_refused_for_an_unknown_token: device A never produced a result (batch may have stopped early)\nmes_catalog_commands_says_the_admin_commands_are_not_runnable: device A never produced a result (batch may have stopped early)\nmes_enroll_grants_this_device_admin_standing: device A never produced a result (batch may have stopped early)\nmes_admin_list_now_names_this_device: device A never produced a result (batch may have stopped early)\nmes_catalog_commands_says_the_admin_commands_are_runnable_now: device A never produced a result (batch may have stopped early)\nmes_catalog_groups_says_this_device_is_in_the_admin_group: device A never produced a result (batch may have stopped early)\nmes_enroll_again_confirms_rather_than_refuses: device A never produced a result (batch may have stopped early)\nmes_admin_invite_mints_the_next_devices_code: device A never produced a result (batch may have stopped early)",
     "cases": [
       {
         "case_id": "get_own_addr",
@@ -5506,533 +5507,710 @@
       },
       {
         "case_id": "cron_serving_is_false_after_stop",
-        "pass": true
+        "pass": false,
+        "error": "device B: 'runConfirmExecute' not shown after 9698ms -- the semantics lookup ran cleanly and simply never found it"
       },
       {
         "case_id": "cron_fires_records_the_dispatch",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "cron_disable_the_schedule",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "cron_get_shows_it_disabled",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "cron_delete",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "lua_list_shows_the_seeded_scripts",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "lua_run_outer_succeeds",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "lua_settle_after_success",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "lua_lastlog_has_the_inner_line",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "lua_put_stores_a_script",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "lua_lastlog_names_the_child_run",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "lua_run_outer_fails",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "lua_settle_after_failure",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "lua_lastlog_has_the_inner_error",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "logref_enters_the_ids_group",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "logref_prefills_the_form",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "logref_refills_an_open_form",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "logref_from_another_group_leaves_the_form",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_person_alice",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_location_shelf",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_person_bob",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_thing_drill",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_take_drill",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_lookup_drill_held_by_alice",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_give_drill_to_bob",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_lookup_drill_held_by_bob",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_put_drill_on_shelf",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_lookup_drill_in_stock_on_the_shelf",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_list_mine_after_putting_it_down",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_list_by_location_shelf",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_history_of_the_drill",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_person_refuse_alice",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_location_refuse_shelf",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_person_refuse_bob",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_thing_refuse_drill",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_take_refused_for_an_unknown_actor",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_person_whose_standing_was_withdrawn",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_take_refused_for_a_withdrawn_actor",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_put_refused_for_an_unknown_location",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_take_refused_for_an_unknown_thing",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_thing_refused_when_already_registered",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_location_refused_when_already_registered",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_take_drill_as_bob",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_lookup_refuse_drill_held_by_bob",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_take_refused_when_already_held",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_give_refused_when_not_the_holder",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_lookup_refuse_drill_unmoved_by_a_refusal",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_give_refused_to_a_recipient_without_standing",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_history_unchanged_by_refusals",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_person_lost_alice",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_location_van",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_thing_saw",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_report_found_refused_when_not_reported_lost",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_report_lost_saw",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_lookup_saw_lost",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_report_found_saw",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_lookup_saw_back_in_the_van",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_person_retire_alice",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_thing_grinder",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_deactivate_grinder",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_take_refused_for_a_retired_thing",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_lookup_grinder_retired",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_person_void_alice",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_location_void_shelf",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_thing_level",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_void_line_refused_for_an_unknown_line",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_verify_the_book",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_void_line",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_lookup_level_back_on_the_shelf",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_void_line_refused_when_already_struck",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_history_keeps_the_struck_line",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_signal_send_message",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_signal_delete_message",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_signal_send_refused_without_a_destination",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_signal_send_qr_code",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_signal_send_refused_for_two_destinations",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_save_to_google_sheets",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_delete_file",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_save_file_refuses_malformed_inputs",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_sync_sheets_creates_the_mirror",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_lookup_drill_before_a_quiet_sync",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_sync_sheets_is_quiet_when_nothing_is_new",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_thing_chisel",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_sync_sheets_mirrors_one_new_line",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_thing_ladder",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_send_data_matrix_for_the_ladder",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_lookup_ladder",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_send_data_matrix_refused_for_an_unknown_thing",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_person_gen_alice",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_location_gen_bench",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_thing_gen_steel",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_edges_before_any_assembly",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_thing_gen_bolt",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_trace_refused_for_an_unknown_thing",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_thing_gen_bracket",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_assemble_refused_without_inputs",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_thing_gen_frame",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_assemble_the_bracket",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_register_thing_gen_chassis",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_edges_show_what_the_bracket_was_made_of",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_assemble_the_chassis",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_trace_recalls_what_the_steel_ended_up_in",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_edges_show_the_bracket_was_consumed",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_trace_defaults_to_what_it_was_made_from",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_assemble_refused_for_a_thing_made_of_itself",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_trace_refused_for_a_direction_that_means_nothing",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_lookup_shows_the_assembler_holds_the_chassis",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_group_sync_follows_signal_membership",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_list_mine_refused_after_leaving_the_group",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_group_sync_is_quiet_when_nothing_changed",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_show_link_qr_refuses_a_payload_that_is_not_a_link",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_link_account_shows_the_code_on_this_device",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_show_link_qr_puts_a_real_code_on_screen",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_hide_link_qr_takes_down_the_code_the_last_case_left",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_show_code_puts_a_datamatrix_on_screen",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_hide_link_qr_leaves_another_flow_s_code_alone",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_hide_code_takes_down_the_code_by_its_tag",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "form_code_opens_the_command_form",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_signal_list_contacts",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_signal_send_attachment",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_signal_list_groups",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_signal_list_contacts_in_a_group",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_sheets_create",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_sheets_delete_refused_for_a_file_that_is_not_a_spreadsheet",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_sheets_list",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_sheets_delete",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_signal_send_attachment_refused_outside_the_allowed_dir",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_catalog_commands_lists_the_whole_catalog",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_catalog_groups_says_why_a_command_is_runnable",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_catalog_commands_refuses_an_unknown_scope",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_catalog_groups_narrowed_by_match",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       },
       {
         "case_id": "mes_catalog_commands_narrowed_by_match",
-        "pass": true
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
+      },
+      {
+        "case_id": "mes_admin_list_refused_before_enrolling",
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
+      },
+      {
+        "case_id": "mes_enroll_refused_for_an_unknown_token",
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
+      },
+      {
+        "case_id": "mes_catalog_commands_says_the_admin_commands_are_not_runnable",
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
+      },
+      {
+        "case_id": "mes_enroll_grants_this_device_admin_standing",
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
+      },
+      {
+        "case_id": "mes_admin_list_now_names_this_device",
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
+      },
+      {
+        "case_id": "mes_catalog_commands_says_the_admin_commands_are_runnable_now",
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
+      },
+      {
+        "case_id": "mes_catalog_groups_says_this_device_is_in_the_admin_group",
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
+      },
+      {
+        "case_id": "mes_enroll_again_confirms_rather_than_refuses",
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
+      },
+      {
+        "case_id": "mes_admin_invite_mints_the_next_devices_code",
+        "pass": false,
+        "error": "device A never produced a result (batch may have stopped early)"
       }
     ],
-    "attempts": 2
+    "attempts": 1
   }
 }
