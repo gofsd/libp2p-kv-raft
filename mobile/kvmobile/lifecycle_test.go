@@ -386,6 +386,70 @@ func TestJoinRedeemsInviteTicketWithToken(t *testing.T) {
 	}
 }
 
+// TestJoinAsAdmitsALearner pins the one thing Join could not express: which
+// suffrage the joining node asks for. Join hardcoded "", so every runtime join
+// produced a voter -- including one redeeming an invite minted with
+// SuffrageLearner, because that suffrage governs the invite record while what
+// the joining node actually asks for is the " learner" marker on its Add.
+//
+// The gap had teeth. This project's android optical plan has 26 cases asserting
+// a refusal whose message is "this device is a learner, not a voter", and a
+// voter is permitted to do every one of them -- so on any app built without the
+// joinSuffrage ldflag they succeeded where the case wanted them refused, and the
+// batch stopped at the first.
+func TestJoinAsAdmitsALearner(t *testing.T) {
+	leaderAddr := spawnTestLeader(t, t.TempDir())
+	leaderPeerID, err := registry.ExtractPeerID(leaderAddr)
+	if err != nil {
+		t.Fatalf("ExtractPeerID: %v", err)
+	}
+	t.Cleanup(func() { _ = Stop() })
+
+	id, err := JoinAs(t.TempDir(), leaderAddr, "learner")
+	if err != nil {
+		t.Fatalf("JoinAs(learner): %v", err)
+	}
+
+	ctx := context.Background()
+	memberKey := string(shmevent.ClusterMemberKey([]byte(id)))
+	if _, err := shmclient.Get(ctx, leaderPeerID, memberKey); err != nil {
+		t.Fatalf("joiner not a cluster member after JoinAs: %v", err)
+	}
+
+	// Read off the *leader's* own membership rather than the joiner's, since
+	// that is the raft configuration this is a claim about.
+	deadline := time.Now().Add(10 * time.Second)
+	var role string
+	for {
+		members, err := ListClusterMembers()
+		if err == nil {
+			var entries []ClusterMember
+			if json.Unmarshal([]byte(members), &entries) == nil {
+				for _, m := range entries {
+					if m.PeerID == id {
+						role = m.Role
+					}
+				}
+			}
+		}
+		if role == "learner" || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if role != "learner" {
+		t.Fatalf("JoinAs(learner) admitted %s as %q, want learner", id, role)
+	}
+}
+
+// TestJoinAsRefusesAnUnknownSuffrage keeps the string-enum honest: a typo must
+// be an error at the call, not a silent voter.
+func TestJoinAsRefusesAnUnknownSuffrage(t *testing.T) {
+	if _, err := JoinAs(t.TempDir(), "/ip4/127.0.0.1/tcp/1/p2p/12D3KooWDRCGaKcUsWuA12N9HnAasid8PPypAThmUQ31n7SCkiqe", "observer"); err == nil {
+		t.Fatal("JoinAs accepted an unknown suffrage, want an error")
+	}
+}
+
 // TestDeleteRefusesWhileRunning drives Delete: it must refuse while a
 // daemon is running against the target dataDir, and once Stopped must
 // remove the directory outright.

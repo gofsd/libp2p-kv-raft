@@ -550,19 +550,42 @@ func startAgainst(dataDirRoot, leaderAddr, suffrage string, resolveIdentity func
 // scratch. See pkg/daemon's TestOriginRejoinsClusterCatchesUpOnMissedWrites
 // for that guarantee proven end to end.
 func Join(dataDir, leaderAddr string) (string, error) {
-	return join(dataDir, leaderAddr, ensureIdentity)
+	return join(dataDir, leaderAddr, "", ensureIdentity)
+}
+
+// JoinAs is Join with the raft suffrage stated rather than defaulted: "learner"
+// joins as a Nonvoter, "voter" (or "") exactly as Join does. It exists because
+// suffrage on this path was previously unreachable at runtime -- Start/StartWithKey
+// take it from the build-time joinSuffrage ldflag, and Join hardcoded the empty
+// string, so a device could only ever be a learner if the AAR it ran had been built
+// to make it one. An invite minted with SuffrageLearner did not change that:
+// CreateJoinInvite's suffrage governs the *invite record*, while what the joining
+// node actually asks for is the " learner" marker appended here, so redeeming a
+// learner invite with Join still produced a voter.
+//
+// That gap is why this project's own android optical plan could not run against an
+// app built without the ldflag: 26 of its cases assert a refusal whose message is
+// "this device is a learner, not a voter", and a voter is permitted to do all of
+// them, so each succeeded where the case wanted it refused.
+func JoinAs(dataDir, leaderAddr, suffrage string) (string, error) {
+	switch suffrage {
+	case "", "voter", "learner":
+	default:
+		return "", fmt.Errorf("kvmobile: unknown suffrage %q (want \"voter\" or \"learner\")", suffrage)
+	}
+	return join(dataDir, leaderAddr, suffrage, ensureIdentity)
 }
 
 // JoinWithKey is like Join but provisions dataDir's identity from keyHex
 // (see StartWithKey) instead of always falling back to ensureIdentity's
 // persisted-or-generated-or-build-seeded key.
 func JoinWithKey(dataDir, keyHex, leaderAddr string) (string, error) {
-	return join(dataDir, leaderAddr, func(dataDir string) (keyPath, peerID string, err error) {
+	return join(dataDir, leaderAddr, "", func(dataDir string) (keyPath, peerID string, err error) {
 		return importIdentity(dataDir, keyHex)
 	})
 }
 
-func join(dataDir, leaderAddr string, resolveIdentity func(dataDir string) (keyPath, peerID string, err error)) (string, error) {
+func join(dataDir, leaderAddr, suffrage string, resolveIdentity func(dataDir string) (keyPath, peerID string, err error)) (string, error) {
 	if leaderAddr == "" {
 		return "", fmt.Errorf("kvmobile: no target leader multiaddr given")
 	}
@@ -572,7 +595,7 @@ func join(dataDir, leaderAddr string, resolveIdentity func(dataDir string) (keyP
 
 	mu.Lock()
 	defer mu.Unlock()
-	return startAgainst(dataDir, leaderAddr, "", resolveIdentity)
+	return startAgainst(dataDir, leaderAddr, suffrage, resolveIdentity)
 }
 
 // Stop shuts down the currently running in-process daemon, if any, and
