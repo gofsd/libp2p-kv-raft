@@ -122,24 +122,21 @@ func runOpticalScanBatch(cases []e2edata.OpticalScanCase, serialA, serialB strin
 		CaseID     string `json:"case_id"`
 		HoldMillis int64  `json:"hold_millis,omitempty"`
 	}
+	// The expect side carries the command whose OutputLog entry is this case's own result --
+	// e2edata.OpticalExpectSpec.Category/Name, defaulted from Generate just below. They are how
+	// UiCommandE2ETest's awaitOneCase picks *its* entry out of the log instead of reading
+	// whatever landed last. Device B needs them because something other than the case under
+	// test can write to that log while the case runs: a Cron: Serve case leaves a scheduler
+	// running, and its fire/skip notifications go through OutputLog.append, which records a
+	// bare INFO line with no category/name at all. Measured on the rig: a Test: SleepMillis
+	// 20000 case took the scheduler's entry as its own after 0.45s, and the sleep's real entry,
+	// arriving 20s later, was then read by whichever case happened to be waiting -- three cases
+	// downstream, which failed on a result belonging to a command it never ran.
 	type expSpecEntry struct {
 		e2edata.OpticalExpectSpec
 		CaseID       string `json:"case_id"`
 		TimeoutMs    int64  `json:"timeout_ms,omitempty"`
 		RunTimeoutMs int64  `json:"run_timeout_ms,omitempty"`
-		// Category/Name name the command whose OutputLog entry is this case's own result,
-		// copied from Generate rather than described separately -- they are how
-		// UiCommandE2ETest's awaitOneCase picks *its* entry out of the log instead of
-		// reading whatever landed last. Device B needs them because something other than
-		// the case under test can write to that log while the case runs: a Cron: Serve
-		// case leaves a scheduler running, and its fire/skip notifications go through
-		// OutputLog.append, which records a bare INFO line with no category/name at all.
-		// Measured on the rig: a Test: SleepMillis 20000 case took the scheduler's entry
-		// as its own after 0.45s, and the sleep's real entry, arriving 20s later, was then
-		// read by whichever case happened to be waiting -- three cases downstream, which
-		// failed on a result belonging to a command it never ran.
-		Category string `json:"category,omitempty"`
-		Name     string `json:"name,omitempty"`
 	}
 	genSpecs := make([]genSpecEntry, len(cases))
 	expSpecs := make([]expSpecEntry, len(cases))
@@ -175,8 +172,17 @@ func runOpticalScanBatch(cases []e2edata.OpticalScanCase, serialA, serialB strin
 			result.Error = fmt.Sprintf("cases %q and %q generate the same code -- device B cannot tell one from the other, so separate them with a case whose code differs", cases[i-1].CaseID, c.CaseID)
 			return result, false
 		}
+		// Defaulted rather than copied: one code runs one command in every case but the
+		// FormCode ones, where the command the scan *opens* is deliberately not the command
+		// that minted the code, and the case says so itself. Copying unconditionally, which
+		// is what this did until the registration cases existed, grades such a form's title
+		// against the generating command and fails naming it.
+		exp := c.Expect
+		if exp.Category == "" && exp.Name == "" {
+			exp.Category, exp.Name = c.Generate.Category, c.Generate.Name
+		}
 		genSpecs[i] = genSpecEntry{c.Generate, c.CaseID, c.HoldMillis}
-		expSpecs[i] = expSpecEntry{c.Expect, c.CaseID, c.TimeoutMs, c.RunTimeoutMs, c.Generate.Category, c.Generate.Name}
+		expSpecs[i] = expSpecEntry{exp, c.CaseID, c.TimeoutMs, c.RunTimeoutMs}
 	}
 	genArg, err := json.Marshal(map[string]any{"specs": genSpecs})
 	if err != nil {

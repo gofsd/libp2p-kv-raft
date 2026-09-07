@@ -367,17 +367,37 @@ type RelayLimits struct {
 
 // Default relay resource values -- pkg/daemon's Config fields fall back to
 // these when left at their zero value (see Config.RelayMaxCircuitsPerPeer
-// et al.'s doc comments). One concurrent circuit and one reservation per
-// peer/IP is deliberately tight (a single-purpose kv-raft client has no
-// legitimate need for more); the 1GB/30-day circuit ceiling is loose
-// enough not to interrupt a long-lived, low-traffic follower's relayed
-// connection under normal operation while still forcing an eventual
-// reset.
+// et al.'s doc comments). The 1GB/30-day circuit ceiling is loose enough
+// not to interrupt a long-lived, low-traffic follower's relayed connection
+// under normal operation while still forcing an eventual reset.
+//
+// MaxCircuitsPerPeer was 1 until 2026-09-07, on the reasoning that "a
+// single-purpose kv-raft client has no legitimate need for more". That is
+// not true of any client this project actually ships. A phone behind NAT
+// holds a circuit to the mes backend for the whole of a session -- every
+// `Mes:` command is a direct dial over it -- and opens a *second* one to
+// another device whenever it scans that device's label, or, on the optical
+// rig, to signal the generator that a case is done. Two is the ordinary
+// number, not the pathological one, and with the cap at 1 the second dial
+// is refused: go-libp2p answers the reservation-holder's peer with
+// NO_RESERVATION and the caller sees `all dials failed`. Measured on the
+// rig that day, where a batch's every case dialled the backend and the
+// harness's own completion channel could then not be opened. 16 is
+// go-libp2p's own DefaultResources value and is the right shape of number
+// for "several concurrent conversations, not an unbounded fan-out".
+//
+// MaxReservationsPerIP was 5, which is a cap on *devices behind one NAT*
+// and not on abuse: a reservation lives for ReservationTTL (an hour) after
+// the peer that made it has gone, so a rig or an office with a handful of
+// devices that reinstall, restart, or rotate identity exhausts five slots
+// without ever holding five at once. It surfaces as an enrolment that
+// works after an idle hour and fails as soon as work resumes -- read for
+// months on this project as "the relay throttling this source IP".
 const (
-	DefaultRelayMaxCircuitsPerPeer     int32         = 1
+	DefaultRelayMaxCircuitsPerPeer     int32         = 16
 	DefaultRelayLimitData              int64         = 1 << 30 // 1 GB
 	DefaultRelayLimitDuration          time.Duration = 30 * 24 * time.Hour
-	DefaultRelayMaxReservationsPerIP   int32         = 5
+	DefaultRelayMaxReservationsPerIP   int32         = 64
 	DefaultRelayMaxReservationsPerPeer int32         = 1
 )
 

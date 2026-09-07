@@ -19,12 +19,26 @@ import (
 // unlimited" once past this substitution -- consistent with every other
 // Default* constant in this codebase.
 //
-// Relay defaults are tight: a reservation/connect event is inherently
-// rare regardless of legitimate workload (a peer reserves a slot once on
-// startup/reconnect, not per operation), so 1/sec sustained with a burst
-// of 5 comfortably covers reconnect churn while still capping a runaway
-// retry loop; the per-IP values are only slightly looser, covering a
-// handful of devices behind one shared gateway.
+// Relay defaults were tight until 2026-09-07, on the premise that "a
+// reservation/connect event is inherently rare regardless of legitimate
+// workload (a peer reserves a slot once on startup/reconnect, not per
+// operation)". That premise is wrong about half of what this bucket
+// meters: relayACL.allow debits it from **AllowConnect** as well as
+// AllowReserve, and AllowConnect fires once per *circuit dial*. A phone
+// that dials the mes backend for each command, and another device each
+// time it scans that device's label, spends a token per operation -- so
+// 1/sec sustained with a burst of 5 was a per-operation throttle wearing a
+// per-connection name, and the sixth dial in a burst was refused with the
+// same denial the group-ACL itself produces. It is also what made a rig
+// start working again after being left alone for four minutes: that is a
+// token bucket refilling, not a relay recovering.
+//
+// The values below are still finite and still cap a runaway retry loop --
+// 32/sec sustained per peer is far above any dial rate this project's
+// clients produce, and the burst absorbs the reconnect storm a restart
+// makes -- but they no longer meter ordinary use. The per-IP values stay
+// proportionally looser, for the several devices that sit behind one
+// gateway on a test rig or in an office.
 //
 // Channel defaults are deliberately generous: unlike relay, Channel is a
 // first-class bulk-transfer feature (README's "Raw Channel" section
@@ -44,10 +58,10 @@ const (
 	DefaultQuotaChannelBytesPerIPPerSec   = 1024 << 20 // 1 GiB/s
 	DefaultQuotaChannelBurstPerIP         = 128 << 20  // 128 MiB
 
-	DefaultQuotaRelayEventsPerPeerPerSec = 1
-	DefaultQuotaRelayBurstPerPeer        = 5
-	DefaultQuotaRelayEventsPerIPPerSec   = 5
-	DefaultQuotaRelayBurstPerIP          = 10
+	DefaultQuotaRelayEventsPerPeerPerSec = 32
+	DefaultQuotaRelayBurstPerPeer        = 128
+	DefaultQuotaRelayEventsPerIPPerSec   = 128
+	DefaultQuotaRelayBurstPerIP          = 512
 )
 
 // quotaTracker enforces one independent token-bucket rate.Limiter per key,

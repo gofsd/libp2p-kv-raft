@@ -116,10 +116,10 @@ mage removepeerfromgroup <peerID> <group>   # revoke either of the above again
 ```
 
 A `-relay-service` node's resource limits (per-peer circuit/reservation caps) are still
-flag-configurable exactly as before: `-relay-max-circuits-per-peer` (default 1) bounds concurrent
+flag-configurable exactly as before: `-relay-max-circuits-per-peer` (default 16) bounds concurrent
 open relayed circuits a single peer may hold; `-relay-limit-data-bytes` (default 1GB) and
 `-relay-limit-duration` (default 720h/30 days) bound a circuit's data/lifetime before it's
-reset; `-relay-max-reservations-per-ip`/`-relay-max-reservations-per-peer` (defaults 5/1) bound
+reset; `-relay-max-reservations-per-ip`/`-relay-max-reservations-per-peer` (defaults 64/1) bound
 active relay-slot reservations from one IP/peer. All five default to
 `pkg/shmevent`'s `DefaultRelay*` constants when left at 0. go-libp2p's circuit-relay v2 applies
 these as one uniform `v2relay.Resources` value to every peer alike — there's no way to give one
@@ -138,6 +138,17 @@ happen at a point this node can see. The identical mechanism also gates
 `-quota-channel-bytes-per-ip-per-sec`/`-quota-channel-burst-per-ip`. All eight flags default to 0
 (unlimited) — a peer/IP that exceeds its quota has an in-progress `channelSession` closed, or a
 relay reservation/connect simply denied, same as failing the group-ACL check.
+
+**A connect is metered per dial, so these are not "once per peer" numbers.** `relayACL.allow`
+debits the bucket from `AllowConnect` as well as `AllowReserve`, and `AllowConnect` runs every
+time somebody opens a circuit through this node -- so a client that dials a service over the relay
+for each operation spends one token per operation. The per-peer defaults were 1/sec with a burst
+of 5 until 2026-09-07, which throttled exactly that; they are 32/sec with a burst of 128 now
+(per-IP 128/sec, burst 512), still finite and still a backstop against a runaway retry loop. The
+matching static cap moved with it: one concurrent circuit per peer is below what a normal client
+needs, because a phone holds a circuit to its backend *and* opens another to whichever peer it is
+talking to. A relay that denies these looks from the client like `all dials failed` or a circuit
+that resets under load, and it recovers by being left alone -- which is a token bucket refilling.
 
 `EventExecute` (`mage execute <destPeerID> <value>` / `mage pollexecute`, a direct unreplicated
 peer-to-peer notification between two node processes — see `pkg/shmevent`'s `EventExecute` doc

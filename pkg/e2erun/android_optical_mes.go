@@ -143,10 +143,15 @@ func resolveMesCases(cases []e2edata.OpticalScanCase) []e2edata.OpticalScanCase 
 
 // substituteToken replaces one token everywhere a case can name it.
 //
-// The expectation side needs the same substitution, not just the generate side: a "form" case
-// asserts that the values device A typed arrived in device B's form, so it names the very same
-// address. Left unsubstituted it compares a real multiaddr against the literal
-// "{{mesBackendAddr}}" and fails with a mismatch that looks like a dropped param.
+// The expectation side needs the same substitution, not just the generate side, for two separate
+// reasons. A "form" case asserts that the values device A typed arrived in device B's form, so it
+// names the very same address; left unsubstituted it compares a real multiaddr against the literal
+// "{{mesBackendAddr}}" and fails with a mismatch that looks like a dropped param. And a
+// "sheets_cell" case has to say which backend to ask for its cell -- that read happens after the
+// command has already answered, so there is no generate spec on device B to take an address from.
+// A token surviving there is worse than a mismatch, because it is silent: the device falls back to
+// its build-time constant and reads a cell of whatever backend that names, which on a rig that
+// mints a fresh address per session is not this run's backend at all.
 func substituteToken(c e2edata.OpticalScanCase, token, value string) e2edata.OpticalScanCase {
 	params := make([]string, len(c.Generate.Params))
 	for i, p := range c.Generate.Params {
@@ -160,6 +165,7 @@ func substituteToken(c e2edata.OpticalScanCase, token, value string) e2edata.Opt
 		}
 		c.Expect.ExpectParams = want
 	}
+	c.Expect.SheetsBackendAddr = strings.ReplaceAll(c.Expect.SheetsBackendAddr, token, value)
 	return c
 }
 
@@ -178,7 +184,10 @@ func caseNeedsToken(c e2edata.OpticalScanCase, token string) bool {
 			return true
 		}
 	}
-	return false
+	// Every place substituteToken rewrites has to be asked here too, or a case whose only
+	// mention of the token is in one of them is run rather than skipped -- and then passes the
+	// literal through to a device that quietly falls back to its build-time backend.
+	return strings.Contains(c.Expect.SheetsBackendAddr, token)
 }
 
 // mesBackendAddr reads the backend's address from the environment, then from the file the

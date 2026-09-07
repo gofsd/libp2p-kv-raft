@@ -225,6 +225,16 @@ func newHost(priv crypto.PrivKey, cfg Config, st *store.Store, selfPeerID string
 		rc.MaxCircuits = int(limits.MaxCircuitsPerPeer)
 		rc.BufferSize = 4096
 		rc.MaxReservationsPerIP = int(limits.MaxReservationsPerIP)
+		// ...and the ASN cap with it, or the per-IP knob does not mean what it
+		// says. go-libp2p defaults MaxReservationsPerASN to 32 and applies both
+		// gates, so every device on one ISP shares that 32 no matter how high
+		// MaxReservationsPerIP goes -- and a test rig, an office and a phone
+		// network are all exactly "one ASN". Raising it in step keeps the IP
+		// value the binding one, which is the value an operator configures and
+		// the one whose refusal is diagnosable (it names an address). Left at a
+		// multiple rather than unbounded: it is still the backstop for a
+		// distributed source that a single-IP cap cannot see.
+		rc.MaxReservationsPerASN = int(limits.MaxReservationsPerIP) * 4
 		// rc.MaxReservationsPerPeer is deliberately not set: go-libp2p
 		// v0.48.0 deprecated it ("we only need 1 reservation per peer")
 		// and its relay implementation no longer reads it at all, so

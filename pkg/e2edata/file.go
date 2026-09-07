@@ -2270,6 +2270,15 @@ type OpticalGenerateSpec struct {
 	//                         "Mes: SignalDeleteMessage" case. Signal has no message id other
 	//                         than the send's timestamp, so the two commands only work as a
 	//                         pair -- see UiCommandE2ETest.mintMesTimestamp.
+	//   "{{generatorPeerID}}" -- A's own peer id (Kvmobile.peerID()), for a peer log reference
+	//                         case that has B record a station for the device that minted the
+	//                         code, or that names A's key in one.
+	//   "{{scannerPeerID}}" -- B's peer id, so a code minted on A carries *B's* key and resolves
+	//                         as B's own log rather than dialling back. A finds it as the one
+	//                         cluster member that is not itself, and resolves nothing when that
+	//                         is not exactly one peer -- picking one of several would mint a code
+	//                         naming the wrong peer silently. Not "{{selfPeerID}}", which already
+	//                         means B's own id in the Result namespace above.
 	//
 	// Two tokens are resolved on the *host* instead, before either device is launched. Both
 	// describe a third process neither device runs, stood up fresh per rig session, so only the
@@ -2287,6 +2296,19 @@ type OpticalGenerateSpec struct {
 	// A token that fails to resolve is left in place rather than replaced by something empty,
 	// so the case fails on the literal token instead of passing against a blank.
 	Params []string `json:"params,omitempty"`
+	// Conversation, for a "signal_note" target, is the Signal conversation device A opens to
+	// hold the delivered image up for device B's camera -- verbatim, as Signal displays its
+	// title on that device, since a group's title is its display name and there is no token to
+	// substitute for one. Blank (and every other target) means Note to Self, which is where an
+	// AdminInvite lands.
+	//
+	// It is a per-case value because the codes this shape carries arrive in three different
+	// places: an admin invite in Note to Self, a group registration code posted into a Signal
+	// *group*, and the private enrolment code that comes back as a direct message. All three
+	// are read the same way, and the only thing that varies is which conversation to open --
+	// see object-history-app's SignalNoteDriver, which is the only thing on either device that
+	// can put a backend-delivered code on a screen.
+	Conversation string `json:"conversation,omitempty"`
 }
 
 // OpticalExpectSpec is device B's half of one OpticalScanCase: what a real camera scan of the
@@ -2374,6 +2396,74 @@ type OpticalExpectSpec struct {
 	// Result does -- see examples/croncmd/README.md's note on why several of its cases assert
 	// only no_crash.
 	VerifyOnDeviceB string `json:"verify_on_device_b,omitempty"`
+	// Category/Name name the command whose OutputLog entry is this case's own result, and
+	// whose form a "form" case expects to have been opened. Almost every case leaves them
+	// blank and gets the *generate* spec's own command instead (pkg/e2erun fills them in
+	// before the spec reaches device B), because one code runs one command and the two names
+	// are the same name.
+	//
+	// They exist for the one dialect where that is false. A FormCode's whole point is that the
+	// command it opens is not the command that minted it -- a "Mes: SetRegistrationGroup" run
+	// on device A posts a code that opens "Mes: RequestRegistration" on device B -- so a case
+	// of that shape has to be able to say so, or it grades the opened form's title against the
+	// command that produced the code and fails naming it.
+	Category string `json:"category,omitempty"`
+	Name     string `json:"name,omitempty"`
+	// FillParams, for a "form" case, is what device B types into the opened form's own
+	// param_0..param_n *after* the ExpectParams assertions above and before it presses Run.
+	//
+	// A second key rather than a widening of ExpectParams, because the two check opposite
+	// things: that one asserts what the code carried across, this one supplies what the code
+	// deliberately did not. The registration code posted into a Signal group carries a blank
+	// phone number on purpose -- everybody in that conversation reads the same code, and the
+	// form is where each person enters their own -- so a case that only asserts and presses
+	// Run submits a blank and is refused for a reason that reads like a missing handler.
+	//
+	// A *pointer* slice, so that a JSON `null` entry survives the trip: null means "leave this
+	// field exactly as the code left it", and the list is positional, so reaching the phone
+	// number at index 2 of [backendAddr, token, signalNumber, label] would otherwise retype the
+	// *registration token* at index 1 on the way. That token is the request's whole
+	// authorization and reaches the device only inside the scanned code, so blanking it is not a
+	// cosmetic loss: the backend answers "unknown or expired registration token", no private
+	// enrolment code is ever sent, and the case still goes green, because a refused mes command
+	// returns and a form case's run expectation defaults to "succeeded".
+	//
+	// []string was enough until a case needed to skip a field, and it fails in the quietest way
+	// available: encoding/json unmarshals a null element of a []string as "", so the null was
+	// silently becoming the very blank it exists to prevent -- object-history-app's harness
+	// handled it correctly and never saw one. Measured on the optical rig 2026-09-07.
+	FillParams []*string `json:"fill_params,omitempty"`
+	// SheetsTab/SheetsCell/SheetsValue, for a "sheets_cell" case, are the one cell of the mes
+	// backend's Google Sheets mirror that must hold SheetsValue once the case's command has
+	// answered -- the tab by name (blank = the backend's default), the cell by its A1 address
+	// ("A2"), and the wanted value, where "" legitimately means "this cell is empty".
+	//
+	// The kind exists because the mirror is written *asynchronously*, after the command device
+	// B ran has already answered, so no result line this plan can read says whether it landed.
+	// The read itself is the backend's own (Mes: SheetsCheckRange, whose answer is a per-cell
+	// pass/fail verdict): nothing on the phone can see the sheet, and putting a second set of
+	// Google credentials on a device to give it a second opinion is not worth the cell.
+	SheetsTab   string `json:"sheets_tab,omitempty"`
+	SheetsCell  string `json:"sheets_cell,omitempty"`
+	SheetsValue string `json:"sheets_value,omitempty"`
+	// SheetsSpreadsheetID names the sheet to read when it is not the inventory mirror. Blank --
+	// every case today -- is the mirror. A literal, never a token: the one sheet a case might
+	// otherwise want to name is created on first use and its id is not knowable when the case
+	// is written.
+	SheetsSpreadsheetID string `json:"sheets_spreadsheet_id,omitempty"`
+	// SheetsBackendAddr is which backend to ask, and it is substituted on the host the same way
+	// a Generate param is: device B has no generate spec to read a first param off for a check
+	// that runs after the command, so it has to be told here. Blank falls back to the
+	// mesBackendAddr instrumentation argument and then to the app's build-time constant --
+	// which is exactly the wrong backend for a rig that mints a fresh address per session, and
+	// is why a "{{mesBackendAddr}}" left standing here reads as a Sheets problem rather than as
+	// a dropped substitution (see pkg/e2erun's substituteToken).
+	SheetsBackendAddr string `json:"sheets_backend_addr,omitempty"`
+	// SheetsTimeoutMs bounds how long that cell is re-read while it still holds something else.
+	// Zero falls back to UiCommandE2ETest.kt's own SHEETS_CELL_TIMEOUT_MS. Only a value that
+	// has not been written *yet* is worth waiting out: a refusal and an unreachable backend are
+	// both reported at once, since neither becomes true by polling.
+	SheetsTimeoutMs int64 `json:"sheets_timeout_ms,omitempty"`
 }
 
 // OpticalScanCase is one round trip through android-app's real DataMatrix/camera pipeline:
