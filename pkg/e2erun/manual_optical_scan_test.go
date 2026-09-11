@@ -60,14 +60,32 @@ func TestManualOpticalScan(t *testing.T) {
 		t.Fatalf("getwd: %v", err)
 	}
 	repoRoot += "/../.."
+
+	// The plan is this repo's committed one unless a caller hands over a built one.
+	//
+	// MES_OPTICAL_PLAN exists because a batch is assembled from more than this repo: the sibling
+	// object-history-app contributes case files of its own, and the way it used to get them into a
+	// run was to *edit this file in place*, back it up, and restore it afterwards. That works until
+	// a run is killed, and then the next batch either doubles the cases or measures a plan nobody
+	// meant -- and an edit made while a batch is in flight is silently reverted by the restore.
+	// Handing over a path instead means nothing in any repository is mutated by a run, two batches
+	// can run different plans, and the plan that ran is an artefact somebody can keep.
+	//
+	// Unset, everything below behaves exactly as it did: the committed plan, and the result written
+	// back into it.
 	testdataPath := filepath.Join(repoRoot, e2edata.DefaultPath)
+	external := strings.TrimSpace(os.Getenv("MES_OPTICAL_PLAN"))
+	if external != "" {
+		testdataPath = external
+		t.Logf("plan: %s (MES_OPTICAL_PLAN) -- this repo's own testdata.json is not read or written", external)
+	}
 
 	file, err := e2edata.Load(testdataPath)
 	if err != nil {
 		t.Fatalf("load testdata: %v", err)
 	}
 	if len(file.OpticalScanCases) == 0 {
-		t.Fatal("test/e2e/testdata.json has no android_optical_cases entries")
+		t.Fatalf("%s has no android_optical_cases entries", testdataPath)
 	}
 
 	cases := file.OpticalScanCases
@@ -96,6 +114,10 @@ func TestManualOpticalScan(t *testing.T) {
 	data, _ := json.MarshalIndent(result, "", "  ")
 	t.Logf("result:\n%s", data)
 
+	// The result goes back into whichever plan was read -- the committed one when that is what ran,
+	// and the handed-over file when it is not. A run must not write its result into a tracked file
+	// it was told not to read: that is the mutation MES_OPTICAL_PLAN exists to stop, arriving at
+	// the end instead of the beginning.
 	if only == "" {
 		file.OpticalScanResult = result
 		if err := file.Save(testdataPath); err != nil {
