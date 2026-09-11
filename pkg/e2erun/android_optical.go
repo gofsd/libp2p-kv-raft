@@ -438,6 +438,12 @@ func stopAppProcesses(serial string) {
 // UiCommandE2ETest.kt's writeResults). Reuses that exact on-device path/pull/parse plumbing
 // runUICommandTest already established, just targeting one specific method instead of the whole
 // class.
+// opticalInlineArgLimit is how much base64 still goes on the command line. adbd refuses a command
+// line over 65536 bytes by closing the connection, and the rest of an `am instrument` invocation
+// has to fit as well -- so this leaves room rather than sitting on the edge of a limit a growing
+// plan would cross again.
+const opticalInlineArgLimit = 48_000
+
 func runOpticalMethod(serial, method, argName string, argJSON []byte) ([]e2edata.UICaseResult, string, bool, error) {
 	stopAppProcesses(serial)
 
@@ -461,11 +467,42 @@ func runOpticalMethod(serial, method, argName string, argJSON []byte) ([]e2edata
 	fmt.Fprintf(os.Stderr, "e2erun: optical: %s#%s starting on %s\n", target.uiTestClass(), method, serial)
 
 	encodedArg := base64.StdEncoding.EncodeToString(argJSON)
-	cmd := exec.Command("adb", "shell", "am", "instrument", "-w",
-		"-e", "class", target.uiTestClass()+"#"+method,
-		"-e", argName, encodedArg,
-		target.runner(),
-	)
+
+	// Past a threshold the specs travel as a *file* rather than as an argument. adbd's shell
+	// command buffer is 65536 bytes, and `adb shell am instrument -e opticalSpecs <base64>`
+	// carrying the whole plan crosses it: adb answers `error: closed` and the instrumentation
+	// never starts. From the harness that is indistinguishable from device A dying at launch --
+	// exit status 1, an empty logcat, and device B then scanning a screen that will never show a
+	// code, burning its budget on every case in the plan. Measured on the mes rig 2026-09-07: a
+	// 65068-byte command line ran, a 65600-byte one did not.
+	//
+	// The threshold is well under the real limit because the rest of the command line counts too,
+	// and because a plan only ever grows. Small runs keep the inline path exactly as it was, so a
+	// filtered batch is unchanged and the file path is only taken when it is needed.
+	specArg := []string{"-e", argName, encodedArg}
+	if len(encodedArg) > opticalInlineArgLimit {
+		devicePath := target.deviceResultsPath(argName + ".b64")
+		local := filepath.Join(os.TempDir(), fmt.Sprintf("kvraft-e2e-%s-%s.b64", argName, strings.ReplaceAll(serial, ":", "_")))
+		if err := os.WriteFile(local, []byte(encodedArg), 0o644); err != nil {
+			return nil, "", false, fmt.Errorf("stage %s for %s: %w", argName, method, err)
+		}
+		defer os.Remove(local)
+		push := exec.Command("adb", "push", local, devicePath)
+		withSerial(push, serial)
+		var pushOut bytes.Buffer
+		push.Stdout, push.Stderr = &pushOut, &pushOut
+		if err := push.Run(); err != nil {
+			return nil, "", false, fmt.Errorf("push %s to %s (%s): %w", argName, devicePath, pushOut.String(), err)
+		}
+		fmt.Fprintf(os.Stderr, "e2erun: optical: %s is %d bytes, over the %d-byte inline limit -- pushed to %s\n",
+			argName, len(encodedArg), opticalInlineArgLimit, devicePath)
+		specArg = []string{"-e", argName + "File", devicePath}
+	}
+
+	instrumentArgs := append([]string{"shell", "am", "instrument", "-w",
+		"-e", "class", target.uiTestClass() + "#" + method}, specArg...)
+	instrumentArgs = append(instrumentArgs, target.runner())
+	cmd := exec.Command("adb", instrumentArgs...)
 	withSerial(cmd, serial)
 	var out bytes.Buffer
 	cmd.Stdout = &out

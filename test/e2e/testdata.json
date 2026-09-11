@@ -5049,9 +5049,8 @@
     }
   ],
   "android_optical_scan_result": {
-    "ran_at": "2026-09-08T21:30:42.16010509+03:00",
-    "status": 1,
-    "error": "3 of 270 optical scan case(s) failed:\nmes_registration_private_code_enrols_this_device: device B: expected result to match /status=ok[\\s\\S]*scope=inventory[\\s\\S]*url=https://docs\\.google\\.com/spreadsheets/d/[^;|\\s]+/, got: (, IUJKGJKDYIM2WPCF, ) ->\ninstance_id=c682277fc8244292fd8a9ff71f85a935; status=ok; devices=2; group=grp-mes-admin; label=optical rig scanner; limit=5; peer=12D3KooWCZHWiMgHYXXpJp1cfbe9kxtMdCb4mUNgk6oaFxEV4KkK; repeat=true; scope=admin; spreadsheetId=1zzBqGGPz21xV5xzT53ib4fdaLWtkSN7p6mT2kzvor9I; url=https://docs.google.com/spreadsheets/d/1zzBqGGPz21xV5xzT53ib4fdaLWtkSN7p6mT2kzvor9I/edit | enrolled 12D3KooWCZHWiMgHYXXpJp1cfbe9kxtMdCb4mUNgk6oaFxEV4KkK as admin (2 device(s) in that scope)\nmes_registration_sync_answers_the_link_and_the_devices_tab: device A never produced a result (batch may have stopped early)\nmes_registration_inventory_is_open_to_the_enrolled_device: device A never produced a result (batch may have stopped early)",
+    "ran_at": "2026-09-11T17:31:56.653911743+03:00",
+    "status": 0,
     "cases": [
       {
         "case_id": "get_own_addr",
@@ -5950,10 +5949,6 @@
         "pass": true
       },
       {
-        "case_id": "mes_link_account_shows_the_code_on_this_device",
-        "pass": true
-      },
-      {
         "case_id": "mes_show_link_qr_puts_a_real_code_on_screen",
         "pass": true
       },
@@ -6123,18 +6118,15 @@
       },
       {
         "case_id": "mes_registration_private_code_enrols_this_device",
-        "pass": false,
-        "error": "device B: expected result to match /status=ok[\\s\\S]*scope=inventory[\\s\\S]*url=https://docs\\.google\\.com/spreadsheets/d/[^;|\\s]+/, got: (, IUJKGJKDYIM2WPCF, ) ->\ninstance_id=c682277fc8244292fd8a9ff71f85a935; status=ok; devices=2; group=grp-mes-admin; label=optical rig scanner; limit=5; peer=12D3KooWCZHWiMgHYXXpJp1cfbe9kxtMdCb4mUNgk6oaFxEV4KkK; repeat=true; scope=admin; spreadsheetId=1zzBqGGPz21xV5xzT53ib4fdaLWtkSN7p6mT2kzvor9I; url=https://docs.google.com/spreadsheets/d/1zzBqGGPz21xV5xzT53ib4fdaLWtkSN7p6mT2kzvor9I/edit | enrolled 12D3KooWCZHWiMgHYXXpJp1cfbe9kxtMdCb4mUNgk6oaFxEV4KkK as admin (2 device(s) in that scope)"
+        "pass": true
       },
       {
         "case_id": "mes_registration_sync_answers_the_link_and_the_devices_tab",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       },
       {
         "case_id": "mes_registration_inventory_is_open_to_the_enrolled_device",
-        "pass": false,
-        "error": "device A never produced a result (batch may have stopped early)"
+        "pass": true
       }
     ],
     "attempts": 1
