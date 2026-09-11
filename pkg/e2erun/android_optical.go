@@ -501,6 +501,18 @@ func runOpticalMethod(serial, method, argName string, argJSON []byte) ([]e2edata
 
 	instrumentArgs := append([]string{"shell", "am", "instrument", "-w",
 		"-e", "class", target.uiTestClass() + "#" + method}, specArg...)
+
+	// How a code gets from the device that draws it to the device that reads it. Unset means the
+	// camera, which is the only transport that has ever existed here and the only one that can
+	// prove a printed code decodes. "inject" hands the payload over instead: device A decodes the
+	// image it just rendered and sends the bytes to B, which feeds them to the app's own scan
+	// entry point. Everything either side of that is identical -- the same encode, the same render,
+	// the same dispatch, the same assertions -- so a batch that cannot get near a rig still measures
+	// all of it, in a fraction of the wall clock. See object-history-app's docs/e2e-gitops-plan.md.
+	if transport := strings.TrimSpace(os.Getenv("MES_OPTICAL_TRANSPORT")); transport != "" {
+		instrumentArgs = append(instrumentArgs, "-e", "opticalTransport", transport)
+		fmt.Fprintf(os.Stderr, "e2erun: optical: transport=%s\n", transport)
+	}
 	instrumentArgs = append(instrumentArgs, target.runner())
 	cmd := exec.Command("adb", instrumentArgs...)
 	withSerial(cmd, serial)
