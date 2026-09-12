@@ -2347,6 +2347,25 @@ type OpticalExpectSpec struct {
 	// reached the form, not merely that the group was entered. Mutually exclusive with
 	// PreopenCommand, which describes a form that was already open.
 	OpenCommand string `json:"open_command,omitempty"`
+
+	// The four keys a "suggestion" case uses, which is the dictionary-backed form field: type a
+	// prefix into one param and assert that the value offered under it can be tapped into place.
+	// Declared here because a key this struct does not carry is dropped silently on the way to the
+	// device -- the case then fails naming something else entirely -- and the app repo cannot
+	// commit to this one.
+	//
+	// ActorPersonID is who device B is badged in as before the field is touched. It is not a
+	// nicety: that dictionary is fetched from the mes backend *as the person operating the
+	// device*, and a rig's scanner enrolled as an admin is bound to nobody, so without it every
+	// fetch is refused for want of an actor and no row is ever offered.
+	ActorPersonID string `json:"actor_person_id,omitempty"`
+	// SuggestParam is the index of the param to type into, SuggestType the prefix typed, and
+	// SuggestOption the option's *value* -- which is what the row is keyed by and what the field
+	// must read afterwards. The value rather than the label, because for a remote dictionary the
+	// two differ (an id and a display name) and only the first may ever be submitted.
+	SuggestParam  int    `json:"suggest_param,omitempty"`
+	SuggestType   string `json:"suggest_type,omitempty"`
+	SuggestOption string `json:"suggest_option,omitempty"`
 	// ExpectParam, for a "log_ref" case, asserts one of the open form's own param fields, as
 	// "<index>=<value>" (e.g. "1=4418" -- CommandDetailScreen's param_1 holds "4418"). Written
 	// as one string rather than an index/value pair because 0 is a perfectly ordinary index and
