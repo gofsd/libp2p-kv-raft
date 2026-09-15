@@ -126,20 +126,41 @@ import (
 // safely. This does nothing for two separate OS processes calling at
 // once, which was never safe and still isn't (no cross-process lock is
 // taken) -- only Go-level concurrency within one process is fixed here.
+//
+// A buffered channel rather than a sync.Mutex, because a mutex cannot be cancelled: Lock() ignores
+// the caller's context entirely. A caller queued behind a slow one therefore waited past its own
+// deadline and only *then* ran its first context-aware step, reporting "waiting for response
+// channel ...: context deadline exceeded" -- blaming the daemon for time spent in this queue, and
+// blaming it after the whole budget was already gone. A mes backend polls many commands through
+// one session, so one slow handler produced a burst of those errors for requests that had never
+// reached the daemon at all; it cost an optical batch its cmd-inventoryDictionary case on
+// 2026-09-15. See caller_lock_test.go.
 var (
 	callerLocksMu sync.Mutex
-	callerLocks   = map[string]*sync.Mutex{}
+	callerLocks   = map[string]chan struct{}{}
 )
 
-func callerLock(peerID string) *sync.Mutex {
+func callerLock(peerID string) chan struct{} {
 	callerLocksMu.Lock()
 	defer callerLocksMu.Unlock()
 	l, ok := callerLocks[peerID]
 	if !ok {
-		l = &sync.Mutex{}
+		l = make(chan struct{}, 1)
 		callerLocks[peerID] = l
 	}
 	return l
+}
+
+// acquireCaller takes peerID's caller lock, or gives up when ctx does, saying which it was
+// waiting for. The returned func releases it and must be called exactly once.
+func acquireCaller(ctx context.Context, peerID string) (func(), error) {
+	l := callerLock(peerID)
+	select {
+	case l <- struct{}{}:
+		return func() { <-l }, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("ipc: waiting for the caller lock on %s: %w", peerID, ctx.Err())
+	}
 }
 
 // capacity is the shared-memory data region size for both channels. It must
@@ -187,9 +208,11 @@ func respChannel(peerID, token string, id uint16) string {
 // EventGetPublicKey/EventGetPrivateKey -- see shmevent.Sign), and returns
 // its response. It blocks until the daemon replies or ctx is done.
 func Call(ctx context.Context, peerID string, m shmevent.Msg, priv shmevent.PrivateKey) (shmevent.Msg, error) {
-	lock := callerLock(peerID)
-	lock.Lock()
-	defer lock.Unlock()
+	release, err := acquireCaller(ctx, peerID)
+	if err != nil {
+		return shmevent.Msg{}, err
+	}
+	defer release()
 
 	token, err := tokenForPeer(peerID)
 	if err != nil {
@@ -263,9 +286,11 @@ func Call(ctx context.Context, peerID string, m shmevent.Msg, priv shmevent.Priv
 // encoded here only reads m.ID back out (to address the response channel)
 // and validates the framing; it never re-encodes or re-signs it.
 func CallRaw(ctx context.Context, peerID string, encoded []byte) (shmevent.Msg, error) {
-	lock := callerLock(peerID)
-	lock.Lock()
-	defer lock.Unlock()
+	release, err := acquireCaller(ctx, peerID)
+	if err != nil {
+		return shmevent.Msg{}, err
+	}
+	defer release()
 
 	m, _, _, err := shmevent.Decode(encoded)
 	if err != nil {

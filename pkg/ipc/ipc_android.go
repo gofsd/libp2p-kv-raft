@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/gofsd/shmring"
 
@@ -54,19 +55,6 @@ const capacity = 16384
 type call struct {
 	reqFD    int
 	respChan chan respHandoff
-}
-
-// respHandoff carries the response segment's fd back to Call, plus an ack
-// Call closes once it has opened (dup'd) that fd. Serve must wait for that
-// ack before it may CloseStorage its own writer: an ASharedMemory fd is
-// the only thing keeping the region alive until the other side dups it, so
-// closing it any earlier would free memory Call hasn't attached to yet
-// (shmring.OpenAndroidSharedMemory dups on entry specifically so each side
-// ends up with an independent fd/mapping safe to close on its own schedule
-// -- but only once that dup has actually happened).
-type respHandoff struct {
-	fd  int
-	ack chan struct{}
 }
 
 var (
@@ -124,6 +112,10 @@ func Call(ctx context.Context, peerID string, m shmevent.Msg, priv shmevent.Priv
 	select {
 	case rh = <-respChan:
 	case <-ctx.Done():
+		// Serve may already have parked a response fd in this buffered channel and be waiting on
+		// the ack before it may release it. Nothing else will ever read this channel, so hand the
+		// drain off rather than walking away from it -- see [ackGrace] for what walking away cost.
+		go releaseAbandoned(respChan)
 		w.CloseStorage()
 		return shmevent.Msg{}, ctx.Err()
 	}
@@ -253,12 +245,19 @@ func Serve(ctx context.Context, peerID, dataDir string, priv shmevent.PrivateKey
 			w.CloseStorage()
 			return ctx.Err()
 		}
+		ackTimer := time.NewTimer(ackGrace)
 		select {
 		case <-ack:
+		case <-ackTimer.C:
+			// The caller gave up between handing us its request and reading our answer. Release
+			// the segment and take the next call rather than holding this loop -- and this peer's
+			// whole IPC -- for the life of the process.
 		case <-ctx.Done():
+			ackTimer.Stop()
 			w.CloseStorage()
 			return ctx.Err()
 		}
+		ackTimer.Stop()
 		w.CloseStorage()
 	}
 }
