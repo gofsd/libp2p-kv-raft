@@ -179,8 +179,40 @@ const (
 	minPoll = 200 * time.Microsecond
 	maxPoll = 5 * time.Millisecond
 
+	// openRetryInterval is the *ceiling* on how long either side waits between attempts to open a
+	// segment the other side has not created yet; openRetryMin is where that wait starts.
+	//
+	// It used to be a flat 20ms on both sides, and both sides are on the round trip: the daemon
+	// waits to notice the request, the client waits to notice the response. The first attempt of
+	// each essentially always fails -- the other end has not written yet -- so every round trip
+	// paid the interval twice however fast the work between them was, and the work between them is
+	// usually a SQLite read measured in microseconds.
+	//
+	// That floor is what made a scan expensive rather than the scanning. Measured on the optical
+	// rig 2026-09-16: a dispatcher sweep of 55 commands, about two round trips each, had a median
+	// of 3.23s -- ~110 x ~30ms, which is this constant and almost nothing else -- and one
+	// command's request listing exhausted kvctl's whole 10s budget across roughly fifty
+	// individually-fast calls, none of them slow enough to be worth a line. The backoff keeps the
+	// old ceiling for a genuinely absent peer, so an idle daemon still costs the same, and hands
+	// the common case back the ~40ms it was spending on sleep.
+	openRetryMin      = 200 * time.Microsecond
 	openRetryInterval = 20 * time.Millisecond
 )
+
+// nextOpenRetry returns the wait after one that lasted d, doubling from [openRetryMin] up to
+// [openRetryInterval]. d == 0 means "no wait yet", so the first is the shortest.
+func nextOpenRetry(d time.Duration) time.Duration {
+	if d <= 0 {
+		return openRetryMin
+	}
+	if d >= openRetryInterval {
+		return openRetryInterval
+	}
+	if d *= 2; d > openRetryInterval {
+		return openRetryInterval
+	}
+	return d
+}
 
 // reqChannel/respChannel fold token (see token.go's doc comment) into the
 // segment name itself, not just something checked after the fact: without
@@ -362,15 +394,17 @@ func CallRaw(ctx context.Context, peerID string, encoded []byte) (shmevent.Msg, 
 
 func openRespWithRetry(ctx context.Context, peerID, token string, id uint16) (*shmring.Reader, error) {
 	name := respChannel(peerID, token, id)
+	var wait time.Duration
 	for {
 		r, err := shmring.OpenShm(name, capacity, shmring.WithPollInterval(minPoll, maxPoll))
 		if err == nil {
 			return r, nil
 		}
+		wait = nextOpenRetry(wait)
 		select {
 		case <-ctx.Done():
 			return nil, fmt.Errorf("ipc: waiting for response channel %s: %w", name, ctx.Err())
-		case <-time.After(openRetryInterval):
+		case <-time.After(wait):
 		}
 	}
 }
@@ -417,6 +451,7 @@ func Serve(ctx context.Context, peerID, dataDir string, priv shmevent.PrivateKey
 
 	var lastID uint16
 	var haveLastID bool
+	var dedupWait time.Duration
 	var pendingResp *shmring.Writer
 	cleanupPending := func() {
 		if pendingResp != nil {
@@ -447,18 +482,27 @@ func Serve(ctx context.Context, peerID, dataDir string, priv shmevent.PrivateKey
 		}
 
 		if haveLastID && m.Id() == lastID {
-			// The same request segment we already answered, reopened
-			// before the client has torn it down -- see the package doc
-			// comment on why we reread and dedup by ID instead of
-			// blocking for the name to disappear. Give the client a beat
-			// to catch up and try again.
+			// The same request segment we already answered, reopened before the client has torn it
+			// down -- see the package doc comment on why we reread and dedup by ID instead of
+			// blocking for the name to disappear. Give the client a beat to catch up and try again.
+			//
+			// **This is the sleep that paced the whole transport**, not the two open-retry loops
+			// that look like they would. The request channel has a fixed name, so after answering
+			// one call the daemon comes straight back round and re-opens the segment the client is
+			// still reading its response out of -- the dedup fires on essentially every call, and a
+			// flat wait here was a flat wait per round trip. Backed off from [openRetryMin] the
+			// same way, which took a 20-call sequence from 432ms to the tens of milliseconds and
+			// is the whole reason a scan of fifty records could exhaust a ten-second budget.
+			dedupWait = nextOpenRetry(dedupWait)
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(openRetryInterval):
+			case <-time.After(dedupWait):
 			}
 			continue
 		}
+		// A new request: the client has moved on, so the next echo starts its backoff afresh.
+		dedupWait = 0
 
 		// A genuinely new request only appears once the client's previous
 		// Call has returned (single in-flight caller), which only happens
@@ -478,15 +522,21 @@ func Serve(ctx context.Context, peerID, dataDir string, priv shmevent.PrivateKey
 }
 
 func openReqWithRetry(ctx context.Context, name string) (*shmring.Reader, error) {
+	var wait time.Duration
 	for {
 		r, err := shmring.OpenShm(name, capacity, shmring.WithPollInterval(minPoll, maxPoll))
 		if err == nil {
 			return r, nil
 		}
+		// Backed off the same way as the response side, and for the same reason: this wait is on
+		// the round trip too. A daemon that sleeps 20ms before noticing a request it could have
+		// served in microseconds adds that to every call, and this loop is also what an *idle*
+		// daemon sits in -- which is why the ceiling stays where it was.
+		wait = nextOpenRetry(wait)
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(openRetryInterval):
+		case <-time.After(wait):
 		}
 	}
 }
