@@ -15,7 +15,7 @@ import (
 // capture runs report and returns the line it wrote, by pointing os.Stderr at a pipe.
 func capture(t *testing.T, tm *callTiming, err error) string {
 	t.Helper()
-	return captureStderr(t, func() { tm.report("peer-1", 7, err) })
+	return captureStderr(t, func() { tm.report("peer-1", 7, "listRange", err) })
 }
 
 // Off by default. These sit in the hot path of every IPC round trip, and a backend where every
@@ -43,7 +43,7 @@ func TestASlowCallNamesThePhaseThatDominatedIt(t *testing.T) {
 	if !strings.Contains(line, "caller-lock dominated") {
 		t.Errorf("did not name the dominating phase: %s", line)
 	}
-	for _, want := range []string{"id=7", "peer-1", "caller-lock=9.5s", "await-response=400ms", "ok"} {
+	for _, want := range []string{"listRange", "id=7", "peer-1", "caller-lock=9.5s", "await-response=400ms", "ok"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("missing %q: %s", want, line)
 		}
@@ -124,6 +124,11 @@ func TestARealCallBlockedOnTheLockReportsTheLock(t *testing.T) {
 
 	if !strings.Contains(line, "caller-lock dominated") {
 		t.Fatalf("a call that spent its whole budget queued did not say so:\n%s", line)
+	}
+	// The event type is what turns "the daemon was slow" into "the daemon was slow answering
+	// *this*", which is the difference between a finding and a lead.
+	if !strings.Contains(line, "getFieldByKey") {
+		t.Errorf("the line does not say which event was waiting:\n%s", line)
 	}
 	if !strings.Contains(line, "failed") {
 		t.Errorf("the call failed but was not reported as failed:\n%s", line)

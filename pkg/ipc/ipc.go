@@ -212,7 +212,7 @@ func Call(ctx context.Context, peerID string, m shmevent.Msg, priv shmevent.Priv
 	// [callTiming]. Off unless KVRAFT_IPC_CALL_LOG is set.
 	timing := startCallTiming()
 	var callErr error
-	defer func() { timing.report(peerID, m.Id(), callErr) }()
+	defer func() { timing.report(peerID, m.Id(), m.Which().String(), callErr) }()
 
 	release, err := acquireCaller(ctx, peerID)
 	timing.done(phaseLock)

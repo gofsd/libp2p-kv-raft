@@ -17,8 +17,10 @@ import (
 // bugs present identically, so three hypotheses have now been eliminated by measurement and none
 // replaced them (see mes's docs/verification-log.md, 2026-09-16).
 //
-// This says which phase. It is the same bargain pkg/dispatch's sweep timing made and the same
-// reason: a rig answers this question in eighty minutes and badly, and one line answers it once.
+// This says which phase, and which event. The event type is on the line because the phases alone
+// got as far as "the daemon took 45s to answer" and no further: what a caller is waiting *for*
+// decides whether that is a read behind a raft commit, a commit of its own, or something else
+// entirely, and those are different bugs.
 //
 // Off unless KVRAFT_IPC_CALL_LOG names a duration: these are the hot path, one line per slow call
 // is still one line per call on a backend where every call is slow, and the default has to be
@@ -77,7 +79,7 @@ func (t *callTiming) done(p callPhase) {
 // dominated. outcome is the error the call is returning, or nil -- **a failing call is reported on
 // the same terms as a slow one**, because the failure this exists for is a call that blocks until
 // its deadline and then blames whichever phase happened to notice.
-func (t *callTiming) report(peerID string, id uint16, outcome error) {
+func (t *callTiming) report(peerID string, id uint16, which string, outcome error) {
 	threshold, on := callTimingThreshold()
 	if !on {
 		return
@@ -102,8 +104,8 @@ func (t *callTiming) report(peerID string, id uint16, outcome error) {
 		status = "failed"
 	}
 	fmt.Fprintf(os.Stderr,
-		"ipc timing: call id=%d to %s %s in %s -- %s dominated (%s);%s\n",
-		id, peerID, status, elapsed.Round(time.Millisecond),
+		"ipc timing: %s id=%d to %s %s in %s -- %s dominated (%s);%s\n",
+		which, id, peerID, status, elapsed.Round(time.Millisecond),
 		worstAt, worst.Round(time.Millisecond), parts)
 }
 
