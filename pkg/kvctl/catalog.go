@@ -153,6 +153,15 @@ func listUnitIDs(ctx context.Context, sess *shmclient.Session, kind string) ([]s
 			seen[unitID] = true
 			ids = append(ids, unitID)
 		}
+		// Skip the rest of this unit's revisions rather than stepping through them one round trip
+		// at a time: this function wants distinct unitIDs, and every further record of this one
+		// would be deduplicated away by the map above after being paid for in full. See
+		// logrecord.AfterUnit for why the skip cannot run past a neighbouring unit, and for the
+		// measurement that made it worth doing.
+		if next := logrecord.AfterUnit(key); next != nil {
+			lo = next
+			continue
+		}
 		lo = append(append([]byte{}, key...), 0x00)
 	}
 }

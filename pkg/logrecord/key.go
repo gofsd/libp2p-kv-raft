@@ -166,6 +166,38 @@ func ScanBounds(kind, unitID string, start, end time.Time) (lo, hi []byte) {
 	return lo, hi
 }
 
+// AfterUnit returns the smallest key that sorts after every record sharing key's (kind, unitID),
+// for a caller walking a kind's range who has all it needs from this unit and wants the next one.
+//
+// A key is prefix + tsNano(8) + rand(RandSize) with the prefix carrying length-delimited kind and
+// unitID (see BuildKey), so every record of one unit shares that prefix and differs only in the
+// fixed-width tail. Maxing the tail out and stepping one past it therefore lands after this unit
+// and before any other: a *different* unitID differs inside the prefix, and a unitID that merely
+// *extends* this one differs in the length bytes that precede it, so the two can never interleave.
+//
+// This is what lets a scan cost one round trip per unit instead of one per record. The store's
+// range scan returns a single pair per call (see pkg/store.ScanRange's limit, which pkg/daemon
+// pins at 1), so a walk that steps key-by-key pays a full IPC round trip for every revision of
+// every unit -- and a log is append-only, so that count only ever grows. Measured on the optical
+// rig 2026-09-16, one command's request listing had reached 10s, which is kvctl's whole IPC
+// timeout, and a dispatcher sweep over 55 commands had a p90 of 20.8s against the 3s tick driving
+// it.
+//
+// Returns nil if key is too short to hold the tail, which callers should treat as "do not skip".
+func AfterUnit(key []byte) []byte {
+	if len(key) < 8+RandSize {
+		return nil
+	}
+	prefixLen := len(key) - 8 - RandSize
+	out := make([]byte, len(key)+1)
+	copy(out, key[:prefixLen])
+	for i := prefixLen; i < len(key); i++ {
+		out[i] = 0xFF
+	}
+	out[len(key)] = 0x00
+	return out
+}
+
 // nonNegativeUnixNano returns ts.UnixNano(), floored at 0. Every real
 // record's tsNano (BuildKey) is time.Now() at write time and so always
 // positive in practice, but a ScanBounds caller reaching for time.Time{}
