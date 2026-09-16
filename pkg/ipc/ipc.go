@@ -208,48 +208,67 @@ func respChannel(peerID, token string, id uint16) string {
 // EventGetPublicKey/EventGetPrivateKey -- see shmevent.Sign), and returns
 // its response. It blocks until the daemon replies or ctx is done.
 func Call(ctx context.Context, peerID string, m shmevent.Msg, priv shmevent.PrivateKey) (shmevent.Msg, error) {
+	// Timed phase by phase, and reported on the failure paths as well as the slow ones -- see
+	// [callTiming]. Off unless KVRAFT_IPC_CALL_LOG is set.
+	timing := startCallTiming()
+	var callErr error
+	defer func() { timing.report(peerID, m.Id(), callErr) }()
+
 	release, err := acquireCaller(ctx, peerID)
+	timing.done(phaseLock)
 	if err != nil {
+		callErr = err
 		return shmevent.Msg{}, err
 	}
 	defer release()
 
 	token, err := tokenForPeer(peerID)
 	if err != nil {
+		callErr = err
 		return shmevent.Msg{}, err
 	}
 
 	rn := reqChannel(peerID, token)
 	w, err := shmring.CreateShm(rn, capacity, shmring.WithPollInterval(minPoll, maxPoll))
+	timing.done(phaseOpenRequest)
 	if err != nil {
-		return shmevent.Msg{}, fmt.Errorf("ipc: create request channel: %w", err)
+		callErr = fmt.Errorf("ipc: create request channel: %w", err)
+		return shmevent.Msg{}, callErr
 	}
 
 	buf, err := shmevent.Encode(m, priv)
 	if err != nil {
 		w.CloseStorage()
-		return shmevent.Msg{}, fmt.Errorf("ipc: encode request: %w", err)
+		callErr = fmt.Errorf("ipc: encode request: %w", err)
+		return shmevent.Msg{}, callErr
 	}
 	if _, err := w.WriteContext(ctx, buf); err != nil {
 		w.CloseStorage()
-		return shmevent.Msg{}, fmt.Errorf("ipc: write request: %w", err)
+		callErr = fmt.Errorf("ipc: write request: %w", err)
+		return shmevent.Msg{}, callErr
 	}
 	if err := w.Close(); err != nil {
 		w.CloseStorage()
-		return shmevent.Msg{}, fmt.Errorf("ipc: close request writer: %w", err)
+		callErr = fmt.Errorf("ipc: close request writer: %w", err)
+		return shmevent.Msg{}, callErr
 	}
+	timing.done(phaseWriteRequest)
 
 	r, err := openRespWithRetry(ctx, peerID, token, m.Id())
+	timing.done(phaseAwaitResponse)
 	if err != nil {
 		w.CloseStorage()
+		callErr = err
 		return shmevent.Msg{}, err
 	}
 
 	respBuf, err := readAll(ctx, r)
 	r.Close()
+	timing.done(phaseReadResponse)
 	if err != nil {
 		w.CloseStorage()
-		return shmevent.Msg{}, fmt.Errorf("ipc: read response: %w", err)
+		callErr = fmt.Errorf("ipc: read response: %w", err)
+		return shmevent.Msg{}, callErr
 	}
 
 	// The response proves the daemon already fully read the request; safe
