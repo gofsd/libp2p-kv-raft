@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -858,6 +859,59 @@ func runCommandDispatch(ctx context.Context, done chan struct{}, commandID strin
 	}
 }
 
+// dispatchPassFailures counts consecutive failed scan passes per command id,
+// so that a dispatcher which has silently stopped serving can say so.
+var (
+	dispatchPassMu       sync.Mutex
+	dispatchPassFailures = map[string]int{}
+)
+
+// dispatchPassFailed reports a scan pass that listed nothing because it could
+// not, on the first failure and then at widening intervals.
+//
+// The pass below used to return in silence here, on the reasoning that a
+// failure is transient and the next tick retries. That is true of a failure;
+// it is not true of a CONDITION. A session wedged on the IPC caller lock fails
+// every pass identically, so the loop keeps ticking, the registration stays
+// valid, and the device serves nothing at all for the life of the process --
+// while a freshly started process drains the same backlog in about three
+// seconds, because its session is new.
+//
+// That cost two optical batches on 2026-09-18, as cases that waited out their
+// budgets for an answer nobody was coming to give: a "wrote no terminal record
+// within 120000ms" and a "no OutputLog entry appeared", neither of which names
+// a dispatcher. There is still no onError callback to hand this to -- gomobile
+// cannot take a func parameter -- so it goes to the platform log, which on
+// Android is where every other diagnostic in this package already goes.
+func dispatchPassFailed(commandID, what string, err error) {
+	dispatchPassMu.Lock()
+	dispatchPassFailures[commandID]++
+	n := dispatchPassFailures[commandID]
+	dispatchPassMu.Unlock()
+	// 1, 10, 100, 1000... -- enough to notice it started and to see it is still
+	// going, without writing a line per tick into a ring buffer somebody else
+	// reads their own diagnostics out of.
+	for p := 1; p <= n; p *= 10 {
+		if p == n {
+			log.Printf("kvmobile: command dispatcher for %q: %s failed %d pass(es) in a row, "+
+				"so this device is serving no dispatches: %v", commandID, what, n, err)
+			return
+		}
+	}
+}
+
+// dispatchPassRecovered clears the counter, and says so if it had been failing.
+func dispatchPassRecovered(commandID string) {
+	dispatchPassMu.Lock()
+	n := dispatchPassFailures[commandID]
+	delete(dispatchPassFailures, commandID)
+	dispatchPassMu.Unlock()
+	if n > 0 {
+		log.Printf("kvmobile: command dispatcher for %q: serving again after %d failed pass(es)",
+			commandID, n)
+	}
+}
+
 // dispatchPendingCommandRequests is RunCommandDispatcher's single scan
 // pass: list every CommandRequest for commandID, skip any instance id
 // commandRequestAlreadyHandled already has a result for, and run
@@ -872,10 +926,13 @@ func runCommandDispatch(ctx context.Context, done chan struct{}, commandID strin
 func dispatchPendingCommandRequests(commandID string, handler CommandDispatchHandler) {
 	out, err := ListCommandRequests(commandID)
 	if err != nil {
+		dispatchPassFailed(commandID, "list requests", err)
 		return
 	}
+	dispatchPassRecovered(commandID)
 	var reqs []CommandRequest
 	if err := json.Unmarshal([]byte(out), &reqs); err != nil {
+		dispatchPassFailed(commandID, "decode requests", err)
 		return
 	}
 	for _, req := range reqs {
