@@ -479,9 +479,27 @@ func (r *run) wait(state *lua.LState, instanceID string, seconds float64) lua.LV
 
 	for {
 		entries, err := r.opts.Env.QueryLog(ctx, instanceID)
-		if err == nil && len(entries) > 0 {
-			if last := entries[len(entries)-1]; last.Done() {
-				return r.recordToLua(state, last, true, false)
+		if err == nil {
+			// Backwards to the last TERMINAL entry, not simply the last
+			// entry. A command log is cluster-wide and every member sees
+			// every request, so a device that decides a request is not its
+			// to serve appends a "running" decline -- and one that lands
+			// *after* the device that did serve it wrote its answer would
+			// otherwise hide that answer forever: this loop would see
+			// "running", keep waiting, and hand the script a timed-out
+			// record with no fields and no narrative to explain itself.
+			//
+			// Every other reader of a command log in this stack already
+			// scans backwards for the last non-running entry -- kvctl's own
+			// push waiter, and both readers in ../object-history-app. This
+			// was the odd one out, and it cost a rig batch on 2026-09-18:
+			// a Lua script's call failed with the empty string as its
+			// reason, because the answer it needed was one entry further
+			// back.
+			for i := len(entries) - 1; i >= 0; i-- {
+				if entries[i].Done() {
+					return r.recordToLua(state, entries[i], true, false)
+				}
 			}
 		}
 		if err != nil && ctx.Err() == nil {

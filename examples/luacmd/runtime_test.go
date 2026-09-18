@@ -704,3 +704,31 @@ func errorNarrative(err error) string {
 	}
 	return err.Error()
 }
+
+// TestWaitFindsAnAnswerAnotherDeviceWrotePast is the bug a rig batch found
+// on 2026-09-18, and the reason this loop scans rather than peeks.
+//
+// A command log is cluster-wide and every member sees every request, so a
+// device that decides a request is not its to serve appends a "running"
+// decline. Land that after the device that *did* serve it wrote its
+// answer, and a wait that only inspected the final entry would see
+// "running" forever -- handing the script a timed-out record with no
+// fields and no narrative, which is an error message of the empty string.
+func TestWaitFindsAnAnswerAnotherDeviceWrotePast(t *testing.T) {
+	env := newFakeEnv()
+	env.setLog("inst-1",
+		luacmd.LogEntry{InstanceID: "inst-1", Fields: map[string]string{"status": "running"}, Narrative: "started"},
+		luacmd.LogEntry{InstanceID: "inst-1", Fields: map[string]string{"status": "ok", "answer": "42"}, Narrative: "done"},
+		// Another member of the cluster, declining a request that was never
+		// addressed to it -- written after the answer.
+		luacmd.LogEntry{InstanceID: "inst-1", Fields: map[string]string{"status": "running"}, Narrative: ""},
+	)
+	result := mustRun(t, env, `
+local res = kv.wait("inst-1", 5)
+if res.status ~= "ok" then error("status is " .. tostring(res.status)) end
+return {fields = {status = res.status, answer = res.fields.answer}}
+`)
+	if result.Fields["status"] != "ok" || result.Fields["answer"] != "42" {
+		t.Fatalf("kv.wait did not find the answer behind the decline: %v", result.Fields)
+	}
+}
