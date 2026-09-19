@@ -912,6 +912,48 @@ func dispatchPassRecovered(commandID string) {
 	}
 }
 
+// dispatchPassEmpty counts consecutive passes that listed NOTHING, per command
+// id, which is a different thing from a pass that could not list at all.
+var dispatchPassEmpty = map[string]int{}
+
+// dispatchPassSaw reports what a successful pass actually found.
+//
+// dispatchPassFailed above covers a pass that errored. This covers the other
+// way a dispatcher serves nothing while looking perfectly healthy: every pass
+// succeeds, returns an empty list, and the request the caller is waiting on is
+// simply not in the view. The loop ticks, the registration is valid, nothing
+// errors, and a device answers no dispatches.
+//
+// Measured on 2026-09-18: a request submitted to the generator at about
+// 22:09:50 was first seen at 22:17:32 -- seven and a half minutes -- by which
+// time the process that had been polling throughout had exited and a newly
+// started one picked it up in about three seconds. Its passes never errored,
+// so the failure counter above stayed at zero the whole time. Without this
+// line there is no way to tell "polling and seeing nothing" from "not polling",
+// and those want completely different fixes.
+func dispatchPassSaw(commandID string, n int) {
+	dispatchPassMu.Lock()
+	defer dispatchPassMu.Unlock()
+	if n > 0 {
+		if empty := dispatchPassEmpty[commandID]; empty > 0 {
+			log.Printf("kvmobile: command dispatcher for %q: saw %d request(s) after %d empty pass(es)",
+				commandID, n, empty)
+		}
+		dispatchPassEmpty[commandID] = 0
+		return
+	}
+	dispatchPassEmpty[commandID]++
+	// Widening, like the failure counter, and for the same reason: this is the
+	// ORDINARY state of an idle device, so it must not write a line per tick.
+	// What it is here to catch is an empty run long enough to outlast a case.
+	for _, at := range []int{100, 1000, 10000} {
+		if dispatchPassEmpty[commandID] == at {
+			log.Printf("kvmobile: command dispatcher for %q: %d pass(es) in a row saw no requests "+
+				"(no errors) -- idle, or this session's view has gone stale", commandID, at)
+		}
+	}
+}
+
 // dispatchPendingCommandRequests is RunCommandDispatcher's single scan
 // pass: list every CommandRequest for commandID, skip any instance id
 // commandRequestAlreadyHandled already has a result for, and run
@@ -935,6 +977,7 @@ func dispatchPendingCommandRequests(commandID string, handler CommandDispatchHan
 		dispatchPassFailed(commandID, "decode requests", err)
 		return
 	}
+	dispatchPassSaw(commandID, len(reqs))
 	for _, req := range reqs {
 		handled, err := commandRequestAlreadyHandled(req.InstanceID)
 		if err != nil || handled {
