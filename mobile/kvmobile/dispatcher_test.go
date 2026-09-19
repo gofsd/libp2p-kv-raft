@@ -396,3 +396,24 @@ func TestReportProgressLeavesInstancePendingForAFreshDispatcher(t *testing.T) {
 		t.Fatalf("first entry = %+v, want the earlier progress update, untouched", entries[0])
 	}
 }
+
+// TestCommandDispatcherRunningTracksRegistration pins the query an always-on
+// listener uses to notice it has been taken down -- see the 2026-09-19 note on
+// CommandDispatcherRunning for why that happens without anything erroring.
+func TestCommandDispatcherRunningTracksRegistration(t *testing.T) {
+	const id = "running-probe"
+	if CommandDispatcherRunning(id) {
+		t.Fatalf("nothing registered yet, but %q reports running", id)
+	}
+	if err := RunCommandDispatcher(id, &recordingDispatchHandler{}); err != nil {
+		t.Fatalf("RunCommandDispatcher: %v", err)
+	}
+	if !CommandDispatcherRunning(id) {
+		t.Fatalf("registered %q, but it does not report running", id)
+	}
+	StopCommandDispatcher(id)
+	if CommandDispatcherRunning(id) {
+		t.Fatalf("stopped %q, but it still reports running -- which is the whole failure this "+
+			"query exists to make visible", id)
+	}
+}

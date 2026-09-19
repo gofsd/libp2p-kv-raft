@@ -912,6 +912,28 @@ func dispatchPassRecovered(commandID string) {
 	}
 }
 
+// CommandDispatcherRunning reports whether a dispatcher loop is currently
+// registered for commandID.
+//
+// It exists so a caller can put its own always-on listener back after somebody
+// else has taken it down, without blindly re-registering: RunCommandDispatcher
+// cancels any existing loop before starting a new one, and doing that on a
+// timer would cancel a loop in the middle of running a handler.
+//
+// Somebody else taking it down is not hypothetical and not misuse.
+// StopCommandDispatcher is an ordinary part of this API, exercised by the
+// optical plan's own Dispatch cases -- and on 2026-09-19 one of them stopped
+// the id an Android app uses for its permanently-registered listener ("ping"),
+// which left that device serving no dispatches for the remaining 160 cases of
+// the batch. Nothing errored and nothing logged: the loop simply was not there
+// any more, which is indistinguishable from an idle one without this.
+func CommandDispatcherRunning(commandID string) bool {
+	dispatchMu.Lock()
+	defer dispatchMu.Unlock()
+	_, ok := dispatches[commandID]
+	return ok
+}
+
 // dispatchPassEmpty counts consecutive passes that listed NOTHING, per command
 // id, which is a different thing from a pass that could not list at all.
 var dispatchPassEmpty = map[string]int{}
