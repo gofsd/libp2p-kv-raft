@@ -36,7 +36,7 @@ web-sys = { version = "0.3.103", features = ["Worker", "MessageEvent", "Dedicate
 getrandom = { version = "0.3", features = ["wasm_js"] }
 
 [target.wasm32-unknown-unknown.dependencies]
-sqlite-wasm-rs = "0.5.5"
+sqlite-wasm-rs = "0.6.1"
 
 [build-dependencies]
 capnpc = "0.26.0"
