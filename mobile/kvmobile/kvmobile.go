@@ -604,6 +604,22 @@ func join(dataDir, leaderAddr, suffrage string, resolveIdentity func(dataDir str
 	if leaderAddr == "" {
 		return "", fmt.Errorf("kvmobile: no target leader multiaddr given")
 	}
+	// A join IS a start sequence -- stop one daemon, start another, and now roll
+	// back to the first if that fails -- so it belongs behind the lock that exists
+	// to keep two such sequences from interleaving, and it was the one that did
+	// not hold it. startSeqMu's own doc comment describes what the overlap costs:
+	// two daemons over one data directory, one of their calls dying with
+	// "ipc: open response shm: backend: dup fd N: bad file descriptor", the store
+	// left locked and no ready.json ever written. That was measured through two
+	// concurrent *starts* (2026-08-19) and fixed for them; a concurrent start and
+	// join could still do it, and on this project's Android caller those two run
+	// at the same moment on every launch -- StartSolo from AppContainer.init, and
+	// the remembered-cluster rejoin on its own scope right after.
+	//
+	// Safe against the rollback below: that calls the unexported startSolo/
+	// startPending/startAgainst, none of which take this lock.
+	startSeqMu.Lock()
+	defer startSeqMu.Unlock()
 	// Captured before the Stop below, because Stop clears it: this is what puts
 	// the current daemon back if the switch fails.
 	mu.Lock()

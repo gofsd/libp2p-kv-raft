@@ -41,6 +41,11 @@ const pendingDirName = "pending"
 // those read the device's actual live raft state, not that bookkeeping
 // field.
 func StartPending(dataDir string) (string, error) {
+	// Behind startSeqMu like the StartSolo* wrappers, and for the reason its doc
+	// comment gives: this is a whole start sequence, and two of them over one data
+	// directory is what leaves the store locked with a dup-fd error behind it.
+	startSeqMu.Lock()
+	defer startSeqMu.Unlock()
 	return startPending(dataDir, 0, ensureIdentity)
 }
 
@@ -48,6 +53,8 @@ func StartPending(dataDir string) (string, error) {
 // identity from keyHex (see StartWithKey) instead of always falling back
 // to ensureIdentity's persisted-or-generated-or-build-seeded key.
 func StartPendingWithKey(dataDir, keyHex string) (string, error) {
+	startSeqMu.Lock()
+	defer startSeqMu.Unlock()
 	return startPending(dataDir, 0, func(dataDir string) (keyPath, peerID string, err error) {
 		return importIdentity(dataDir, keyHex)
 	})
@@ -64,6 +71,8 @@ func StartPendingWithKey(dataDir, keyHex string) (string, error) {
 // time this device's own daemon is resumed in a fresh process) can't
 // guarantee.
 func StartPendingWithKeyAndPort(dataDir, keyHex string, port int) (string, error) {
+	startSeqMu.Lock()
+	defer startSeqMu.Unlock()
 	return startPending(dataDir, port, func(dataDir string) (keyPath, peerID string, err error) {
 		return importIdentity(dataDir, keyHex)
 	})
