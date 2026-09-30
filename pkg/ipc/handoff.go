@@ -37,6 +37,35 @@ type respHandoff struct {
 // to, which is the corruption this handshake exists to prevent.
 const ackGrace = 5 * time.Second
 
+// awaitHandoffAck waits for Call to say it has dup'd the parked fd, or for [ackGrace] to expire.
+//
+// **It deliberately takes no context, and that is the whole point of it being a function.** Once the
+// fd is in Call's channel, Call may read it and dup it at any moment, and the only thing that makes
+// that dup safe is Serve still holding the fd open. A cancellation arriving in between is not a
+// reason to free the segment early -- it is exactly the case [ackGrace]'s own comment describes as
+// the corruption this handshake exists to prevent, arriving with a timer that fires at zero.
+//
+// Serve used to select on `ctx.Done()` here alongside the ack and the grace, and released the
+// segment the instant its daemon was cancelled. Measured on object-history-app's optical rig,
+// 2026-09-30: a phone whose remembered cluster named a destroyed peer had its daemon torn down by a
+// failed join while `requestRelayAccess` was in flight, and that call answered
+// `ipc: open response shm: backend: dup fd 198: bad file descriptor` -- unix.Dup on an fd this
+// branch had just closed underneath it.
+//
+// The cost of not honouring cancellation here is bounded and small: at most [ackGrace] on a shutdown
+// where the caller never acks, which is the same bound the abandoned case already accepts. The cost
+// of honouring it was a caller mapping memory that had been freed, or -- if the fd number had been
+// reused by then -- mapping somebody else's.
+func awaitHandoffAck(ack <-chan struct{}) {
+	t := time.NewTimer(ackGrace)
+	defer t.Stop()
+	select {
+	case <-ack:
+	case <-t.C:
+		// The caller gave up between handing us its request and reading our answer.
+	}
+}
+
 // releaseAbandoned takes a response handoff nobody is going to read and acks it, so Serve may
 // release the segment and move on. Bounded, because Serve is not obliged to send at all: it
 // `continue`s past several error paths without ever reaching the handoff, and a goroutine parked

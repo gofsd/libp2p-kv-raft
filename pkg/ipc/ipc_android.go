@@ -31,7 +31,6 @@ import (
 	"fmt"
 	"io"
 	"sync"
-	"time"
 
 	"github.com/gofsd/shmring"
 
@@ -245,19 +244,10 @@ func Serve(ctx context.Context, peerID, dataDir string, priv shmevent.PrivateKey
 			w.CloseStorage()
 			return ctx.Err()
 		}
-		ackTimer := time.NewTimer(ackGrace)
-		select {
-		case <-ack:
-		case <-ackTimer.C:
-			// The caller gave up between handing us its request and reading our answer. Release
-			// the segment and take the next call rather than holding this loop -- and this peer's
-			// whole IPC -- for the life of the process.
-		case <-ctx.Done():
-			ackTimer.Stop()
-			w.CloseStorage()
-			return ctx.Err()
-		}
-		ackTimer.Stop()
+		// Past this point the fd is Call's to read, so the ack (or its grace) is the only thing
+		// that may release it -- cancellation included. See awaitHandoffAck for what a ctx.Done()
+		// branch here cost on a real device.
+		awaitHandoffAck(ack)
 		w.CloseStorage()
 	}
 }
