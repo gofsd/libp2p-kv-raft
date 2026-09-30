@@ -134,6 +134,10 @@ func startPending(dataDirRoot string, port int, resolveIdentity func(dataDir str
 	runErrC = errC
 	cancelRun = cancel
 	started = true
+	// See restartCurrent: startPending takes mu itself, as startSolo does.
+	restartCurrent = func() (string, error) {
+		return startPending(dataDirRoot, port, resolveIdentity)
+	}
 	return peerID, nil
 }
 

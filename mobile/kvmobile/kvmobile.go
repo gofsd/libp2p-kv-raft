@@ -211,6 +211,15 @@ var (
 	runErrC        chan error
 	session        *shmclient.Session
 	cancelRun      context.CancelFunc
+	// restartCurrent re-runs the start that produced the daemon now running --
+	// solo bootstrap, a join against a leader, or a pending join -- and is the
+	// only way back once Stop has been called, since Start is a no-op after its
+	// first success and nothing else re-enters a start path. Recorded by each of
+	// those three, cleared by Stop, and read by join: switching clusters has to
+	// stop the current daemon before it can know the new cluster is reachable,
+	// and a caller left with no daemon at all is strictly worse off than one
+	// whose join was refused. Must be called WITHOUT mu held.
+	restartCurrent func() (string, error)
 )
 
 // Start brings up the follower daemon in-process under dataDir (an
@@ -520,6 +529,12 @@ func startAgainst(dataDirRoot, leaderAddr, suffrage string, resolveIdentity func
 	runErrC = errC
 	cancelRun = cancel
 	started = true
+	// Takes mu itself, because a rollback runs with it released -- see join.
+	restartCurrent = func() (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return startAgainst(dataDirRoot, leaderAddr, suffrage, resolveIdentity)
+	}
 	return peerID, nil
 }
 
@@ -589,13 +604,47 @@ func join(dataDir, leaderAddr, suffrage string, resolveIdentity func(dataDir str
 	if leaderAddr == "" {
 		return "", fmt.Errorf("kvmobile: no target leader multiaddr given")
 	}
+	// Captured before the Stop below, because Stop clears it: this is what puts
+	// the current daemon back if the switch fails.
+	mu.Lock()
+	restore := restartCurrent
+	mu.Unlock()
+
 	if err := Stop(); err != nil {
 		return "", fmt.Errorf("kvmobile: join: stop current node: %w", err)
 	}
 
 	mu.Lock()
-	defer mu.Unlock()
-	return startAgainst(dataDir, leaderAddr, suffrage, resolveIdentity)
+	id, err := startAgainst(dataDir, leaderAddr, suffrage, resolveIdentity)
+	mu.Unlock()
+	if err == nil {
+		return id, nil
+	}
+
+	// The Stop above took down a daemon that was working, and this function
+	// cannot leave the process with none: `started` would stay false for its
+	// whole life, since Start is a no-op once it believes it has run and
+	// StartSolo is called once at app startup, so *every* later binding would
+	// answer "Start has not completed successfully yet". Measured on
+	// object-history-app's rig 2026-09-30: a phone whose remembered cluster
+	// named a peer that had been destroyed spent every launch in that state --
+	// its relay grant failed one millisecond after the join did, it advertised
+	// no address, and it was unreachable until the app was next relaunched,
+	// with its own log saying "staying solo for now", which it was not.
+	//
+	// The join error is what the caller hears either way; the rollback only
+	// decides whether it still has a node. Note startAgainst has its own,
+	// narrower version of this rule -- a *refused re-announcement* on a node
+	// that resumed existing state stays up rather than tearing itself down --
+	// and this is the same principle one level out, for the failures that
+	// version cannot save.
+	if restore == nil {
+		return "", err
+	}
+	if _, rerr := restore(); rerr != nil {
+		return "", fmt.Errorf("%w (and the node running before it could not be restarted: %v)", err, rerr)
+	}
+	return "", fmt.Errorf("%w (the node running before it has been restarted)", err)
 }
 
 // Stop shuts down the currently running in-process daemon, if any, and
@@ -632,6 +681,9 @@ func Stop() error {
 	session = nil
 	runErrC = nil
 	cancelRun = nil
+	// Nothing to put back: a caller that asked for this daemon to stop did not
+	// ask for it to come back on somebody else's failed join.
+	restartCurrent = nil
 	mu.Unlock()
 	// Anything holding the session this daemon had must let go of it: a
 	// journal opened against it is bound to a peer id and a session that

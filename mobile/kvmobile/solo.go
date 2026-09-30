@@ -182,5 +182,10 @@ func startSolo(dataDirRoot string, port int, resolveIdentity func(dataDir string
 	runErrC = errC
 	cancelRun = cancel
 	started = true
+	// See restartCurrent: startSolo takes mu itself, so a rollback must call
+	// this with mu released.
+	restartCurrent = func() (string, error) {
+		return startSolo(dataDirRoot, port, resolveIdentity)
+	}
 	return peerID, nil
 }
